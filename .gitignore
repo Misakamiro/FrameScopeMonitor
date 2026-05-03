@@ -5,6 +5,9 @@ framescope-watcher-state.json
 framescope-watcher.log
 game-lite-priority-state.json
 game-lite-watcher.log
+Enter-GameLite.ps1
+Exit-GameLite.ps1
+GameLiteWatcher.ps1
 framescope-runs/
 cs2-monitor-runs/
 script-backups/

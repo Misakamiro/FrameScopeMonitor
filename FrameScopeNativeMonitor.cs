@@ -588,8 +588,6 @@ internal static class FrameScopeNativeMonitor
 
     private static void StopFrameScopeBackgroundProcesses()
     {
-        RestoreGameLitePriorities();
-
         var pids = EnumerateFrameScopeBackgroundPids();
         if (pids.Count == 0) return;
 
@@ -627,8 +625,7 @@ internal static class FrameScopeNativeMonitor
 
             if (name.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) &&
                 (commandLower.Contains("framescopewatcher.ps1") ||
-                 commandLower.Contains("monitor-cs2-highfreq.ps1") ||
-                 commandLower.Contains("gamelitewatcher.ps1")) &&
+                 commandLower.Contains("monitor-cs2-highfreq.ps1")) &&
                 commandLower.Contains(rootLower))
             {
                 result.Add(info.ProcessId);
@@ -708,32 +705,6 @@ internal static class FrameScopeNativeMonitor
         {
             if (result.Add(child)) AddChildPids(child, processMap, result);
         }
-    }
-
-    private static void RestoreGameLitePriorities()
-    {
-        try
-        {
-            var exitLiteScript = Path.Combine(Root, "Exit-GameLite.ps1");
-            var liteStatePath = Path.Combine(Root, "game-lite-priority-state.json");
-            if (!File.Exists(exitLiteScript) || !File.Exists(liteStatePath)) return;
-
-            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-            var psi = new ProcessStartInfo
-            {
-                FileName = powershell,
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " + Quote(exitLiteScript),
-                WorkingDirectory = Root,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-            using (var process = Process.Start(psi))
-            {
-                if (process != null) process.WaitForExit(5000);
-            }
-        }
-        catch { }
     }
 
     private static int GetTreeDepth(int pid, Dictionary<int, List<int>> processMap)

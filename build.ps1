@@ -39,9 +39,6 @@ try {
         'FrameScopeWatcher.ps1',
         'Monitor-CS2-HighFreq.ps1',
         'Generate-CS2-FrameScope-Interactive-Report.py',
-        'Enter-GameLite.ps1',
-        'Exit-GameLite.ps1',
-        'GameLiteWatcher.ps1',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt'
     )) {
