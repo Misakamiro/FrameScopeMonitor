@@ -1,19 +1,19 @@
 # FrameScope Monitor
 
-FrameScope Monitor is a Windows game performance monitoring tool focused on short stutter diagnosis. It watches configured game processes, starts high-frequency capture when a game launches, stops when the game exits, and generates an interactive HTML report.
+FrameScope Monitor 是一个面向 Windows 游戏卡顿排查的性能监测工具。它可以监听你配置的游戏进程：游戏启动时自动开始记录，游戏退出后自动停止记录，并生成可交互的 HTML 性能报告。
 
-## Features
+## 功能
 
-- Native WinForms launcher for selecting monitored processes.
-- Automatic watcher mode: start the app, then launch a configured game.
-- High-frequency process sampling for CPU, memory, disk IO, and process activity.
-- PresentMon-based frame capture for FPS, 1% low, and 0.1% low analysis.
-- Interactive HTML report with FPS, system metrics, process usage, and performance charts.
-- Offline installer package published through GitHub Releases.
+- 原生 WinForms 图形界面，用于选择和管理需要监测的游戏进程。
+- 自动监听模式：先启动 FrameScope Monitor，再正常打开游戏即可自动开始记录。
+- 高频采样后台进程占用，包括 CPU、内存、磁盘 IO 和进程活动。
+- 基于 PresentMon 捕获帧时间数据，用于分析平均 FPS、1% Low 和 0.1% Low。
+- 自动生成交互式 HTML 报告，包含 FPS 波动、系统指标、进程占用和性能图表。
+- 提供离线安装包，安装后不需要用户额外安装 Python 等依赖。
 
-## Default Targets
+## 默认预设
 
-The default configuration includes presets for:
+默认配置包含以下游戏进程预设：
 
 - Counter-Strike 2
 - Delta Force
@@ -24,39 +24,54 @@ The default configuration includes presets for:
 - Hogwarts Legacy
 - OPUS Prism Peak
 
-You can add more processes from the app UI.
+也可以在软件界面里手动添加更多进程。
 
-## Install
+## 安装
 
-Download `FrameScopeMonitor-Setup.exe` from the latest GitHub Release and run it.
+从 GitHub Releases 下载 `FrameScopeMonitor-Setup.exe`，双击运行即可安装。
 
-The installer includes the app, PresentMon, and a portable Python runtime. Users do not need to install Python separately.
+安装包内置：
 
-Default install path:
+- FrameScope Monitor 主程序
+- PresentMon
+- 便携 Python 运行时
+- 自动监测与报告生成脚本
+
+默认安装位置：
 
 ```text
 %LOCALAPPDATA%\FrameScopeMonitor
 ```
 
-## Build From Source
+安装完成后会创建桌面快捷方式和开始菜单快捷方式。
 
-Run:
+## 使用方式
+
+1. 启动 `FrameScope Monitor`。
+2. 在列表中勾选需要监测的游戏进程。
+3. 点击启动监测。
+4. 正常打开游戏。
+5. 游戏退出后，软件会停止记录并打开对应的 HTML 报告。
+
+生成的数据和报告默认保存在安装目录下的 `framescope-runs` 文件夹中。
+
+## 从源码构建
+
+运行：
 
 ```powershell
 .\build.ps1
 ```
 
-The build script uses the .NET Framework compiler included with Windows and expects a portable Python runtime at:
+构建脚本会调用 Windows 自带的 .NET Framework 编译器，并期望便携 Python 位于：
 
 ```text
 %USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python
 ```
 
-If you only need the GUI executable, compile `FrameScopeNativeMonitor.cs` with .NET Framework 4.x references.
+如果只需要编译 GUI 主程序，可以直接用 .NET Framework 4.x 引用编译 `FrameScopeNativeMonitor.cs`。
 
-## Runtime Files
-
-Core files:
+## 核心运行文件
 
 - `FrameScopeMonitor.exe`
 - `FrameScopeWatcher.ps1`
@@ -64,4 +79,15 @@ Core files:
 - `Generate-CS2-FrameScope-Interactive-Report.py`
 - `tools\PresentMon-2.4.1-x64.exe`
 
-Generated local files such as `framescope-runs`, `cs2-monitor-runs`, logs, configs, and packaged installers are intentionally ignored by git.
+## 仓库说明
+
+以下内容不会提交到 git：
+
+- 本地监测数据
+- HTML 报告输出
+- 运行日志
+- 本地配置文件
+- 旧脚本备份
+- `dist` 打包产物
+
+安装包体积较大，因此通过 GitHub Releases 发布，不直接放进仓库源码中。
