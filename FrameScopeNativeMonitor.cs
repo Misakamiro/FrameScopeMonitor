@@ -463,7 +463,23 @@ internal static class FrameScopeNativeMonitor
     private static void RefreshProcessList()
     {
         processCombo.Items.Clear();
-        foreach (var name in Process.GetProcesses().Select(p => p.ProcessName + ".exe").Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(v => v))
+        var names = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var process in Process.GetProcesses())
+        {
+            try
+            {
+                names.Add(process.ProcessName + ".exe");
+            }
+            catch
+            {
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        foreach (var name in names)
         {
             processCombo.Items.Add(name);
         }
@@ -499,7 +515,9 @@ internal static class FrameScopeNativeMonitor
             var state = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(StatePath));
             if (!state.ContainsKey("WatcherPid")) return false;
             pid = Convert.ToInt32(state["WatcherPid"]);
-            Process.GetProcessById(pid);
+            using (Process.GetProcessById(pid))
+            {
+            }
             return true;
         }
         catch

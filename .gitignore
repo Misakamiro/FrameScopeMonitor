@@ -6,6 +6,7 @@ framescope-watcher.log
 framescope-runs/
 cs2-monitor-runs/
 script-backups/
+install-backups/
 
 # Build output and packaged installers
 dist/
