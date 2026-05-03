@@ -1,0 +1,32 @@
+{
+  "PollIntervalMs": 500,
+  "DataRoot": "framescope-runs",
+  "OpenReportOnComplete": true,
+  "MonitorScript": "Monitor-CS2-HighFreq.ps1",
+  "Targets": [
+    {
+      "Enabled": true,
+      "Name": "Counter-Strike 2",
+      "ProcessName": "cs2.exe",
+      "SampleIntervalMs": 80,
+      "SlowSampleIntervalMs": 1000,
+      "OpenReportOnComplete": true
+    },
+    {
+      "Enabled": true,
+      "Name": "Delta Force",
+      "ProcessName": "DeltaForceClient-Win64-Shipping.exe",
+      "SampleIntervalMs": 80,
+      "SlowSampleIntervalMs": 1000,
+      "OpenReportOnComplete": true
+    },
+    {
+      "Enabled": true,
+      "Name": "Neverness To Everness",
+      "ProcessName": "HTGame.exe",
+      "SampleIntervalMs": 80,
+      "SlowSampleIntervalMs": 1000,
+      "OpenReportOnComplete": true
+    }
+  ]
+}

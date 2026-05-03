@@ -1,0 +1,29 @@
+# Local runtime data
+framescope-config.json
+framescope-history.jsonl
+framescope-watcher-state.json
+framescope-watcher.log
+framescope-runs/
+cs2-monitor-runs/
+script-backups/
+
+# Build output and packaged installers
+dist/
+FrameScopeMonitor.exe
+*.pdb
+*.user
+*.suo
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Keep bundled PresentMon, ignore other transient executables by default.
+*.exe
+!tools/PresentMon-2.4.1-x64.exe
+
+# OS/editor noise
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
