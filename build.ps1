@@ -15,6 +15,10 @@ try {
         /reference:System.Web.Extensions.dll `
         .\FrameScopeNativeMonitor.cs
 
+    & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /out:FrameScopeProcessSampler.exe `
+        .\FrameScopeProcessSampler.cs
+
     $dist = Join-Path $root 'dist'
     $payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
     $sourceRoot = Join-Path $dist 'FrameScopeMonitor-installer-source'
@@ -25,6 +29,7 @@ try {
 
     foreach ($file in @(
         'FrameScopeMonitor.exe',
+        'FrameScopeProcessSampler.exe',
         'FrameScopeWatcher.ps1',
         'Monitor-CS2-HighFreq.ps1',
         'Generate-CS2-FrameScope-Interactive-Report.py',

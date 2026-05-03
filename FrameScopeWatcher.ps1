@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ConfigPath = '',
     [switch]$ExitAfterFirstRun,
     [switch]$ValidateOnly
@@ -44,14 +44,14 @@ function Get-DefaultConfig {
         OpenReportOnComplete = $true
         MonitorScript = $monitorScript
         Targets = @(
-            [pscustomobject]@{ Enabled = $true;  Name = 'Counter-Strike 2'; ProcessName = 'cs2.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $true;  Name = 'Delta Force'; ProcessName = 'DeltaForceClient-Win64-Shipping.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $true;  Name = 'Neverness To Everness'; ProcessName = 'HTGame.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Valorant'; ProcessName = 'VALORANT-Win64-Shipping.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Cyberpunk 2077'; ProcessName = 'Cyberpunk2077.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Battlefield 6'; ProcessName = 'bf6.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Hogwarts Legacy'; ProcessName = 'HogwartsLegacy.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'OPUS Prism Peak'; ProcessName = 'OPUS_ Prism Peak.exe'; SampleIntervalMs = 80; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true }
+            [pscustomobject]@{ Enabled = $true;  Name = 'Counter-Strike 2'; ProcessName = 'cs2.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $true;  Name = 'Delta Force'; ProcessName = 'DeltaForceClient-Win64-Shipping.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $true;  Name = 'Neverness To Everness'; ProcessName = 'HTGame.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Valorant'; ProcessName = 'VALORANT-Win64-Shipping.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Cyberpunk 2077'; ProcessName = 'Cyberpunk2077.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Battlefield 6'; ProcessName = 'bf6.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Hogwarts Legacy'; ProcessName = 'HogwartsLegacy.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'OPUS Prism Peak'; ProcessName = 'OPUS_ Prism Peak.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true }
         )
     }
 }
@@ -131,6 +131,56 @@ function Add-HistoryEntry {
     return [pscustomobject]$entry
 }
 
+function Test-ProcessIdRunning {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    return [bool](Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+function Get-MonitorPid {
+    param($Item)
+    if ($Item.MonitorPid) { return [int]$Item.MonitorPid }
+    try {
+        if ($Item.Process) { return [int]$Item.Process.Id }
+    }
+    catch {
+    }
+    return 0
+}
+
+function Test-MonitorExited {
+    param($Item)
+    try {
+        if ($Item.Process) {
+            $Item.Process.Refresh()
+            return [bool]$Item.Process.HasExited
+        }
+    }
+    catch {
+    }
+
+    $pid = Get-MonitorPid -Item $Item
+    if ($pid -gt 0) {
+        return -not (Test-ProcessIdRunning -ProcessId $pid)
+    }
+    return $true
+}
+
+function Get-MonitorExitCode {
+    param($Item, $Status)
+    try {
+        if ($Item.Process) { return [int]$Item.Process.ExitCode }
+    }
+    catch {
+    }
+    try {
+        if ($Status -and $null -ne $Status.ExitCode) { return [int]$Status.ExitCode }
+    }
+    catch {
+    }
+    return -1
+}
+
 function Write-WatcherState {
     param(
         [string]$Phase,
@@ -146,7 +196,10 @@ function Write-WatcherState {
             Key = $key
             Game = $item.Target.Name
             ProcessName = $item.Target.ProcessName
-            MonitorPid = if ($item.Process -and -not $item.Process.HasExited) { $item.Process.Id } else { $null }
+            MonitorPid = $(try {
+                $pid = Get-MonitorPid -Item $item
+                if ($pid -gt 0 -and (Test-ProcessIdRunning -ProcessId $pid)) { $pid } else { $null }
+            } catch { $null })
             RunRoot = $item.RunRoot
         }
     }
@@ -193,10 +246,11 @@ while ($true) {
 
     foreach ($key in @($activeMonitors.Keys)) {
         $item = $activeMonitors[$key]
-        if ($item.Process -and $item.Process.HasExited) {
+        if (Test-MonitorExited -Item $item) {
             $run = Get-LatestRun -RunRoot $item.RunRoot
             $status = if ($run) { Read-RunStatus -RunDir $run.FullName } else { $null }
-            $entry = if ($run) { Add-HistoryEntry -Target $item.Target -RunDir $run.FullName -Status $status -MonitorExitCode $item.Process.ExitCode } else { $null }
+            $exitCode = Get-MonitorExitCode -Item $item -Status $status
+            $entry = if ($run) { Add-HistoryEntry -Target $item.Target -RunDir $run.FullName -Status $status -MonitorExitCode $exitCode } else { $null }
             if ($entry) {
                 $lastReport = [string]$entry.ReportHtml
                 Write-FrameScopeLog "monitor-complete game=$($item.Target.Name) report=$lastReport"
@@ -227,7 +281,9 @@ while ($true) {
         $targetRunRoot = Join-Path $dataRoot $safeName
         New-Item -ItemType Directory -Path $targetRunRoot -Force | Out-Null
 
-        $sampleMs = if ($target.SampleIntervalMs) { [int]$target.SampleIntervalMs } else { 80 }
+        $sampleMs = if ($target.SampleIntervalMs) { [int]$target.SampleIntervalMs } else { 100 }
+        $processSampleMs = if ($target.ProcessSampleIntervalMs) { [int]$target.ProcessSampleIntervalMs } else { 250 }
+        if ($processSampleMs -lt 250) { $processSampleMs = 250 }
         $slowSampleMs = if ($target.SlowSampleIntervalMs) { [int]$target.SlowSampleIntervalMs } else { 1000 }
         $args = @(
             '-NoProfile',
@@ -237,6 +293,7 @@ while ($true) {
             '-WaitSeconds', '15',
             '-CaptureSeconds', '0',
             '-SampleIntervalMs', [string]$sampleMs,
+            '-ProcessSampleIntervalMs', [string]$processSampleMs,
             '-SlowSampleIntervalMs', [string]$slowSampleMs,
             '-RunRoot', $targetRunRoot,
             '-RunNamePrefix', $safeName
@@ -245,6 +302,7 @@ while ($true) {
         $activeMonitors[$key] = [pscustomobject]@{
             Target = $target
             Process = $process
+            MonitorPid = $process.Id
             RunRoot = $targetRunRoot
             StartedAt = Get-Date
         }
@@ -263,3 +321,4 @@ while ($true) {
     if ($pollMs -lt 250) { $pollMs = 250 }
     Start-Sleep -Milliseconds $pollMs
 }
+

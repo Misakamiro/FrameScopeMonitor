@@ -8,7 +8,8 @@
       "Enabled": true,
       "Name": "Counter-Strike 2",
       "ProcessName": "cs2.exe",
-      "SampleIntervalMs": 80,
+      "SampleIntervalMs": 100,
+      "ProcessSampleIntervalMs": 250,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -16,7 +17,8 @@
       "Enabled": true,
       "Name": "Delta Force",
       "ProcessName": "DeltaForceClient-Win64-Shipping.exe",
-      "SampleIntervalMs": 80,
+      "SampleIntervalMs": 100,
+      "ProcessSampleIntervalMs": 250,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -24,7 +26,8 @@
       "Enabled": true,
       "Name": "Neverness To Everness",
       "ProcessName": "HTGame.exe",
-      "SampleIntervalMs": 80,
+      "SampleIntervalMs": 100,
+      "ProcessSampleIntervalMs": 250,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     }

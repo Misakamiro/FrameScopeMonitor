@@ -1,10 +1,12 @@
 param(
     [int]$WaitSeconds = 600,
     [int]$CaptureSeconds = 0,
-    [int]$SampleIntervalMs = 80,
+    [int]$SampleIntervalMs = 100,
+    [int]$ProcessSampleIntervalMs = 250,
     [int]$SlowSampleIntervalMs = 1000,
     [string]$TargetProcessName = 'cs2',
     [string]$PresentMonExe = '',
+    [string]$ProcessSamplerExe = '',
     [string]$RunRoot = '',
     [string]$RunNamePrefix = ''
 )
@@ -12,12 +14,13 @@ param(
 $ErrorActionPreference = 'Stop'
 
 try {
-    [Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'
+    [Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
 }
 catch {
 }
 
 if ($SampleIntervalMs -lt 50) { $SampleIntervalMs = 50 }
+if ($ProcessSampleIntervalMs -lt 250) { $ProcessSampleIntervalMs = 250 }
 if ($SlowSampleIntervalMs -lt $SampleIntervalMs) { $SlowSampleIntervalMs = $SampleIntervalMs }
 
 $root = $PSScriptRoot
@@ -95,6 +98,27 @@ function Resolve-PresentMonPath {
     return $null
 }
 
+function Resolve-ProcessSamplerPath {
+    param([string]$RequestedPath)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($RequestedPath) { $candidates.Add($RequestedPath) }
+    $candidates.Add((Join-Path $root 'FrameScopeProcessSampler.exe'))
+
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if (-not $candidate) { continue }
+        try { $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path }
+        catch { continue }
+
+        $key = $resolved.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        return $resolved
+    }
+    return $null
+}
+
 function Resolve-PythonPath {
     $portable = Join-Path $root 'runtime\python\python.exe'
     if (Test-Path -LiteralPath $portable) { return $portable }
@@ -108,6 +132,8 @@ function Resolve-PythonPath {
 }
 
 $presentMonPath = Resolve-PresentMonPath -RequestedPath $PresentMonExe
+$processSamplerPath = Resolve-ProcessSamplerPath -RequestedPath $ProcessSamplerExe
+$processSamplingMode = 'native-all-process-groups'
 
 function Write-Status {
     param(
@@ -137,8 +163,10 @@ function Write-Status {
         TargetProcess           = $presentMonProcessName
         CaptureMode             = $captureMode
         SampleIntervalMs        = $SampleIntervalMs
+        ProcessSampleIntervalMs = $ProcessSampleIntervalMs
         SlowSampleIntervalMs    = $SlowSampleIntervalMs
-        ProcessSamplingMode     = 'all-process-groups'
+        ProcessSamplingMode     = $processSamplingMode
+        ProcessSamplerExe       = $processSamplerPath
     }
     foreach ($key in $Extra.Keys) {
         $obj[$key] = $Extra[$key]
@@ -437,8 +465,10 @@ function Build-Summary {
         TargetProcess          = $presentMonProcessName
         CaptureMode            = $captureMode
         SampleIntervalMs       = $SampleIntervalMs
+        ProcessSampleIntervalMs = $ProcessSampleIntervalMs
         SlowSampleIntervalMs   = $SlowSampleIntervalMs
-        ProcessSamplingMode    = 'all-process-groups'
+        ProcessSamplingMode    = $processSamplingMode
+        ProcessSamplerExe      = $processSamplerPath
         FrameSummary           = if ($frameAnalysis.FrameSummary) { $frameAnalysis.FrameSummary } else { $null }
         PossibleCorrelates     = @()
         AlertSummary           = @()
@@ -561,6 +591,12 @@ function Start-SystemSlowSampler {
 
     Start-Job -ArgumentList $Path, $TargetBaseName, $IntervalMs, $NvidiaSmi -ScriptBlock {
         param($Path, $TargetBaseName, $IntervalMs, $NvidiaSmi)
+
+        try {
+            [Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'
+        }
+        catch {
+        }
 
         function Convert-CsvField {
             param($Value)
@@ -706,6 +742,7 @@ $topIoWriter = $null
 $alertsWriter = $null
 $slowJob = $null
 $presentMon = $null
+$processSampler = $null
 $presentMonExitCode = $null
 $presentMonExitedEarly = $false
 $presentMonForcedStop = $false
@@ -713,6 +750,9 @@ $presentMonForcedStop = $false
 try {
     if (-not $presentMonPath -or -not (Test-Path -LiteralPath $presentMonPath)) {
         throw "PresentMon not found. Expected portable copy under tools\PresentMon-2.4.1-x64.exe or NVIDIA FrameView SDK PresentMon."
+    }
+    if (-not $processSamplerPath -or -not (Test-Path -LiteralPath $processSamplerPath)) {
+        throw "FrameScopeProcessSampler.exe not found beside the monitor script."
     }
 
     $presentMonItem = Get-Item -LiteralPath $presentMonPath
@@ -760,20 +800,19 @@ try {
 
     $presentMon = Start-Process -FilePath $presentMonPath -ArgumentList $pmArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $presentMonStdout -RedirectStandardError $presentMonStderr
 
-    $processWriter = New-CsvWriter -Path $processCsv -Header @('Time','SampleIndex','ElapsedMs','ProcessName','Count','CpuPct','WorkingSetMB','ReadMBps','WriteMBps','Priorities','Pids')
-    $topWriter = New-CsvWriter -Path $topCsv -Header @('Time','SampleIndex','ElapsedMs','ProcessName','Id','CpuPct','WorkingSetMB')
-    $topIoWriter = New-CsvWriter -Path $topIoCsv -Header @('Time','SampleIndex','ElapsedMs','ProcessName','Id','CpuPct','ReadMBps','WriteMBps','WorkingSetMB')
-    $alertsWriter = New-CsvWriter -Path $alertsCsv -Header @('Time','SampleIndex','ElapsedMs','Alerts','TotalCpuPct','GpuUtilPct','GpuClockMHz','GpuTempC','AvailableMB','DiskLatencySec','TopCpuProcess','TopCpuPct','TopIoProcess','TopIoReadMBps','TopIoWriteMBps')
+    $processSamplerArgs = @(
+        '--target', $targetProcessBaseName,
+        '--interval', [string]$ProcessSampleIntervalMs,
+        '--process-csv', $processCsv,
+        '--top-cpu-csv', $topCsv,
+        '--top-io-csv', $topIoCsv,
+        '--alerts-csv', $alertsCsv
+    )
+    $processSampler = Start-Process -FilePath $processSamplerPath -ArgumentList $processSamplerArgs -PassThru -WindowStyle Hidden
     $slowJob = Start-SystemSlowSampler -Path $samplesCsv -TargetBaseName $targetProcessBaseName -IntervalMs $SlowSampleIntervalMs -NvidiaSmi $nvidiaSmiPath
 
-    $prevCpu = @{}
-    $prevRead = @{}
-    $prevWrite = @{}
-    $prevTime = Get-Date
     $sampleIndex = 0
     $captureDeadline = if ($captureUntilTargetExit) { [DateTime]::MaxValue } else { (Get-Date).AddSeconds($CaptureSeconds) }
-    $cachedSlow = [pscustomobject]@{ AvailableMB = $null; DiskAvgSecPerTransfer = $null; DiskBytesPerSec = $null; NetBytesPerSec = $null }
-    $cachedGpu = $null
     $lastStatusWrite = [DateTime]::MinValue
 
     while ((Get-Date) -lt $captureDeadline) {
@@ -787,192 +826,32 @@ try {
         }
 
         $now = Get-Date
-        $elapsed = [Math]::Max(0.001, ($now - $prevTime).TotalSeconds)
-        $elapsedMsSinceStart = [Math]::Round(($now - $startTime).TotalMilliseconds, 1)
-        $nowText = $now.ToString('o')
-        $procs = @(Get-Process -ErrorAction SilentlyContinue)
-        $cpuRows = New-Object System.Collections.Generic.List[object]
-
-        foreach ($p in $procs) {
-            $processId = [int]$p.Id
-            $cpuNow = $null
-            try { $cpuNow = [double]$p.CPU } catch {}
-            $cpuPct = $null
-            if ($null -ne $cpuNow -and $prevCpu.ContainsKey($processId)) {
-                $deltaCpu = $cpuNow - [double]$prevCpu[$processId]
-                if ($deltaCpu -ge 0) {
-                    $cpuPct = ($deltaCpu / $elapsed / [Environment]::ProcessorCount) * 100.0
-                }
-            }
-            if ($null -ne $cpuNow) { $prevCpu[$processId] = $cpuNow }
-
-            $readMBps = $null
-            $writeMBps = $null
-            try {
-                $readNow = [double]$p.IOReadBytes
-                $writeNow = [double]$p.IOWriteBytes
-                if ($prevRead.ContainsKey($processId)) { $readMBps = (($readNow - [double]$prevRead[$processId]) / $elapsed) / 1MB }
-                if ($prevWrite.ContainsKey($processId)) { $writeMBps = (($writeNow - [double]$prevWrite[$processId]) / $elapsed) / 1MB }
-                $prevRead[$processId] = $readNow
-                $prevWrite[$processId] = $writeNow
-            }
-            catch {
-            }
-
-            $cpuRows.Add([pscustomobject]@{
-                Id          = $processId
-                ProcessName = $p.ProcessName
-                CpuPct      = if ($null -ne $cpuPct) { [Math]::Round($cpuPct, 2) } else { $null }
-                ReadMBps    = if ($null -ne $readMBps) { [Math]::Round($readMBps, 3) } else { $null }
-                WriteMBps   = if ($null -ne $writeMBps) { [Math]::Round($writeMBps, 3) } else { $null }
-                WorkingSet  = [double]$p.WorkingSet64
-            }) | Out-Null
-        }
-
-        $groups = @{}
-        foreach ($row in $cpuRows) {
-            if (-not $row.ProcessName -or $row.ProcessName -eq 'Idle') { continue }
-            $name = [string]$row.ProcessName
-            if (-not $groups.ContainsKey($name)) {
-                $groups[$name] = @{
-                    Count      = 0
-                    CpuPct     = 0.0
-                    HasCpu     = $false
-                    WorkingSet = 0.0
-                    ReadMBps   = 0.0
-                    WriteMBps  = 0.0
-                    Pids       = New-Object System.Collections.ArrayList
-                }
-            }
-            $entry = $groups[$name]
-            $entry.Count++
-            $entry.WorkingSet += [double]$row.WorkingSet
-            if ($null -ne $row.CpuPct) {
-                $entry.CpuPct += [double]$row.CpuPct
-                $entry.HasCpu = $true
-            }
-            if ($null -ne $row.ReadMBps) { $entry.ReadMBps += [double]$row.ReadMBps }
-            if ($null -ne $row.WriteMBps) { $entry.WriteMBps += [double]$row.WriteMBps }
-            [void]$entry.Pids.Add([string]$row.Id)
-        }
-
-        $top = @($cpuRows | Where-Object { $null -ne $_.CpuPct -and $_.ProcessName -ne 'Idle' } | Sort-Object CpuPct -Descending | Select-Object -First 20)
-        foreach ($row in $top) {
-            Write-CsvLine -Writer $topWriter -Values @(
-                $nowText, $sampleIndex, $elapsedMsSinceStart, $row.ProcessName, $row.Id, $row.CpuPct, [Math]::Round($row.WorkingSet / 1MB, 1)
-            )
-        }
-
-        $topIo = @(
-            $cpuRows |
-                Where-Object {
-                    $read = Safe-Number $_.ReadMBps
-                    $write = Safe-Number $_.WriteMBps
-                    (($null -ne $read -and $read -gt 0.01) -or ($null -ne $write -and $write -gt 0.01))
-                } |
-                Sort-Object @{Expression={ (Safe-Number $_.ReadMBps) + (Safe-Number $_.WriteMBps) }; Descending=$true} |
-                Select-Object -First 20
-        )
-        foreach ($row in $topIo) {
-            Write-CsvLine -Writer $topIoWriter -Values @(
-                $nowText, $sampleIndex, $elapsedMsSinceStart, $row.ProcessName, $row.Id, $row.CpuPct, $row.ReadMBps, $row.WriteMBps, [Math]::Round($row.WorkingSet / 1MB, 1)
-            )
-        }
-
-        foreach ($name in $groups.Keys) {
-            $entry = $groups[$name]
-            Write-CsvLine -Writer $processWriter -Values @(
-                $nowText,
-                $sampleIndex,
-                $elapsedMsSinceStart,
-                $name,
-                $entry.Count,
-                $(if ($entry.HasCpu) { [Math]::Round([double]$entry.CpuPct, 2) } else { $null }),
-                [Math]::Round([double]$entry.WorkingSet / 1MB, 1),
-                [Math]::Round([double]$entry.ReadMBps, 3),
-                [Math]::Round([double]$entry.WriteMBps, 3),
-                '',
-                ($entry.Pids -join ';')
-            )
-        }
-
-        $totalCpuPct = $null
-        $cpuValues = @($cpuRows | ForEach-Object { Safe-Number $_.CpuPct } | Where-Object { $null -ne $_ })
-        if ($cpuValues.Count -gt 0) {
-            $totalCpuPct = [Math]::Min(100.0, [Math]::Max(0.0, ($cpuValues | Measure-Object -Sum).Sum))
-        }
-
-        $alerts = @()
-        if ((Safe-Number $totalCpuPct) -gt 85) { $alerts += 'high-total-cpu' }
-        if ((Safe-Number $cachedSlow.AvailableMB) -lt 2048) { $alerts += 'low-available-memory' }
-        if ((Safe-Number $cachedSlow.DiskAvgSecPerTransfer) -gt 0.02) { $alerts += 'high-disk-latency' }
-        if ($cachedGpu -and (Safe-Number $cachedGpu.GpuUtilPct) -ge 98) { $alerts += 'gpu-near-saturation' }
-        if ($cachedGpu -and (Safe-Number $cachedGpu.GpuTempC) -ge 83) { $alerts += 'high-gpu-temperature' }
-        if ($cachedGpu -and (Safe-Number $cachedGpu.GpuUtilPct) -gt 80 -and (Safe-Number $cachedGpu.GpuClockMHz) -lt 1200) { $alerts += 'gpu-clock-drop-under-load' }
-        if ($top.Count -gt 0 -and (Safe-Number $top[0].CpuPct) -gt 25 -and $top[0].ProcessName -ne $targetProcessBaseName) { $alerts += 'background-cpu-spike' }
-        if ($topIo.Count -gt 0 -and (((Safe-Number $topIo[0].ReadMBps) + (Safe-Number $topIo[0].WriteMBps)) -gt 100)) { $alerts += 'heavy-process-io' }
-
-        if ($alerts.Count -gt 0) {
-            Write-CsvLine -Writer $alertsWriter -Values @(
-                $nowText,
-                $sampleIndex,
-                $elapsedMsSinceStart,
-                ($alerts -join ';'),
-                (Round-Nullable $totalCpuPct 2),
-                $(if ($cachedGpu) { $cachedGpu.GpuUtilPct } else { $null }),
-                $(if ($cachedGpu) { $cachedGpu.GpuClockMHz } else { $null }),
-                $(if ($cachedGpu) { $cachedGpu.GpuTempC } else { $null }),
-                (Round-Nullable $cachedSlow.AvailableMB 1),
-                $cachedSlow.DiskAvgSecPerTransfer,
-                $(if ($top.Count -gt 0) { $top[0].ProcessName } else { $null }),
-                $(if ($top.Count -gt 0) { $top[0].CpuPct } else { $null }),
-                $(if ($topIo.Count -gt 0) { $topIo[0].ProcessName } else { $null }),
-                $(if ($topIo.Count -gt 0) { $topIo[0].ReadMBps } else { $null }),
-                $(if ($topIo.Count -gt 0) { $topIo[0].WriteMBps } else { $null })
-            )
-        }
-
-        if ($sampleIndex % 10 -eq 0) {
-            $processWriter.Flush()
-            $topWriter.Flush()
-            $topIoWriter.Flush()
-            $alertsWriter.Flush()
-        }
-
         if (($now - $lastStatusWrite).TotalSeconds -ge 1) {
             Write-Status -Phase 'capturing' -Extra @{
                 TargetPid             = $targetProc.Id
                 PresentMonPid         = $presentMon.Id
+                ProcessSamplerPid     = $processSampler.Id
+                ProcessSamplerExited  = $processSampler.HasExited
                 PresentMonExitedEarly = $presentMonExitedEarly
                 PresentMonCsvExists   = (Test-Path -LiteralPath $presentMonCsv)
                 SampleIndex           = $sampleIndex
-                CurrentTotalCpuPct    = (Round-Nullable $totalCpuPct 2)
-                CurrentAvailableMB    = (Round-Nullable $cachedSlow.AvailableMB 1)
-                CurrentGpuUtilPct     = if ($cachedGpu) { $cachedGpu.GpuUtilPct } else { $null }
-                CurrentGpuClockMHz    = if ($cachedGpu) { $cachedGpu.GpuClockMHz } else { $null }
-                CurrentGpuTempC       = if ($cachedGpu) { $cachedGpu.GpuTempC } else { $null }
-                CurrentAlerts         = $alerts
-                CurrentTopCpu         = @($top | Select-Object -First 8 ProcessName, Id, CpuPct, WorkingSet)
-                ProcessCount          = $procs.Count
-                ProcessGroups         = $groups.Count
             }
             $lastStatusWrite = $now
         }
 
-        $prevTime = $now
         $sampleIndex++
         $processingMs = ((Get-Date) - $loopStart).TotalMilliseconds
         $sleepMs = [Math]::Max(1, [int]($SampleIntervalMs - $processingMs))
         Start-Sleep -Milliseconds $sleepMs
     }
 
-    foreach ($writer in @($processWriter, $topWriter, $topIoWriter, $alertsWriter)) {
-        if ($writer) { $writer.Flush(); $writer.Close() }
+    if ($processSampler -and -not $processSampler.HasExited) {
+        $processSampler.WaitForExit(5000) | Out-Null
+        if (-not $processSampler.HasExited) {
+            try { Stop-Process -Id $processSampler.Id -Force -ErrorAction SilentlyContinue } catch {}
+            $processSampler.WaitForExit() | Out-Null
+        }
     }
-    $processWriter = $null
-    $topWriter = $null
-    $topIoWriter = $null
-    $alertsWriter = $null
 
     if ($slowJob) {
         try {

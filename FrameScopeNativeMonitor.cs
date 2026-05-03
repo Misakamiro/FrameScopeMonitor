@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -31,7 +31,8 @@ public sealed class FrameScopeTarget
     {
         Name = "";
         ProcessName = "";
-        SampleIntervalMs = 80;
+        SampleIntervalMs = 100;
+        ProcessSampleIntervalMs = 250;
         SlowSampleIntervalMs = 1000;
         OpenReportOnComplete = true;
     }
@@ -40,6 +41,7 @@ public sealed class FrameScopeTarget
     public string Name { get; set; }
     public string ProcessName { get; set; }
     public int SampleIntervalMs { get; set; }
+    public int ProcessSampleIntervalMs { get; set; }
     public int SlowSampleIntervalMs { get; set; }
     public bool OpenReportOnComplete { get; set; }
 }
@@ -153,7 +155,8 @@ internal static class FrameScopeNativeMonitor
             Enabled = enabled,
             Name = name,
             ProcessName = processName,
-            SampleIntervalMs = 80,
+            SampleIntervalMs = 100,
+            ProcessSampleIntervalMs = 250,
             SlowSampleIntervalMs = 1000,
             OpenReportOnComplete = true
         };
@@ -169,7 +172,8 @@ internal static class FrameScopeNativeMonitor
         foreach (var target in config.Targets)
         {
             if (target == null) continue;
-            if (target.SampleIntervalMs < 50) target.SampleIntervalMs = 80;
+            if (target.SampleIntervalMs < 50) target.SampleIntervalMs = 100;
+            if (target.ProcessSampleIntervalMs < 250) target.ProcessSampleIntervalMs = 250;
             if (target.SlowSampleIntervalMs < target.SampleIntervalMs) target.SlowSampleIntervalMs = 1000;
         }
     }
@@ -207,7 +211,7 @@ internal static class FrameScopeNativeMonitor
 
         var subtitle = new Label
         {
-            Text = "选择要监测的游戏进程；启动后自动等待游戏运行，退出后打开 HTML 报告并记录 CSV 路径。",
+            Text = "Select game processes to monitor; reports open after capture and CSV paths are saved.",
             ForeColor = Color.FromArgb(159, 180, 196),
             Location = new Point(22, 58),
             Size = new Size(920, 24)
@@ -248,11 +252,11 @@ internal static class FrameScopeNativeMonitor
         grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(24, 36, 50);
         grid.AlternatingRowsDefaultCellStyle.ForeColor = Color.FromArgb(239, 247, 255);
 
-        grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Enabled", HeaderText = "启用", FillWeight = 42 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "GameName", HeaderText = "游戏/软件名称", FillWeight = 150 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ProcessName", HeaderText = "进程名", FillWeight = 230 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "SampleMs", HeaderText = "采样(ms)", FillWeight = 62 });
-        grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AutoOpen", HeaderText = "结束后打开报告", FillWeight = 86 });
+        grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "Enabled", HeaderText = "On", FillWeight = 42 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "GameName", HeaderText = "Name", FillWeight = 150 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ProcessName", HeaderText = "Process", FillWeight = 230 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "SampleMs", HeaderText = "Sample(ms)", FillWeight = 62 });
+        grid.Columns.Add(new DataGridViewCheckBoxColumn { Name = "AutoOpen", HeaderText = "Open report", FillWeight = 86 });
         foreach (DataGridViewColumn column in grid.Columns)
         {
             column.Resizable = DataGridViewTriState.False;
@@ -275,15 +279,15 @@ internal static class FrameScopeNativeMonitor
         };
         form.Controls.Add(processCombo);
 
-        var refreshButton = Button("刷新进程", 330, 449, 90, 30);
+        var refreshButton = Button("Refresh", 330, 449, 90, 30);
         refreshButton.Click += (_, __) => RefreshProcessList();
         form.Controls.Add(refreshButton);
 
-        var addButton = Button("添加进程", 430, 449, 90, 30);
+        var addButton = Button("Add", 430, 449, 90, 30);
         addButton.Click += (_, __) => AddSelectedProcess();
         form.Controls.Add(addButton);
 
-        form.Controls.Add(new Label { Text = "数据目录", Location = new Point(20, 496), Size = new Size(70, 24), Anchor = AnchorStyles.Left | AnchorStyles.Bottom, ForeColor = Color.FromArgb(239, 247, 255) });
+        form.Controls.Add(new Label { Text = "Data root", Location = new Point(20, 496), Size = new Size(70, 24), Anchor = AnchorStyles.Left | AnchorStyles.Bottom, ForeColor = Color.FromArgb(239, 247, 255) });
         dataRootText = new TextBox
         {
             Text = config.DataRoot,
@@ -296,14 +300,14 @@ internal static class FrameScopeNativeMonitor
         };
         form.Controls.Add(dataRootText);
 
-        var browseButton = Button("选择", 740, 492, 70, 30);
+        var browseButton = Button("Browse", 740, 492, 70, 30);
         browseButton.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
         browseButton.Click += (_, __) => BrowseDataRoot();
         form.Controls.Add(browseButton);
 
         autoOpenCheck = new CheckBox
         {
-            Text = "监测结束后自动打开报告",
+            Text = "Open report after capture completes",
             Checked = config.OpenReportOnComplete,
             Location = new Point(830, 496),
             Size = new Size(210, 24),
@@ -312,33 +316,33 @@ internal static class FrameScopeNativeMonitor
         };
         form.Controls.Add(autoOpenCheck);
 
-        var saveButton = Button("保存配置", 20, 542, 100, 34);
+        var saveButton = Button("Save", 20, 542, 100, 34);
         saveButton.Click += (_, __) => SaveConfigFromGrid();
         form.Controls.Add(saveButton);
 
-        startButton = Button("启动监测", 130, 542, 100, 34);
+        startButton = Button("Start", 130, 542, 100, 34);
         startButton.Click += (_, __) => StartWatcher();
         form.Controls.Add(startButton);
 
-        var stopButton = Button("停止监测", 240, 542, 100, 34);
+        var stopButton = Button("Stop", 240, 542, 100, 34);
         stopButton.Click += (_, __) => StopWatcher();
         form.Controls.Add(stopButton);
 
-        var openDataButton = Button("打开数据目录", 350, 542, 115, 34);
+        var openDataButton = Button("Data folder", 350, 542, 115, 34);
         openDataButton.Click += (_, __) => OpenDataRoot();
         form.Controls.Add(openDataButton);
 
-        var openLatestButton = Button("打开最近报告", 475, 542, 115, 34);
+        var openLatestButton = Button("Latest report", 475, 542, 115, 34);
         openLatestButton.Click += (_, __) => OpenLatestReport();
         form.Controls.Add(openLatestButton);
 
-        var openHistoryButton = Button("打开历史记录", 600, 542, 115, 34);
+        var openHistoryButton = Button("History", 600, 542, 115, 34);
         openHistoryButton.Click += (_, __) => OpenHistory();
         form.Controls.Add(openHistoryButton);
 
         statusLabel = new Label
         {
-            Text = "状态：未启动",
+            Text = "Status: idle",
             ForeColor = Color.FromArgb(169, 255, 71),
             Location = new Point(20, 592),
             Size = new Size(1000, 28),
@@ -394,7 +398,7 @@ internal static class FrameScopeNativeMonitor
 
     private static void SetStatus(string text)
     {
-        statusLabel.Text = "状态：" + text;
+        statusLabel.Text = "Status: " + text;
         statusLabel.ForeColor = Color.FromArgb(41, 230, 255);
         var timer = new Timer { Interval = 180 };
         timer.Tick += (_, __) =>
@@ -417,7 +421,7 @@ internal static class FrameScopeNativeMonitor
             var name = Convert.ToString(row.Cells["GameName"].Value);
             if (string.IsNullOrWhiteSpace(name)) name = Path.GetFileNameWithoutExtension(processName);
             int sampleMs;
-            if (!int.TryParse(Convert.ToString(row.Cells["SampleMs"].Value), out sampleMs)) sampleMs = 80;
+            if (!int.TryParse(Convert.ToString(row.Cells["SampleMs"].Value), out sampleMs)) sampleMs = 100;
             if (sampleMs < 50) sampleMs = 50;
             targets.Add(new FrameScopeTarget
             {
@@ -425,6 +429,7 @@ internal static class FrameScopeNativeMonitor
                 Name = name ?? processName,
                 ProcessName = processName,
                 SampleIntervalMs = sampleMs,
+                ProcessSampleIntervalMs = 250,
                 SlowSampleIntervalMs = 1000,
                 OpenReportOnComplete = Convert.ToBoolean(row.Cells["AutoOpen"].Value ?? true)
             });
@@ -445,11 +450,11 @@ internal static class FrameScopeNativeMonitor
         try
         {
             SaveConfig(ReadGridConfig());
-            SetStatus("配置已保存：" + ConfigPath);
+            SetStatus("Saved config: " + ConfigPath);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(ex.Message, "Save failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -460,7 +465,7 @@ internal static class FrameScopeNativeMonitor
         {
             processCombo.Items.Add(name);
         }
-        SetStatus("已刷新当前进程列表");
+        SetStatus("Process list refreshed.");
     }
 
     private static void AddSelectedProcess()
@@ -468,13 +473,13 @@ internal static class FrameScopeNativeMonitor
         var processName = processCombo.Text.Trim();
         if (string.IsNullOrWhiteSpace(processName)) return;
         if (!processName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) processName += ".exe";
-        grid.Rows.Add(true, Path.GetFileNameWithoutExtension(processName), processName, 80, true);
-        SetStatus("已添加 " + processName);
+        grid.Rows.Add(true, Path.GetFileNameWithoutExtension(processName), processName, 100, true);
+        SetStatus("Added " + processName);
     }
 
     private static void BrowseDataRoot()
     {
-        using (var dialog = new FolderBrowserDialog { Description = "选择 FrameScope 数据目录" })
+        using (var dialog = new FolderBrowserDialog { Description = "Select FrameScope data folder" })
         {
             if (dialog.ShowDialog(form) == DialogResult.OK)
             {
@@ -509,13 +514,13 @@ internal static class FrameScopeNativeMonitor
             int existingPid;
             if (IsWatcherRunning(out existingPid))
             {
-                SetStatus("监测已经在运行，Watcher PID=" + existingPid);
+                SetStatus("Monitor already running, Watcher PID=" + existingPid);
                 return;
             }
 
             if (!File.Exists(WatcherScript))
             {
-                MessageBox.Show("FrameScopeWatcher.ps1 不存在。", "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("FrameScopeWatcher.ps1 not found.", "Start failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -530,11 +535,11 @@ internal static class FrameScopeNativeMonitor
                 WindowStyle = ProcessWindowStyle.Hidden
             };
             var proc = Process.Start(psi);
-            SetStatus("监测已启动，Watcher PID=" + (proc != null ? proc.Id.ToString() : "未知") + "。现在启动配置里的游戏就会自动记录。");
+            SetStatus("Monitor started, Watcher PID=" + (proc != null ? proc.Id.ToString() : "unknown") + ". Launch a configured game to start capture.");
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(ex.Message, "Start failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -543,17 +548,17 @@ internal static class FrameScopeNativeMonitor
         int pid;
         if (!IsWatcherRunning(out pid))
         {
-            SetStatus("没有正在运行的 FrameScope watcher");
+            SetStatus("No running FrameScope watcher");
             return;
         }
         try
         {
             Process.GetProcessById(pid).Kill();
-            SetStatus("监测已停止");
+            SetStatus("Monitor stopped.");
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "停止失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(ex.Message, "Stop failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -564,15 +569,15 @@ internal static class FrameScopeNativeMonitor
         {
             pulse = !pulse;
             startButton.BackColor = pulse ? Color.FromArgb(30, 96, 78) : Color.FromArgb(24, 36, 50);
-            string text = "运行中，Watcher PID=" + pid;
+            string text = "Running, Watcher PID=" + pid;
             try
             {
                 var state = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(StatePath));
-                if (state.ContainsKey("CompletedRuns")) text += "，已完成 " + state["CompletedRuns"] + " 次";
-                if (state.ContainsKey("LastReport") && state["LastReport"] != null && state["LastReport"].ToString() != "") text += "，最近报告：" + state["LastReport"];
+                if (state.ContainsKey("CompletedRuns")) text += ", completed " + state["CompletedRuns"] + " run(s)";
+                if (state.ContainsKey("LastReport") && state["LastReport"] != null && state["LastReport"].ToString() != "") text += ", latest report: " + state["LastReport"];
             }
             catch { }
-            statusLabel.Text = "状态：" + text;
+            statusLabel.Text = "Status: " + text;
         }
         else if (startButton.BackColor != Color.FromArgb(24, 36, 50))
         {
@@ -596,16 +601,40 @@ internal static class FrameScopeNativeMonitor
         catch { return null; }
     }
 
-    private static void OpenLatestReport()
+    private static string LatestReportPath()
     {
         var entry = LatestHistory();
-        if (entry != null && File.Exists(entry.ReportHtml))
+        if (entry != null && File.Exists(entry.ReportHtml)) return entry.ReportHtml;
+
+        var root = dataRootText != null ? dataRootText.Text : Path.Combine(Root, "framescope-runs");
+        if (string.IsNullOrWhiteSpace(root)) root = Path.Combine(Root, "framescope-runs");
+        if (!Path.IsPathRooted(root)) root = Path.Combine(Root, root);
+        if (!Directory.Exists(root)) return "";
+
+        try
         {
-            Process.Start(new ProcessStartInfo { FileName = entry.ReportHtml, UseShellExecute = true });
-            SetStatus("已打开最近报告：" + entry.ReportHtml);
+            return Directory.GetFiles(root, "framescope-interactive-report.html", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .Select(file => file.FullName)
+                .FirstOrDefault() ?? "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static void OpenLatestReport()
+    {
+        var reportPath = LatestReportPath();
+        if (!string.IsNullOrWhiteSpace(reportPath) && File.Exists(reportPath))
+        {
+            Process.Start(new ProcessStartInfo { FileName = reportPath, UseShellExecute = true });
+            SetStatus("Opened latest report: " + reportPath);
             return;
         }
-        SetStatus("还没有可打开的历史报告");
+        SetStatus("No report found.");
     }
 
     private static void OpenHistory()
@@ -619,3 +648,4 @@ internal static class FrameScopeNativeMonitor
         return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 }
+
