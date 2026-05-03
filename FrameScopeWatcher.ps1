@@ -21,12 +21,82 @@ $statePath = Join-Path $root 'framescope-watcher-state.json'
 $logPath = Join-Path $root 'framescope-watcher.log'
 $historyPath = Join-Path $root 'framescope-history.jsonl'
 $monitorScript = Join-Path $root 'Monitor-CS2-HighFreq.ps1'
+$enterLiteScript = Join-Path $root 'Enter-GameLite.ps1'
+$exitLiteScript = Join-Path $root 'Exit-GameLite.ps1'
+$liteStatePath = Join-Path $root 'game-lite-priority-state.json'
 $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+$gameLiteProtectedProcessNames = @(
+    'steamwebhelper',
+    'gameoverlayui64',
+    'steamservice',
+    'steamerrorreporter',
+    'steamerrorreporter64',
+    'O+Connect',
+    'devicespace',
+    'oplus_remote_ui',
+    'oplus_remote_service',
+    'OplusRemoteService',
+    'pantaChannelService',
+    'adb',
+    'everything',
+    'Everything',
+    'QQ',
+    'QQEX',
+    'WeChat',
+    'WeChatAppEx',
+    'Weixin'
+)
 
 function Write-FrameScopeLog {
     param([string]$Message)
     $line = '{0} {1}' -f (Get-Date).ToString('o'), $Message
     Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+}
+
+function Invoke-GameLiteEnter {
+    param([object[]]$ActiveGames)
+
+    if (-not (Test-Path -LiteralPath $enterLiteScript)) { return }
+    if (Test-Path -LiteralPath $liteStatePath) { return }
+
+    $activeNames = @($ActiveGames | ForEach-Object { $_.ProcessName } | Where-Object { $_ })
+    $exclusions = @($gameLiteProtectedProcessNames + $activeNames | Select-Object -Unique)
+    $names = ($ActiveGames | ForEach-Object { '{0}:{1}' -f $_.ProcessName, $_.Id }) -join ','
+    Write-FrameScopeLog ("game-lite-enter active={0}" -f $names)
+    try {
+        $output = & $enterLiteScript -ForceSnapshot -ExcludeProcessNames $exclusions | Out-String
+        try {
+            $result = $output | ConvertFrom-Json
+            Write-FrameScopeLog ("game-lite-enter-result changed={0} snapshot={1}" -f $result.ChangedCount, $result.SnapshotCount)
+        }
+        catch {
+            if ($output.Trim()) { Write-FrameScopeLog ("game-lite-enter-result {0}" -f $output.Trim()) }
+        }
+    }
+    catch {
+        Write-FrameScopeLog ("game-lite-enter-failed {0}" -f $_.Exception.Message)
+    }
+}
+
+function Invoke-GameLiteExit {
+    if (-not (Test-Path -LiteralPath $exitLiteScript)) { return }
+    if (-not (Test-Path -LiteralPath $liteStatePath)) { return }
+
+    Write-FrameScopeLog 'game-lite-exit'
+    try {
+        $output = & $exitLiteScript | Out-String
+        try {
+            $result = $output | ConvertFrom-Json
+            Write-FrameScopeLog ("game-lite-exit-result restored={0} not-running={1} state-removed={2}" -f $result.RestoredCount, $result.NotRunning, $result.StateRemoved)
+        }
+        catch {
+            if ($output.Trim()) { Write-FrameScopeLog ("game-lite-exit-result {0}" -f $output.Trim()) }
+        }
+    }
+    catch {
+        Write-FrameScopeLog ("game-lite-exit-failed {0}" -f $_.Exception.Message)
+    }
 }
 
 function ConvertTo-SafeName {
@@ -268,13 +338,17 @@ while ($true) {
     }
 
     $targets = @($config.Targets | Where-Object { $_.Enabled -and $_.ProcessName })
+    $activeGamesForLite = @()
     foreach ($target in $targets) {
         $base = Get-TargetBaseName -ProcessName ([string]$target.ProcessName)
         if (-not $base) { continue }
         $key = $base.ToLowerInvariant()
-        if ($activeMonitors.ContainsKey($key)) { continue }
 
         $running = @(Get-Process -Name $base -ErrorAction SilentlyContinue)
+        if ($running.Count -gt 0) {
+            $activeGamesForLite += @($running | Select-Object Id, ProcessName)
+        }
+        if ($activeMonitors.ContainsKey($key)) { continue }
         if ($running.Count -eq 0) { continue }
 
         $safeName = ConvertTo-SafeName -Name ([string]$target.Name) -Fallback $base
@@ -295,6 +369,7 @@ while ($true) {
             '-SampleIntervalMs', [string]$sampleMs,
             '-ProcessSampleIntervalMs', [string]$processSampleMs,
             '-SlowSampleIntervalMs', [string]$slowSampleMs,
+            '-ControlPollIntervalMs', '500',
             '-RunRoot', $targetRunRoot,
             '-RunNamePrefix', $safeName
         )
@@ -307,6 +382,13 @@ while ($true) {
             StartedAt = Get-Date
         }
         Write-FrameScopeLog "monitor-start game=$($target.Name) process=$($target.ProcessName) pid=$($process.Id)"
+    }
+
+    if ($activeGamesForLite.Count -gt 0) {
+        Invoke-GameLiteEnter -ActiveGames $activeGamesForLite
+    }
+    else {
+        Invoke-GameLiteExit
     }
 
     $phase = if ($activeMonitors.Count -gt 0) { 'monitoring' } else { 'idle' }

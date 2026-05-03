@@ -20,6 +20,10 @@ try {
         /out:FrameScopeProcessSampler.exe `
         .\FrameScopeProcessSampler.cs
 
+    & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /out:FrameScopeSystemSampler.exe `
+        .\FrameScopeSystemSampler.cs
+
     $dist = Join-Path $root 'dist'
     $payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
     $sourceRoot = Join-Path $dist 'FrameScopeMonitor-installer-source'
@@ -31,9 +35,13 @@ try {
     foreach ($file in @(
         'FrameScopeMonitor.exe',
         'FrameScopeProcessSampler.exe',
+        'FrameScopeSystemSampler.exe',
         'FrameScopeWatcher.ps1',
         'Monitor-CS2-HighFreq.ps1',
         'Generate-CS2-FrameScope-Interactive-Report.py',
+        'Enter-GameLite.ps1',
+        'Exit-GameLite.ps1',
+        'GameLiteWatcher.ps1',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt'
     )) {

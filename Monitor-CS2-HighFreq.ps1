@@ -4,9 +4,11 @@ param(
     [int]$SampleIntervalMs = 100,
     [int]$ProcessSampleIntervalMs = 100,
     [int]$SlowSampleIntervalMs = 1000,
+    [int]$ControlPollIntervalMs = 500,
     [string]$TargetProcessName = 'cs2',
     [string]$PresentMonExe = '',
     [string]$ProcessSamplerExe = '',
+    [string]$SystemSamplerExe = '',
     [string]$RunRoot = '',
     [string]$RunNamePrefix = ''
 )
@@ -21,6 +23,7 @@ catch {
 
 if ($SampleIntervalMs -lt 50) { $SampleIntervalMs = 50 }
 if ($ProcessSampleIntervalMs -lt 100) { $ProcessSampleIntervalMs = 100 }
+if ($ControlPollIntervalMs -lt 250) { $ControlPollIntervalMs = 250 }
 if ($SlowSampleIntervalMs -lt $SampleIntervalMs) { $SlowSampleIntervalMs = $SampleIntervalMs }
 
 $root = $PSScriptRoot
@@ -119,6 +122,27 @@ function Resolve-ProcessSamplerPath {
     return $null
 }
 
+function Resolve-SystemSamplerPath {
+    param([string]$RequestedPath)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    if ($RequestedPath) { $candidates.Add($RequestedPath) }
+    $candidates.Add((Join-Path $root 'FrameScopeSystemSampler.exe'))
+
+    $seen = @{}
+    foreach ($candidate in $candidates) {
+        if (-not $candidate) { continue }
+        try { $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path }
+        catch { continue }
+
+        $key = $resolved.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        return $resolved
+    }
+    return $null
+}
+
 function Resolve-PythonPath {
     $portable = Join-Path $root 'runtime\python\python.exe'
     if (Test-Path -LiteralPath $portable) { return $portable }
@@ -133,7 +157,9 @@ function Resolve-PythonPath {
 
 $presentMonPath = Resolve-PresentMonPath -RequestedPath $PresentMonExe
 $processSamplerPath = Resolve-ProcessSamplerPath -RequestedPath $ProcessSamplerExe
+$systemSamplerPath = Resolve-SystemSamplerPath -RequestedPath $SystemSamplerExe
 $processSamplingMode = 'native-all-process-groups'
+$systemSamplingMode = if ($systemSamplerPath) { 'native-system-slow' } else { 'powershell-job-fallback' }
 
 function Write-Status {
     param(
@@ -164,9 +190,12 @@ function Write-Status {
         CaptureMode             = $captureMode
         SampleIntervalMs        = $SampleIntervalMs
         ProcessSampleIntervalMs = $ProcessSampleIntervalMs
+        ControlPollIntervalMs   = $ControlPollIntervalMs
         SlowSampleIntervalMs    = $SlowSampleIntervalMs
         ProcessSamplingMode     = $processSamplingMode
         ProcessSamplerExe       = $processSamplerPath
+        SystemSamplingMode      = $systemSamplingMode
+        SystemSamplerExe        = $systemSamplerPath
     }
     foreach ($key in $Extra.Keys) {
         $obj[$key] = $Extra[$key]
@@ -466,9 +495,12 @@ function Build-Summary {
         CaptureMode            = $captureMode
         SampleIntervalMs       = $SampleIntervalMs
         ProcessSampleIntervalMs = $ProcessSampleIntervalMs
+        ControlPollIntervalMs  = $ControlPollIntervalMs
         SlowSampleIntervalMs   = $SlowSampleIntervalMs
         ProcessSamplingMode    = $processSamplingMode
         ProcessSamplerExe      = $processSamplerPath
+        SystemSamplingMode     = $systemSamplingMode
+        SystemSamplerExe       = $systemSamplerPath
         FrameSummary           = if ($frameAnalysis.FrameSummary) { $frameAnalysis.FrameSummary } else { $null }
         PossibleCorrelates     = @()
         AlertSummary           = @()
@@ -743,6 +775,7 @@ $alertsWriter = $null
 $slowJob = $null
 $presentMon = $null
 $processSampler = $null
+$systemSampler = $null
 $presentMonExitCode = $null
 $presentMonExitedEarly = $false
 $presentMonForcedStop = $false
@@ -810,7 +843,21 @@ try {
         '--alerts-csv', $alertsCsv
     )
     $processSampler = Start-Process -FilePath $processSamplerPath -ArgumentList $processSamplerArgs -PassThru -WindowStyle Hidden
-    $slowJob = Start-SystemSlowSampler -Path $samplesCsv -TargetBaseName $targetProcessBaseName -IntervalMs $SlowSampleIntervalMs -NvidiaSmi $nvidiaSmiPath
+    if ($systemSamplerPath -and (Test-Path -LiteralPath $systemSamplerPath)) {
+        $systemSamplerArgs = @(
+            '--target', $targetProcessBaseName,
+            '--interval', [string]$SlowSampleIntervalMs,
+            '--parent-pid', [string]$PID,
+            '--system-csv', $samplesCsv
+        )
+        if ($nvidiaSmiPath) {
+            $systemSamplerArgs += @('--nvidia-smi', $nvidiaSmiPath)
+        }
+        $systemSampler = Start-Process -FilePath $systemSamplerPath -ArgumentList $systemSamplerArgs -PassThru -WindowStyle Hidden
+    }
+    else {
+        $slowJob = Start-SystemSlowSampler -Path $samplesCsv -TargetBaseName $targetProcessBaseName -IntervalMs $SlowSampleIntervalMs -NvidiaSmi $nvidiaSmiPath
+    }
 
     $sampleIndex = 0
     $captureDeadline = if ($captureUntilTargetExit) { [DateTime]::MaxValue } else { (Get-Date).AddSeconds($CaptureSeconds) }
@@ -818,7 +865,13 @@ try {
 
     while ((Get-Date) -lt $captureDeadline) {
         $loopStart = Get-Date
-        $targetStillRunning = [bool](Get-Process -Name $targetProcessBaseName -ErrorAction SilentlyContinue)
+        try {
+            $targetProc.Refresh()
+            $targetStillRunning = -not $targetProc.HasExited
+        }
+        catch {
+            $targetStillRunning = [bool](Get-Process -Name $targetProcessBaseName -ErrorAction SilentlyContinue)
+        }
         if (-not $targetStillRunning) { break }
 
         if ($presentMon.HasExited -and $null -eq $presentMonExitCode) {
@@ -832,6 +885,7 @@ try {
                 TargetPid             = $targetProc.Id
                 PresentMonPid         = $presentMon.Id
                 ProcessSamplerPid     = $processSampler.Id
+                SystemSamplerPid      = if ($systemSampler) { $systemSampler.Id } else { $null }
                 ProcessSamplerExited  = $processSampler.HasExited
                 PresentMonExitedEarly = $presentMonExitedEarly
                 PresentMonCsvExists   = (Test-Path -LiteralPath $presentMonCsv)
@@ -842,7 +896,7 @@ try {
 
         $sampleIndex++
         $processingMs = ((Get-Date) - $loopStart).TotalMilliseconds
-        $sleepMs = [Math]::Max(1, [int]($SampleIntervalMs - $processingMs))
+        $sleepMs = [Math]::Max(1, [int]($ControlPollIntervalMs - $processingMs))
         Start-Sleep -Milliseconds $sleepMs
     }
 
@@ -851,6 +905,14 @@ try {
         if (-not $processSampler.HasExited) {
             try { Stop-Process -Id $processSampler.Id -Force -ErrorAction SilentlyContinue } catch {}
             $processSampler.WaitForExit() | Out-Null
+        }
+    }
+
+    if ($systemSampler -and -not $systemSampler.HasExited) {
+        $systemSampler.WaitForExit(5000) | Out-Null
+        if (-not $systemSampler.HasExited) {
+            try { Stop-Process -Id $systemSampler.Id -Force -ErrorAction SilentlyContinue } catch {}
+            $systemSampler.WaitForExit() | Out-Null
         }
     }
 
@@ -929,6 +991,9 @@ catch {
     }
     if ($processSampler -and -not $processSampler.HasExited) {
         try { Stop-Process -Id $processSampler.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if ($systemSampler -and -not $systemSampler.HasExited) {
+        try { Stop-Process -Id $systemSampler.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     if ($presentMon -and -not $presentMon.HasExited) {
         try { Stop-Process -Id $presentMon.Id -Force -ErrorAction SilentlyContinue } catch {}

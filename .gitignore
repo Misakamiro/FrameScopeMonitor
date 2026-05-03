@@ -3,6 +3,8 @@ framescope-config.json
 framescope-history.jsonl
 framescope-watcher-state.json
 framescope-watcher.log
+game-lite-priority-state.json
+game-lite-watcher.log
 framescope-runs/
 cs2-monitor-runs/
 script-backups/
