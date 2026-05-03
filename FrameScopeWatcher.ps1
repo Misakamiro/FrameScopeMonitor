@@ -44,14 +44,14 @@ function Get-DefaultConfig {
         OpenReportOnComplete = $true
         MonitorScript = $monitorScript
         Targets = @(
-            [pscustomobject]@{ Enabled = $true;  Name = 'Counter-Strike 2'; ProcessName = 'cs2.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $true;  Name = 'Delta Force'; ProcessName = 'DeltaForceClient-Win64-Shipping.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $true;  Name = 'Neverness To Everness'; ProcessName = 'HTGame.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Valorant'; ProcessName = 'VALORANT-Win64-Shipping.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Cyberpunk 2077'; ProcessName = 'Cyberpunk2077.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Battlefield 6'; ProcessName = 'bf6.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'Hogwarts Legacy'; ProcessName = 'HogwartsLegacy.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
-            [pscustomobject]@{ Enabled = $false; Name = 'OPUS Prism Peak'; ProcessName = 'OPUS_ Prism Peak.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 250; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true }
+            [pscustomobject]@{ Enabled = $true;  Name = 'Counter-Strike 2'; ProcessName = 'cs2.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $true;  Name = 'Delta Force'; ProcessName = 'DeltaForceClient-Win64-Shipping.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $true;  Name = 'Neverness To Everness'; ProcessName = 'HTGame.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Valorant'; ProcessName = 'VALORANT-Win64-Shipping.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Cyberpunk 2077'; ProcessName = 'Cyberpunk2077.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Battlefield 6'; ProcessName = 'bf6.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'Hogwarts Legacy'; ProcessName = 'HogwartsLegacy.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true },
+            [pscustomobject]@{ Enabled = $false; Name = 'OPUS Prism Peak'; ProcessName = 'OPUS_ Prism Peak.exe'; SampleIntervalMs = 100; ProcessSampleIntervalMs = 100; SlowSampleIntervalMs = 1000; OpenReportOnComplete = $true }
         )
     }
 }
@@ -282,8 +282,8 @@ while ($true) {
         New-Item -ItemType Directory -Path $targetRunRoot -Force | Out-Null
 
         $sampleMs = if ($target.SampleIntervalMs) { [int]$target.SampleIntervalMs } else { 100 }
-        $processSampleMs = if ($target.ProcessSampleIntervalMs) { [int]$target.ProcessSampleIntervalMs } else { 250 }
-        if ($processSampleMs -lt 250) { $processSampleMs = 250 }
+        $processSampleMs = if ($target.ProcessSampleIntervalMs) { [int]$target.ProcessSampleIntervalMs } else { 100 }
+        if ($processSampleMs -lt 100) { $processSampleMs = 100 }
         $slowSampleMs = if ($target.SlowSampleIntervalMs) { [int]$target.SlowSampleIntervalMs } else { 1000 }
         $args = @(
             '-NoProfile',

@@ -53,8 +53,9 @@ internal static class FrameScopeProcessSampler
             catch { }
 
             string target = BaseName(Arg(args, "--target", "cs2"));
-            int intervalMs = ParseInt(Arg(args, "--interval", "250"), 250);
+            int intervalMs = ParseInt(Arg(args, "--interval", "100"), 100);
             if (intervalMs < 100) intervalMs = 100;
+            int parentPid = ParseInt(Arg(args, "--parent-pid", "0"), 0);
 
             string processCsv = Arg(args, "--process-csv", "process-samples.csv");
             string topCpuCsv = Arg(args, "--top-cpu-csv", "topcpu-samples.csv");
@@ -76,7 +77,7 @@ internal static class FrameScopeProcessSampler
                 WriteCsv(topIoWriter, new object[] { "Time", "SampleIndex", "ElapsedMs", "ProcessName", "Id", "CpuPct", "ReadMBps", "WriteMBps", "WorkingSetMB" });
                 WriteCsv(alertsWriter, new object[] { "Time", "SampleIndex", "ElapsedMs", "Alerts", "TotalCpuPct", "GpuUtilPct", "GpuClockMHz", "GpuTempC", "AvailableMB", "DiskLatencySec", "TopCpuProcess", "TopCpuPct", "TopIoProcess", "TopIoReadMBps", "TopIoWriteMBps" });
 
-                RunLoop(target, intervalMs, processWriter, topWriter, topIoWriter, alertsWriter);
+                RunLoop(target, intervalMs, parentPid, processWriter, topWriter, topIoWriter, alertsWriter);
             }
 
             return 0;
@@ -88,7 +89,7 @@ internal static class FrameScopeProcessSampler
         }
     }
 
-    private static void RunLoop(string target, int intervalMs, StreamWriter processWriter, StreamWriter topWriter, StreamWriter topIoWriter, StreamWriter alertsWriter)
+    private static void RunLoop(string target, int intervalMs, int parentPid, StreamWriter processWriter, StreamWriter topWriter, StreamWriter topIoWriter, StreamWriter alertsWriter)
     {
         Dictionary<int, double> prevCpu = new Dictionary<int, double>();
         Dictionary<int, ulong> prevRead = new Dictionary<int, ulong>();
@@ -100,6 +101,8 @@ internal static class FrameScopeProcessSampler
 
         while (true)
         {
+            if (parentPid > 0 && !IsProcessRunning(parentPid)) break;
+
             Stopwatch loop = Stopwatch.StartNew();
             DateTime now = DateTime.Now;
             double elapsedSeconds = Math.Max(0.001, (now - prevTime).TotalSeconds);
@@ -179,21 +182,13 @@ internal static class FrameScopeProcessSampler
 
             string nowText = now.ToString("o", CultureInfo.InvariantCulture);
             WriteGroupedRows(processWriter, rows, nowText, sampleIndex, elapsedMs);
-            List<ProcRow> topCpu = rows
-                .Where(r => r.CpuPct.HasValue && !StringComparer.OrdinalIgnoreCase.Equals(r.ProcessName, "Idle"))
-                .OrderByDescending(r => r.CpuPct.Value)
-                .Take(20)
-                .ToList();
+            List<ProcRow> topCpu = TopCpuRows(rows, 20);
             foreach (ProcRow row in topCpu)
             {
                 WriteCsv(topWriter, new object[] { nowText, sampleIndex, Round(elapsedMs, 1), row.ProcessName, row.Id, Round(row.CpuPct, 2), Round(row.WorkingSet / 1048576.0, 1) });
             }
 
-            List<ProcRow> topIo = rows
-                .Where(r => (Value(r.ReadMBps) + Value(r.WriteMBps)) > 0.01)
-                .OrderByDescending(r => Value(r.ReadMBps) + Value(r.WriteMBps))
-                .Take(20)
-                .ToList();
+            List<ProcRow> topIo = TopIoRows(rows, 20);
             foreach (ProcRow row in topIo)
             {
                 WriteCsv(topIoWriter, new object[] { nowText, sampleIndex, Round(elapsedMs, 1), row.ProcessName, row.Id, Round(row.CpuPct, 2), Round(row.ReadMBps, 3), Round(row.WriteMBps, 3), Round(row.WorkingSet / 1048576.0, 1) });
@@ -240,7 +235,7 @@ internal static class FrameScopeProcessSampler
             stats.Pids.Add(row.Id);
         }
 
-        foreach (KeyValuePair<string, GroupStats> item in groups.OrderBy(kvp => kvp.Key, StringComparer.OrdinalIgnoreCase))
+        foreach (KeyValuePair<string, GroupStats> item in groups)
         {
             GroupStats stats = item.Value;
             WriteCsv(writer, new object[]
@@ -262,7 +257,8 @@ internal static class FrameScopeProcessSampler
 
     private static void WriteAlerts(StreamWriter writer, List<ProcRow> allRows, List<ProcRow> topCpu, List<ProcRow> topIo, string target, string nowText, int sampleIndex, double elapsedMs)
     {
-        double totalCpu = allRows.Sum(r => Value(r.CpuPct));
+        double totalCpu = 0.0;
+        foreach (ProcRow row in allRows) totalCpu += Value(row.CpuPct);
         if (totalCpu > 100.0) totalCpu = 100.0;
 
         ProcRow topCpuRow = topCpu.FirstOrDefault();
@@ -304,6 +300,53 @@ internal static class FrameScopeProcessSampler
         {
             return false;
         }
+    }
+
+    private static bool IsProcessRunning(int pid)
+    {
+        try
+        {
+            using (Process process = Process.GetProcessById(pid))
+            {
+                return !process.HasExited;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static List<ProcRow> TopCpuRows(List<ProcRow> rows, int limit)
+    {
+        List<ProcRow> top = new List<ProcRow>(limit);
+        foreach (ProcRow row in rows)
+        {
+            if (!row.CpuPct.HasValue || StringComparer.OrdinalIgnoreCase.Equals(row.ProcessName, "Idle")) continue;
+            double score = row.CpuPct.Value;
+            int index = 0;
+            while (index < top.Count && Value(top[index].CpuPct) >= score) index++;
+            if (index >= limit) continue;
+            top.Insert(index, row);
+            if (top.Count > limit) top.RemoveAt(top.Count - 1);
+        }
+        return top;
+    }
+
+    private static List<ProcRow> TopIoRows(List<ProcRow> rows, int limit)
+    {
+        List<ProcRow> top = new List<ProcRow>(limit);
+        foreach (ProcRow row in rows)
+        {
+            double score = Value(row.ReadMBps) + Value(row.WriteMBps);
+            if (score <= 0.01) continue;
+            int index = 0;
+            while (index < top.Count && (Value(top[index].ReadMBps) + Value(top[index].WriteMBps)) >= score) index++;
+            if (index >= limit) continue;
+            top.Insert(index, row);
+            if (top.Count > limit) top.RemoveAt(top.Count - 1);
+        }
+        return top;
     }
 
     private static void Prune<T>(Dictionary<int, T> values, HashSet<int> seenPids)
@@ -352,7 +395,8 @@ internal static class FrameScopeProcessSampler
 
     private static StreamWriter Writer(string path)
     {
-        StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(false));
+        FileStream stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read, 1024 * 1024);
+        StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false), 1024 * 1024);
         writer.NewLine = "\r\n";
         return writer;
     }

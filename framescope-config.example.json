@@ -9,7 +9,7 @@
       "Name": "Counter-Strike 2",
       "ProcessName": "cs2.exe",
       "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 250,
+      "ProcessSampleIntervalMs": 100,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -18,7 +18,7 @@
       "Name": "Delta Force",
       "ProcessName": "DeltaForceClient-Win64-Shipping.exe",
       "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 250,
+      "ProcessSampleIntervalMs": 100,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -27,7 +27,7 @@
       "Name": "Neverness To Everness",
       "ProcessName": "HTGame.exe",
       "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 250,
+      "ProcessSampleIntervalMs": 100,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     }

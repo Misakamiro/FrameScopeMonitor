@@ -2,7 +2,7 @@ param(
     [int]$WaitSeconds = 600,
     [int]$CaptureSeconds = 0,
     [int]$SampleIntervalMs = 100,
-    [int]$ProcessSampleIntervalMs = 250,
+    [int]$ProcessSampleIntervalMs = 100,
     [int]$SlowSampleIntervalMs = 1000,
     [string]$TargetProcessName = 'cs2',
     [string]$PresentMonExe = '',
@@ -20,7 +20,7 @@ catch {
 }
 
 if ($SampleIntervalMs -lt 50) { $SampleIntervalMs = 50 }
-if ($ProcessSampleIntervalMs -lt 250) { $ProcessSampleIntervalMs = 250 }
+if ($ProcessSampleIntervalMs -lt 100) { $ProcessSampleIntervalMs = 100 }
 if ($SlowSampleIntervalMs -lt $SampleIntervalMs) { $SlowSampleIntervalMs = $SampleIntervalMs }
 
 $root = $PSScriptRoot
@@ -803,6 +803,7 @@ try {
     $processSamplerArgs = @(
         '--target', $targetProcessBaseName,
         '--interval', [string]$ProcessSampleIntervalMs,
+        '--parent-pid', [string]$PID,
         '--process-csv', $processCsv,
         '--top-cpu-csv', $topCsv,
         '--top-io-csv', $topIoCsv,
@@ -925,6 +926,12 @@ catch {
             Remove-Job -Job $slowJob -Force -ErrorAction SilentlyContinue
         }
         catch {}
+    }
+    if ($processSampler -and -not $processSampler.HasExited) {
+        try { Stop-Process -Id $processSampler.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if ($presentMon -and -not $presentMon.HasExited) {
+        try { Stop-Process -Id $presentMon.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     $message = $_ | Out-String
     $message | Set-Content -LiteralPath $errorPath -Encoding UTF8

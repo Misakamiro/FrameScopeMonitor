@@ -12,6 +12,7 @@ try {
         /out:FrameScopeMonitor.exe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
+        /reference:System.Management.dll `
         /reference:System.Web.Extensions.dll `
         .\FrameScopeNativeMonitor.cs
 
