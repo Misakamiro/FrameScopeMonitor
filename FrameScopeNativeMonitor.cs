@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 public sealed class FrameScopeConfig
 {
@@ -95,6 +96,8 @@ internal sealed class ReportGenerationResult
     public string LogPath;
     public string Error;
     public int FrameCount;
+    public int ProcessSampleCount;
+    public int SystemSampleCount;
     public bool HasFrameData;
     public string ReportKind;
 }
@@ -128,6 +131,7 @@ internal static class FrameScopeNativeMonitor
     private static readonly string ReportGeneratorExe = Path.Combine(Root, "FrameScopeReportGenerator.exe");
     private static readonly string StatePath = Path.Combine(Root, "framescope-watcher-state.json");
     private static readonly string HistoryPath = Path.Combine(Root, "framescope-history.jsonl");
+    private const string PresentMonSessionPrefix = "FrameScopeNativePresentMon_";
     private static readonly string DefaultDataRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "FrameScopeMonitorData",
@@ -165,6 +169,7 @@ internal static class FrameScopeNativeMonitor
         var config = LoadConfig();
         BuildUi(config);
         RefreshProcessList();
+        StartWatcher();
         Application.Run(form);
     }
 
@@ -603,6 +608,16 @@ internal static class FrameScopeNativeMonitor
                 result.FrameCount = Convert.ToInt32(framesValue);
                 result.HasFrameData = result.FrameCount > 0;
             }
+            object processSamplesValue;
+            if (manifest != null && manifest.TryGetValue("processSamples", out processSamplesValue) && processSamplesValue != null)
+            {
+                result.ProcessSampleCount = Convert.ToInt32(processSamplesValue);
+            }
+            object systemSamplesValue;
+            if (manifest != null && manifest.TryGetValue("systemSamples", out systemSamplesValue) && systemSamplesValue != null)
+            {
+                result.SystemSampleCount = Convert.ToInt32(systemSamplesValue);
+            }
             object kindValue;
             if (manifest != null && manifest.TryGetValue("reportKind", out kindValue) && kindValue != null)
             {
@@ -633,6 +648,8 @@ internal static class FrameScopeNativeMonitor
         map["ReportGenerationExitCode"] = result.ExitCode;
         map["ReportFrameCount"] = result.FrameCount;
         map["ReportHasFrameData"] = result.HasFrameData;
+        map["ReportProcessSampleCount"] = result.ProcessSampleCount;
+        map["ReportSystemSampleCount"] = result.SystemSampleCount;
         map["ReportKind"] = result.ReportKind;
 
         try { File.WriteAllText(statusPath, Json.Serialize(map), Encoding.UTF8); }
@@ -792,7 +809,7 @@ internal static class FrameScopeNativeMonitor
             var prefix = SafeName(runNamePrefix, targetBaseName);
             paths = CreateMonitorSessionPaths(Path.Combine(runRoot, prefix + "-" + stamp));
             Directory.CreateDirectory(paths.RunDir);
-            var presentMonSessionName = "FrameScopeNativePresentMon_" + SafeName(prefix, targetBaseName) + "_" + stamp;
+            var presentMonSessionName = PresentMonSessionPrefix + SafeName(prefix, targetBaseName);
 
             var presentMonPath = ResolvePresentMonPath(requestedPresentMon);
             var processSamplerPath = ResolveProcessSamplerPath(requestedProcessSampler);
@@ -800,7 +817,7 @@ internal static class FrameScopeNativeMonitor
             var nvidiaSmiPath = ResolveNvidiaSmiPath();
             var captureUntilTargetExit = captureSeconds <= 0;
             var captureMode = captureUntilTargetExit ? "until-target-exit" : "timed";
-            var presentMonCaptureMode = "process_name";
+            var presentMonCaptureMode = "waiting-for-pid";
             var presentMonCaptureTarget = presentMonProcessName;
             var presentMonArguments = "";
 
@@ -816,10 +833,11 @@ internal static class FrameScopeNativeMonitor
                 throw new InvalidOperationException("PresentMon not found. Expected portable copy under tools\\PresentMon-2.4.1-x64.exe or NVIDIA FrameView SDK PresentMon.");
             }
             if (string.IsNullOrWhiteSpace(processSamplerPath) || !File.Exists(processSamplerPath))
-            {
-                throw new InvalidOperationException("FrameScopeProcessSampler.exe not found beside FrameScopeMonitor.exe.");
-            }
+                {
+                    throw new InvalidOperationException("FrameScopeProcessSampler.exe not found beside FrameScopeMonitor.exe.");
+                }
 
+            CleanupFrameScopePresentMonSessions(presentMonPath);
             WritePresentMonInfo(paths.PresentMonInfoPath, presentMonPath);
 
             WriteNativeMonitorStatus(paths, "waiting-for-target", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, new Dictionary<string, object>
@@ -842,9 +860,11 @@ internal static class FrameScopeNativeMonitor
             using (targetProc)
             {
                 var startTime = DateTime.Now;
+                presentMonCaptureMode = "process_id";
+                presentMonCaptureTarget = targetProc.Id.ToString(CultureInfo.InvariantCulture);
                 var presentMonArgs = new List<string>
                 {
-                    "--process_name", presentMonCaptureTarget,
+                    "--process_id", presentMonCaptureTarget,
                     "--output_file", paths.PresentMonCsv,
                     "--date_time",
                     "--terminate_on_proc_exit",
@@ -873,7 +893,8 @@ internal static class FrameScopeNativeMonitor
                     presentMonArguments,
                     Root,
                     paths.PresentMonStdout,
-                    paths.PresentMonStderr);
+                    paths.PresentMonStderr,
+                    ProcessPriorityClass.BelowNormal);
 
                 processSampler = StartNativeMonitorChild(
                     processSamplerPath,
@@ -912,6 +933,7 @@ internal static class FrameScopeNativeMonitor
                 var presentMonExitCode = (int?)null;
                 var presentMonExitedEarly = false;
                 var presentMonForcedStop = false;
+                var presentMonStopRequested = false;
 
                 while (DateTime.Now < captureDeadline)
                 {
@@ -972,7 +994,8 @@ internal static class FrameScopeNativeMonitor
 
                 if (presentMon != null && !ProcessExited(presentMon))
                 {
-                    if (!presentMon.WaitForExit(10000))
+                    presentMonStopRequested = RequestPresentMonStop(presentMonPath, presentMonSessionName);
+                    if (!presentMon.WaitForExit(15000))
                     {
                         presentMonForcedStop = true;
                         StopMonitorChild(presentMon, 0, true);
@@ -984,6 +1007,7 @@ internal static class FrameScopeNativeMonitor
                     catch { }
                 }
                 if (!presentMonExitCode.HasValue && File.Exists(paths.PresentMonCsv)) presentMonExitCode = 0;
+                CleanupFrameScopePresentMonSessions(presentMonPath);
 
                 var endTime = DateTime.Now;
                 var reportHtml = Path.Combine(paths.RunDir, "charts", "framescope-interactive-report.html");
@@ -992,6 +1016,7 @@ internal static class FrameScopeNativeMonitor
                     { "TargetPid", targetProc.Id },
                     { "ExitCode", presentMonExitCode },
                     { "SampleCount", sampleIndex },
+                    { "PresentMonStopRequested", presentMonStopRequested },
                     { "PresentMonForcedStop", presentMonForcedStop },
                     { "PresentMonExitedEarly", presentMonExitedEarly },
                     { "EndTime", endTime.ToString("o") },
@@ -1011,6 +1036,7 @@ internal static class FrameScopeNativeMonitor
                     { "TargetPid", targetProc.Id },
                     { "ExitCode", presentMonExitCode },
                     { "SampleCount", sampleIndex },
+                    { "PresentMonStopRequested", presentMonStopRequested },
                     { "PresentMonForcedStop", presentMonForcedStop },
                     { "PresentMonExitedEarly", presentMonExitedEarly },
                     { "EndTime", endTime.ToString("o") },
@@ -1192,6 +1218,11 @@ internal static class FrameScopeNativeMonitor
 
     private static Process StartNativeMonitorChild(string fileName, string arguments, string workingDirectory, string stdoutPath = null, string stderrPath = null)
     {
+        return StartNativeMonitorChild(fileName, arguments, workingDirectory, stdoutPath, stderrPath, ProcessPriorityClass.Idle);
+    }
+
+    private static Process StartNativeMonitorChild(string fileName, string arguments, string workingDirectory, string stdoutPath, string stderrPath, ProcessPriorityClass priority)
+    {
         var psi = new ProcessStartInfo
         {
             FileName = fileName,
@@ -1206,12 +1237,145 @@ internal static class FrameScopeNativeMonitor
         var process = Process.Start(psi);
         if (process != null)
         {
-            try { process.PriorityClass = ProcessPriorityClass.Idle; }
+            try { process.PriorityClass = priority; }
             catch { }
             if (!string.IsNullOrWhiteSpace(stdoutPath)) BeginCopyPipe(process.StandardOutput, stdoutPath);
             if (!string.IsNullOrWhiteSpace(stderrPath)) BeginCopyPipe(process.StandardError, stderrPath);
         }
         return process;
+    }
+
+    private static bool RequestPresentMonStop(string presentMonPath, string sessionName)
+    {
+        if (string.IsNullOrWhiteSpace(presentMonPath) || string.IsNullOrWhiteSpace(sessionName)) return false;
+        if (!File.Exists(presentMonPath)) return false;
+        try
+        {
+            var args = JoinArguments(new[] { "--terminate_existing_session", "--session_name", sessionName });
+            using (var stopper = Process.Start(new ProcessStartInfo
+            {
+                FileName = presentMonPath,
+                Arguments = args,
+                WorkingDirectory = Root,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            }))
+            {
+                if (stopper == null) return false;
+                if (!stopper.WaitForExit(10000))
+                {
+                    try { stopper.Kill(); } catch { }
+                    return false;
+                }
+                WriteFrameScopeLog("presentmon-stop-requested session=" + sessionName + " exit=" + stopper.ExitCode);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("presentmon-stop-request-failed session=" + sessionName + " error=" + ex.Message);
+            return false;
+        }
+    }
+
+    private static void CleanupFrameScopePresentMonSessions(string presentMonPath)
+    {
+        var sessions = QueryFrameScopePresentMonSessions();
+        foreach (var session in sessions)
+        {
+            var stopped = RequestPresentMonStop(presentMonPath, session);
+            if (!stopped) StopEtwSessionWithLogman(session);
+        }
+        if (sessions.Count > 0)
+        {
+            WriteFrameScopeLog("presentmon-session-cleanup count=" + sessions.Count);
+        }
+    }
+
+    private static List<string> QueryFrameScopePresentMonSessions()
+    {
+        var result = new List<string>();
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "logman.exe",
+                Arguments = "query -ets",
+                WorkingDirectory = Root,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.Default,
+                StandardErrorEncoding = Encoding.Default
+            };
+            using (var process = Process.Start(psi))
+            {
+                if (process == null) return result;
+                var output = process.StandardOutput.ReadToEnd();
+                process.StandardError.ReadToEnd();
+                if (!process.WaitForExit(10000))
+                {
+                    try { process.Kill(); } catch { }
+                    return result;
+                }
+
+                using (var reader = new StringReader(output ?? ""))
+                {
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        line = line.Trim();
+                        if (!line.StartsWith(PresentMonSessionPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+                        var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length > 0 && !result.Contains(parts[0], StringComparer.OrdinalIgnoreCase)) result.Add(parts[0]);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("presentmon-session-query-failed " + ex.Message);
+        }
+        return result;
+    }
+
+    private static bool StopEtwSessionWithLogman(string sessionName)
+    {
+        if (string.IsNullOrWhiteSpace(sessionName)) return false;
+        try
+        {
+            using (var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "logman.exe",
+                Arguments = "stop " + QuoteCommandArgument(sessionName) + " -ets",
+                WorkingDirectory = Root,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.Default,
+                StandardErrorEncoding = Encoding.Default
+            }))
+            {
+                if (process == null) return false;
+                process.StandardOutput.ReadToEnd();
+                process.StandardError.ReadToEnd();
+                if (!process.WaitForExit(10000))
+                {
+                    try { process.Kill(); } catch { }
+                    return false;
+                }
+                WriteFrameScopeLog("presentmon-session-logman-stop session=" + sessionName + " exit=" + process.ExitCode);
+                return process.ExitCode == 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("presentmon-session-logman-stop-failed session=" + sessionName + " error=" + ex.Message);
+            return false;
+        }
     }
 
     private static void BeginCopyPipe(StreamReader reader, string path)
@@ -1538,8 +1702,10 @@ internal static class FrameScopeNativeMonitor
 
     private static bool ShouldAutoOpenCompletedReport(Dictionary<string, object> status)
     {
-        if (!StatusBool(status, "ReportHasFrameData", false)) return false;
-        return string.IsNullOrWhiteSpace(StatusString(status, "ReportError", ""));
+        if (StatusBool(status, "ReportHasFrameData", false)) return true;
+        if (StatusInt(status, "ReportProcessSampleCount", 0) > 0) return true;
+        if (StatusInt(status, "ReportSystemSampleCount", 0) > 0) return true;
+        return false;
     }
 
     private static void WriteNativeWatcherState(string configPath, string phase, Dictionary<string, ActiveMonitor> activeMonitors, int completedRuns, string lastReport)
@@ -1582,7 +1748,7 @@ internal static class FrameScopeNativeMonitor
     {
         if (string.IsNullOrWhiteSpace(path)) return false;
         var fullPath = Path.GetFullPath(path);
-        if (Path.GetExtension(fullPath).Equals(".html", StringComparison.OrdinalIgnoreCase) && TryOpenHtmlWithEdge(fullPath))
+        if (Path.GetExtension(fullPath).Equals(".html", StringComparison.OrdinalIgnoreCase) && TryOpenHtmlWithBrowsers(fullPath))
         {
             return true;
         }
@@ -1609,41 +1775,175 @@ internal static class FrameScopeNativeMonitor
         }
     }
 
-    private static bool TryOpenHtmlWithEdge(string htmlPath)
+    private static bool TryOpenHtmlWithBrowsers(string htmlPath)
     {
-        foreach (var edgePath in GetEdgeCandidates())
+        var uri = new Uri(htmlPath).AbsoluteUri;
+        try
         {
-            if (!File.Exists(edgePath)) continue;
-            try
+            Process.Start(new ProcessStartInfo
             {
-                var uri = new Uri(htmlPath).AbsoluteUri;
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = edgePath,
-                    Arguments = "--new-window " + QuoteCommandArgument(uri),
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                });
-                WriteFrameScopeLog("open-report-edge report=" + htmlPath + " edge=" + edgePath);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                WriteFrameScopeLog("open-report-edge-failed path=" + htmlPath + " edge=" + edgePath + " error=" + ex.Message);
-            }
+                FileName = uri,
+                UseShellExecute = true,
+                Verb = "open"
+            });
+            WriteFrameScopeLog("open-report-default-browser report=" + htmlPath + " uri=" + uri);
+            return true;
         }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("open-report-default-browser-failed report=" + htmlPath + " error=" + ex.Message);
+        }
+
+        foreach (var browserPath in GetBrowserCandidates())
+        {
+            if (!File.Exists(browserPath)) continue;
+            if (TryOpenHtmlWithBrowser(browserPath, uri, htmlPath)) return true;
+        }
+
         return false;
     }
 
-    private static IEnumerable<string> GetEdgeCandidates()
+    private static bool TryOpenHtmlWithBrowser(string browserPath, string uri, string htmlPath)
     {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = browserPath,
+                Arguments = GetBrowserOpenArguments(browserPath, uri),
+                UseShellExecute = false,
+                CreateNoWindow = false,
+                WindowStyle = ProcessWindowStyle.Normal
+            });
+            WriteFrameScopeLog("open-report-browser report=" + htmlPath + " browser=" + browserPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("open-report-browser-failed report=" + htmlPath + " browser=" + browserPath + " error=" + ex.Message);
+            return false;
+        }
+    }
+
+    private static string GetBrowserOpenArguments(string browserPath, string uri)
+    {
+        var name = Path.GetFileName(browserPath ?? "");
+        if (name.Equals("firefox.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return "-new-window " + QuoteCommandArgument(uri);
+        }
+        if (name.Equals("opera.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return QuoteCommandArgument(uri);
+        }
+        return "--new-window " + QuoteCommandArgument(uri);
+    }
+
+    private static IEnumerable<string> GetBrowserCandidates()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in GetRegisteredBrowserCandidates())
+        {
+            if (IsSupportedBrowserCandidate(path) && seen.Add(path)) yield return path;
+        }
+
         var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (!string.IsNullOrWhiteSpace(programFilesX86))
-            yield return Path.Combine(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe");
-        if (!string.IsNullOrWhiteSpace(programFiles))
-            yield return Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe");
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var candidates = new[]
+        {
+            Path.Combine(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+            Path.Combine(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+            Path.Combine(programFiles, "Mozilla Firefox", "firefox.exe"),
+            Path.Combine(programFilesX86, "Mozilla Firefox", "firefox.exe"),
+            Path.Combine(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(programFilesX86, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(localAppData, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+            Path.Combine(localAppData, "Vivaldi", "Application", "vivaldi.exe"),
+            Path.Combine(programFiles, "Vivaldi", "Application", "vivaldi.exe"),
+            Path.Combine(localAppData, "Programs", "Opera", "opera.exe"),
+            Path.Combine(programFiles, "Opera", "opera.exe"),
+            Path.Combine(programFilesX86, "Tencent", "QQBrowser", "QQBrowser.exe"),
+            Path.Combine(localAppData, "Tencent", "QQBrowser", "Application", "QQBrowser.exe"),
+            Path.Combine(programFiles, "360Chrome", "Chrome", "Application", "360chrome.exe"),
+            Path.Combine(programFilesX86, "360Chrome", "Chrome", "Application", "360chrome.exe"),
+            Path.Combine(programFiles, "360", "360se6", "Application", "360se.exe"),
+            Path.Combine(programFilesX86, "360", "360se6", "Application", "360se.exe"),
+            Path.Combine(programFiles, "SogouExplorer", "SogouExplorer.exe"),
+            Path.Combine(programFilesX86, "SogouExplorer", "SogouExplorer.exe")
+        };
+
+        foreach (var path in candidates)
+        {
+            if (IsSupportedBrowserCandidate(path) && seen.Add(path)) yield return path;
+        }
+    }
+
+    private static bool IsSupportedBrowserCandidate(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        var name = Path.GetFileName(path);
+        if (name.Equals("iexplore.exe", StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
+    }
+
+    private static IEnumerable<string> GetRegisteredBrowserCandidates()
+    {
+        foreach (var root in new[] { Registry.CurrentUser, Registry.LocalMachine })
+        {
+            foreach (var subKey in new[] { @"SOFTWARE\Clients\StartMenuInternet", @"SOFTWARE\WOW6432Node\Clients\StartMenuInternet" })
+            {
+                foreach (var path in GetRegisteredBrowserCandidates(root, subKey))
+                {
+                    yield return path;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetRegisteredBrowserCandidates(RegistryKey root, string subKey)
+    {
+        var result = new List<string>();
+        try
+        {
+            using (var key = root.OpenSubKey(subKey))
+            {
+                if (key == null) return result;
+                foreach (var browserName in key.GetSubKeyNames())
+                {
+                    using (var commandKey = key.OpenSubKey(browserName + @"\shell\open\command"))
+                    {
+                        var command = commandKey == null ? "" : Convert.ToString(commandKey.GetValue(""));
+                        var exe = ExtractExecutableFromCommand(command);
+                        if (!string.IsNullOrWhiteSpace(exe)) result.Add(exe);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("browser-registry-read-failed key=" + subKey + " error=" + ex.Message);
+        }
+        return result;
+    }
+
+    private static string ExtractExecutableFromCommand(string command)
+    {
+        if (string.IsNullOrWhiteSpace(command)) return "";
+        command = Environment.ExpandEnvironmentVariables(command.Trim());
+        if (command.StartsWith("\"", StringComparison.Ordinal))
+        {
+            var end = command.IndexOf('"', 1);
+            if (end > 1) return command.Substring(1, end - 1);
+        }
+
+        var exeIndex = command.IndexOf(".exe", StringComparison.OrdinalIgnoreCase);
+        if (exeIndex >= 0) return command.Substring(0, exeIndex + 4).Trim();
+        var space = command.IndexOf(' ');
+        return space > 0 ? command.Substring(0, space).Trim() : command;
     }
 
     private static bool TryOpenReport(string reportHtml, string runDir)
@@ -1705,7 +2005,10 @@ internal static class FrameScopeNativeMonitor
             Font = new Font("Microsoft YaHei UI", 9f),
             Opacity = 0
         };
-        form.Shown += (_, __) => FadeIn(form);
+        form.Shown += (_, __) =>
+        {
+            FadeIn(form);
+        };
         form.FormClosing += (_, __) => StopFrameScopeBackgroundProcesses();
 
         var title = new Label
@@ -2022,6 +2325,7 @@ internal static class FrameScopeNativeMonitor
             var state = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(StatePath));
             if (!state.ContainsKey("WatcherPid")) return false;
             pid = Convert.ToInt32(state["WatcherPid"]);
+            if (pid <= 0) return false;
             using (Process.GetProcessById(pid))
             {
             }
@@ -2037,10 +2341,12 @@ internal static class FrameScopeNativeMonitor
     {
         try
         {
+            WriteFrameScopeLog("gui-start-watcher-request");
             SaveConfig(ReadGridConfig());
             int existingPid;
             if (IsWatcherRunning(out existingPid))
             {
+                WriteFrameScopeLog("gui-start-watcher-existing pid=" + existingPid);
                 SetStatus("监测已经在运行，Watcher PID=" + existingPid);
                 return;
             }
@@ -2060,10 +2366,12 @@ internal static class FrameScopeNativeMonitor
                 if (proc != null) proc.PriorityClass = ProcessPriorityClass.BelowNormal;
             }
             catch { }
+            WriteFrameScopeLog("gui-start-watcher-started pid=" + (proc != null ? proc.Id.ToString(CultureInfo.InvariantCulture) : "null"));
             SetStatus("监测已启动，Watcher PID=" + (proc != null ? proc.Id.ToString() : "未知") + "。现在启动配置里的游戏就会自动记录。");
         }
         catch (Exception ex)
         {
+            WriteFrameScopeLog("gui-start-watcher-failed " + ex);
             MessageBox.Show(ex.Message, "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -2310,8 +2618,14 @@ internal static class FrameScopeNativeMonitor
         var reportPath = LatestReportPath();
         if (!string.IsNullOrWhiteSpace(reportPath) && File.Exists(reportPath))
         {
-            Process.Start(new ProcessStartInfo { FileName = reportPath, UseShellExecute = true });
-            SetStatus("已打开最近报告：" + reportPath);
+            if (TryOpenPath(reportPath))
+            {
+                SetStatus("已打开最近报告：" + reportPath);
+            }
+            else
+            {
+                SetStatus("找到报告但打开失败：" + reportPath);
+            }
             return;
         }
         SetStatus("没有找到报告。");

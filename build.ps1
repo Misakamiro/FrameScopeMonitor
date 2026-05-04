@@ -64,7 +64,9 @@ try {
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $payloadRoot -Force
     }
 
-    Copy-Item -LiteralPath (Join-Path $root 'tools') -Destination (Join-Path $payloadRoot 'tools') -Recurse -Force
+    $payloadTools = Join-Path $payloadRoot 'tools'
+    New-Item -ItemType Directory -Path $payloadTools -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'tools\PresentMon-2.4.1-x64.exe') -Destination $payloadTools -Force
 
     $payloadZip = Join-Path $sourceRoot 'payload.zip'
     Compress-Archive -Path (Join-Path $payloadRoot '*') -DestinationPath $payloadZip -Force
