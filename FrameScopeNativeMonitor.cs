@@ -125,9 +125,13 @@ internal static class FrameScopeNativeMonitor
     private static readonly string ConfigPath = Path.Combine(Root, "framescope-config.json");
     private const string NativeMonitorMode = "native-csharp";
     private static readonly string LegacyMonitorScript = Path.Combine(Root, "Monitor-CS2-HighFreq.ps1");
-    private static readonly string ReportScript = Path.Combine(Root, "Generate-CS2-FrameScope-Interactive-Report.py");
+    private static readonly string ReportGeneratorExe = Path.Combine(Root, "FrameScopeReportGenerator.exe");
     private static readonly string StatePath = Path.Combine(Root, "framescope-watcher-state.json");
     private static readonly string HistoryPath = Path.Combine(Root, "framescope-history.jsonl");
+    private static readonly string DefaultDataRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "FrameScopeMonitorData",
+        "framescope-runs");
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
     private static Form form;
@@ -190,12 +194,13 @@ internal static class FrameScopeNativeMonitor
         var config = new FrameScopeConfig
         {
             PollIntervalMs = 1000,
-            DataRoot = Path.Combine(Root, "framescope-runs"),
+            DataRoot = DefaultDataRoot,
             OpenReportOnComplete = true,
             MonitorScript = NativeMonitorMode,
             Targets = new List<FrameScopeTarget>
             {
                 Target(true, "Counter-Strike 2", "cs2.exe"),
+                Target(true, "PUBG: BATTLEGROUNDS", "TslGame.exe"),
                 Target(true, "Delta Force", "DeltaForceClient-Win64-Shipping.exe"),
                 Target(true, "Neverness To Everness", "HTGame.exe"),
                 Target(false, "Valorant", "VALORANT-Win64-Shipping.exe"),
@@ -226,7 +231,7 @@ internal static class FrameScopeNativeMonitor
     {
         if (config == null) throw new InvalidOperationException("FrameScope config is empty.");
         if (config.Targets == null) config.Targets = new List<FrameScopeTarget>();
-        if (string.IsNullOrWhiteSpace(config.DataRoot)) config.DataRoot = Path.Combine(Root, "framescope-runs");
+        if (string.IsNullOrWhiteSpace(config.DataRoot)) config.DataRoot = DefaultDataRoot;
         if (string.IsNullOrWhiteSpace(config.MonitorScript) ||
             config.MonitorScript.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase) ||
             config.MonitorScript.Equals(LegacyMonitorScript, StringComparison.OrdinalIgnoreCase))
@@ -507,17 +512,9 @@ internal static class FrameScopeNativeMonitor
             ReportKind = "unknown"
         };
 
-        var python = ResolvePythonPath();
-        if (string.IsNullOrWhiteSpace(python) || !File.Exists(python))
+        if (!File.Exists(ReportGeneratorExe))
         {
-            result.Error = "python.exe was not found.";
-            WriteReportLog(result.LogPath, result.Error);
-            WriteFrameScopeLog("report-generate-failed run=" + runDir + " error=" + result.Error);
-            return result;
-        }
-        if (!File.Exists(ReportScript))
-        {
-            result.Error = "Report script not found: " + ReportScript;
+            result.Error = "Native report generator not found: " + ReportGeneratorExe;
             WriteReportLog(result.LogPath, result.Error);
             WriteFrameScopeLog("report-generate-failed run=" + runDir + " error=" + result.Error);
             return result;
@@ -529,8 +526,8 @@ internal static class FrameScopeNativeMonitor
         {
             var psi = new ProcessStartInfo
             {
-                FileName = python,
-                Arguments = Quote(ReportScript) + " " + Quote(runDir),
+                FileName = ReportGeneratorExe,
+                Arguments = Quote(runDir),
                 WorkingDirectory = Root,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -547,7 +544,7 @@ internal static class FrameScopeNativeMonitor
                     WriteReportLog(result.LogPath, result.Error);
                     return result;
                 }
-                try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
+                try { process.PriorityClass = ProcessPriorityClass.AboveNormal; }
                 catch { }
 
                 var output = process.StandardOutput.ReadToEnd();
@@ -618,30 +615,6 @@ internal static class FrameScopeNativeMonitor
         }
     }
 
-    private static string ResolvePythonPath()
-    {
-        var portable = Path.Combine(Root, "runtime", "python", "python.exe");
-        if (File.Exists(portable)) return portable;
-
-        var bundled = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".cache", "codex-runtimes", "codex-primary-runtime", "dependencies", "python", "python.exe");
-        if (File.Exists(bundled)) return bundled;
-
-        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var part in pathEnv.Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrWhiteSpace(part)) continue;
-            try
-            {
-                var candidate = Path.Combine(part.Trim(), "python.exe");
-                if (File.Exists(candidate)) return candidate;
-            }
-            catch { }
-        }
-        return "";
-    }
-
     private static Dictionary<string, object> UpdateStatusAfterReportGeneration(string runDir, Dictionary<string, object> status, ReportGenerationResult result, int monitorExitCode)
     {
         var statusPath = Path.Combine(runDir, "status.json");
@@ -676,7 +649,7 @@ internal static class FrameScopeNativeMonitor
     private static string ResolveDataRoot(string configuredRoot)
     {
         var dataRoot = configuredRoot;
-        if (string.IsNullOrWhiteSpace(dataRoot)) dataRoot = Path.Combine(Root, "framescope-runs");
+        if (string.IsNullOrWhiteSpace(dataRoot)) dataRoot = DefaultDataRoot;
         if (!Path.IsPathRooted(dataRoot)) dataRoot = Path.Combine(Root, dataRoot);
         return dataRoot;
     }
@@ -794,7 +767,7 @@ internal static class FrameScopeNativeMonitor
             var slowSampleIntervalMs = ParseIntArgument(args, "--SlowSampleIntervalMs", 1000);
             var controlPollIntervalMs = ParseIntArgument(args, "--ControlPollIntervalMs", 3000);
             var targetProcessName = GetArgValue(args, "--TargetProcessName", "cs2.exe");
-            var runRoot = GetArgValue(args, "--RunRoot", Path.Combine(Root, "framescope-runs"));
+            var runRoot = GetArgValue(args, "--RunRoot", DefaultDataRoot);
             var runNamePrefix = GetArgValue(args, "--RunNamePrefix", GetTargetBaseName(targetProcessName));
             var requestedPresentMon = GetArgValue(args, "--PresentMonExe", "");
             var requestedProcessSampler = GetArgValue(args, "--ProcessSamplerExe", "");
@@ -811,7 +784,7 @@ internal static class FrameScopeNativeMonitor
                 ? targetProcessName
                 : targetBaseName + ".exe";
 
-            if (string.IsNullOrWhiteSpace(runRoot)) runRoot = Path.Combine(Root, "framescope-runs");
+            if (string.IsNullOrWhiteSpace(runRoot)) runRoot = DefaultDataRoot;
             if (!Path.IsPathRooted(runRoot)) runRoot = Path.Combine(Root, runRoot);
             Directory.CreateDirectory(runRoot);
 
@@ -819,6 +792,7 @@ internal static class FrameScopeNativeMonitor
             var prefix = SafeName(runNamePrefix, targetBaseName);
             paths = CreateMonitorSessionPaths(Path.Combine(runRoot, prefix + "-" + stamp));
             Directory.CreateDirectory(paths.RunDir);
+            var presentMonSessionName = "FrameScopeNativePresentMon_" + SafeName(prefix, targetBaseName) + "_" + stamp;
 
             var presentMonPath = ResolvePresentMonPath(requestedPresentMon);
             var processSamplerPath = ResolveProcessSamplerPath(requestedProcessSampler);
@@ -833,7 +807,8 @@ internal static class FrameScopeNativeMonitor
             WriteNativeMonitorStatus(paths, "created", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, new Dictionary<string, object>
             {
                 { "PresentMonCaptureMode", presentMonCaptureMode },
-                { "PresentMonCaptureTarget", presentMonCaptureTarget }
+                { "PresentMonCaptureTarget", presentMonCaptureTarget },
+                { "PresentMonSessionName", presentMonSessionName }
             });
 
             if (string.IsNullOrWhiteSpace(presentMonPath) || !File.Exists(presentMonPath))
@@ -853,7 +828,8 @@ internal static class FrameScopeNativeMonitor
                 { "CaptureSeconds", captureSeconds },
                 { "CaptureUntilTargetExit", captureUntilTargetExit },
                 { "PresentMonCaptureMode", presentMonCaptureMode },
-                { "PresentMonCaptureTarget", presentMonCaptureTarget }
+                { "PresentMonCaptureTarget", presentMonCaptureTarget },
+                { "PresentMonSessionName", presentMonSessionName }
             });
 
             var targetProc = WaitForTargetProcess(targetBaseName, waitSeconds);
@@ -874,7 +850,7 @@ internal static class FrameScopeNativeMonitor
                     "--terminate_on_proc_exit",
                     "--no_console_stats",
                     "--stop_existing_session",
-                    "--session_name", "FrameScopeNativePresentMon"
+                    "--session_name", presentMonSessionName
                 };
                 if (!captureUntilTargetExit)
                 {
@@ -888,6 +864,7 @@ internal static class FrameScopeNativeMonitor
                     { "StartTime", startTime.ToString("o") },
                     { "PresentMonCaptureMode", presentMonCaptureMode },
                     { "PresentMonCaptureTarget", presentMonCaptureTarget },
+                    { "PresentMonSessionName", presentMonSessionName },
                     { "PresentMonArgs", presentMonArguments }
                 });
 
@@ -966,6 +943,7 @@ internal static class FrameScopeNativeMonitor
                             { "SampleIndex", sampleIndex },
                             { "PresentMonCaptureMode", presentMonCaptureMode },
                             { "PresentMonCaptureTarget", presentMonCaptureTarget },
+                            { "PresentMonSessionName", presentMonSessionName },
                             { "PresentMonArgs", presentMonArguments }
                         });
                         lastStatusWrite = now;
@@ -1021,6 +999,7 @@ internal static class FrameScopeNativeMonitor
                     { "ReportHtml", reportHtml },
                     { "PresentMonCaptureMode", presentMonCaptureMode },
                     { "PresentMonCaptureTarget", presentMonCaptureTarget },
+                    { "PresentMonSessionName", presentMonSessionName },
                     { "PresentMonArgs", presentMonArguments }
                 });
 
@@ -1042,6 +1021,7 @@ internal static class FrameScopeNativeMonitor
                     { "MonitorMode", "native-csharp" },
                     { "PresentMonCaptureMode", presentMonCaptureMode },
                     { "PresentMonCaptureTarget", presentMonCaptureTarget },
+                    { "PresentMonSessionName", presentMonSessionName },
                     { "PresentMonArgs", presentMonArguments }
                 });
             }
@@ -2306,8 +2286,8 @@ internal static class FrameScopeNativeMonitor
         var entry = LatestHistory();
         if (entry != null && File.Exists(entry.ReportHtml)) return entry.ReportHtml;
 
-        var root = dataRootText != null ? dataRootText.Text : Path.Combine(Root, "framescope-runs");
-        if (string.IsNullOrWhiteSpace(root)) root = Path.Combine(Root, "framescope-runs");
+        var root = dataRootText != null ? dataRootText.Text : DefaultDataRoot;
+        if (string.IsNullOrWhiteSpace(root)) root = DefaultDataRoot;
         if (!Path.IsPathRooted(root)) root = Path.Combine(Root, root);
         if (!Directory.Exists(root)) return "";
 

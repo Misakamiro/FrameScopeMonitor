@@ -1,4 +1,9 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='SilentlyContinue'; Get-Process -Name FrameScopeMonitor | Stop-Process -Force; Remove-Item -LiteralPath ([Environment]::GetFolderPath('Desktop') + '\FrameScope Monitor.lnk') -Force; Remove-Item -LiteralPath ([Environment]::GetFolderPath('StartMenu') + '\Programs\FrameScope Monitor.lnk') -Force; Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA 'FrameScopeMonitor') -Recurse -Force"
-exit /b 0
+set "UNINSTALLER=%~dp0FrameScopeUninstaller.exe"
+if exist "%UNINSTALLER%" (
+    start "" "%UNINSTALLER%" %*
+    exit /b 0
+)
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\FrameScopeMonitor" /f >nul 2>nul
+exit /b 1

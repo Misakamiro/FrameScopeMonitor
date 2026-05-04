@@ -24,6 +24,26 @@ try {
         /out:FrameScopeSystemSampler.exe `
         .\FrameScopeSystemSampler.cs
 
+    & $csc /nologo /target:exe /platform:x64 /optimize+ /codepage:65001 `
+        /out:FrameScopeReportGenerator.exe `
+        /reference:System.Web.Extensions.dll `
+        /reference:System.Management.dll `
+        /reference:Microsoft.VisualBasic.dll `
+        .\FrameScopeReportGenerator.cs
+
+    & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /out:FrameScopeUninstaller.exe `
+        /reference:System.Windows.Forms.dll `
+        /reference:System.Drawing.dll `
+        .\packaging\FrameScopeUninstaller.cs
+
+    & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /out:FrameScopeLegacyCleanup.exe `
+        /reference:System.Windows.Forms.dll `
+        /reference:System.Drawing.dll `
+        /reference:System.Management.dll `
+        .\packaging\FrameScopeLegacyCleanup.cs
+
     $dist = Join-Path $root 'dist'
     $payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
     $sourceRoot = Join-Path $dist 'FrameScopeMonitor-installer-source'
@@ -36,7 +56,8 @@ try {
         'FrameScopeMonitor.exe',
         'FrameScopeProcessSampler.exe',
         'FrameScopeSystemSampler.exe',
-        'Generate-CS2-FrameScope-Interactive-Report.py',
+        'FrameScopeReportGenerator.exe',
+        'FrameScopeUninstaller.exe',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt'
     )) {
@@ -44,14 +65,6 @@ try {
     }
 
     Copy-Item -LiteralPath (Join-Path $root 'tools') -Destination (Join-Path $payloadRoot 'tools') -Recurse -Force
-
-    $pythonRoot = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python'
-    if (-not (Test-Path -LiteralPath (Join-Path $pythonRoot 'python.exe'))) {
-        throw "Portable Python runtime not found: $pythonRoot"
-    }
-    New-Item -ItemType Directory -Path (Join-Path $payloadRoot 'runtime') -Force | Out-Null
-    robocopy $pythonRoot (Join-Path $payloadRoot 'runtime\python') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
-    if ($LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
 
     $payloadZip = Join-Path $sourceRoot 'payload.zip'
     Compress-Archive -Path (Join-Path $payloadRoot '*') -DestinationPath $payloadZip -Force
@@ -65,6 +78,15 @@ try {
         /reference:System.IO.Compression.FileSystem.dll `
         /resource:$payloadZip,FrameScopePayload `
         .\packaging\FrameScopeSetupNative.cs
+
+    $legacyCleanupExe = Join-Path $dist 'FrameScopeMonitor-LegacyCleanup.exe'
+    $distReadme = Join-Path $dist 'README-FrameScopeMonitor.txt'
+    Copy-Item -LiteralPath (Join-Path $root 'FrameScopeLegacyCleanup.exe') -Destination $legacyCleanupExe -Force
+    Copy-Item -LiteralPath (Join-Path $root 'packaging\README-FrameScopeMonitor.txt') -Destination $distReadme -Force
+
+    $releaseZip = Join-Path $dist 'FrameScopeMonitor-Installer.zip'
+    if (Test-Path -LiteralPath $releaseZip) { Remove-Item -LiteralPath $releaseZip -Force }
+    Compress-Archive -LiteralPath @($setupExe, $legacyCleanupExe, $distReadme) -DestinationPath $releaseZip -Force
 
     "Build complete: $setupExe"
 }
