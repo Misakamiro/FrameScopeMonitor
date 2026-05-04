@@ -1,8 +1,8 @@
 {
-  "PollIntervalMs": 500,
+  "PollIntervalMs": 1000,
   "DataRoot": "framescope-runs",
   "OpenReportOnComplete": true,
-  "MonitorScript": "Monitor-CS2-HighFreq.ps1",
+  "MonitorScript": "native-csharp",
   "Targets": [
     {
       "Enabled": true,
@@ -26,6 +26,15 @@
       "Enabled": true,
       "Name": "Neverness To Everness",
       "ProcessName": "HTGame.exe",
+      "SampleIntervalMs": 100,
+      "ProcessSampleIntervalMs": 100,
+      "SlowSampleIntervalMs": 1000,
+      "OpenReportOnComplete": true
+    },
+    {
+      "Enabled": true,
+      "Name": "Valorant",
+      "ProcessName": "VALORANT-Win64-Shipping.exe",
       "SampleIntervalMs": 100,
       "ProcessSampleIntervalMs": 100,
       "SlowSampleIntervalMs": 1000,

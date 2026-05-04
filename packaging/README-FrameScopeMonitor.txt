@@ -1,13 +1,14 @@
 FrameScope Monitor
 
-Install:
-Run Install-FrameScopeMonitor.cmd or FrameScopeMonitor-Setup.exe.
+安装：
+运行 FrameScopeMonitor-Setup.exe。
 
-Installed files:
+安装位置：
 %LOCALAPPDATA%\FrameScopeMonitor
 
-Data and reports:
-By default, monitoring reports are written under the installed app folder's framescope-runs directory.
+数据和报告：
+默认写入 %LOCALAPPDATA%\FrameScopeMonitor\framescope-runs。
 
-Notes:
-The package includes PresentMon and a portable Python runtime, so users do not need to install Python or other extra tools.
+说明：
+监测会话由 FrameScopeMonitor.exe 的原生 C# 模式执行，游戏运行期间不再常驻 PowerShell 监测壳。
+安装包内置 PresentMon 和便携 Python 运行时，用户不需要额外安装依赖。

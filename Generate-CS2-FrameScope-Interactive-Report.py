@@ -10,13 +10,22 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
 import html
 import json
 import math
+import os
+import platform
+import shutil
 import subprocess
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+
+try:
+    import winreg
+except Exception:  # pragma: no cover - Windows-only optional import
+    winreg = None
 
 
 BRAND = "FrameScope"
@@ -103,6 +112,8 @@ def find_latest_run(base_dir: Path) -> Path:
 
 def read_presentmon(path: Path) -> list[tuple[datetime, float]]:
     frames: list[tuple[datetime, float]] = []
+    if not path.exists():
+        return frames
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -157,6 +168,9 @@ def align_presentmon_time(
 
 
 def bucket_fps(frames: list[tuple[datetime, float]], seconds: float = 0.1) -> dict:
+    if not frames:
+        return {"bucketMs": int(seconds * 1000), "t": [], "avg": [], "low1": [], "low01": [], "min": []}
+
     start = frames[0][0]
     buckets: dict[int, list[float]] = defaultdict(list)
     for t, ms in frames:
@@ -178,40 +192,105 @@ def bucket_fps(frames: list[tuple[datetime, float]], seconds: float = 0.1) -> di
 
 
 def load_hardware() -> dict:
-    script = r"""
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed
-$gpu = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA|AMD|Intel' } | Select-Object -First 1 Name,DriverVersion
-$os = Get-CimInstance Win32_OperatingSystem | Select-Object -First 1 Caption,Version,OSArchitecture,TotalVisibleMemorySize
-[pscustomobject]@{
-  CpuName = $cpu.Name
-  CpuCores = $cpu.NumberOfCores
-  CpuThreads = $cpu.NumberOfLogicalProcessors
-  CpuMaxClockMHz = $cpu.MaxClockSpeed
-  GpuName = $gpu.Name
-  GpuDriver = $gpu.DriverVersion
-  OsCaption = $os.Caption
-  OsVersion = $os.Version
-  OsArch = $os.OSArchitecture
-  TotalMemoryMB = [math]::Round($os.TotalVisibleMemorySize / 1024, 0)
-} | ConvertTo-Json -Compress
-"""
-    try:
-        completed = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-            check=False,
+    data: dict[str, object] = {
+        "CpuThreads": os.cpu_count(),
+        "OsCaption": platform.platform(),
+        "OsVersion": platform.version(),
+        "OsArch": platform.machine(),
+    }
+
+    if winreg is not None:
+        def reg_value(root, path: str, name: str) -> object | None:
+            try:
+                with winreg.OpenKey(root, path) as key:
+                    return winreg.QueryValueEx(key, name)[0]
+            except Exception:
+                return None
+
+        cpu_name = reg_value(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            "ProcessorNameString",
         )
-        if completed.returncode == 0 and completed.stdout.strip():
-            return json.loads(completed.stdout)
+        cpu_mhz = reg_value(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            "~MHz",
+        )
+        product_name = reg_value(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "ProductName",
+        )
+        display_version = reg_value(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "DisplayVersion",
+        )
+        build = reg_value(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "CurrentBuildNumber",
+        )
+
+        if cpu_name:
+            data["CpuName"] = str(cpu_name).strip()
+        if cpu_mhz:
+            data["CpuMaxClockMHz"] = cpu_mhz
+        if product_name:
+            suffix = f" {display_version}" if display_version else ""
+            data["OsCaption"] = f"{product_name}{suffix}".strip()
+        if build:
+            data["OsVersion"] = str(build)
+
+    try:
+        class MemoryStatusEx(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        memory = MemoryStatusEx()
+        memory.dwLength = ctypes.sizeof(MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory)):
+            data["TotalMemoryMB"] = round(memory.ullTotalPhys / 1024 / 1024)
     except Exception:
         pass
-    return {}
+
+    nvidia_smi = shutil.which("nvidia-smi.exe") or r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe"
+    if nvidia_smi and Path(nvidia_smi).exists():
+        try:
+            completed = subprocess.run(
+                [
+                    nvidia_smi,
+                    "--query-gpu=name,driver_version",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5,
+                check=False,
+            )
+            line = (completed.stdout or "").splitlines()[0].strip() if completed.stdout else ""
+            if completed.returncode == 0 and line:
+                parts = [part.strip() for part in line.split(",", 1)]
+                if parts:
+                    data["GpuName"] = parts[0]
+                if len(parts) > 1:
+                    data["GpuDriver"] = parts[1]
+        except Exception:
+            pass
+
+    return {key: value for key, value in data.items() if value not in (None, "")}
 
 
 def load_run_metadata(run_dir: Path) -> dict:
@@ -234,12 +313,13 @@ def fmt_duration(seconds: int) -> str:
     return f"{seconds // 60}分{seconds % 60}秒"
 
 
-def read_process_matrix(path: Path, start: datetime) -> tuple[list[float], list[str], list[list[float | None]], list[list[float | None]], list[dict]]:
+def read_process_matrix(
+    path: Path, start: datetime, target_process: str | None = None
+) -> tuple[list[float], list[str], list[list[float | None]], list[list[float | None]], list[dict]]:
     sample_times: list[float] = []
     sample_index_to_pos: dict[str, int] = {}
-    names_seen: set[str] = set()
-    rows_cache: list[tuple[int, str, float | None, float | None]] = []
     stats: dict[str, dict] = {}
+    target_base = Path(target_process or "").stem.lower()
 
     if not path.exists():
         return [], [], [], [], []
@@ -248,7 +328,9 @@ def read_process_matrix(path: Path, start: datetime) -> tuple[list[float], list[
         reader = csv.DictReader(handle)
         for row in reader:
             name = (row.get("ProcessName") or "").strip()
-            if not name or name.lower() == "cs2":
+            if not name:
+                continue
+            if name.lower() == "cs2" or (target_base and name.lower() == target_base):
                 continue
             idx = row.get("SampleIndex", "")
             t = parse_iso_time(row.get("Time", ""))
@@ -260,8 +342,6 @@ def read_process_matrix(path: Path, start: datetime) -> tuple[list[float], list[
             pos = sample_index_to_pos[idx]
             cpu = parse_float(row.get("CpuPct"))
             mem = parse_float(row.get("WorkingSetMB"))
-            names_seen.add(name)
-            rows_cache.append((pos, name, cpu, mem))
 
             item = stats.setdefault(name, {"name": name, "maxCpu": 0.0, "avgCpuSum": 0.0, "cpuSamples": 0, "maxMem": 0.0, "samples": 0})
             item["samples"] += 1
@@ -287,12 +367,24 @@ def read_process_matrix(path: Path, start: datetime) -> tuple[list[float], list[
     n_times = len(sample_times)
     cpu_matrix: list[list[float | None]] = [[None] * n_times for _ in names]
     mem_matrix: list[list[float | None]] = [[None] * n_times for _ in names]
-    for pos, name, cpu, mem in rows_cache:
-        i = name_to_index[name]
-        if cpu is not None:
-            cpu_matrix[i][pos] = rounded(cpu, 2)
-        if mem is not None:
-            mem_matrix[i][pos] = rounded(mem, 1)
+
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            name = (row.get("ProcessName") or "").strip()
+            if name not in name_to_index:
+                continue
+            idx = row.get("SampleIndex", "")
+            pos = sample_index_to_pos.get(idx)
+            if pos is None:
+                continue
+            cpu = parse_float(row.get("CpuPct"))
+            mem = parse_float(row.get("WorkingSetMB"))
+            i = name_to_index[name]
+            if cpu is not None:
+                cpu_matrix[i][pos] = rounded(cpu, 2)
+            if mem is not None:
+                mem_matrix[i][pos] = rounded(mem, 1)
     return sample_times, names, cpu_matrix, mem_matrix, process_stats
 
 
@@ -476,6 +568,10 @@ function setOptions(){
   if(view==="perf") metricSelect.innerHTML = `<option>CPU/GPU 频率</option>`;
   if(view==="system") metricSelect.innerHTML = `<option>系统占用率</option>`;
   if(view==="io") metricSelect.innerHTML = `<option>IO / 功耗 / 温度</option>`;
+  if(view==="fps" && !DATA.notes.frameDataCaptured){
+    viewTitle.textContent="帧率数据未捕获";
+    viewNote.textContent="PresentMon 本次没有写入帧数据；本页只保留系统和后台进程诊断数据，不会作为正常帧率报告自动弹出。";
+  }
 }
 function buildSeries(){
   currentYMax=null;
@@ -632,7 +728,8 @@ def make_html() -> str:
     input { min-width:240px; }
     .chartbox { position:relative; height:560px; border:1px solid rgba(96,147,179,.52); background:#111a24; overflow:hidden; transition: border-color .2s ease, box-shadow .2s ease; }
     .chartbox.switching { border-color: rgba(41,230,255,.82); box-shadow: inset 0 0 18px rgba(41,230,255,.08); }
-    canvas { width:100%; height:100%; display:block; opacity:1; transform:translateY(0); transition: opacity .16s ease, transform .16s ease; }
+    canvas { position:absolute; inset:0; width:100%; height:100%; display:block; opacity:1; transform:translateY(0); transition: opacity .16s ease, transform .16s ease; }
+    #overlay { pointer-events:none; }
     .chartbox.switching canvas { opacity:.46; transform:translateY(5px); }
     .tooltip { position:absolute; pointer-events:none; opacity:0; min-width:260px; max-width:460px; background:rgba(24,33,46,.96); border:1px solid rgba(196,226,241,.25); box-shadow:0 12px 36px rgba(0,0,0,.38); border-radius:5px; padding:10px 12px; font-size:13px; line-height:1.55; white-space:normal; z-index:5; transition: opacity .1s ease, transform .1s ease; }
     .legend { display:flex; gap:10px 12px; flex-wrap:wrap; max-height:76px; overflow:auto; color:#dceef7; font-size:12px; }
@@ -672,13 +769,13 @@ def make_html() -> str:
         <button class="tab" data-view="io">IO/温度</button>
       </div>
     </div>
-    <div class="title"><h2 id="viewTitle">帧率波动</h2><span id="viewNote">数据来自本次完整 CSV，页面使用处理后的矩阵数据绘图。</span></div>
+    <div class="title"><h2 id="viewTitle">帧率波动</h2><span id="viewNote">完整数据保留在本地 data.js，图表按屏幕像素自适应绘制。</span></div>
     <div class="gauges" id="gauges"></div>
     <div class="toolbar">
       <div class="left-tools"><select id="metricSelect"></select><input id="processSearch" placeholder="搜索进程，留空显示全部后台进程"></div>
       <div class="right-tools"><div class="legend" id="legend"></div></div>
     </div>
-    <div class="chartbox" id="chartBox"><canvas id="chart"></canvas><div class="tooltip" id="tooltip"></div></div>
+    <div class="chartbox" id="chartBox"><canvas id="chart"></canvas><canvas id="overlay"></canvas><div class="tooltip" id="tooltip"></div></div>
     <div class="panelgrid">
       <div class="card"><h3>后台进程峰值</h3><div class="rows" id="processRows"></div></div>
       <div class="card"><h3>本次帧率摘要</h3><div class="rows" id="summaryRows"></div></div>
@@ -697,6 +794,8 @@ let ioMetric = "all";
 let processMetric = "cpu";
 const canvas = document.getElementById("chart");
 const ctx = canvas.getContext("2d");
+const overlay = document.getElementById("overlay");
+const octx = overlay.getContext("2d");
 const tooltip = document.getElementById("tooltip");
 const metricSelect = document.getElementById("metricSelect");
 const processSearch = document.getElementById("processSearch");
@@ -709,6 +808,11 @@ let currentSeries = [];
 let currentTimes = [];
 let currentUnit = "";
 let currentYMax = null;
+const renderCache = new Map();
+const yMaxCache = new Map();
+let legendKey = "";
+let hoverFrame = 0;
+let pendingHoverEvent = null;
 
 function esc(v){ return String(v ?? "").replace(/[&<>"']/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch])); }
 function n(v,d=1){ const num=Number(v); return v===null || v===undefined || !Number.isFinite(num) ? "N/A" : num.toFixed(d); }
@@ -716,8 +820,64 @@ function mmss(sec){ sec=Math.max(0,Math.round(Number(sec)||0)); return `${Math.f
 function setText(id,v){ const e=document.getElementById(id); if(e) e.textContent=v; }
 function pct(v){ return Math.max(0,Math.min(100,Number(v)||0)); }
 function maxFinite(arr, fallback=1){ let m=fallback; for(let i=0;i<arr.length;i++){ const v=Number(arr[i]); if(Number.isFinite(v) && v>m) m=v; } return m; }
-function maxSeriesValue(series, fallback=1){ let m=fallback; for(const s of series){ const d=s.data||[]; for(let i=0;i<d.length;i++){ const v=Number(d[i]); if(Number.isFinite(v) && v>m) m=v; } } return m; }
+function seriesMaxValue(s, fallback=1){
+  const d=s.data||[];
+  const key=`${s.key||s.name}|${d.length}|max`;
+  if(yMaxCache.has(key)) return yMaxCache.get(key);
+  let m=fallback;
+  for(let i=0;i<d.length;i++){ const v=Number(d[i]); if(Number.isFinite(v) && v>m) m=v; }
+  yMaxCache.set(key,m);
+  return m;
+}
+function maxSeriesValue(series, fallback=1){ let m=fallback; for(const s of series){ m=Math.max(m, seriesMaxValue(s, fallback)); } return m; }
 function hasAnyValue(arr){ for(let i=0;i<arr.length;i++){ if(Number.isFinite(Number(arr[i]))) return true; } return false; }
+function clearOverlay(){ octx.clearRect(0,0,overlay.width,overlay.height); }
+function getRenderablePoints(series, pixelWidth){
+  const data=series.data||[];
+  const len=Math.min(currentTimes.length, data.length);
+  if(len<=0) return {t:[], y:[]};
+  const widthBucket=Math.max(1,Math.round(pixelWidth));
+  const bucketCount=Math.max(260,Math.ceil(widthBucket*(view==="process" ? .75 : 1.6)));
+  const cacheKey=`${series.key||series.name}|${len}|${widthBucket}|${view}`;
+  if(renderCache.has(cacheKey)) return renderCache.get(cacheKey);
+  if(len<=bucketCount*4){
+    const raw={t:currentTimes, y:data};
+    renderCache.set(cacheKey, raw);
+    return raw;
+  }
+  const t=[], y=[];
+  const step=len/bucketCount;
+  for(let b=0;b<bucketCount;b++){
+    const start=Math.floor(b*step);
+    const end=Math.min(len, Math.max(start+1, Math.floor((b+1)*step)));
+    let first=-1,last=-1,minI=-1,maxI=-1,minV=Infinity,maxV=-Infinity;
+    for(let i=start;i<end;i++){
+      const v=Number(data[i]);
+      if(!Number.isFinite(v)) continue;
+      if(first<0) first=i;
+      last=i;
+      if(v<minV){ minV=v; minI=i; }
+      if(v>maxV){ maxV=v; maxI=i; }
+    }
+    if(first<0){
+      const gap=Math.min(len-1, Math.floor((start+end)/2));
+      t.push(Number(currentTimes[gap])||0); y.push(null);
+      continue;
+    }
+    const indexes=[first,minI,maxI,last].filter((v,i,a)=>v>=0 && a.indexOf(v)===i).sort((a,b)=>a-b);
+    for(const idx of indexes){ t.push(currentTimes[idx]); y.push(data[idx]); }
+  }
+  const result={t,y};
+  renderCache.set(cacheKey,result);
+  return result;
+}
+function updateLegend(){
+  const key=`${view}|${currentUnit}|${currentSeries.map(s=>s.key||s.name).join(";")}`;
+  if(key===legendKey) return;
+  legendKey=key;
+  const shown=currentSeries.slice(0,80).map(s=>`<span><i class="dot" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("");
+  legend.innerHTML=shown + (currentSeries.length>80 ? `<span>另外 ${currentSeries.length-80} 条曲线已绘制</span>` : "");
+}
 function ring(title,value,sub,p,color,foot){
   return `<div class="gauge"><h3>${esc(title)}</h3><div class="ring ${title==="FPS"?"big":""}" style="--p:${pct(p)};--c:${color}"><div><b>${esc(value)}</b><small>${esc(sub)}</small></div></div><div class="foot">${esc(foot||"")}</div></div>`;
 }
@@ -755,14 +915,16 @@ function initStatic(){
   document.getElementById("summaryRows").innerHTML = rows.map(r=>`<div class="row"><span>${esc(r[0])}</span><span>${esc(r[1])}</span><div class="bar"><i style="width:64%"></i></div></div>`).join("");
 }
 function resizeCanvas(){
-  const r=canvas.getBoundingClientRect();
+  const r=chartBox.getBoundingClientRect();
   const d=window.devicePixelRatio || 1;
-  canvas.width=Math.max(1,Math.round(r.width*d));
-  canvas.height=Math.max(1,Math.round(r.height*d));
+  canvas.width=overlay.width=Math.max(1,Math.round(r.width*d));
+  canvas.height=overlay.height=Math.max(1,Math.round(r.height*d));
   ctx.setTransform(d,0,0,d,0,0);
+  octx.setTransform(d,0,0,d,0,0);
+  renderCache.clear();
   draw();
 }
-function chartDims(){ const r=canvas.getBoundingClientRect(); return {w:r.width,h:r.height,pw:r.width-PAD.l-PAD.r,ph:r.height-PAD.t-PAD.b}; }
+function chartDims(){ const r=chartBox.getBoundingClientRect(); return {w:r.width,h:r.height,pw:r.width-PAD.l-PAD.r,ph:r.height-PAD.t-PAD.b}; }
 function visibleProcessIndexes(){
   const q=processSearch.value.trim().toLowerCase();
   const names=DATA.process.names || [];
@@ -797,16 +959,20 @@ function setTitle(){
   if(view==="system"){ viewTitle.textContent="系统占用"; viewNote.textContent="CPU、GPU、显存控制器、内存和显存占用率。"; }
   if(view==="process"){ viewTitle.textContent="后台进程监测"; viewNote.textContent=`${countText}。留空搜索框会绘制全部进程，悬停显示该时间点占用最高的进程。`; }
   if(view==="io"){ viewTitle.textContent="IO / 温度"; viewNote.textContent="磁盘、网络、磁盘延迟、GPU 功耗和温度。"; }
+  if(view==="fps" && !DATA.notes.frameDataCaptured){
+    viewTitle.textContent="帧率数据未捕获";
+    viewNote.textContent="PresentMon 本次没有写入帧数据；本页只保留系统和后台进程诊断数据，不会作为正常帧率报告自动弹出。";
+  }
 }
 function buildSeries(){
   currentYMax=null;
   if(view==="fps"){
     currentTimes=DATA.fps.t || []; currentUnit="FPS";
     const all=[
-      {name:"平均 FPS",color:"#29e6ff",data:DATA.fps.avg || []},
-      {name:"1% Low",color:"#a9ff47",data:DATA.fps.low1 || []},
-      {name:"0.1% Low",color:"#ffd35b",data:DATA.fps.low01 || []},
-      {name:"最低瞬时 FPS",color:"#ff5d7d",data:DATA.fps.min || []},
+      {key:"fps:avg",name:"平均 FPS",color:"#29e6ff",data:DATA.fps.avg || []},
+      {key:"fps:low1",name:"1% Low",color:"#a9ff47",data:DATA.fps.low1 || []},
+      {key:"fps:low01",name:"0.1% Low",color:"#ffd35b",data:DATA.fps.low01 || []},
+      {key:"fps:min",name:"最低瞬时 FPS",color:"#ff5d7d",data:DATA.fps.min || []},
     ];
     const map={avg:0,low1:1,low01:2,min:3};
     currentSeries=fpsMetric==="all" ? all : [all[map[fpsMetric] || 0]];
@@ -815,9 +981,9 @@ function buildSeries(){
   if(view==="perf"){
     currentTimes=DATA.system.t || []; currentUnit="MHz";
     const all=[
-      {name:"CPU 频率",color:"#29e6ff",data:DATA.system.perf.cpuFreq || []},
-      {name:"GPU 频率",color:"#a9ff47",data:DATA.system.perf.gpuClock || []},
-      {name:"显存频率",color:"#ffd35b",data:DATA.system.perf.memClock || []},
+      {key:"perf:cpu",name:"CPU 频率",color:"#29e6ff",data:DATA.system.perf.cpuFreq || []},
+      {key:"perf:gpu",name:"GPU 频率",color:"#a9ff47",data:DATA.system.perf.gpuClock || []},
+      {key:"perf:mem",name:"显存频率",color:"#ffd35b",data:DATA.system.perf.memClock || []},
     ];
     const map={cpu:0,gpu:1,mem:2};
     currentSeries=perfMetric==="all" ? all : [all[map[perfMetric] || 0]];
@@ -826,11 +992,11 @@ function buildSeries(){
   if(view==="system"){
     currentTimes=DATA.system.t || []; currentUnit="%"; currentYMax=100;
     const all=[
-      {name:"CPU 占用",color:"#29e6ff",data:DATA.system.usage.cpu || []},
-      {name:"GPU 占用",color:"#a9ff47",data:DATA.system.usage.gpu || []},
-      {name:"显存控制器",color:"#ffd35b",data:DATA.system.usage.gpuMem || []},
-      {name:"内存占用",color:"#ff5d7d",data:DATA.system.usage.mem || []},
-      {name:"显存占用",color:"#65a7ff",data:DATA.system.usage.vram || []},
+      {key:"system:cpu",name:"CPU 占用",color:"#29e6ff",data:DATA.system.usage.cpu || []},
+      {key:"system:gpu",name:"GPU 占用",color:"#a9ff47",data:DATA.system.usage.gpu || []},
+      {key:"system:gpuMem",name:"显存控制器",color:"#ffd35b",data:DATA.system.usage.gpuMem || []},
+      {key:"system:mem",name:"内存占用",color:"#ff5d7d",data:DATA.system.usage.mem || []},
+      {key:"system:vram",name:"显存占用",color:"#65a7ff",data:DATA.system.usage.vram || []},
     ];
     const map={cpu:0,gpu:1,gpuMem:2,mem:3,vram:4};
     currentSeries=systemMetric==="all" ? all : [all[map[systemMetric] || 0]];
@@ -839,11 +1005,11 @@ function buildSeries(){
   if(view==="io"){
     currentTimes=DATA.system.t || []; currentUnit="混合单位";
     const all=[
-      {name:"磁盘 MB/s",color:"#29e6ff",data:DATA.system.io.disk || []},
-      {name:"网络 MB/s",color:"#a9ff47",data:DATA.system.io.net || []},
-      {name:"磁盘延迟 ms",color:"#ffd35b",data:DATA.system.io.diskLatency || []},
-      {name:"GPU 功耗 W",color:"#ff5d7d",data:DATA.system.io.power || []},
-      {name:"GPU 温度 °C",color:"#65a7ff",data:DATA.system.io.temp || []},
+      {key:"io:disk",name:"磁盘 MB/s",color:"#29e6ff",data:DATA.system.io.disk || []},
+      {key:"io:net",name:"网络 MB/s",color:"#a9ff47",data:DATA.system.io.net || []},
+      {key:"io:latency",name:"磁盘延迟 ms",color:"#ffd35b",data:DATA.system.io.diskLatency || []},
+      {key:"io:power",name:"GPU 功耗 W",color:"#ff5d7d",data:DATA.system.io.power || []},
+      {key:"io:temp",name:"GPU 温度 °C",color:"#65a7ff",data:DATA.system.io.temp || []},
     ];
     if(ioMetric==="diskNet") currentSeries=[all[0],all[1]];
     else if(ioMetric==="diskLatency") currentSeries=[all[2]];
@@ -854,13 +1020,14 @@ function buildSeries(){
   const idxs=visibleProcessIndexes();
   currentTimes=DATA.process.t || []; currentUnit=processMetric==="cpu" ? "CPU %" : "MB";
   const matrix=processMetric==="cpu" ? (DATA.process.cpu || []) : (DATA.process.mem || []);
-  currentSeries=idxs.map((idx,n)=>({name:DATA.process.names[idx],color:COLORS[n%COLORS.length],data:matrix[idx] || []}));
+  currentSeries=idxs.map((idx,n)=>({key:`process:${processMetric}:${idx}`,name:DATA.process.names[idx],color:COLORS[n%COLORS.length],data:matrix[idx] || []}));
 }
 function draw(){
   if(!DATA) return;
   setTitle();
   buildSeries();
   const {w,h,pw,ph}=chartDims();
+  clearOverlay();
   ctx.clearRect(0,0,w,h);
   ctx.fillStyle="#111a24"; ctx.fillRect(0,0,w,h);
   if(!currentTimes.length || !currentSeries.length){
@@ -888,22 +1055,22 @@ function draw(){
   }
   for(let si=0;si<currentSeries.length;si++){
     const s=currentSeries[si];
-    if(!hasAnyValue(s.data)) continue;
+    if(seriesMaxValue(s, -Infinity) === -Infinity) continue;
     const alpha=view==="process" ? (si < 18 ? .72 : .25) : .95;
     ctx.strokeStyle=s.color; ctx.globalAlpha=alpha; ctx.lineWidth=view==="process" ? 1.05 : (si===0?2.8:2);
     ctx.beginPath(); let started=false;
-    const len=Math.min(currentTimes.length, s.data.length);
+    const points=getRenderablePoints(s,pw);
+    const len=Math.min(points.t.length, points.y.length);
     for(let i=0;i<len;i++){
-      const v=s.data[i];
+      const v=points.y[i];
       if(v===null || !Number.isFinite(Number(v))) { started=false; continue; }
-      const xx=x(currentTimes[i]); const yy=y(v);
+      const xx=x(points.t[i]); const yy=y(v);
       if(!started){ ctx.moveTo(xx,yy); started=true; } else ctx.lineTo(xx,yy);
     }
     ctx.stroke(); ctx.globalAlpha=1;
   }
   ctx.strokeStyle="rgba(96,147,179,.78)"; ctx.strokeRect(PAD.l,PAD.t,pw,ph);
-  const shown=currentSeries.slice(0,80).map(s=>`<span><i class="dot" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("");
-  legend.innerHTML=shown + (currentSeries.length>80 ? `<span>另外 ${currentSeries.length-80} 条曲线已绘制</span>` : "");
+  updateLegend();
 }
 function redrawWithTransition(){
   tooltip.style.opacity=0;
@@ -914,20 +1081,32 @@ function redrawWithTransition(){
   }, 90);
 }
 function nearestIndex(times, sec){
-  let best=0, bd=Infinity;
-  for(let i=0;i<times.length;i++){ const d=Math.abs(Number(times[i])-sec); if(d<bd){bd=d;best=i;} }
-  return best;
+  if(!times.length) return 0;
+  if(sec<=Number(times[0])) return 0;
+  let lo=0, hi=times.length-1;
+  if(sec>=Number(times[hi])) return hi;
+  while(hi-lo>1){
+    const mid=(lo+hi)>>1;
+    if(Number(times[mid])<sec) lo=mid; else hi=mid;
+  }
+  return Math.abs(Number(times[lo])-sec)<=Math.abs(Number(times[hi])-sec) ? lo : hi;
+}
+function drawHoverLine(mx){
+  const {ph}=chartDims();
+  clearOverlay();
+  octx.strokeStyle="rgba(255,255,255,.62)";
+  octx.lineWidth=1;
+  octx.beginPath(); octx.moveTo(mx,PAD.t); octx.lineTo(mx,PAD.t+ph); octx.stroke();
 }
 function hover(evt){
   const {pw,ph}=chartDims();
-  const rect=canvas.getBoundingClientRect();
+  const rect=chartBox.getBoundingClientRect();
   const mx=evt.clientX-rect.left; const my=evt.clientY-rect.top;
-  if(mx<PAD.l||mx>PAD.l+pw||my<PAD.t||my>PAD.t+ph){ tooltip.style.opacity=0; draw(); return; }
+  if(mx<PAD.l||mx>PAD.l+pw||my<PAD.t||my>PAD.t+ph){ tooltip.style.opacity=0; clearOverlay(); return; }
   const maxT=maxFinite(currentTimes,1);
   const sec=(mx-PAD.l)/pw*maxT;
   const idx=nearestIndex(currentTimes,sec);
-  draw();
-  ctx.strokeStyle="rgba(255,255,255,.62)"; ctx.beginPath(); ctx.moveTo(mx,PAD.t); ctx.lineTo(mx,PAD.t+ph); ctx.stroke();
+  drawHoverLine(mx);
   let rows=[];
   if(view==="process"){
     for(const s of currentSeries){ const v=s.data[idx]; if(v!==null && Number.isFinite(Number(v))) rows.push({name:s.name,value:v,color:s.color}); }
@@ -940,6 +1119,16 @@ function hover(evt){
   tooltip.style.left=Math.min(rect.width-470,Math.max(8,mx+14))+"px";
   tooltip.style.top=Math.max(8,my+14)+"px";
   tooltip.style.opacity=1;
+}
+function scheduleHover(evt){
+  pendingHoverEvent=evt;
+  if(hoverFrame) return;
+  hoverFrame=window.requestAnimationFrame(()=>{
+    hoverFrame=0;
+    const event=pendingHoverEvent;
+    pendingHoverEvent=null;
+    if(event) hover(event);
+  });
 }
 if(DATA){
   document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",()=>{
@@ -957,9 +1146,9 @@ if(DATA){
     else if(view==="process") processMetric=metricSelect.value;
     redrawWithTransition();
   });
-  processSearch.addEventListener("input",draw);
-  canvas.addEventListener("mousemove",hover);
-  canvas.addEventListener("mouseleave",()=>{tooltip.style.opacity=0; draw();});
+  processSearch.addEventListener("input",()=>{ renderCache.clear(); legendKey=""; draw(); });
+  chartBox.addEventListener("mousemove",scheduleHover);
+  chartBox.addEventListener("mouseleave",()=>{tooltip.style.opacity=0; clearOverlay();});
   window.addEventListener("resize",resizeCanvas);
   initStatic(); setOptions(); resizeCanvas();
 }
@@ -981,9 +1170,13 @@ def main() -> int:
     frames_raw = read_presentmon(run_dir / "presentmon.csv")
     system_rows = read_system(run_dir / "system-samples.csv")
     frames, time_shift = align_presentmon_time(frames_raw, system_rows)
-    if not frames:
-        raise RuntimeError("No frame data found.")
-    start, end = frames[0][0], frames[-1][0]
+
+    if frames:
+        start, end = frames[0][0], frames[-1][0]
+    elif system_rows:
+        start, end = system_rows[0]["time"], system_rows[-1]["time"]
+    else:
+        start = end = datetime.now()
     duration_seconds = max(1, int((end - start).total_seconds()))
 
     hardware = load_hardware()
@@ -994,11 +1187,14 @@ def main() -> int:
         total_memory_mb = max(available_values)
     total_memory_gb = total_memory_mb / 1024 if total_memory_mb else None
 
-    process_times, process_names, process_cpu, process_mem, process_stats = read_process_matrix(run_dir / "process-samples.csv", start)
+    target_process = run_metadata.get("targetProcess") or "cs2.exe"
+    process_times, process_names, process_cpu, process_mem, process_stats = read_process_matrix(
+        run_dir / "process-samples.csv", start, target_process
+    )
     frame_times = [ms for _, ms in frames]
     p99, p999 = percentile_high(frame_times, 0.99), percentile_high(frame_times, 0.999)
     frame_stats = {
-        "average": rounded(1000 / (avg(frame_times) or 1), 2),
+        "average": rounded(1000 / (avg(frame_times) or 1), 2) if frame_times else None,
         "low1": rounded(1000 / p99 if p99 else None, 2),
         "low01": rounded(1000 / p999 if p999 else None, 2),
         "minInstant": rounded(1000 / max(frame_times) if frame_times else None, 3),
@@ -1035,6 +1231,7 @@ def main() -> int:
         "memUsedPctAvg": rounded(mem_used_pct_avg, 2),
     }
 
+    has_frame_data = len(frames) > 0
     data = {
         "brand": BRAND,
         "colors": COLORS,
@@ -1046,18 +1243,19 @@ def main() -> int:
             "timeShiftHours": time_shift,
         },
         "target": {
-            "processName": run_metadata.get("targetProcess") or "cs2.exe",
-            "displayName": run_metadata.get("targetProcess") or "cs2.exe",
+            "processName": target_process,
+            "displayName": target_process,
         },
         "hardware": hardware,
         "hardwareDerived": {"totalMemoryGb": rounded(total_memory_gb, 2), "vramTotalGb": rounded(vram_total_gb, 2)},
-        "counts": {"frames": len(frames), "processSamples": len(process_times), "processes": len(process_names), "systemSamples": len(system_rows)},
+        "counts": {"frames": len(frames), "hasFrameData": has_frame_data, "processSamples": len(process_times), "processes": len(process_names), "systemSamples": len(system_rows)},
         "frameStats": frame_stats,
         "systemStats": system_stats,
         "fps": bucket_fps(frames, 0.1),
         "system": series_from_system(system_rows, start, total_memory_mb),
         "process": {"t": process_times, "names": process_names, "cpu": process_cpu, "mem": process_mem, "stats": process_stats},
         "notes": {
+            "frameDataCaptured": has_frame_data,
             "cpuFrequencyCaptured": any(v is not None for v in series_from_system(system_rows, start, total_memory_mb)["perf"]["cpuFreq"]),
         },
     }
@@ -1070,6 +1268,8 @@ def main() -> int:
         "report": str(html_path),
         "data": str(data_path),
         "frames": len(frames),
+        "hasFrameData": has_frame_data,
+        "reportKind": "full" if has_frame_data else "diagnostic",
         "processes": len(process_names),
         "processSamples": len(process_times),
         "systemSamples": len(system_rows),

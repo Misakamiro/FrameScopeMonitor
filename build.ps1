@@ -36,8 +36,6 @@ try {
         'FrameScopeMonitor.exe',
         'FrameScopeProcessSampler.exe',
         'FrameScopeSystemSampler.exe',
-        'FrameScopeWatcher.ps1',
-        'Monitor-CS2-HighFreq.ps1',
         'Generate-CS2-FrameScope-Interactive-Report.py',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt'
