@@ -5,13 +5,16 @@ framescope-watcher-state.json
 framescope-watcher.log
 game-lite-priority-state.json
 game-lite-watcher.log
-Enter-GameLite.ps1
-Exit-GameLite.ps1
 GameLiteWatcher.ps1
 framescope-runs/
 cs2-monitor-runs/
 script-backups/
 install-backups/
+artifacts/
+backups/
+--run/
+artifacts.error.txt
+修改报告.txt
 
 # Build output and packaged installers
 dist/
@@ -23,6 +26,12 @@ FrameScopeMonitor.exe
 # Python cache
 __pycache__/
 *.pyc
+
+# .NET build output
+bin/
+obj/
+tools/**/bin/
+tools/**/obj/
 
 # Keep bundled PresentMon, ignore other transient executables by default.
 *.exe

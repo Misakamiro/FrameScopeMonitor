@@ -70,6 +70,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 构建脚本会调用 Windows 自带的 .NET Framework 编译器，输出主程序、采样器、原生报告生成器和安装包。
 
+## 项目结构
+
+- `src\app\`：主程序入口、主窗口、页面切换、监听器和监测会话编排。
+- `src\ui\`：UI 主题、卡片、按钮、表格、图表容器、实时页数据读取、报告页 UI。
+- `src\core\`：配置、目标捕获规划、报告生成进度等共享核心逻辑。
+- `src\monitoring\`：进程采样器和系统采样器。
+- `src\diagnostics\`：诊断报告、日志清理、隐私脱敏。
+- `src\reporting\`：HTML 报告生成器。
+- `..\gamelite-auto-lightweight\`：独立的 GameLite 自动轻量化项目；它不参与 FrameScope 主程序构建、采样或报告生成。
+- `packaging\`：安装器、卸载器、旧版清理工具源码。
+- `tools\`：PresentMon、PUBG 模拟器、渲染探针等工具。
+- `tests\`：核心逻辑回归测试和测试重编译脚本。
+
+详细说明见 `docs\FrameScopeMonitor-Project-Overview.md` 和 `docs\modules\*.md`。
+
+## 自动轻量化脚本说明
+
+`..\gamelite-auto-lightweight\` 下的 GameLite 自动轻量化脚本是独立项目，不是 FrameScope Monitor 监测链路的一部分。FrameScope 根目录同名 `.ps1` 只作为兼容 wrapper 保留，用于旧快捷方式、旧 WMI consumer 和手动入口；根目录 `.cmd` 启动器会继续转发参数。
+
+SGuard 压制默认开启，`-AllowSGuardThrottle` 只作为兼容参数保留；需要关闭时使用 `-DisableSGuardThrottle`。GameLite 新自动触发使用 WMI start/stop 事件，不靠长期 PowerShell 轮询监测游戏退出。不要把 SGuard 压制、WMI 触发器安装或移除当作 FrameScope build/test 的前置条件。
+
 ## 核心文件
 
 - `FrameScopeMonitor.exe`：主界面、自动监听器和单次原生监测会话。
@@ -77,6 +98,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 - `FrameScopeSystemSampler.exe`：系统性能采样器。
 - `FrameScopeReportGenerator.exe`：原生 HTML 报告生成器。
 - `tools\PresentMon-2.4.1-x64.exe`：帧时间采集工具。
+
+源码对应：
+
+- `src\app\FrameScopeNativeMonitor.cs`
+- `src\monitoring\FrameScopeProcessSampler.cs`
+- `src\monitoring\FrameScopeSystemSampler.cs`
+- `src\reporting\FrameScopeReportGenerator.cs`
 
 ## 仓库说明
 
