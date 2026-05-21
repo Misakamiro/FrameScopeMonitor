@@ -18,8 +18,8 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
           <span className="mock-ribbon">FrameScope Web UI</span>
           <h2>WebView2 React UI</h2>
           <p>
-            当前 React UI 通过 typed bridge client 接入 C# WebView2 bridge。默认 WinForms 没有被替换；
-            只有显式 `--web-ui` 才进入 WebView2 路径。
+            当前界面是 FrameScope Monitor 的默认界面。React 前端通过 typed bridge client 接入
+            C# WebView2 bridge，所有系统操作仍由本机 C# host 校验和执行。
           </p>
         </div>
       </div>
@@ -31,11 +31,10 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
               <MonitorCheck aria-hidden="true" size={34} />
             </div>
             <div>
-              <h3>Bridge-first interaction</h3>
+              <h3>真实 Bridge 交互</h3>
               <p>
-                `state.snapshot`、`config.get/save`、`processes.refresh`、`reports.*`、`targets.get/save`、
-                `monitor.start/stop`、`diagnostics.generate` 已经按 visible state 接入。普通浏览器预览只使用
-                `mockPreview.ts` 中的集中 mock adapter，并明确显示 mock 标签。
+                state、config、processes、reports、targets、monitor 和 diagnostics
+                已接入真实 WebView2 bridge。普通浏览器预览只使用集中 mock adapter，并会显示 mock 标签。
               </p>
             </div>
           </div>
@@ -46,7 +45,7 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
             title={bridgeState.isMockPreview ? "Mock adapter preview" : "WebView2 bridge live"}
             message={
               bridgeState.isMockPreview
-                ? "当前不是 WebView2 环境，所有系统数据来自集中 mock adapter。"
+                ? "当前不是 WebView2 环境，系统数据来自 mock adapter。"
                 : "当前通过 window.chrome.webview 与 C# bridge 通信。"
             }
           />
@@ -71,20 +70,20 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
         <div className="section-title">
           <div>
             <h3>仍保持 disabled 的边界</h3>
-            <p>这些不是本轮后端 bridge 已承诺的动作，仍不会假装可用。</p>
+            <p>这些动作没有对应的后端语义时不会伪装可用。</p>
           </div>
           <StatusPill tone="warning">disabled</StatusPill>
         </div>
         <div className="scope-grid">
           <EmptyState
             icon={Layers3}
-            title="新增目标和进程选择写入"
-            description="目标保存已接 targets.save；从进程列表新增目标仍保持 disabled，避免前端自行定义写入语义。"
+            title="从进程列表直接新增目标"
+            description="目标保存已接 targets.save；从进程结果一键新增目标仍保持 disabled，避免前端自行定义写入语义。"
           />
           <EmptyState
             icon={Code2}
             title="搜索、通知和打开数据目录"
-            description="顶栏搜索、通知和 Overview 数据目录打开没有本轮对应 request，继续保持 disabled。"
+            description="顶栏搜索、通知和 Overview 数据目录打开没有对应 request 时继续保持 disabled。"
           />
         </div>
       </GlassCard>

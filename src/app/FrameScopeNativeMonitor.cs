@@ -58,31 +58,8 @@ internal static partial class FrameScopeNativeMonitor
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        if (args != null && args.Any(a => a.Equals("--web-ui", StringComparison.OrdinalIgnoreCase)))
-        {
-            Environment.Exit(RunWebUi(args));
-            return;
-        }
-
-        var sidebarScreenshotPath = GetArgValue(args, "--sidebar-screenshot", "");
-        if (!string.IsNullOrWhiteSpace(sidebarScreenshotPath))
-        {
-            CaptureSidebarScreenshot(sidebarScreenshotPath, GetArgValue(args, "--sidebar-active", "live"));
-            return;
-        }
-
-        var config = LoadConfig();
-        BuildUi(config);
-        var uiScreenshotPath = GetArgValue(args, "--ui-screenshot", "");
-        var uiScreenshotPage = GetArgValue(args, "--ui-page", "overview");
-        if (!string.IsNullOrWhiteSpace(uiScreenshotPath))
-        {
-            CaptureUiScreenshot(uiScreenshotPath, uiScreenshotPage);
-            return;
-        }
-        RefreshProcessList();
-        StartWatcher();
-        Application.Run(form);
+        Environment.Exit(RunWebUi(args));
+        return;
     }
 
     private static FrameScopeConfig LoadConfig()

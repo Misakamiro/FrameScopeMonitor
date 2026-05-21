@@ -1,21 +1,33 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.IO;
-using System.Globalization;
 using System.Linq;
 using System.Management;
-using System.Text;
-using System.Threading;
-using System.Web.Script.Serialization;
-using System.Windows.Forms;
-using Microsoft.Win32;
-using System.Runtime.InteropServices;
 
 internal static partial class FrameScopeNativeMonitor
 {
+    private static bool IsWatcherRunning(out int pid)
+    {
+        pid = 0;
+        if (!File.Exists(StatePath)) return false;
+        try
+        {
+            var state = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(StatePath));
+            if (!state.ContainsKey("WatcherPid")) return false;
+            pid = Convert.ToInt32(state["WatcherPid"]);
+            if (pid <= 0) return false;
+            using (Process.GetProcessById(pid))
+            {
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static bool HasFrameScopeBackgroundProcesses()
     {
         return EnumerateFrameScopeBackgroundPids().Count > 0;

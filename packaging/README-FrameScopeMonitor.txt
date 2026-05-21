@@ -1,24 +1,41 @@
-FrameScope Monitor
+FrameScope Monitor 安装说明
 
-安装：
-运行 FrameScopeMonitor-Setup.exe。
-安装时可以选择数据和报告目录。
+本版本默认启动 WebView2 React 新界面。旧 WinForms 主界面已经从主程序构建中移除。
 
-安装位置：
-%LOCALAPPDATA%\FrameScopeMonitor
+安装后直接运行：
 
-数据和报告：
-默认写入 %LOCALAPPDATA%\FrameScopeMonitorData\framescope-runs。
+  FrameScopeMonitor.exe
 
-说明：
-监测会话由 FrameScopeMonitor.exe 的原生 C# 模式执行，游戏运行期间不再常驻 PowerShell 监测壳。
-报告生成由 FrameScopeReportGenerator.exe 的原生 .NET 模式执行，不再调用 Python，也不再打包 Python runtime。
-安装包内置 PresentMon 和所有必需组件，用户不需要额外安装依赖。
+主要文件：
+
+  FrameScopeMonitor.exe
+  FrameScopeProcessSampler.exe
+  FrameScopeSystemSampler.exe
+  FrameScopeReportGenerator.exe
+  Microsoft.Web.WebView2.Core.dll
+  Microsoft.Web.WebView2.WinForms.dll
+  WebView2Loader.dll
+  tools\PresentMon-2.4.1-x64.exe
+  frontend\index.html
+  frontend\assets\*
+
+默认安装目录：
+
+  %LOCALAPPDATA%\FrameScopeMonitor
+
+默认数据目录：
+
+  %LOCALAPPDATA%\FrameScopeMonitorData\framescope-runs
+
+基本流程：
+
+1. 启动 FrameScope Monitor。
+2. 在“监控目标”页确认或保存需要监测的进程目标。
+3. 点击启动监控。
+4. 进入游戏场景。
+5. 停止监控或退出游戏后等待报告生成。
+6. 在“报告”页打开 HTML 报告、报告目录或重新生成报告。
 
 卸载：
-卸载时会询问是否同时删除数据和报告目录；选择“否”会保留历史报告和 CSV 数据。
 
-旧版本完全清理：
-如果用户安装过早期版本并出现 PowerShell/Python 监测残留、快捷方式或卸载入口残留，请单独运行 FrameScopeMonitor-LegacyCleanup.exe。
-该工具会扫描旧进程、旧启动项、计划任务、快捷方式、卸载注册表、旧程序目录，并可删除旧数据和 HTML 报告目录。
-清理日志会写到桌面。
+  运行 Uninstall-FrameScopeMonitor.cmd 或 FrameScopeUninstaller.exe。

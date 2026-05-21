@@ -96,15 +96,12 @@ Invoke-TestBuild `
     )
 
 Invoke-TestBuild `
-    -OutputName 'FrameScopeUiStateTests.exe' `
-    -Sources @('src\ui\FrameScopeUiState.cs', 'src\ui\FrameScopeMotion.cs', 'tests\FrameScopeUiStateTests.cs')
-
-Invoke-TestBuild `
     -OutputName 'FrameScopeWebBridgeTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @(
         'src\core\FrameScopeConfigStore.cs',
-        'src\ui\FrameScopeUiState.cs',
+        'src\core\FrameScopeProcessPicker.cs',
+        'src\core\FrameScopeTargetEditRules.cs',
         'src\app\FrameScopeWebBridge.Contracts.cs',
         'src\app\FrameScopeWebBridge.cs',
         'src\app\FrameScopeWebBridge.State.cs',

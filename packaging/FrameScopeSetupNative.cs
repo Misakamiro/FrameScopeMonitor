@@ -13,7 +13,7 @@ using Microsoft.Win32;
 internal static class FrameScopeSetupNative
 {
     private const string ResourceName = "FrameScopePayload";
-    private const string AppVersion = "1.1.1";
+    private const string AppVersion = "1.1.2";
     private const string Publisher = "Misakamiro";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\FrameScopeMonitor";
     private static InstallerForm form;
