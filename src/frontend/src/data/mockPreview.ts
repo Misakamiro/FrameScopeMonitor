@@ -47,25 +47,25 @@ export const navigationItems: NavigationItem[] = [
   {
     id: "targets",
     label: "目标",
-    description: "进程目标静态预览",
+    description: "选择要监控的游戏进程",
     icon: Activity,
   },
   {
     id: "reports",
     label: "报告",
-    description: "历史报告静态预览",
+    description: "查看和打开性能报告",
     icon: FileStack,
   },
   {
     id: "settings",
     label: "设置",
-    description: "配置表单视觉结构",
+    description: "调整采样与保存选项",
     icon: Settings2,
   },
   {
     id: "about",
     label: "关于",
-    description: "前端边界与版本",
+    description: "连接状态与技术边界",
     icon: Info,
   },
 ];
@@ -277,7 +277,7 @@ const mockConfig: FrameScopeConfig = {
 const mockProcesses: ProcessInfo[] = processPreview.map((process) => ({
   processName: process.name,
   processId: process.pid,
-  windowTitle: process.status === "watching" ? "Mock game window" : "",
+  windowTitle: process.status === "watching" ? "预览窗口" : "",
   displayText: `${process.name}${process.pid ? ` (${process.pid})` : ""}`,
 }));
 
@@ -395,7 +395,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
         const accepted = {
           status: "accepted",
           requestId,
-          message: "Mock process refresh accepted. Browser preview is not reading real processes.",
+          message: "进程刷新请求已接受。浏览器预览不会读取真实系统进程。",
         };
         window.setTimeout(() => {
           const normalizedQuery = query.trim().toLowerCase();
@@ -436,8 +436,8 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
           status,
           message:
             type === "reports.open"
-              ? "Mock preview marked the report open action successful."
-              : "Mock preview marked the directory open action successful.",
+              ? "报告打开操作已在预览中完成。"
+              : "目录打开操作已在预览中完成。",
         } satisfies ReportActionPayload;
         publish({
           type: "event.reportsChanged",
@@ -465,7 +465,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
               runDir: report.runDir,
               reportHtml: report.reportHtml,
               ok: false,
-              message: "Mock report regeneration failed.",
+              message: "预览中的报告重新生成失败。",
               code: "mock_report_regenerate_failed",
             });
             return;
@@ -474,7 +474,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
             reportId: report.reportId,
             runDir: report.runDir,
             reportHtml: report.reportHtml,
-            message: "Mock report regenerated.",
+            message: "预览中的报告已重新生成。",
           });
         }, 360);
         return accepted as TPayload;
@@ -497,7 +497,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
               reportId: report?.reportId ?? "",
               runDir: report?.runDir ?? "mock://framescope-runs",
               ok: false,
-              message: "Mock diagnostics generation failed.",
+              message: "预览中的诊断生成失败。",
               code: "mock_diagnostics_failed",
             });
             return;
@@ -507,7 +507,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
             runDir: report?.runDir ?? "mock://framescope-runs",
             markdownPath: "mock://diagnostics/frame-scope-diagnostic.md",
             jsonPath: "mock://diagnostics/frame-scope-diagnostic.json",
-            message: "Mock diagnostics generated.",
+            message: "预览中的诊断已生成。",
           });
         }, 360);
         return accepted as TPayload;
@@ -523,7 +523,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
                 requestId,
                 type,
                 code: "mock_monitor_action_failed",
-                message: `${type} failed in browser mock preview.`,
+                message: "预览中的监控操作失败。",
               },
               sentAt: new Date().toISOString(),
             });
@@ -536,7 +536,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
               requestId,
               status: monitorRunning ? "monitor.started" : "monitor.stopped",
               action: type,
-              message: monitorRunning ? "Mock monitor started." : "Mock monitor stopped.",
+              message: monitorRunning ? "预览中的监控已启动。" : "预览中的监控已停止。",
               pid: monitorRunning ? 4242 : 0,
             } satisfies StatusEventPayload,
             sentAt: new Date().toISOString(),
@@ -629,7 +629,7 @@ function buildMockReportsPayload(): ReportListPayload {
 function findMockReport(reportId: string): ReportListItem {
   const report = mockReportItems.find((item) => item.reportId === reportId);
   if (!report) {
-    throw new Error("Mock reportId was not found.");
+    throw new Error("预览报告不存在。");
   }
   return { ...report };
 }
@@ -639,7 +639,7 @@ function buildMockAccepted(requestId: string, action: string): LongActionAccepte
     status: "accepted",
     requestId,
     action,
-    message: `${action} accepted by browser mock adapter.`,
+    message: `${action} 请求已接受。`,
   };
 }
 
@@ -698,7 +698,7 @@ function readMockFailureModes() {
 
 function throwIfMockFailure(failureModes: Set<string>, type: BridgeRequestType) {
   if (failureModes.has(type)) {
-    throw new Error(`${type} failed in browser mock preview.`);
+    throw new Error(`${type} 在浏览器预览中失败。`);
   }
 }
 

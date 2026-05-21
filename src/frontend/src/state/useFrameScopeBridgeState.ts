@@ -100,44 +100,44 @@ const emptyOperationState = (message: string): OperationState => ({
   updatedAt: "",
 });
 
-const defaultReportOperationState = emptyOperationState("No report action has been requested.");
+const defaultReportOperationState = emptyOperationState("尚未执行报告操作。");
 
 export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapter): FrameScopeBridgeViewState {
   const adapter = useMemo(() => adapterOverride ?? createFrameScopeBridgeAdapter(), [adapterOverride]);
   const [snapshot, setSnapshot] = useState<LoadState<StateSnapshotPayload>>(
-    emptyLoadState("Snapshot has not been requested yet."),
+    emptyLoadState("尚未读取状态。"),
   );
   const [config, setConfig] = useState<LoadState<ConfigPayload>>(
-    emptyLoadState("Config has not been requested yet."),
+    emptyLoadState("尚未读取设置。"),
   );
   const [reports, setReports] = useState<LoadState<ReportListPayload>>(
-    emptyLoadState("Reports have not been requested yet."),
+    emptyLoadState("尚未读取报告。"),
   );
   const [targets, setTargets] = useState<LoadState<TargetsPayload>>(
-    emptyLoadState("Targets have not been requested yet."),
+    emptyLoadState("尚未读取目标。"),
   );
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [processRefresh, setProcessRefresh] = useState<OperationState>(
-    emptyOperationState("Process refresh has not been requested yet."),
+    emptyOperationState("尚未刷新进程。"),
   );
   const [configSave, setConfigSave] = useState<OperationState>(
-    emptyOperationState("No config changes have been saved in this session."),
+    emptyOperationState("本次会话尚未保存设置修改。"),
   );
   const [targetsSave, setTargetsSave] = useState<OperationState>(
-    emptyOperationState("No target changes have been saved in this session."),
+    emptyOperationState("本次会话尚未保存目标修改。"),
   );
   const [monitorAction, setMonitorAction] = useState<OperationState>(
-    emptyOperationState("Monitor start/stop has not been requested yet."),
+    emptyOperationState("尚未启动或停止监控。"),
   );
   const [monitorRuntime, setMonitorRuntime] = useState<MonitorRuntimeState>({
     running: null,
     pid: 0,
-    message: "Waiting for state.snapshot or event.status.",
+    message: "正在等待监控状态。",
     updatedAt: "",
   });
   const [reportOperations, setReportOperations] = useState<Record<string, OperationState>>({});
   const [diagnosticsGenerate, setDiagnosticsGenerate] = useState<OperationState>(
-    emptyOperationState("Diagnostics generation has not been requested yet."),
+    emptyOperationState("尚未生成诊断。"),
   );
   const [diagnosticsResult, setDiagnosticsResult] = useState<ReportProgressEventPayload | null>(null);
   const [lastStatusEvent, setLastStatusEvent] = useState<StatusEventPayload | null>(null);
@@ -191,7 +191,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     setSnapshot((current) => ({
       ...current,
       status: "loading",
-      message: "Loading bridge snapshot.",
+      message: "正在读取监控状态。",
       error: "",
     }));
     try {
@@ -199,21 +199,21 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setSnapshot({
         status: "success",
         data,
-        message: "Snapshot loaded from bridge.",
+        message: "监控状态已读取。",
         error: "",
         updatedAt: new Date().toISOString(),
       });
       setMonitorRuntime({
         running: data.watcher.running,
         pid: data.watcher.pid,
-        message: data.watcher.running ? "Watcher is running according to state.snapshot." : "Watcher is stopped according to state.snapshot.",
+        message: data.watcher.running ? "监控服务正在运行。" : "监控服务未启动。",
         updatedAt: data.generatedAt || new Date().toISOString(),
       });
     } catch (error) {
       setSnapshot((current) => ({
         ...current,
         status: "error",
-        message: "Snapshot load failed.",
+        message: "监控状态读取失败。",
         error: getErrorMessage(error),
         updatedAt: new Date().toISOString(),
       }));
@@ -224,7 +224,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     setConfig((current) => ({
       ...current,
       status: "loading",
-      message: "Loading FrameScope config.",
+      message: "正在读取应用设置。",
       error: "",
     }));
     try {
@@ -232,7 +232,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setConfig({
         status: "success",
         data,
-        message: "Config loaded from bridge.",
+        message: "应用设置已读取。",
         error: "",
         updatedAt: new Date().toISOString(),
       });
@@ -240,7 +240,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setConfig((current) => ({
         ...current,
         status: "error",
-        message: "Config load failed.",
+        message: "应用设置读取失败。",
         error: getErrorMessage(error),
         updatedAt: new Date().toISOString(),
       }));
@@ -251,7 +251,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     setReports((current) => ({
       ...current,
       status: "loading",
-      message: "Loading reports from bridge.",
+      message: "正在读取报告列表。",
       error: "",
     }));
     try {
@@ -259,7 +259,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setReports({
         status: "success",
         data,
-        message: `Reports loaded. ${data.count} entries returned.`,
+        message: `已读取 ${data.count} 条报告。`,
         error: "",
         updatedAt: new Date().toISOString(),
       });
@@ -267,7 +267,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setReports((current) => ({
         ...current,
         status: "error",
-        message: "Reports load failed.",
+        message: "报告列表读取失败。",
         error: getErrorMessage(error),
         updatedAt: new Date().toISOString(),
       }));
@@ -278,7 +278,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     setTargets((current) => ({
       ...current,
       status: "loading",
-      message: "Loading targets from bridge.",
+      message: "正在读取监控目标。",
       error: "",
     }));
     try {
@@ -286,7 +286,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setTargets({
         status: "success",
         data,
-        message: `Targets loaded. ${data.targetCount} entries returned.`,
+        message: `已读取 ${data.targetCount} 个目标。`,
         error: "",
         updatedAt: new Date().toISOString(),
       });
@@ -294,7 +294,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setTargets((current) => ({
         ...current,
         status: "error",
-        message: "Targets load failed.",
+        message: "监控目标读取失败。",
         error: getErrorMessage(error),
         updatedAt: new Date().toISOString(),
       }));
@@ -306,7 +306,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       clearProcessEventTimeout();
       setProcessRefresh({
         status: "loading",
-        message: "Requesting process refresh.",
+        message: "正在请求刷新进程。",
         error: "",
         requestId: "",
         updatedAt: new Date().toISOString(),
@@ -332,8 +332,8 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           if (latestProcessRequestId.current !== accepted.requestId) return;
           setProcessRefresh({
             status: "error",
-            message: "Process refresh accepted but no result event arrived.",
-            error: "Timed out waiting for event.processesRefreshed.",
+            message: "进程刷新超时。",
+            error: "等待进程列表返回超时。",
             requestId: accepted.requestId,
             updatedAt: new Date().toISOString(),
           });
@@ -341,7 +341,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       } catch (error) {
         setProcessRefresh({
           status: "error",
-          message: "Process refresh failed.",
+          message: "进程刷新失败。",
           error: getErrorMessage(error),
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
@@ -355,7 +355,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     async (nextConfig: FrameScopeConfig) => {
       setConfigSave({
         status: "loading",
-        message: "Saving FrameScope config.",
+        message: "正在保存应用设置。",
         error: "",
         requestId: "",
         updatedAt: new Date().toISOString(),
@@ -370,13 +370,13 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setConfig({
           status: "success",
           data,
-          message: "Config saved and reloaded from bridge.",
+          message: "应用设置已保存并重新读取。",
           error: "",
           updatedAt: new Date().toISOString(),
         });
         setConfigSave({
           status: "success",
-          message: "Config saved.",
+          message: "应用设置已保存。",
           error: "",
           requestId: "",
           updatedAt: new Date().toISOString(),
@@ -387,7 +387,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       } catch (error) {
         setConfigSave({
           status: "error",
-          message: "Config save failed.",
+          message: "应用设置保存失败。",
           error: getErrorMessage(error),
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
@@ -406,7 +406,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     }) => {
       setTargetsSave({
         status: "loading",
-        message: "Saving target configuration.",
+        message: "正在保存目标设置。",
         error: "",
         requestId: "",
         updatedAt: new Date().toISOString(),
@@ -425,13 +425,13 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setTargets({
           status: "success",
           data,
-          message: "Targets saved and reloaded from bridge.",
+          message: "目标设置已保存并重新读取。",
           error: "",
           updatedAt: new Date().toISOString(),
         });
         setTargetsSave({
           status: "success",
-          message: "Targets saved.",
+          message: "目标设置已保存。",
           error: "",
           requestId: "",
           updatedAt: new Date().toISOString(),
@@ -442,7 +442,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       } catch (error) {
         setTargetsSave({
           status: "error",
-          message: "Target save failed.",
+          message: "目标设置保存失败。",
           error: getErrorMessage(error),
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
@@ -458,7 +458,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     clearMonitorEventTimeout();
     setMonitorAction({
       status: "loading",
-      message: "Requesting monitor.start.",
+      message: "正在启动监控。",
       error: "",
       requestId: "",
       updatedAt: new Date().toISOString(),
@@ -477,8 +477,8 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         if (latestMonitorRequestId.current !== accepted.requestId) return;
         setMonitorAction({
           status: "error",
-          message: "monitor.start accepted but no status event arrived.",
-          error: "Timed out waiting for event.status.",
+          message: "启动监控超时。",
+          error: "等待监控启动状态超时。",
           requestId: accepted.requestId,
           updatedAt: new Date().toISOString(),
         });
@@ -486,7 +486,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     } catch (error) {
       setMonitorAction({
         status: "error",
-        message: "monitor.start failed.",
+        message: "启动监控失败。",
         error: getErrorMessage(error),
         requestId: error instanceof BridgeRequestError ? error.requestId : "",
         updatedAt: new Date().toISOString(),
@@ -499,7 +499,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     clearMonitorEventTimeout();
     setMonitorAction({
       status: "loading",
-      message: "Requesting monitor.stop.",
+      message: "正在停止监控。",
       error: "",
       requestId: "",
       updatedAt: new Date().toISOString(),
@@ -518,8 +518,8 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         if (latestMonitorRequestId.current !== accepted.requestId) return;
         setMonitorAction({
           status: "error",
-          message: "monitor.stop accepted but no status event arrived.",
-          error: "Timed out waiting for event.status.",
+          message: "停止监控超时。",
+          error: "等待监控停止状态超时。",
           requestId: accepted.requestId,
           updatedAt: new Date().toISOString(),
         });
@@ -527,7 +527,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     } catch (error) {
       setMonitorAction({
         status: "error",
-        message: "monitor.stop failed.",
+        message: "停止监控失败。",
         error: getErrorMessage(error),
         requestId: error instanceof BridgeRequestError ? error.requestId : "",
         updatedAt: new Date().toISOString(),
@@ -540,7 +540,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       if (!reportId) return null;
       setReportOperation(kind, reportId, {
         status: "loading",
-        message: requestType === "reports.open" ? "Opening report through host." : "Opening run directory through host.",
+        message: requestType === "reports.open" ? "正在打开报告。" : "正在打开报告目录。",
         error: "",
         requestId: "",
         updatedAt: new Date().toISOString(),
@@ -549,7 +549,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         const data = await adapter.request<ReportActionPayload>(requestType, { reportId }, { timeoutMs: 10000 });
         setReportOperation(kind, reportId, {
           status: "success",
-          message: data.message || "Report action completed.",
+          message: data.message || "报告操作已完成。",
           error: "",
           requestId: "",
           updatedAt: new Date().toISOString(),
@@ -559,7 +559,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       } catch (error) {
         setReportOperation(kind, reportId, {
           status: "error",
-          message: "Report action failed.",
+          message: "报告操作失败。",
           error: getErrorMessage(error),
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
@@ -587,7 +587,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       if (reportOperations[key]?.status === "loading") return;
       setReportOperation("regenerate", reportId, {
         status: "loading",
-        message: "Requesting reports.regenerate.",
+        message: "正在请求重新生成报告。",
         error: "",
         requestId: "",
         updatedAt: new Date().toISOString(),
@@ -611,8 +611,8 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           setTimeout(() => {
             setReportOperation("regenerate", reportId, {
               status: "error",
-              message: "reports.regenerate accepted but no progress event arrived.",
-              error: "Timed out waiting for event.reportProgress.",
+              message: "重新生成报告超时。",
+              error: "等待报告生成进度超时。",
               requestId: accepted.requestId,
               updatedAt: new Date().toISOString(),
             });
@@ -622,7 +622,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       } catch (error) {
         setReportOperation("regenerate", reportId, {
           status: "error",
-          message: "reports.regenerate failed.",
+          message: "重新生成报告失败。",
           error: getErrorMessage(error),
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
@@ -638,7 +638,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       clearDiagnosticsEventTimeout();
       setDiagnosticsGenerate({
         status: "loading",
-        message: "Requesting diagnostics.generate.",
+        message: "正在请求生成诊断。",
         error: "",
         requestId: "",
         updatedAt: new Date().toISOString(),
@@ -662,16 +662,16 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           if (latestDiagnosticsRequestId.current !== accepted.requestId) return;
           setDiagnosticsGenerate({
             status: "error",
-            message: "diagnostics.generate accepted but no progress event arrived.",
-            error: "Timed out waiting for event.reportProgress.",
+            message: "生成诊断超时。",
+            error: "等待诊断生成进度超时。",
             requestId: accepted.requestId,
             updatedAt: new Date().toISOString(),
           });
         }, 30000);
       } catch (error) {
         setDiagnosticsGenerate({
-          status: "error",
-          message: "diagnostics.generate failed.",
+        status: "error",
+          message: "诊断生成失败。",
           error: getErrorMessage(error),
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
@@ -697,7 +697,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setProcesses(event.payload.processes);
         setProcessRefresh({
           status: "success",
-          message: `Process refresh completed. ${event.payload.count} processes returned.`,
+          message: `进程列表已刷新，共 ${event.payload.count} 个进程。`,
           error: "",
           requestId: event.payload.requestId,
           updatedAt: event.payload.refreshedAt || new Date().toISOString(),
@@ -711,7 +711,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       if (payload.status === "monitor.starting" || payload.status === "monitor.stopping" || payload.status === "monitor.in_flight") {
         setMonitorAction({
           status: "loading",
-          message: payload.message || `${payload.status}.`,
+          message: payload.message || "监控操作正在执行。",
           error: "",
           requestId: payload.requestId || latestMonitorRequestId.current,
           updatedAt: new Date().toISOString(),
@@ -723,7 +723,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
         setMonitorAction({
           status: "success",
-          message: payload.message || "Monitor started.",
+          message: payload.message || "监控已启动。",
           error: "",
           requestId: latestMonitorRequestId.current,
           updatedAt: new Date().toISOString(),
@@ -731,7 +731,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setMonitorRuntime({
           running: true,
           pid: readNumericPayload(payload, "pid"),
-          message: payload.message || "Monitor started.",
+          message: payload.message || "监控已启动。",
           updatedAt: new Date().toISOString(),
         });
         void refreshSnapshot();
@@ -742,7 +742,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
         setMonitorAction({
           status: "success",
-          message: payload.message || "Monitor stopped.",
+          message: payload.message || "监控已停止。",
           error: "",
           requestId: latestMonitorRequestId.current,
           updatedAt: new Date().toISOString(),
@@ -750,7 +750,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setMonitorRuntime({
           running: false,
           pid: 0,
-          message: payload.message || "Monitor stopped.",
+          message: payload.message || "监控已停止。",
           updatedAt: new Date().toISOString(),
         });
         void refreshSnapshot();
@@ -768,7 +768,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
             setDiagnosticsResult(payload);
             setDiagnosticsGenerate({
               status: "success",
-              message: payload.message || "Diagnostics generated.",
+              message: payload.message || "诊断已生成。",
               error: "",
               requestId,
               updatedAt: new Date().toISOString(),
@@ -777,15 +777,15 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
             clearDiagnosticsEventTimeout();
             setDiagnosticsGenerate({
               status: "error",
-              message: payload.message || "Diagnostics generation failed.",
-              error: payload.message || "diagnostics.generate failed.",
+              message: payload.message || "诊断生成失败。",
+              error: payload.message || "诊断生成失败。",
               requestId,
               updatedAt: new Date().toISOString(),
             });
           } else {
             setDiagnosticsGenerate({
               status: "loading",
-              message: payload.message || "Diagnostics generation is running.",
+              message: payload.message || "诊断正在生成。",
               error: "",
               requestId,
               updatedAt: new Date().toISOString(),
@@ -800,7 +800,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           clearReportEventTimeout(requestId);
           setReportOperation(reportAction.kind, reportAction.reportId, {
             status: "success",
-            message: payload.message || "Report action completed.",
+            message: payload.message || "报告操作已完成。",
             error: "",
             requestId,
             updatedAt: new Date().toISOString(),
@@ -811,8 +811,8 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           clearReportEventTimeout(requestId);
           setReportOperation(reportAction.kind, reportAction.reportId, {
             status: "error",
-            message: payload.message || "Report action failed.",
-            error: payload.message || "Report action failed.",
+            message: payload.message || "报告操作失败。",
+            error: payload.message || "报告操作失败。",
             requestId,
             updatedAt: new Date().toISOString(),
           });
@@ -820,7 +820,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         } else {
           setReportOperation(reportAction.kind, reportAction.reportId, {
             status: "loading",
-            message: payload.message || "Report action is running.",
+            message: payload.message || "报告操作正在执行。",
             error: "",
             requestId,
             updatedAt: new Date().toISOString(),
@@ -839,7 +839,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         clearProcessEventTimeout();
         setProcessRefresh({
           status: "error",
-          message: "Process refresh failed.",
+          message: "进程刷新失败。",
           error: payload.message,
           requestId: payload.requestId,
           updatedAt: new Date().toISOString(),
@@ -850,7 +850,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         clearMonitorEventTimeout();
         setMonitorAction({
           status: "error",
-          message: "Monitor action failed.",
+          message: "监控操作失败。",
           error: payload.message,
           requestId: payload.requestId,
           updatedAt: new Date().toISOString(),
@@ -861,7 +861,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         clearDiagnosticsEventTimeout();
         setDiagnosticsGenerate({
           status: "error",
-          message: "Diagnostics generation failed.",
+          message: "诊断生成失败。",
           error: payload.message,
           requestId: payload.requestId,
           updatedAt: new Date().toISOString(),
@@ -873,7 +873,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         clearReportEventTimeout(payload.requestId);
         setReportOperation(reportAction.kind, reportAction.reportId, {
           status: "error",
-          message: "Report action failed.",
+          message: "报告操作失败。",
           error: payload.message,
           requestId: payload.requestId,
           updatedAt: new Date().toISOString(),
@@ -959,7 +959,7 @@ function readNumericPayload(payload: StatusEventPayload, key: string) {
 function getErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  return "Unknown bridge error.";
+  return "未知错误。";
 }
 
 async function withMinimumDelay<TValue>(promise: Promise<TValue>, minimumMs: number) {

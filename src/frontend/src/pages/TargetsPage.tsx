@@ -1,4 +1,4 @@
-import { Plus, RefreshCw, RotateCcw, Save } from "lucide-react";
+import { RefreshCw, RotateCcw, Save } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { FrameScopeTargetConfig } from "../bridge/contract";
 import { Button } from "../components/Button";
@@ -6,7 +6,7 @@ import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { InlineStatus } from "../components/InlineStatus";
 import { StatusPill } from "../components/StatusPill";
-import type { FrameScopeBridgeViewState } from "../state/useFrameScopeBridgeState";
+import type { AsyncStatus, FrameScopeBridgeViewState } from "../state/useFrameScopeBridgeState";
 import "./pages.css";
 
 interface TargetsPageProps {
@@ -22,6 +22,7 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
   const loadedTargetsPayload = bridgeState.targets.data;
   const refreshBusy = bridgeState.processRefresh.status === "loading";
   const saveBusy = bridgeState.targetsSave.status === "loading";
+  const smokeProcessRefreshState = bridgeState.processRefresh.status === "success" ? "Process refresh completed" : "";
 
   useEffect(() => {
     if (!loadedTargetsPayload) return;
@@ -83,14 +84,9 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
     <section className="page targets-page" data-smoke-page="targets">
       <div className="page__header">
         <div>
-          <span className="mock-ribbon">
-            {bridgeState.isMockPreview ? "mock targets adapter" : "real targets.get/save"}
-          </span>
+          <span className="mode-ribbon">{bridgeState.isMockPreview ? "界面预览" : "本机数据"}</span>
           <h2>监控目标</h2>
-          <p>
-            目标配置来自 `targets.get`。保存只发送 editable targets、dataRoot 和 openReportOnComplete；
-            不向后端传 config path，失败时保留当前表单输入。
-          </p>
+          <p>选择需要监控的游戏进程，设置采样间隔和报告打开方式。保存失败时，当前输入会保留在页面上。</p>
         </div>
         <div className="page__actions">
           <Button
@@ -114,9 +110,6 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
           >
             {saveBusy ? "保存中" : dirty ? "保存目标" : "无修改"}
           </Button>
-          <Button icon={Plus} variant="secondary" disabled>
-            新增目标待接入
-          </Button>
         </div>
       </div>
 
@@ -124,25 +117,25 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
         <GlassCard className="split-grid__main">
           <div className="section-title">
             <div>
-              <h3>真实目标配置</h3>
-              <p>表单由 `targets.get` 返回值初始化；保存失败不会清空本地草稿。</p>
+              <h3>目标列表</h3>
+              <p>启用开关决定启动监控时是否采样；进程名需要和系统里的进程一致。</p>
             </div>
             <StatusPill tone={dirty ? "warning" : bridgeState.targets.status === "success" ? "success" : "diagnostics"}>
-              {dirty ? "dirty" : bridgeState.targets.status}
+              {dirty ? "未保存" : targetStatusLabel(bridgeState.targets.status)}
             </StatusPill>
           </div>
 
           {bridgeState.targets.status === "error" ? (
             <InlineStatus tone="danger" title="目标读取失败" message={bridgeState.targets.error} />
           ) : bridgeState.targets.status === "loading" ? (
-            <InlineStatus tone="diagnostics" title="正在读取目标" message="等待 targets.get 返回。" busy />
+            <InlineStatus tone="diagnostics" title="正在读取目标" message="正在加载已保存的目标配置。" busy />
           ) : null}
 
           {draftTargets.length > 0 ? (
             <>
               <div className="target-root-editor">
                 <label>
-                  <span>Data root</span>
+                  <span>数据保存位置</span>
                   <input
                     value={draftDataRoot}
                     onChange={(event) => setDraftDataRoot(event.target.value)}
@@ -160,12 +153,12 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
                 </label>
               </div>
 
-              <div className="target-table target-table--editable" role="table" aria-label="FrameScope target config">
+              <div className="target-table target-table--editable" role="table" aria-label="监控目标配置">
                 <div className="target-table__head" role="row">
                   <span>启用</span>
                   <span>游戏</span>
                   <span>进程</span>
-                  <span>采样</span>
+                  <span>间隔(ms)</span>
                   <span>报告</span>
                 </div>
                 {draftTargets.map((target, index) => (
@@ -216,8 +209,8 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
           ) : (
             <EmptyState
               icon={Save}
-              title="暂无配置目标"
-              description={bridgeState.targets.error || "targets.get 尚未返回目标列表。"}
+              title="暂无目标"
+              description={bridgeState.targets.error || "点击重新加载后，这里会显示当前保存的监控目标。"}
               actionLabel="等待目标"
             />
           )}
@@ -245,7 +238,7 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
                       ? "有未保存目标修改"
                       : "目标配置已同步"
             }
-            message={bridgeState.targetsSave.error || bridgeState.targetsSave.message}
+            message={targetSaveMessage(bridgeState.targetsSave.status, bridgeState.targetsSave.error, bridgeState.targetsSave.message)}
             busy={saveBusy}
           />
 
@@ -256,7 +249,7 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="例如 TslGame 或 VALORANT"
-                aria-label="Process refresh query"
+                aria-label="进程过滤关键字"
               />
             </label>
             <Button
@@ -277,18 +270,27 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
                     : "diagnostics"
               }
               title="刷新进程状态"
-              message={bridgeState.processRefresh.error || bridgeState.processRefresh.message}
+              message={processRefreshMessage(
+                bridgeState.processRefresh.status,
+                bridgeState.processRefresh.error,
+                bridgeState.processRefresh.message,
+              )}
               busy={refreshBusy}
             />
+            {smokeProcessRefreshState ? (
+              <span className="sr-only" data-smoke-state="process-refresh">
+                {smokeProcessRefreshState}
+              </span>
+            ) : null}
           </div>
 
           {bridgeState.processes.length > 0 ? (
-            <div className="process-result-list" aria-label="Refreshed process list">
+            <div className="process-result-list" aria-label="刷新后的进程列表">
               {bridgeState.processes.map((process) => (
                 <div className="process-result-row" key={`${process.processName}-${process.processId}`}>
                   <div>
                     <strong>{process.processName}</strong>
-                    <small>{process.windowTitle || process.displayText || "No window title"}</small>
+                    <small>{process.windowTitle || process.displayText || "无窗口标题"}</small>
                   </div>
                   <span>PID {process.processId}</span>
                 </div>
@@ -298,7 +300,7 @@ export function TargetsPage({ bridgeState }: TargetsPageProps) {
             <EmptyState
               icon={RefreshCw}
               title="尚未返回进程列表"
-              description="点击刷新进程后，这里会显示 event.processesRefreshed 推送的真实列表或合理空状态。"
+              description="点击刷新进程后，这里会显示匹配到的进程。空列表表示暂时没有找到。"
               actionLabel="非阻塞刷新"
             />
           )}
@@ -323,4 +325,25 @@ function serializeTargets(
   openReportOnComplete: boolean,
 ) {
   return JSON.stringify({ targets, dataRoot, openReportOnComplete });
+}
+
+function targetStatusLabel(status: AsyncStatus) {
+  if (status === "loading") return "读取中";
+  if (status === "success") return "已同步";
+  if (status === "error") return "读取失败";
+  return "未读取";
+}
+
+function targetSaveMessage(status: AsyncStatus, error: string, message: string) {
+  if (status === "error") return error || "保存失败，请检查目标配置后重试。";
+  if (status === "loading") return "正在保存当前目标设置。";
+  if (status === "success") return "目标设置已保存。";
+  return message || "修改目标后，点击保存目标写入配置。";
+}
+
+function processRefreshMessage(status: AsyncStatus, error: string, message: string) {
+  if (status === "error") return error || "进程刷新失败，请稍后重试。";
+  if (status === "loading") return "正在读取当前运行的进程。";
+  if (status === "success") return "进程列表已刷新。";
+  return message || "用于确认游戏进程名称是否填写正确。";
 }

@@ -15,11 +15,10 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
     <section className="page about-page" data-smoke-page="about">
       <div className="page__header">
         <div>
-          <span className="mock-ribbon">FrameScope Web UI</span>
-          <h2>WebView2 React UI</h2>
+          <span className="mode-ribbon">技术说明</span>
+          <h2>关于 FrameScope Web UI</h2>
           <p>
-            当前界面是 FrameScope Monitor 的默认界面。React 前端通过 typed bridge client 接入
-            C# WebView2 bridge，所有系统操作仍由本机 C# host 校验和执行。
+            这里集中说明界面运行环境、WebView2 bridge 边界和仍未接入的功能，避免主流程页面被技术细节打断。
           </p>
         </div>
       </div>
@@ -31,10 +30,9 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
               <MonitorCheck aria-hidden="true" size={34} />
             </div>
             <div>
-              <h3>真实 Bridge 交互</h3>
+              <h3>本机宿主负责真实操作</h3>
               <p>
-                state、config、processes、reports、targets、monitor 和 diagnostics
-                已接入真实 WebView2 bridge。普通浏览器预览只使用集中 mock adapter，并会显示 mock 标签。
+                React 只负责展示和收集用户输入。启动监控、保存配置、打开报告、读取进程等系统操作仍由 C# host 校验和执行。
               </p>
             </div>
           </div>
@@ -42,25 +40,25 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
         <GlassCard>
           <InlineStatus
             tone={bridgeState.isMockPreview ? "diagnostics" : "success"}
-            title={bridgeState.isMockPreview ? "Mock adapter preview" : "WebView2 bridge live"}
+            title={bridgeState.isMockPreview ? "浏览器预览模式" : "WebView2 实时连接"}
             message={
               bridgeState.isMockPreview
-                ? "当前不是 WebView2 环境，系统数据来自 mock adapter。"
-                : "当前通过 window.chrome.webview 与 C# bridge 通信。"
+                ? "当前不在 WebView2 宿主中，页面只使用 mock adapter 预览状态。"
+                : "当前通过 window.chrome.webview 与 C# WebView2 bridge 通信。"
             }
           />
           <div className="about-list">
             <span>
               <Layers3 aria-hidden="true" size={16} />
-              Contract types in src/frontend/src/bridge/contract.ts
+              请求与响应类型集中在 src/frontend/src/bridge/contract.ts
             </span>
             <span>
               <Code2 aria-hidden="true" size={16} />
-              Request timeout and event subscriptions in webviewBridge.ts
+              requestId、超时和事件订阅由 webviewBridge.ts 管理
             </span>
             <span>
               <MonitorCheck aria-hidden="true" size={16} />
-              Local loading, success, and failure feedback
+              主流程页面只显示用户需要的加载、成功和失败反馈
             </span>
           </div>
         </GlassCard>
@@ -69,21 +67,21 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
       <GlassCard>
         <div className="section-title">
           <div>
-            <h3>仍保持 disabled 的边界</h3>
-            <p>这些动作没有对应的后端语义时不会伪装可用。</p>
+            <h3>仍未伪装的功能边界</h3>
+            <p>没有明确后端语义的动作不会做成可点击的假功能。</p>
           </div>
-          <StatusPill tone="warning">disabled</StatusPill>
+          <StatusPill tone="warning">未接入</StatusPill>
         </div>
         <div className="scope-grid">
           <EmptyState
             icon={Layers3}
             title="从进程列表直接新增目标"
-            description="目标保存已接 targets.save；从进程结果一键新增目标仍保持 disabled，避免前端自行定义写入语义。"
+            description="目标保存已经有明确接口；从进程结果一键新增目标还没有确认写入规则，因此不在主流程里放假按钮。"
           />
           <EmptyState
             icon={Code2}
-            title="搜索、通知和打开数据目录"
-            description="顶栏搜索、通知和 Overview 数据目录打开没有对应 request 时继续保持 disabled。"
+            title="搜索、通知和数据目录快捷入口"
+            description="这些快捷入口还没有完整语义时不会占据顶栏位置。需要接入时，应先补齐真实行为再进入主界面。"
           />
         </div>
       </GlassCard>

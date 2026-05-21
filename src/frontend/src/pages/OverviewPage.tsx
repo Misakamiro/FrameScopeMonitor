@@ -1,4 +1,4 @@
-import { FolderOpen, Play, RefreshCw, ShieldAlert, Square } from "lucide-react";
+import { Clock3, Play, RefreshCw, ShieldAlert, Square, Target } from "lucide-react";
 import { Button } from "../components/Button";
 import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
@@ -14,21 +14,20 @@ interface OverviewPageProps {
 }
 
 export function OverviewPage({ bridgeState }: OverviewPageProps) {
-  const { snapshot, config, environment, isMockPreview, refreshSnapshot } = bridgeState;
-  const metrics = buildOverviewMetrics(bridgeState);
+  const { snapshot, config, isMockPreview, refreshSnapshot } = bridgeState;
   const monitorBusy = bridgeState.monitorAction.status === "loading";
   const monitorRunning = bridgeState.monitorRuntime.running ?? snapshot.data?.watcher.running ?? false;
+  const enabledTargets = getEnabledTargets(bridgeState);
+  const targetSummary = enabledTargets.length > 0 ? enabledTargets.join("、") : "尚未启用目标";
+  const metrics = buildOverviewMetrics(bridgeState, enabledTargets);
 
   return (
     <section className="page overview-page" data-smoke-page="overview">
-      <div className="page__header">
+      <div className="page__header page__header--focus">
         <div>
-          <span className="mock-ribbon">{isMockPreview ? "浏览器 mock adapter preview" : "WebView2 bridge live"}</span>
-          <h2>性能会话总览</h2>
-          <p>
-            本页读取 C# bridge 的 `state.snapshot`、`config.get`，并通过 `monitor.start` / `monitor.stop`
-            控制 watcher。普通 Vite 预览只使用集中 mock adapter，不把 mock 数据当作真实监控结果。
-          </p>
+          <span className="mode-ribbon">{isMockPreview ? "界面预览" : "本机数据"}</span>
+          <h2>当前监控</h2>
+          <p>先看监控是否运行、正在关注哪些目标，再决定启动、停止或刷新状态。</p>
         </div>
         <div className="page__actions">
           <Button
@@ -56,48 +55,40 @@ export function OverviewPage({ bridgeState }: OverviewPageProps) {
             data-smoke-action="refresh-snapshot"
             onClick={() => void refreshSnapshot()}
           >
-              {snapshot.status === "loading" ? "刷新中" : "刷新状态"}
-          </Button>
-          <Button icon={FolderOpen} variant="secondary" disabled>
-            打开数据目录待接入
+            {snapshot.status === "loading" ? "刷新中" : "刷新状态"}
           </Button>
         </div>
       </div>
 
-      {snapshot.status === "error" ? (
-        <InlineStatus tone="danger" title="Snapshot 加载失败" message={snapshot.error} />
-      ) : snapshot.status === "loading" ? (
-        <InlineStatus tone="diagnostics" title="正在读取状态" message="正在通过 bridge 请求 state.snapshot。" busy />
-      ) : null}
+      <div className="monitor-hero">
+        <GlassCard className="monitor-hero__primary">
+          <div className="monitor-status-block">
+            <div className="monitor-status-block__icon">
+              <Target aria-hidden="true" size={30} />
+            </div>
+            <div>
+              <span>{monitorRunning ? "正在监控" : "当前未启动"}</span>
+              <h3>{targetSummary}</h3>
+              <p>{monitorRunning ? "可以随时停止监控，报告会按当前配置生成。" : "确认目标后，点击启动监控开始记录帧数据。"}</p>
+            </div>
+          </div>
+        </GlassCard>
 
-      <InlineStatus
-        tone={
-          bridgeState.monitorAction.status === "error"
-            ? "danger"
-            : bridgeState.monitorAction.status === "success"
-              ? "success"
-              : bridgeState.monitorAction.status === "loading"
-                ? "diagnostics"
-                : monitorRunning
-                  ? "success"
-                  : "diagnostics"
-        }
-        title={
-          bridgeState.monitorAction.status === "error"
-            ? "Monitor 操作失败"
-            : bridgeState.monitorAction.status === "loading"
-              ? "Monitor 操作执行中"
-              : monitorRunning
-                ? "Watcher 运行中"
-                : "Watcher 未运行"
-        }
-        message={
-          bridgeState.monitorAction.error ||
-          bridgeState.monitorAction.message ||
-          bridgeState.monitorRuntime.message
-        }
-        busy={bridgeState.monitorAction.status === "loading"}
-      />
+        <GlassCard className="monitor-hero__side">
+          <InlineStatus
+            tone={monitorStatusTone(bridgeState, monitorRunning)}
+            title={monitorStatusTitle(bridgeState, monitorRunning)}
+            message={monitorStatusMessage(bridgeState, monitorRunning)}
+            busy={monitorBusy}
+          />
+        </GlassCard>
+      </div>
+
+      {snapshot.status === "error" ? (
+        <InlineStatus tone="danger" title="状态读取失败" message={snapshot.error} />
+      ) : snapshot.status === "loading" ? (
+        <InlineStatus tone="diagnostics" title="正在读取状态" message="正在读取当前监控状态。" busy />
+      ) : null}
 
       {snapshot.data ? (
         <>
@@ -111,94 +102,135 @@ export function OverviewPage({ bridgeState }: OverviewPageProps) {
             <GlassCard className="overview-grid__wide">
               <div className="section-title">
                 <div>
-                  <h3>Bridge snapshot</h3>
-                  <p>真实 WebView2 环境中来自 C#；浏览器环境中来自集中 mock adapter。</p>
+                  <h3>会话详情</h3>
+                  <p>这些信息用来确认当前监控对象、数据位置和最近报告。</p>
                 </div>
-                <StatusPill tone={environment === "webview2" ? "success" : "diagnostics"}>{environment}</StatusPill>
+                <StatusPill tone={monitorRunning ? "success" : "diagnostics"}>
+                  {monitorRunning ? "运行中" : "未启动"}
+                </StatusPill>
               </div>
               <div className="snapshot-grid">
-                <SnapshotItem label="Watcher" value={snapshot.data.watcher.running ? "运行中" : "未运行"} />
-                <SnapshotItem label="Watcher PID" value={String(snapshot.data.watcher.pid || "-")} />
-                <SnapshotItem label="Config path" value={snapshot.data.config.path || "-"} />
-                <SnapshotItem label="Data root" value={snapshot.data.config.dataRoot || "-"} />
-                <SnapshotItem label="History" value={snapshot.data.reports.historyExists ? "存在" : "暂无历史"} />
-                <SnapshotItem label="Generated" value={formatDateTime(snapshot.data.generatedAt)} />
+                <SnapshotItem label="监控目标" value={targetSummary} />
+                <SnapshotItem label="进程 ID" value={String(bridgeState.monitorRuntime.pid || snapshot.data.watcher.pid || "-")} />
+                <SnapshotItem label="数据目录" value={snapshot.data.config.dataRoot || "-"} />
+                <SnapshotItem label="最近报告" value={formatPathTail(snapshot.data.watcher.lastReport)} />
+                <SnapshotItem label="历史记录" value={snapshot.data.reports.historyExists ? "已找到" : "暂无记录"} />
+                <SnapshotItem label="更新时间" value={formatDateTime(snapshot.data.generatedAt)} />
               </div>
             </GlassCard>
 
             <GlassCard>
+              <div className="section-title">
+                <div>
+                  <h3>下一步</h3>
+                  <p>根据当前状态选择最直接的操作。</p>
+                </div>
+                <Clock3 aria-hidden="true" size={18} />
+              </div>
+              <InlineStatus
+                tone={enabledTargets.length > 0 ? "success" : "warning"}
+                title={enabledTargets.length > 0 ? "目标已准备" : "还没有启用目标"}
+                message={
+                  enabledTargets.length > 0
+                    ? `已启用 ${enabledTargets.length} 个目标，可以开始监控。`
+                    : "请先到目标页启用至少一个游戏进程。"
+                }
+              />
               <InlineStatus
                 tone={config.status === "error" ? "danger" : config.data ? "success" : "diagnostics"}
-                title={config.data ? "配置已加载" : "等待配置"}
+                title={config.data ? "设置已加载" : "正在等待设置"}
                 message={config.data ? `${config.data.targetCount} 个目标，${config.data.enabledTargetCount} 个启用。` : config.message}
                 busy={config.status === "loading"}
               />
               {snapshot.data.watcher.lastError ? (
-                <InlineStatus tone="danger" title="Watcher 错误" message={snapshot.data.watcher.lastError} />
+                <InlineStatus tone="danger" title="最近错误" message={snapshot.data.watcher.lastError} />
               ) : (
-                <InlineStatus tone="success" title="Watcher 错误状态" message="当前 snapshot 未报告 watcher 错误。" />
+                <InlineStatus tone="success" title="未发现最近错误" message="当前状态没有报告新的监控错误。" />
               )}
-              <InlineStatus
-                tone={monitorRunning ? "success" : "diagnostics"}
-                title="Monitor bridge 状态"
-                message={`event.status: ${bridgeState.lastStatusEvent?.status ?? "等待事件"}；PID ${
-                  bridgeState.monitorRuntime.pid || snapshot.data.watcher.pid || "-"
-                }`}
-                busy={monitorBusy}
-              />
             </GlassCard>
           </div>
         </>
       ) : snapshot.status !== "loading" ? (
         <EmptyState
           icon={ShieldAlert}
-          title="暂无 snapshot 数据"
-          description="state.snapshot 尚未返回可用数据。可以刷新状态；如果在普通浏览器预览中看到此状态，说明 mock adapter 没有正常初始化。"
-          actionLabel="未启用后端操作"
+          title="暂无状态数据"
+          description="点击刷新状态后，如果仍没有数据，请检查本机应用是否已经启动。"
+          actionLabel="等待数据"
         />
       ) : null}
     </section>
   );
 }
 
-function buildOverviewMetrics(bridgeState: FrameScopeBridgeViewState): Metric[] {
+function buildOverviewMetrics(bridgeState: FrameScopeBridgeViewState, enabledTargets: string[]): Metric[] {
   const snapshot = bridgeState.snapshot.data;
   const config = bridgeState.config.data;
+  const monitorRunning = bridgeState.monitorRuntime.running ?? snapshot?.watcher.running ?? false;
   return [
     {
-      label: "Bridge",
-      value: snapshot?.bridgeStatus ?? bridgeState.snapshot.status,
-      detail: bridgeState.environment === "webview2" ? "C# WebView2 bridge" : "Vite mock adapter",
-      tone: bridgeState.snapshot.status === "error" ? "danger" : "success",
+      label: "监控状态",
+      value: monitorRunning ? "运行中" : "未启动",
+      detail: monitorRunning ? "正在记录性能数据" : "等待启动监控",
+      tone: monitorRunning ? "success" : "neutral",
     },
     {
       label: "启用目标",
-      value: String(config?.enabledTargetCount ?? snapshot?.config.enabledTargetCount ?? "-"),
+      value: String(enabledTargets.length || config?.enabledTargetCount || snapshot?.config.enabledTargetCount || "-"),
       detail: `${config?.targetCount ?? snapshot?.config.targetCount ?? 0} 个配置目标`,
       tone: "primary",
     },
     {
-      label: "Watcher",
-      value: snapshot?.watcher.running ? "运行中" : "未运行",
-      detail: snapshot?.watcher.pid ? `PID ${snapshot.watcher.pid}` : "未检测到 watcher 进程",
-      tone: snapshot?.watcher.running ? "success" : "neutral",
+      label: "最近报告",
+      value: formatPathTail(snapshot?.watcher.lastReport),
+      detail: snapshot?.watcher.completedRuns ? `${snapshot.watcher.completedRuns} 个完成会话` : "暂无完成会话",
+      tone: snapshot?.watcher.lastReport ? "success" : "warning",
     },
     {
-      label: "历史文件",
-      value: snapshot?.reports.historyExists ? "存在" : "暂无",
-      detail: snapshot?.reports.historyPath || "等待 snapshot",
+      label: "历史记录",
+      value: snapshot?.reports.historyExists ? "已找到" : "暂无",
+      detail: snapshot?.reports.historyPath || "等待状态刷新",
       tone: snapshot?.reports.historyExists ? "success" : "warning",
     },
   ].map((metric) => ({ ...metric, tone: metric.tone as Tone }));
+}
+
+function getEnabledTargets(bridgeState: FrameScopeBridgeViewState) {
+  const targets = bridgeState.config.data?.config.Targets ?? [];
+  return targets.filter((target) => target.Enabled).map((target) => target.Name || target.ProcessName).filter(Boolean);
+}
+
+function monitorStatusTone(bridgeState: FrameScopeBridgeViewState, running: boolean): Tone {
+  if (bridgeState.monitorAction.status === "error") return "danger";
+  if (bridgeState.monitorAction.status === "loading") return "diagnostics";
+  return running ? "success" : "diagnostics";
+}
+
+function monitorStatusTitle(bridgeState: FrameScopeBridgeViewState, running: boolean) {
+  if (bridgeState.monitorAction.status === "error") return "监控操作失败";
+  if (bridgeState.monitorAction.status === "loading") return "正在执行监控操作";
+  return running ? "监控服务运行中" : "监控服务未启动";
+}
+
+function monitorStatusMessage(bridgeState: FrameScopeBridgeViewState, running: boolean) {
+  if (bridgeState.monitorAction.status === "error") return bridgeState.monitorAction.error;
+  if (bridgeState.monitorAction.status === "loading") return "请求已发送，正在等待本机应用返回状态。";
+  if (running) return "正在记录已启用目标的性能数据。";
+  return "启动前请确认目标页里的游戏进程名称和开关。";
 }
 
 function SnapshotItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="snapshot-item">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong>{value || "-"}</strong>
     </div>
   );
+}
+
+function formatPathTail(value?: string) {
+  if (!value) return "-";
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? value;
 }
 
 function formatDateTime(value: string) {

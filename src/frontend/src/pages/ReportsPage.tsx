@@ -6,6 +6,7 @@ import { GlassCard } from "../components/GlassCard";
 import { InlineStatus } from "../components/InlineStatus";
 import { StatusPill } from "../components/StatusPill";
 import type {
+  AsyncStatus,
   FrameScopeBridgeViewState,
   OperationState,
   ReportOperationKind,
@@ -25,12 +26,9 @@ export function ReportsPage({ bridgeState }: ReportsPageProps) {
     <section className="page reports-page" data-smoke-page="reports">
       <div className="page__header">
         <div>
-          <span className="mock-ribbon">{bridgeState.isMockPreview ? "mock reports adapter" : "real reports bridge"}</span>
+          <span className="mode-ribbon">{bridgeState.isMockPreview ? "界面预览" : "本机数据"}</span>
           <h2>报告历史</h2>
-          <p>
-            本页通过 `reports.list` 读取报告。打开报告、打开目录、重新生成和诊断生成都只使用后端返回的
-            `reportId`，不在前端拼接路径。
-          </p>
+          <p>查看最近生成的性能报告，打开报告或所在目录，也可以重新生成报告和诊断文件。</p>
         </div>
         <div className="page__actions">
           <Button
@@ -59,17 +57,17 @@ export function ReportsPage({ bridgeState }: ReportsPageProps) {
           <div className="section-title">
             <div>
               <h3>报告列表</h3>
-              <p>列表内容来自 `reports.list`。如果后端返回 unsupported/error，这里显示真实失败。</p>
+              <p>按最近会话展示报告状态、帧数和文件大小。不可用的操作会保持禁用。</p>
             </div>
             <StatusPill tone={bridgeState.reports.status === "success" ? "success" : "diagnostics"}>
-              {bridgeState.reports.status}
+              {loadStatusLabel(bridgeState.reports.status)}
             </StatusPill>
           </div>
 
           {bridgeState.reports.status === "error" ? (
             <InlineStatus tone="danger" title="报告列表读取失败" message={bridgeState.reports.error} />
           ) : bridgeState.reports.status === "loading" ? (
-            <InlineStatus tone="diagnostics" title="正在读取报告" message="等待 reports.list 返回。" busy />
+            <InlineStatus tone="diagnostics" title="正在读取报告" message="正在加载可用报告。" busy />
           ) : null}
 
           {reports.length > 0 ? (
@@ -88,8 +86,8 @@ export function ReportsPage({ bridgeState }: ReportsPageProps) {
             <EmptyState
               icon={FolderOpen}
               title="暂无报告"
-              description={bridgeState.reports.error || "reports.list 尚未返回可操作的报告记录。"}
-              actionLabel="等待 reports.list"
+              description={bridgeState.reports.error || "还没有可打开的报告。完成一次监控后，报告会出现在这里。"}
+              actionLabel="等待报告"
             />
           )}
         </GlassCard>
@@ -114,29 +112,23 @@ export function ReportsPage({ bridgeState }: ReportsPageProps) {
                     ? "诊断生成失败"
                     : "诊断待生成"
             }
-            message={bridgeState.diagnosticsGenerate.error || bridgeState.diagnosticsGenerate.message}
+            message={diagnosticsMessage(
+              bridgeState.diagnosticsGenerate.status,
+              bridgeState.diagnosticsGenerate.error,
+              bridgeState.diagnosticsGenerate.message,
+            )}
             busy={diagnosticsBusy}
           />
 
           <div className="report-detail">
-            <h3>诊断输出</h3>
+            <h3>诊断文件</h3>
             <dl>
-              <ReportDetailLine label="Markdown" value={stringPayload(bridgeState.diagnosticsResult, "markdownPath")} />
-              <ReportDetailLine label="JSON" value={stringPayload(bridgeState.diagnosticsResult, "jsonPath")} />
-              <ReportDetailLine label="Run dir" value={stringPayload(bridgeState.diagnosticsResult, "runDir")} />
-              <ReportDetailLine label="Report" value={stringPayload(bridgeState.diagnosticsResult, "reportHtml")} />
+              <ReportDetailLine label="说明文件" value={stringPayload(bridgeState.diagnosticsResult, "markdownPath")} />
+              <ReportDetailLine label="数据文件" value={stringPayload(bridgeState.diagnosticsResult, "jsonPath")} />
+              <ReportDetailLine label="会话目录" value={stringPayload(bridgeState.diagnosticsResult, "runDir")} />
+              <ReportDetailLine label="关联报告" value={stringPayload(bridgeState.diagnosticsResult, "reportHtml")} />
             </dl>
           </div>
-
-          <InlineStatus
-            tone="diagnostics"
-            title="Mock/live 边界"
-            message={
-              bridgeState.isMockPreview
-                ? "当前为浏览器 mock adapter，用于预览 UI 状态，不代表真实报告已生成。"
-                : "当前为 WebView2 live bridge；失败会按后端返回错误显示，不回落到 mock 成功。"
-            }
-          />
         </GlassCard>
       </div>
     </section>
@@ -167,18 +159,18 @@ function ReportListRow({
           <FileText aria-hidden="true" size={18} />
         </div>
         <div className="report-list-row__title">
-          <strong>{report.game || report.processName || "FrameScope report"}</strong>
+          <strong>{report.game || report.processName || "FrameScope 报告"}</strong>
           <span>{formatReportTime(report.time || report.lastWriteTime)}</span>
         </div>
         <StatusPill tone={report.reportExists ? "success" : "warning"}>
-          {report.reportExists ? report.reportKind || "ready" : "missing html"}
+          {report.reportExists ? reportKindLabel(report.reportKind) : "报告缺失"}
         </StatusPill>
       </div>
 
       <div className="report-list-row__meta">
-        <SnapshotLine label="Report ID" value={report.reportId} />
-        <SnapshotLine label="Frames" value={String(report.frameCount)} valueClassName="snapshot-item__value--nowrap" />
-        <SnapshotLine label="Size" value={formatBytes(report.reportSizeBytes)} valueClassName="snapshot-item__value--nowrap" />
+        <SnapshotLine label="报告编号" value={report.reportId} />
+        <SnapshotLine label="帧数" value={String(report.frameCount)} valueClassName="snapshot-item__value--nowrap" />
+        <SnapshotLine label="大小" value={formatBytes(report.reportSizeBytes)} valueClassName="snapshot-item__value--nowrap" />
       </div>
 
       <div className="report-list-row__actions">
@@ -232,8 +224,8 @@ function ReportOperationStatus({ kind, state }: { kind: ReportOperationKind; sta
   return (
     <InlineStatus
       tone={state.status === "error" ? "danger" : state.status === "success" ? "success" : "diagnostics"}
-      title={`${kind} ${state.status}`}
-      message={state.error || state.message}
+      title={`${reportOperationLabel(kind)}${operationStatusLabel(state.status)}`}
+      message={state.status === "error" ? state.error || "操作失败，请稍后重试。" : operationStatusMessage(kind, state.status)}
       busy={state.status === "loading"}
     />
   );
@@ -260,6 +252,45 @@ function SnapshotLine({ label, value, valueClassName }: { label: string; value: 
 function stringPayload(payload: Record<string, unknown> | null, key: string) {
   const value = payload?.[key];
   return typeof value === "string" ? value : "";
+}
+
+function loadStatusLabel(status: AsyncStatus) {
+  if (status === "loading") return "读取中";
+  if (status === "success") return "已加载";
+  if (status === "error") return "失败";
+  return "未读取";
+}
+
+function reportKindLabel(kind: string) {
+  if (kind === "full") return "完整报告";
+  if (kind === "pending") return "处理中";
+  return kind || "可打开";
+}
+
+function reportOperationLabel(kind: ReportOperationKind) {
+  if (kind === "open") return "打开报告";
+  if (kind === "openDirectory") return "打开目录";
+  return "重新生成";
+}
+
+function operationStatusLabel(status: AsyncStatus) {
+  if (status === "loading") return "中";
+  if (status === "success") return "成功";
+  if (status === "error") return "失败";
+  return "";
+}
+
+function operationStatusMessage(kind: ReportOperationKind, status: AsyncStatus) {
+  if (status === "loading") return `${reportOperationLabel(kind)}正在执行。`;
+  if (status === "success") return `${reportOperationLabel(kind)}已完成。`;
+  return "";
+}
+
+function diagnosticsMessage(status: AsyncStatus, error: string, message: string) {
+  if (status === "error") return error || "诊断生成失败，请稍后重试。";
+  if (status === "loading") return "正在收集当前会话信息。";
+  if (status === "success") return "诊断文件已生成。";
+  return message || "需要排查报告问题时，可以先生成诊断。";
 }
 
 function formatReportTime(value: string) {

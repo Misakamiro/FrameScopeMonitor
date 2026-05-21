@@ -6,7 +6,7 @@ import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { InlineStatus } from "../components/InlineStatus";
 import { StatusPill } from "../components/StatusPill";
-import type { FrameScopeBridgeViewState } from "../state/useFrameScopeBridgeState";
+import type { AsyncStatus, FrameScopeBridgeViewState } from "../state/useFrameScopeBridgeState";
 import "./pages.css";
 
 interface SettingsPageProps {
@@ -29,6 +29,7 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
   const dirty = useMemo(() => {
     return draft ? serializeConfig(draft) !== loadedSignature : false;
   }, [draft, loadedSignature]);
+  const smokeConfigState = getSmokeConfigState(dirty, bridgeState.configSave.status);
 
   const updateDraft = (patch: Partial<FrameScopeConfig>) => {
     setDraft((current) => (current ? { ...current, ...patch } : current));
@@ -52,12 +53,9 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
     <section className="page settings-page" data-smoke-page="settings">
       <div className="page__header">
         <div>
-          <span className="mock-ribbon">{bridgeState.isMockPreview ? "mock config adapter" : "real config.get/save"}</span>
+          <span className="mode-ribbon">{bridgeState.isMockPreview ? "界面预览" : "本机数据"}</span>
           <h2>应用设置</h2>
-          <p>
-            本页读取 `config.get`。修改字段后显示 dirty 状态，点击保存会调用 `config.save`，保存成功后以 bridge
-            返回的规范化配置刷新表单。
-          </p>
+          <p>调整数据保存位置、刷新间隔、日志保留和诊断开关。修改后需要点击保存设置才会生效。</p>
         </div>
         <div className="page__actions">
           <Button icon={RotateCcw} variant="secondary" disabled={!dirty || saveBusy} onClick={resetDraft}>
@@ -80,15 +78,15 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
           <div className="section-title">
             <div>
               <h3>基础配置</h3>
-              <p>这些字段对应 C# `FrameScopeConfig`，不发送路径覆写字段。</p>
+              <p>这些设置会影响后续监控和报告生成，不会改变已经生成的历史报告。</p>
             </div>
-            <StatusPill tone={dirty ? "warning" : "success"}>{dirty ? "dirty" : "clean"}</StatusPill>
+            <StatusPill tone={dirty ? "warning" : "success"}>{dirty ? "未保存" : "已同步"}</StatusPill>
           </div>
 
           {bridgeState.config.status === "error" ? (
             <InlineStatus tone="danger" title="配置读取失败" message={bridgeState.config.error} />
           ) : bridgeState.config.status === "loading" ? (
-            <InlineStatus tone="diagnostics" title="正在读取配置" message="等待 config.get 返回。" busy />
+            <InlineStatus tone="diagnostics" title="正在读取设置" message="正在加载已保存的应用设置。" busy />
           ) : null}
 
           {draft ? (
@@ -102,7 +100,7 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
                 />
               </label>
               <label className="settings-control">
-                <span>监听轮询间隔 ms</span>
+                <span>状态刷新间隔(ms)</span>
                 <input
                   type="number"
                   min={100}
@@ -122,7 +120,7 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
                 />
               </label>
               <label className="settings-control">
-                <span>最大日志 MB</span>
+                <span>最大日志大小(MB)</span>
                 <input
                   type="number"
                   min={1}
@@ -142,7 +140,7 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
                 onChange={(checked) => updateDraft({ EnableVerboseLogs: checked })}
               />
               <ToggleRow
-                label="性能诊断日志"
+                label="记录性能诊断日志"
                 checked={draft.EnablePerformanceDiagnosticsLogs}
                 onChange={(checked) => updateDraft({ EnablePerformanceDiagnosticsLogs: checked })}
               />
@@ -156,8 +154,8 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
             <EmptyState
               icon={Save}
               title="暂无可编辑配置"
-              description="config.get 尚未返回配置，或读取失败。"
-              actionLabel="等待 bridge"
+              description="还没有读取到设置，或读取设置失败。"
+              actionLabel="等待设置"
             />
           )}
         </GlassCard>
@@ -184,17 +182,22 @@ export function SettingsPage({ bridgeState }: SettingsPageProps) {
                       ? "有未保存修改"
                       : "配置已同步"
             }
-            message={bridgeState.configSave.error || bridgeState.configSave.message}
+            message={settingsSaveMessage(bridgeState.configSave.status, bridgeState.configSave.error, bridgeState.configSave.message)}
             busy={saveBusy}
           />
+          {smokeConfigState ? (
+            <span className="sr-only" data-smoke-state="settings-config">
+              {smokeConfigState}
+            </span>
+          ) : null}
 
           <div className="settings-note">
-            <h3>已加载配置</h3>
+            <h3>当前设置摘要</h3>
             <div className="snapshot-grid">
-              <SnapshotLine label="Config path" value={bridgeState.config.data?.configPath ?? "-"} />
-              <SnapshotLine label="Resolved data root" value={bridgeState.config.data?.resolvedDataRoot ?? "-"} />
-              <SnapshotLine label="Targets" value={String(bridgeState.config.data?.targetCount ?? 0)} />
-              <SnapshotLine label="Enabled" value={String(bridgeState.config.data?.enabledTargetCount ?? 0)} />
+              <SnapshotLine label="保存位置" value={bridgeState.config.data?.resolvedDataRoot ?? "-"} />
+              <SnapshotLine label="目标总数" value={String(bridgeState.config.data?.targetCount ?? 0)} />
+              <SnapshotLine label="启用目标" value={String(bridgeState.config.data?.enabledTargetCount ?? 0)} />
+              <SnapshotLine label="自动打开报告" value={draft?.OpenReportOnComplete ? "开启" : "关闭"} />
             </div>
           </div>
         </GlassCard>
@@ -221,10 +224,14 @@ function ToggleRow({
 }
 
 function SnapshotLine({ label, value }: { label: string; value: string }) {
+  const valueClassName = value.length > 28 ? "snapshot-item__value--nowrap" : undefined;
+
   return (
     <div className="snapshot-item">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong className={valueClassName} title={value}>
+        {value}
+      </strong>
     </div>
   );
 }
@@ -240,4 +247,17 @@ function cloneConfig(config: FrameScopeConfig): FrameScopeConfig {
 
 function serializeConfig(config: FrameScopeConfig) {
   return JSON.stringify(config);
+}
+
+function settingsSaveMessage(status: AsyncStatus, error: string, message: string) {
+  if (status === "error") return error || "保存失败，请检查设置后重试。";
+  if (status === "loading") return "正在保存当前设置。";
+  if (status === "success") return "设置已保存。";
+  return message || "修改字段后，点击保存设置写入配置。";
+}
+
+function getSmokeConfigState(dirty: boolean, saveStatus: AsyncStatus) {
+  if (saveStatus === "loading") return "Saving FrameScope config.";
+  if (saveStatus === "success") return "Config saved.";
+  return dirty ? "dirty" : "";
 }

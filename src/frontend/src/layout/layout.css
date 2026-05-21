@@ -1,15 +1,11 @@
-.mac-window {
+.app-shell {
   position: relative;
   display: grid;
   grid-template-columns: var(--fs-sidebar-width) minmax(0, 1fr);
-  width: min(1600px, 100%);
-  min-height: calc(100vh - var(--fs-space-8));
-  margin: 0 auto;
+  width: 100%;
+  min-height: 100vh;
   overflow: hidden;
-  border: 1px solid var(--fs-shell-border);
-  border-radius: var(--fs-shell-radius);
   background: var(--fs-shell-bg);
-  box-shadow: var(--fs-shadow-3);
 }
 
 .sidebar {
@@ -23,37 +19,11 @@
   backdrop-filter: var(--fs-blur-material);
 }
 
-.window-controls {
-  display: flex;
-  gap: 8px;
-  height: 16px;
-}
-
-.window-controls__dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 1px var(--fs-window-control-border);
-}
-
-.window-controls__dot--close {
-  background: var(--fs-color-window-close);
-}
-
-.window-controls__dot--min {
-  background: var(--fs-color-window-minimize);
-}
-
-.window-controls__dot--max {
-  background: var(--fs-color-window-maximize);
-}
-
 .brand-lockup,
 .topbar__title,
 .topbar__status,
 .connection-pill,
-.sidebar__status,
-.mock-banner {
+.sidebar__status {
   display: flex;
   align-items: center;
 }
@@ -218,6 +188,7 @@
   justify-content: flex-end;
   gap: var(--fs-space-2);
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .connection-pill {
@@ -231,11 +202,6 @@
   font-size: var(--fs-type-caption);
   font-weight: 800;
   white-space: nowrap;
-}
-
-.topbar__tools {
-  display: flex;
-  gap: var(--fs-space-2);
 }
 
 .page-viewport {
@@ -283,24 +249,8 @@
   gap: var(--fs-space-2);
 }
 
-.mock-banner {
-  position: absolute;
-  right: 18px;
-  bottom: 16px;
-  gap: var(--fs-space-1);
-  padding: 0 var(--fs-space-3);
-  min-height: 30px;
-  border: 1px solid var(--fs-border-mock);
-  border-radius: 999px;
-  background: var(--fs-surface-wash-64);
-  color: var(--fs-accent-mock);
-  font-size: var(--fs-type-caption);
-  font-weight: 800;
-  box-shadow: var(--fs-shadow-1);
-}
-
 @media (max-width: 1080px) {
-  .mac-window {
+  .app-shell {
     grid-template-columns: 86px minmax(0, 1fr);
   }
 
@@ -322,9 +272,8 @@
 }
 
 @media (max-width: 760px) {
-  .mac-window {
+  .app-shell {
     grid-template-columns: 1fr;
-    border-radius: var(--fs-radius-5);
   }
 
   .sidebar {
@@ -337,10 +286,7 @@
     grid-template-columns: repeat(5, minmax(48px, 1fr));
   }
 
-  .window-controls,
   .sidebar__status,
-  .mock-banner,
-  .topbar__tools,
   .connection-pill {
     display: none;
   }

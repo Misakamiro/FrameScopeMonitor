@@ -15,11 +15,6 @@ interface SidebarNavProps {
 export function SidebarNav({ activePage, bridgeEnvironment, onNavigate }: SidebarNavProps) {
   return (
     <aside className="sidebar" aria-label="FrameScope navigation">
-      <div className="window-controls" aria-hidden="true">
-        <span className="window-controls__dot window-controls__dot--close" />
-        <span className="window-controls__dot window-controls__dot--min" />
-        <span className="window-controls__dot window-controls__dot--max" />
-      </div>
       <div className="brand-lockup">
         <div className="brand-lockup__mark">
           <Activity aria-hidden="true" size={22} />
@@ -58,8 +53,8 @@ export function SidebarNav({ activePage, bridgeEnvironment, onNavigate }: Sideba
       <div className="sidebar__status">
         <ShieldCheck aria-hidden="true" size={18} />
         <div>
-          <strong>{bridgeEnvironment === "webview2" ? "WebView2 live bridge" : "Browser mock preview"}</strong>
-          <span>{bridgeEnvironment === "webview2" ? "真实 bridge 请求已启用" : "仅预览交互状态"}</span>
+          <strong>{bridgeEnvironment === "webview2" ? "本机功能可用" : "界面预览中"}</strong>
+          <span>{bridgeEnvironment === "webview2" ? "操作会交给宿主应用执行" : "不会读取真实系统数据"}</span>
         </div>
       </div>
     </aside>

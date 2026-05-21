@@ -1,27 +1,23 @@
-import type { ReactNode } from "react";
 import { RadioTower } from "lucide-react";
 import type { BridgeEnvironment } from "../bridge/contract";
 import { StatusPill } from "../components/StatusPill";
 import { navigationItems } from "../data/mockPreview";
 import type { AsyncStatus } from "../state/useFrameScopeBridgeState";
-import type { AppPage, Tone } from "../types";
+import type { AppPage } from "../types";
 import "./layout.css";
 
 interface TopStatusBarProps {
   page: AppPage;
   bridgeEnvironment: BridgeEnvironment;
   snapshotStatus: AsyncStatus;
-  children?: ReactNode;
 }
 
-export function TopStatusBar({ page, bridgeEnvironment, snapshotStatus, children }: TopStatusBarProps) {
+export function TopStatusBar({ page, bridgeEnvironment, snapshotStatus }: TopStatusBarProps) {
   const item = navigationItems.find((nav) => nav.id === page) ?? navigationItems[0];
   const Icon = item.icon;
-  const statusTone: Tone =
-    snapshotStatus === "error" ? "danger" : snapshotStatus === "success" ? "success" : "diagnostics";
-  const bridgeLabel = bridgeEnvironment === "mock" ? "Mock preview" : "WebView2";
+  const environmentLabel = bridgeEnvironment === "mock" ? "预览模式" : "本机连接";
   const connectionText =
-    snapshotStatus === "loading" ? "Loading" : snapshotStatus === "error" ? "Bridge error" : "Bridge ready";
+    snapshotStatus === "loading" ? "正在读取" : snapshotStatus === "error" ? "连接异常" : "状态正常";
 
   return (
     <header className="topbar">
@@ -35,12 +31,11 @@ export function TopStatusBar({ page, bridgeEnvironment, snapshotStatus, children
         </div>
       </div>
       <div className="topbar__status">
-        <StatusPill tone={statusTone}>{bridgeLabel}</StatusPill>
+        <StatusPill tone={bridgeEnvironment === "mock" ? "diagnostics" : "success"}>{environmentLabel}</StatusPill>
         <span className="connection-pill">
           <RadioTower aria-hidden="true" size={14} />
           {connectionText}
         </span>
-        {children}
       </div>
     </header>
   );

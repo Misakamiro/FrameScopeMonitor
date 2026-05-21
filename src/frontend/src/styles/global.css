@@ -16,9 +16,7 @@ body {
   min-height: 100vh;
   margin: 0;
   overflow-x: hidden;
-  background:
-    linear-gradient(135deg, var(--fs-surface-window-wash-start), var(--fs-surface-window-wash-end)),
-    var(--fs-surface-window);
+  background: var(--fs-surface-window);
 }
 
 button,
@@ -46,19 +44,19 @@ button:disabled {
 
 .app-root {
   min-height: 100vh;
-  padding: var(--fs-space-4);
+  padding: 0;
 }
 
-.mock-ribbon {
+.mode-ribbon {
   display: inline-flex;
   align-items: center;
   gap: var(--fs-space-2);
   min-height: 30px;
   padding: 0 var(--fs-space-3);
-  border: 1px solid var(--fs-border-mock-strong);
+  border: 1px solid var(--fs-border-subtle);
   border-radius: 999px;
-  background: var(--fs-tint-mock);
-  color: var(--fs-accent-mock);
+  background: var(--fs-surface-wash-70);
+  color: var(--fs-text-secondary);
   font-size: var(--fs-type-caption);
   font-weight: 700;
 }
@@ -73,10 +71,4 @@ button:disabled {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
-}
-
-@media (max-width: 920px) {
-  .app-root {
-    padding: var(--fs-space-2);
-  }
 }
