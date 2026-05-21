@@ -1,0 +1,165 @@
+:root {
+  /* primitive tokens */
+  --fs-color-ink-950: #111318;
+  --fs-color-ink-900: #1a1d24;
+  --fs-color-ink-800: #252a33;
+  --fs-color-ink-700: #333a45;
+  --fs-color-ink-500: #68717f;
+  --fs-color-ink-300: #a6adba;
+  --fs-color-ink-100: #e7eaef;
+  --fs-color-ink-050: #f7f8fa;
+  --fs-color-mist-100: #f1f4f7;
+  --fs-color-mist-200: #e4e9ef;
+  --fs-color-mist-300: #d5dde6;
+  --fs-color-sky-500: #3178c6;
+  --fs-color-sky-600: #245f9f;
+  --fs-color-mint-500: #2e9f72;
+  --fs-color-amber-500: #c9892b;
+  --fs-color-rose-500: #cf4d5b;
+  --fs-color-violet-500: #7558c8;
+  --fs-color-teal-500: #2c8f8a;
+  --fs-color-mock-700: #59449d;
+  --fs-color-window-close: #ed6a5e;
+  --fs-color-window-minimize: #f4bf4f;
+  --fs-color-window-maximize: #61c554;
+  --fs-space-0: 0;
+  --fs-space-1: 4px;
+  --fs-space-2: 8px;
+  --fs-space-3: 12px;
+  --fs-space-4: 16px;
+  --fs-space-5: 20px;
+  --fs-space-6: 24px;
+  --fs-space-8: 32px;
+  --fs-space-10: 40px;
+  --fs-space-12: 48px;
+  --fs-radius-2: 6px;
+  --fs-radius-3: 8px;
+  --fs-radius-4: 10px;
+  --fs-radius-5: 14px;
+  --fs-radius-6: 18px;
+  --fs-radius-7: 22px;
+  --fs-shadow-1: 0 1px 2px rgb(17 19 24 / 0.08);
+  --fs-shadow-2: 0 12px 26px rgb(17 19 24 / 0.12);
+  --fs-shadow-3: 0 20px 50px rgb(17 19 24 / 0.18);
+  --fs-blur-material: blur(22px) saturate(1.18);
+  --fs-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI",
+    "PingFang SC", sans-serif;
+  --fs-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --fs-type-caption: 12px;
+  --fs-type-label: 13px;
+  --fs-type-body: 14px;
+  --fs-type-body-lg: 16px;
+  --fs-type-title: 20px;
+  --fs-type-display: 28px;
+  --fs-line-tight: 1.22;
+  --fs-line-normal: 1.5;
+  --fs-motion-fast: 150ms;
+  --fs-motion-base: 220ms;
+  --fs-motion-slow: 360ms;
+
+  /* semantic tokens */
+  --fs-surface-window: #eef2f6;
+  --fs-surface-window-accent: #e8edf3;
+  --fs-surface-window-wash-start: rgb(255 255 255 / 0.76);
+  --fs-surface-window-wash-end: rgb(223 231 240 / 0.88);
+  --fs-surface-sidebar: rgb(247 248 250 / 0.76);
+  --fs-surface-glass: rgb(255 255 255 / 0.68);
+  --fs-surface-elevated: rgb(255 255 255 / 0.86);
+  --fs-surface-solid: #ffffff;
+  --fs-surface-subtle: rgb(241 244 247 / 0.72);
+  --fs-surface-wash-92: rgb(255 255 255 / 0.92);
+  --fs-surface-wash-90: rgb(255 255 255 / 0.9);
+  --fs-surface-wash-72: rgb(255 255 255 / 0.72);
+  --fs-surface-wash-70: rgb(255 255 255 / 0.7);
+  --fs-surface-wash-64: rgb(255 255 255 / 0.64);
+  --fs-surface-wash-62: rgb(255 255 255 / 0.62);
+  --fs-surface-wash-60: rgb(255 255 255 / 0.6);
+  --fs-surface-wash-58: rgb(255 255 255 / 0.58);
+  --fs-surface-wash-56: rgb(255 255 255 / 0.56);
+  --fs-surface-wash-54: rgb(255 255 255 / 0.54);
+  --fs-surface-wash-52: rgb(255 255 255 / 0.52);
+  --fs-surface-wash-48: rgb(255 255 255 / 0.48);
+  --fs-surface-wash-42: rgb(255 255 255 / 0.42);
+  --fs-surface-mist-76: rgb(247 248 250 / 0.76);
+  --fs-surface-mist-72: rgb(247 248 250 / 0.72);
+  --fs-surface-mist-58: rgb(247 248 250 / 0.58);
+  --fs-surface-mist-54: rgb(247 248 250 / 0.54);
+  --fs-surface-steel-72: rgb(228 233 239 / 0.72);
+  --fs-surface-panel-end: rgb(238 242 246 / 0.72);
+  --fs-border-subtle: rgb(37 42 51 / 0.1);
+  --fs-border-window: rgb(37 42 51 / 0.12);
+  --fs-border-strong: rgb(37 42 51 / 0.16);
+  --fs-border-inset: rgb(17 19 24 / 0.12);
+  --fs-text-primary: var(--fs-color-ink-950);
+  --fs-text-secondary: #4d5663;
+  --fs-text-muted: #717a87;
+  --fs-text-inverse: #f8fafc;
+  --fs-accent-primary: var(--fs-color-sky-500);
+  --fs-accent-primary-strong: var(--fs-color-sky-600);
+  --fs-state-running: var(--fs-color-mint-500);
+  --fs-state-warning: var(--fs-color-amber-500);
+  --fs-state-error: var(--fs-color-rose-500);
+  --fs-state-diagnostics: var(--fs-color-violet-500);
+  --fs-state-info: var(--fs-color-teal-500);
+  --fs-accent-mock: var(--fs-color-mock-700);
+  --fs-focus-ring: rgb(49 120 198 / 0.34);
+  --fs-tint-neutral: rgb(104 113 127 / 0.1);
+  --fs-tint-primary: rgb(49 120 198 / 0.12);
+  --fs-tint-primary-soft: rgb(49 120 198 / 0.1);
+  --fs-tint-success: rgb(46 159 114 / 0.12);
+  --fs-tint-warning: rgb(201 137 43 / 0.12);
+  --fs-tint-danger: rgb(207 77 91 / 0.12);
+  --fs-tint-diagnostics: rgb(117 88 200 / 0.12);
+  --fs-tint-mock: rgb(117 88 200 / 0.1);
+  --fs-border-mock: rgb(117 88 200 / 0.18);
+  --fs-border-mock-strong: rgb(117 88 200 / 0.2);
+  --fs-chart-grid: rgb(37 42 51 / 0.08);
+  --fs-page-padding: var(--fs-space-6);
+  --fs-section-gap: var(--fs-space-5);
+
+  /* component tokens */
+  --fs-shell-radius: var(--fs-radius-7);
+  --fs-shell-bg: var(--fs-surface-wash-42);
+  --fs-shell-border: var(--fs-border-window);
+  --fs-window-control-border: var(--fs-border-inset);
+  --fs-icon-tile-bg: linear-gradient(145deg, var(--fs-surface-wash-90), var(--fs-surface-steel-72));
+  --fs-about-mark-bg: linear-gradient(145deg, var(--fs-surface-wash-92), var(--fs-surface-steel-72));
+  --fs-workspace-bg: linear-gradient(180deg, var(--fs-surface-wash-56), var(--fs-surface-panel-end));
+  --fs-sidebar-width: 260px;
+  --fs-topbar-height: 76px;
+  --fs-card-bg: var(--fs-surface-glass);
+  --fs-card-border: var(--fs-border-subtle);
+  --fs-card-radius: var(--fs-radius-6);
+  --fs-card-shadow: var(--fs-shadow-2);
+  --fs-card-padding: var(--fs-space-5);
+  --fs-button-radius: var(--fs-radius-4);
+  --fs-button-height: 38px;
+  --fs-button-padding-x: var(--fs-space-4);
+  --fs-button-secondary-bg: var(--fs-surface-wash-58);
+  --fs-button-primary-shadow: 0 8px 20px rgb(49 120 198 / 0.24);
+  --fs-button-danger-shadow: 0 8px 20px rgb(207 77 91 / 0.2);
+  --fs-input-radius: var(--fs-radius-4);
+  --fs-input-bg: var(--fs-surface-mist-76);
+  --fs-row-radius: var(--fs-radius-4);
+  --fs-row-bg: var(--fs-surface-wash-54);
+  --fs-chart-radius: var(--fs-radius-5);
+  --fs-toast-radius: var(--fs-radius-5);
+  --fs-toast-bg: var(--fs-surface-wash-62);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --fs-surface-sidebar: #f7f8fa;
+    --fs-surface-glass: #ffffff;
+    --fs-surface-elevated: #ffffff;
+    --fs-blur-material: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --fs-motion-fast: 1ms;
+    --fs-motion-base: 1ms;
+    --fs-motion-slow: 1ms;
+  }
+}

@@ -58,6 +58,12 @@ internal static partial class FrameScopeNativeMonitor
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        if (args != null && args.Any(a => a.Equals("--web-ui", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.Exit(RunWebUi(args));
+            return;
+        }
+
         var sidebarScreenshotPath = GetArgValue(args, "--sidebar-screenshot", "");
         if (!string.IsNullOrWhiteSpace(sidebarScreenshotPath))
         {

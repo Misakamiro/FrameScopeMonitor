@@ -6,6 +6,23 @@ if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
 }
 
+$webView2PackageRoot = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2'
+$webView2Package = Get-ChildItem -LiteralPath $webView2PackageRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'lib\net462\Microsoft.Web.WebView2.WinForms.dll') } |
+    Sort-Object { [version]$_.Name } |
+    Select-Object -Last 1
+if ($null -eq $webView2Package) {
+    throw "Microsoft.Web.WebView2 package was not found. Run: dotnet restore .\tools\WebView2Spike\WebView2Spike.csproj"
+}
+$webView2Core = Join-Path $webView2Package.FullName 'lib\net462\Microsoft.Web.WebView2.Core.dll'
+$webView2WinForms = Join-Path $webView2Package.FullName 'lib\net462\Microsoft.Web.WebView2.WinForms.dll'
+$webView2Loader = Join-Path $webView2Package.FullName 'runtimes\win-x64\native\WebView2Loader.dll'
+foreach ($requiredWebView2File in @($webView2Core, $webView2WinForms, $webView2Loader)) {
+    if (-not (Test-Path -LiteralPath $requiredWebView2File)) {
+        throw "WebView2 dependency missing: $requiredWebView2File"
+    }
+}
+
 Push-Location $root
 try {
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
@@ -14,6 +31,8 @@ try {
         /reference:System.Drawing.dll `
         /reference:System.Management.dll `
         /reference:System.Web.Extensions.dll `
+        /reference:$webView2Core `
+        /reference:$webView2WinForms `
         .\src\core\FrameScopeConfigStore.cs `
         .\src\core\FrameScopeCapturePlanner.cs `
         .\src\diagnostics\FrameScopeDiagnostics.cs `
@@ -45,7 +64,17 @@ try {
         .\src\ui\FrameScopeReportPage.Layout.cs `
         .\src\ui\FrameScopeReportPage.Detail.cs `
         .\src\ui\FrameScopeReportPage.Actions.cs `
+        .\src\app\FrameScopeWebBridge.Contracts.cs `
+        .\src\app\FrameScopeWebBridge.cs `
+        .\src\app\FrameScopeWebBridge.State.cs `
+        .\src\app\FrameScopeWebBridge.Config.cs `
+        .\src\app\FrameScopeWebBridge.Processes.cs `
+        .\src\app\FrameScopeWebBridge.Monitoring.cs `
+        .\src\app\FrameScopeWebBridge.Reports.cs `
+        .\src\app\FrameScopeWebBridge.Diagnostics.cs `
+        .\src\app\FrameScopeWebBridge.Targets.cs `
         .\src\app\FrameScopeNativeMonitor.cs `
+        .\src\app\FrameScopeNativeMonitor.WebHost.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.Models.cs `
         .\src\app\FrameScopeNativeMonitor.ReportStatus.cs `
@@ -150,9 +179,17 @@ try {
         .\packaging\FrameScopeLegacyCleanup.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeLegacyCleanup.exe" }
 
+    Copy-Item -LiteralPath $webView2Core -Destination (Join-Path $root 'Microsoft.Web.WebView2.Core.dll') -Force
+    Copy-Item -LiteralPath $webView2WinForms -Destination (Join-Path $root 'Microsoft.Web.WebView2.WinForms.dll') -Force
+    Copy-Item -LiteralPath $webView2Loader -Destination (Join-Path $root 'WebView2Loader.dll') -Force
+
     $dist = Join-Path $root 'dist'
     $payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
     $sourceRoot = Join-Path $dist 'FrameScopeMonitor-installer-source'
+    $frontendDist = Join-Path $root 'src\frontend\dist'
+    if (-not (Test-Path -LiteralPath (Join-Path $frontendDist 'index.html'))) {
+        throw "Frontend dist was not found. Run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Run-Frontend.ps1 build"
+    }
     foreach ($path in @($payloadRoot, $sourceRoot)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
         New-Item -ItemType Directory -Path $path -Force | Out-Null
@@ -164,6 +201,9 @@ try {
         'FrameScopeSystemSampler.exe',
         'FrameScopeReportGenerator.exe',
         'FrameScopeUninstaller.exe',
+        'Microsoft.Web.WebView2.Core.dll',
+        'Microsoft.Web.WebView2.WinForms.dll',
+        'WebView2Loader.dll',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt'
     )) {
@@ -173,6 +213,9 @@ try {
     $payloadTools = Join-Path $payloadRoot 'tools'
     New-Item -ItemType Directory -Path $payloadTools -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'tools\PresentMon-2.4.1-x64.exe') -Destination $payloadTools -Force
+
+    $payloadFrontend = Join-Path $payloadRoot 'frontend'
+    Copy-Item -LiteralPath $frontendDist -Destination $payloadFrontend -Recurse -Force
 
     $payloadZip = Join-Path $sourceRoot 'payload.zip'
     Compress-Archive -Path (Join-Path $payloadRoot '*') -DestinationPath $payloadZip -Force

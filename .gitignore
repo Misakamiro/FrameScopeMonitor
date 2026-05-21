@@ -19,9 +19,17 @@ artifacts.error.txt
 # Build output and packaged installers
 dist/
 FrameScopeMonitor.exe
+Microsoft.Web.WebView2.Core.dll
+Microsoft.Web.WebView2.WinForms.dll
+WebView2Loader.dll
 *.pdb
 *.user
 *.suo
+src/frontend/node_modules/
+src/frontend/dist/
+src/frontend/.vite/
+src/frontend/coverage/
+tools/.cache/
 
 # Python cache
 __pycache__/

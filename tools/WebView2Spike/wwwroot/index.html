@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FrameScope WebView2 Bridge Spike</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080d15;
+      --surface: rgba(18, 30, 46, 0.74);
+      --surface-strong: rgba(26, 42, 64, 0.88);
+      --border: rgba(124, 167, 214, 0.28);
+      --text: #f5f8fc;
+      --muted: #a9b7c8;
+      --accent: #56b6ff;
+      --ok: #55d98a;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(circle at 12% 8%, rgba(86, 182, 255, 0.16), transparent 30%),
+        linear-gradient(145deg, #050812, var(--bg));
+      color: var(--text);
+      font-family: "Segoe UI", system-ui, sans-serif;
+    }
+
+    main {
+      box-sizing: border-box;
+      display: grid;
+      grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+      gap: 18px;
+      min-height: 100%;
+      padding: 22px;
+      overflow-x: hidden;
+    }
+
+    aside,
+    section {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--surface);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      backdrop-filter: blur(18px);
+    }
+
+    aside {
+      padding: 18px;
+    }
+
+    section {
+      padding: 24px;
+      min-width: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+    }
+
+    .mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      border-radius: 12px;
+      background: linear-gradient(145deg, rgba(86, 182, 255, 0.32), rgba(85, 217, 138, 0.2));
+      color: var(--text);
+    }
+
+    .nav {
+      display: grid;
+      gap: 10px;
+      margin-top: 28px;
+    }
+
+    .nav div {
+      padding: 12px 14px;
+      border-radius: 12px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .nav div:first-child {
+      color: var(--text);
+      border: 1px solid rgba(86, 182, 255, 0.55);
+      background: rgba(86, 182, 255, 0.12);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+
+    p {
+      max-width: 780px;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .card {
+      min-height: 118px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface-strong);
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .value {
+      margin-top: 12px;
+      color: var(--ok);
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    pre {
+      overflow: auto;
+      min-height: 150px;
+      margin-top: 22px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(0, 0, 0, 0.24);
+      color: #d8e7f7;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <aside>
+      <div class="brand"><div class="mark">FS</div><div>FrameScope<br>Web UI</div></div>
+      <div class="nav">
+        <div>Bridge Spike</div>
+        <div>Config</div>
+        <div>Processes</div>
+        <div>Reports</div>
+      </div>
+    </aside>
+    <section>
+      <h1>WebView2 local frontend bridge</h1>
+      <p>This experimental page proves that a local frontend asset can load inside a C# WinForms-hosted WebView2 control and exchange JSON messages with the host.</p>
+      <div class="grid">
+        <div class="card"><div class="label">Local page</div><div class="value" id="page-status">loaded</div></div>
+        <div class="card"><div class="label">Host ping</div><div class="value" id="host-status">waiting</div></div>
+        <div class="card"><div class="label">JS reply</div><div class="value" id="reply-status">pending</div></div>
+      </div>
+      <pre id="log"></pre>
+    </section>
+  </main>
+  <script>
+    const log = document.getElementById("log");
+    const hostStatus = document.getElementById("host-status");
+    const replyStatus = document.getElementById("reply-status");
+
+    function append(message) {
+      log.textContent += new Date().toISOString() + " " + message + "\n";
+    }
+
+    if (window.chrome && window.chrome.webview) {
+      append("js:posting webview-ready");
+      window.chrome.webview.postMessage({ type: "webview-ready", source: "local-index" });
+      window.chrome.webview.addEventListener("message", (event) => {
+        const message = event.data || {};
+        append("js:received " + JSON.stringify(message));
+        hostStatus.textContent = message.type || "received";
+        const reply = {
+          type: "js-reply",
+          id: message.id,
+          receivedType: message.type,
+          source: "local-index",
+          payload: {
+            pageLoaded: true,
+            bridgeReady: true
+          }
+        };
+        window.chrome.webview.postMessage(reply);
+        replyStatus.textContent = "sent";
+        append("js:sent " + JSON.stringify(reply));
+      });
+    } else {
+      append("js:no chrome.webview object; open this page through WebView2.");
+      hostStatus.textContent = "no host";
+      replyStatus.textContent = "blocked";
+    }
+  </script>
+</body>
+</html>
