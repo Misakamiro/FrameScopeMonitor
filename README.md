@@ -1,79 +1,26 @@
 # FrameScope Monitor
 
-FrameScope Monitor 是一个面向 Windows 游戏性能排查的本地监测工具。它用于记录游戏运行期间的帧时间、FPS、后台进程占用、系统资源状态和报告生成过程，帮助定位掉帧、卡顿、后台进程干扰、采样异常和报告生成失败等问题。
+FrameScope Monitor 是一个面向 Windows 游戏玩家的本地性能排查工具。它会在游戏运行时记录帧时间、FPS、后台进程占用和系统资源变化，帮助你判断卡顿、掉帧、加载异常或后台程序抢占资源的原因。
 
-当前版本默认启动 WebView2 React 新界面。旧 WinForms 主界面已经从主程序构建中移除，不再作为默认界面或备用入口发布。
+当前版本默认打开 WebView2 React 新界面。旧 WinForms 主界面已移除，安装后直接启动软件就会进入新界面。
 
 ## 主要功能
 
-- 游戏性能监测：监听已启用的目标进程，目标出现后自动开始一次监测会话。
-- 监控目标管理：支持配置、启用、停用和保存目标 `.exe` 进程名。
-- PresentMon 帧数据采集：采集帧时间数据，用于分析平均 FPS、1% Low、0.1% Low、最低瞬时 FPS 和帧时间曲线。
-- 后台进程采样：记录进程 CPU、内存和磁盘 IO，辅助判断启动器、浏览器、录屏、系统服务等是否抢占资源。
-- 系统状态采样：记录 CPU、GPU、内存、磁盘、网络、显存、GPU 频率和功耗等指标。
-- HTML 交互报告：生成包含 FPS、帧时间、异常帧、后台进程、系统状态、诊断信息和原始数据引用的报告。
-- 诊断报告：生成 Markdown 和 JSON 诊断报告，并对隐私字段和敏感路径做脱敏处理。
-- WebView2 React UI：通过 C# WebView2 bridge 调用真实后端能力，支持监控启停、目标保存、报告列表、打开报告、打开目录、重新生成报告和生成诊断。
-
-## 启动方式
-
-安装后直接运行：
-
-```powershell
-FrameScopeMonitor.exe
-```
-
-这会打开 WebView2 React 新界面。`--web-ui` 参数仍被兼容接受，但已经不是必需参数：
-
-```powershell
-FrameScopeMonitor.exe --web-ui
-```
-
-WebView2 前端请求通过 C# host bridge 执行。配置写入、报告打开、目录打开、进程控制和监控启动/停止都由 C# 侧校验，不信任前端传入的任意本地路径。
-
-## 基本使用
-
-1. 启动 FrameScope Monitor。
-2. 打开“监控目标”，确认需要监测的游戏进程已启用。
-3. 如需新增目标，按真实 `.exe` 进程名添加或编辑目标。
-4. 点击启动监控。
-5. 正常启动游戏并进入实际场景。
-6. 退出游戏或停止监控后，等待报告生成完成。
-7. 在“报告”页打开 HTML 报告、报告目录，或重新生成报告 / 诊断报告。
-
-没有真实 PUBG 环境时，可以使用项目内 simulator 做链路验证；真实游戏结论仍建议用实际游戏会话手动确认。
-
-## 报告输出
-
-一次完整监测会在 run 目录中生成这些关键文件：
-
-```text
-presentmon.csv
-process-samples.csv
-system-samples.csv
-summary.json
-status.json
-report-progress.json
-charts\framescope-interactive-report.html
-charts\framescope-interactive-data.js
-charts\framescope-interactive-manifest.json
-```
-
-HTML 报告主要包含：
-
-- FPS、平均帧时间、1% Low、0.1% Low 和异常帧概览。
-- 帧时间曲线、FPS 曲线和可交互图表。
-- 后台进程 CPU、内存和 IO 占用。
-- CPU、GPU、内存、磁盘、网络、显存和功耗等系统采样。
-- 捕获状态、报告状态、诊断信息和原始数据路径。
+- 自动监听游戏进程：当配置好的游戏进程启动后，FrameScope Monitor 会开始记录一次监测会话。
+- 帧时间和 FPS 分析：记录平均 FPS、1% Low、0.1% Low、最低瞬时 FPS 和帧时间曲线。
+- 后台进程占用记录：查看浏览器、启动器、录屏、聊天软件或系统服务是否在游戏时抢占 CPU、内存或磁盘 IO。
+- 系统资源采样：记录 CPU、GPU、内存、磁盘、网络、显存、GPU 频率和功耗等指标。
+- 目标管理：在界面里启用、停用、编辑或新增需要监测的游戏进程。
+- 报告管理：查看历史报告、打开报告目录、重新生成报告。
+- 诊断信息：在排查复杂问题时生成诊断报告，方便整理当前软件状态和关键日志。
 
 ## 下载和安装
 
-从 GitHub Releases 下载发布产物：
+请到 GitHub Releases 下载最新版本。
 
-- `FrameScopeMonitor-Setup.exe`：推荐使用的安装程序。
-- `FrameScopeMonitor-Installer.zip`：包含安装程序、旧版本清理工具和发布说明文本。
-- `FrameScopeMonitor-LegacyCleanup.exe`：旧版本残留清理工具，只在需要清理早期版本残留时使用。
+- `FrameScopeMonitor-Setup.exe`：推荐下载。适合大多数用户，直接运行即可安装。
+- `FrameScopeMonitor-Installer.zip`：压缩包版本，内含安装程序和附带说明，适合想保留完整发布包的用户。
+- `FrameScopeMonitor-LegacyCleanup.exe`：旧版本清理工具。只有在早期版本残留影响使用时才需要运行。
 
 默认安装位置：
 
@@ -87,154 +34,88 @@ HTML 报告主要包含：
 %LOCALAPPDATA%\FrameScopeMonitorData\framescope-runs
 ```
 
-安装目录中的主要发布项：
+## 启动方式
+
+安装后从开始菜单、桌面快捷方式或安装目录运行：
 
 ```text
 FrameScopeMonitor.exe
-FrameScopeProcessSampler.exe
-FrameScopeSystemSampler.exe
-FrameScopeReportGenerator.exe
-FrameScopeUninstaller.exe
-Microsoft.Web.WebView2.Core.dll
-Microsoft.Web.WebView2.WinForms.dll
-WebView2Loader.dll
-tools\PresentMon-2.4.1-x64.exe
-frontend\index.html
-frontend\assets\*
-README-FrameScopeMonitor.txt
-Uninstall-FrameScopeMonitor.cmd
 ```
+
+软件会直接进入 WebView2 React 新界面，不需要额外启动参数。
+
+## 基本使用流程
+
+1. 打开 FrameScope Monitor。
+2. 进入“监控目标”，确认要监测的游戏已经启用。
+3. 如果列表里没有你的游戏，新增目标并填写真实的 `.exe` 进程名。
+4. 点击启动监控。
+5. 正常启动游戏并进入你想排查的场景。
+6. 结束游戏或停止监控后，等待报告生成。
+7. 在“报告”页打开 HTML 报告，或打开报告所在目录查看原始数据。
+
+为了让报告更有参考价值，建议在一次监测中只排查一个明确场景，例如“进入大厅后卡顿”“开局前两分钟掉帧”或“切换地图时加载慢”。
+
+## 报告里有什么
+
+FrameScope Monitor 会为每次监测生成一个报告目录。HTML 报告通常包含：
+
+- FPS 概览：平均 FPS、1% Low、0.1% Low、最低瞬时 FPS。
+- 帧时间曲线：查看卡顿发生的大致时间点。
+- 异常帧提示：帮助定位突然变慢或波动明显的片段。
+- 后台进程占用：显示游戏过程中 CPU、内存和磁盘 IO 占用较高的进程。
+- 系统资源变化：查看 CPU、GPU、内存、磁盘、网络、显存和功耗等趋势。
+- 原始数据引用：需要深入排查时，可以继续查看 CSV、JSON 和图表数据文件。
+
+报告重点不是给出一个简单结论，而是把游戏过程中的帧表现和系统状态放在同一条时间线上，方便你判断卡顿更像是游戏本身、后台进程、系统资源还是采集环境造成的。
+
+## 常见问题
+
+### 启动后没有自动记录怎么办？
+
+先确认“监控目标”里对应游戏已经启用，并且进程名填写的是实际运行的 `.exe` 名称。可以打开任务管理器查看真实进程名。
+
+### 为什么报告里没有帧数据？
+
+常见原因是游戏进程没有被正确识别、监测时间太短、游戏没有进入实际渲染场景，或者当前游戏/反作弊环境限制了帧数据采集。建议确认目标进程名后，重新进行一次完整游戏会话。
+
+### 为什么后台进程占用看起来很高？
+
+短时间峰值不一定就是卡顿原因。建议结合帧时间曲线看同一时间点是否也出现明显波动，再判断该进程是否可能影响游戏。
+
+### 报告打不开怎么办？
+
+可以在“报告”页打开报告目录，手动打开 `charts\framescope-interactive-report.html`。如果浏览器拦截本地文件，请换一个浏览器或把报告目录复制到普通用户目录后再打开。
+
+### 需要管理员权限吗？
+
+通常不需要。少数游戏或安全软件可能限制采集行为，如果数据一直为空，可以尝试用管理员权限启动 FrameScope Monitor。
+
+### 数据会上传吗？
+
+FrameScope Monitor 是本地工具。监测数据默认保存在你的本机数据目录中，软件不会把报告上传到云端。
 
 ## 从源码构建
 
-先验证并构建前端：
+源码构建适合开发者或想自行打包的用户。普通用户建议直接下载 Release 安装包。
+
+先准备并构建前端资源：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Run-Frontend.ps1 verify
 ```
 
-再构建主程序、采样器、报告生成器、卸载器、payload、安装器和 release zip：
+再构建主程序和安装包：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-构建产物输出到：
+构建完成后，安装包会输出到 `dist` 目录。
 
-```text
-dist\
-dist\FrameScopeMonitor-payload\
-dist\FrameScopeMonitor-Setup.exe
-dist\FrameScopeMonitor-Installer.zip
-dist\FrameScopeMonitor-LegacyCleanup.exe
-```
-
-构建要求：
+基本要求：
 
 - Windows。
-- .NET Framework `csc.exe`，通常位于 `%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`。
-- Microsoft WebView2 NuGet 包；缺失时先运行 `dotnet restore .\tools\WebView2Spike\WebView2Spike.csproj`。
-- Node.js。`tools\Run-Frontend.ps1` 会优先使用 `FRAMESCOPE_NODE_EXE`、Codex bundled Node 或系统 `node.exe`，并可自动 bootstrap npm。
-
-## 测试和验证
-
-重建 C# 测试：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Build-FrameScopeTests.ps1
-```
-
-常用回归验证：
-
-```powershell
-.\tests\FrameScopeReportProgressTests.exe
-.\tests\FrameScopeReportManifestTests.exe
-.\tests\FrameScopeWebBridgeTests.exe
-```
-
-图表采样测试：
-
-```powershell
-node .\tests\chart-sampling-tests.js
-```
-
-RenderProbe 构建：
-
-```powershell
-dotnet build .\tools\FrameScopeRenderProbe\FrameScopeRenderProbe.csproj -c Release --nologo
-```
-
-发布前还应验证：
-
-- `dist\FrameScopeMonitor-payload\frontend` 存在并包含 React dist。
-- 直接启动 payload 中的 `FrameScopeMonitor.exe` 会打开 WebView2 React UI。
-- WebView2 live smoke 覆盖 state、config、processes、reports、targets、monitor、diagnostics。
-- reduced motion 下没有页面混绘、空白帧或整页转圈等待。
-- Reports 窄布局中 `Size` 不竖向换行。
-- payload 与安装目录关键文件 SHA256 一致。
-- 结束后没有 FrameScope、PresentMon、采样器、报告生成器、WebView2 测试 user-data、Vite、esbuild 或项目 Node 残留进程。
-
-## WebView2 bridge 范围
-
-当前 WebView2 bridge 已接入：
-
-- `state.snapshot`
-- `config.get`
-- `config.save`
-- `processes.refresh`
-- `reports.list`
-- `reports.open`
-- `reports.openDirectory`
-- `reports.regenerate`
-- `targets.get`
-- `targets.save`
-- `monitor.start`
-- `monitor.stop`
-- `diagnostics.generate`
-
-安全边界：
-
-- 前端请求必须携带 `requestId`。
-- C# 响应必须回传匹配的 `requestId`。
-- 长任务先返回 accepted 或 in-flight，再通过事件通知完成或失败。
-- 前端不能直接指定任意报告路径、配置路径或目录路径。
-- 报告打开、目录打开、重新生成和诊断都由 C# host 重新解析和校验。
-
-## 项目结构
-
-```text
-src\app          主程序入口、WebView2 host、bridge、watcher、monitor session
-src\frontend     React / Vite / Framer Motion WebView2 前端
-src\core         配置、捕获规划、报告进度、目标编辑规则等共享核心逻辑
-src\monitoring   进程采样器和系统采样器
-src\diagnostics  诊断报告、日志清理和隐私脱敏
-src\reporting    HTML 报告生成器、CSV 解析、manifest、summary 和图表模板
-tests            C# 回归测试、Web bridge 测试和 chart sampling 测试
-tools            PresentMon、WebView2 spike、RenderProbe 和前端运行脚本
-packaging        安装器、卸载器、旧版本清理工具和安装说明
-docs             模块说明、实现报告、测试报告和交接文档
-```
-
-## GameLite 边界
-
-GameLite 自动轻量化已经从 FrameScope Monitor 主项目中分离。FrameScope 根目录保留的 GameLite 脚本是兼容入口，用于旧快捷方式、旧 WMI consumer 或用户手动入口。
-
-维护边界：
-
-- FrameScope C# 主程序、构建、测试、监测和报告生成不依赖 GameLite。
-- 不要把 GameLite 核心逻辑重新塞回 FrameScope 主项目。
-- 没有明确授权时，不要安装、删除或迁移 WMI trigger。
-- SGuard、WMI 和 GameLite 默认策略属于 GameLite 侧维护范围。
-
-## 不提交到仓库的内容
-
-以下内容属于本地运行、构建或验证输出，不应提交：
-
-- 本地配置和历史记录。
-- 运行日志。
-- 监测数据和 HTML 报告输出。
-- `dist` 打包产物。
-- `artifacts` 截图和测试证据。
-- `src\frontend\node_modules` 和 `src\frontend\dist`。
-- `tools\.cache`。
-- 根目录构建生成的 `.exe`、WebView2 DLL、`bin`、`obj` 等输出。
+- .NET Framework 编译器。
+- Node.js。
+- Microsoft WebView2 运行环境。
