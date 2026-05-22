@@ -114,4 +114,12 @@ Invoke-TestBuild `
         'tests\FrameScopeWebBridgeTests.cs'
     )
 
+Invoke-TestBuild `
+    -OutputName 'FrameScopeWebView2RuntimeTests.exe' `
+    -References @('System.Windows.Forms.dll') `
+    -Sources @(
+        'src\app\FrameScopeWebView2Runtime.cs',
+        'tests\FrameScopeWebView2RuntimeTests.cs'
+    )
+
 'FrameScope tests rebuilt.'

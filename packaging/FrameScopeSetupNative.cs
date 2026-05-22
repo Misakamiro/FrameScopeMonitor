@@ -13,16 +13,26 @@ using Microsoft.Win32;
 internal static class FrameScopeSetupNative
 {
     private const string ResourceName = "FrameScopePayload";
-    private const string AppVersion = "1.1.2";
+    private const string WebView2RuntimeInstallerResourceName = "FrameScopeWebView2RuntimeInstaller";
+    private const string AppVersion = "1.1.3";
     private const string Publisher = "Misakamiro";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\FrameScopeMonitor";
     private static InstallerForm form;
 
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        if (HasArg(args, "/quiet") || HasArg(args, "--quiet"))
+        {
+            string dataRoot = GetArgValue(args, "--data-root", GetExistingOrDefaultDataRoot());
+            form = new QuietInstallerForm();
+            Install(dataRoot);
+            Environment.ExitCode = ((QuietInstallerForm)form).Succeeded ? 0 : 1;
+            return;
+        }
+
         form = new InstallerForm();
         Application.Run(form);
     }
@@ -30,6 +40,26 @@ internal static class FrameScopeSetupNative
     internal static void BeginInstall(string dataRoot)
     {
         ThreadPool.QueueUserWorkItem(_ => Install(dataRoot));
+    }
+
+    private static bool HasArg(string[] args, string value)
+    {
+        if (args == null) return false;
+        foreach (string arg in args)
+        {
+            if (arg.Equals(value, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private static string GetArgValue(string[] args, string name, string fallback)
+    {
+        if (args == null) return fallback;
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals(name, StringComparison.OrdinalIgnoreCase)) return args[i + 1];
+        }
+        return fallback;
     }
 
     private static void Install(string requestedDataRoot)
@@ -46,6 +76,18 @@ internal static class FrameScopeSetupNative
 
             Directory.CreateDirectory(appDir);
             Log(logPath, "install-start dataRoot=" + dataRoot);
+            var assembly = Assembly.GetExecutingAssembly();
+            bool hasBundledRuntimeInstaller = HasManifestResource(assembly, WebView2RuntimeInstallerResourceName);
+            FrameScopeWebView2RuntimeStatus runtimeStatus = FrameScopeWebView2Runtime.GetRuntimeStatus();
+            Log(logPath, "webview2-runtime available=" + runtimeStatus.IsAvailable + " version=" + runtimeStatus.Version + " source=" + runtimeStatus.Source + " fullPackage=" + hasBundledRuntimeInstaller);
+            if (FrameScopeWebView2Runtime.ShouldInstallBundledRuntime(hasBundledRuntimeInstaller, runtimeStatus))
+            {
+                InstallBundledWebView2Runtime(assembly, logPath);
+            }
+            else if (!runtimeStatus.IsAvailable)
+            {
+                Log(logPath, "webview2-runtime-missing normal-package");
+            }
             Update("正在停止旧的 FrameScope Monitor 进程...", 2);
             foreach (var proc in Process.GetProcessesByName("FrameScopeMonitor"))
             {
@@ -60,7 +102,6 @@ internal static class FrameScopeSetupNative
             MigrateDataRoot(appDir, dataRoot);
 
             Update("正在读取内置安装包...", 5);
-            var assembly = Assembly.GetExecutingAssembly();
             using (var payload = assembly.GetManifestResourceStream(ResourceName))
             {
                 if (payload == null)
@@ -141,6 +182,74 @@ internal static class FrameScopeSetupNative
             throw new InvalidOperationException("安装包内存在非法路径：" + relative);
         }
         return fullPath;
+    }
+
+    private static bool HasManifestResource(Assembly assembly, string resourceName)
+    {
+        if (assembly == null || string.IsNullOrWhiteSpace(resourceName)) return false;
+        foreach (string name in assembly.GetManifestResourceNames())
+        {
+            if (string.Equals(name, resourceName, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static void InstallBundledWebView2Runtime(Assembly assembly, string logPath)
+    {
+        Update("正在安装 Microsoft Edge WebView2 Runtime...", 1);
+        string tempDir = Path.Combine(Path.GetTempPath(), "FrameScopeMonitor-WebView2-" + Guid.NewGuid().ToString("N"));
+        string installerPath = Path.Combine(tempDir, "MicrosoftEdgeWebView2RuntimeInstallerX64.exe");
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            using (Stream resource = assembly.GetManifestResourceStream(WebView2RuntimeInstallerResourceName))
+            {
+                if (resource == null)
+                {
+                    throw new InvalidOperationException("完整安装包损坏：找不到内置 WebView2 Runtime 安装器。");
+                }
+
+                using (FileStream output = File.Create(installerPath))
+                {
+                    resource.CopyTo(output);
+                }
+            }
+
+            Log(logPath, "webview2-runtime-install-start " + installerPath);
+            using (Process process = Process.Start(new ProcessStartInfo
+            {
+                FileName = installerPath,
+                Arguments = "/silent /install",
+                WorkingDirectory = tempDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            }))
+            {
+                if (process == null)
+                {
+                    throw new InvalidOperationException("无法启动 WebView2 Runtime 安装器。");
+                }
+
+                process.WaitForExit();
+                Log(logPath, "webview2-runtime-install-exit " + process.ExitCode);
+                if (process.ExitCode != 0)
+                {
+                    throw new InvalidOperationException("WebView2 Runtime 静默安装失败，退出码：" + process.ExitCode);
+                }
+            }
+
+            FrameScopeWebView2RuntimeStatus afterInstall = FrameScopeWebView2Runtime.GetRuntimeStatus();
+            Log(logPath, "webview2-runtime-after-install available=" + afterInstall.IsAvailable + " version=" + afterInstall.Version + " source=" + afterInstall.Source);
+            if (!afterInstall.IsAvailable)
+            {
+                throw new InvalidOperationException("WebView2 Runtime 安装完成后仍未检测到可用版本。");
+            }
+        }
+        finally
+        {
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true); } catch { }
+        }
     }
 
     private static void CleanStaleComponents(string appDir)
@@ -449,7 +558,7 @@ internal static class FrameScopeSetupNative
         shortcutType.InvokeMember("Save", BindingFlags.InvokeMethod, null, shortcut, null);
     }
 
-    internal sealed class InstallerForm : Form
+    internal class InstallerForm : Form
     {
         private readonly Label status;
         private readonly TextBox dataRootText;
@@ -593,7 +702,7 @@ internal static class FrameScopeSetupNative
             }
         }
 
-        public void UpdateProgress(string text, int percent)
+        public virtual void UpdateProgress(string text, int percent)
         {
             if (InvokeRequired)
             {
@@ -604,7 +713,7 @@ internal static class FrameScopeSetupNative
             progress.Value = percent;
         }
 
-        public void Finish(bool success, string message)
+        public virtual void Finish(bool success, string message)
         {
             if (InvokeRequired)
             {
@@ -624,6 +733,22 @@ internal static class FrameScopeSetupNative
                 installButton.Enabled = true;
                 MessageBox.Show(this, message, "安装失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+    }
+
+    internal sealed class QuietInstallerForm : InstallerForm
+    {
+        public bool Succeeded { get; private set; }
+
+        public override void UpdateProgress(string text, int percent)
+        {
+            Console.WriteLine(percent + "% " + text);
+        }
+
+        public override void Finish(bool success, string message)
+        {
+            Succeeded = success;
+            Console.WriteLine((success ? "SUCCESS " : "FAILED ") + message);
         }
     }
 }

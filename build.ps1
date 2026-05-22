@@ -22,6 +22,8 @@ foreach ($requiredWebView2File in @($webView2Core, $webView2WinForms, $webView2L
         throw "WebView2 dependency missing: $requiredWebView2File"
     }
 }
+$webView2StandaloneUrl = 'https://go.microsoft.com/fwlink/?linkid=2124701'
+$webView2StandaloneInstaller = Join-Path $root 'packaging\MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
 
 Push-Location $root
 try {
@@ -54,6 +56,7 @@ try {
         .\src\app\FrameScopeWebBridge.Reports.cs `
         .\src\app\FrameScopeWebBridge.Diagnostics.cs `
         .\src\app\FrameScopeWebBridge.Targets.cs `
+        .\src\app\FrameScopeWebView2Runtime.cs `
         .\src\app\FrameScopeNativeMonitor.cs `
         .\src\app\FrameScopeNativeMonitor.WebHost.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.cs `
@@ -180,8 +183,34 @@ try {
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
         /resource:$payloadZip,FrameScopePayload `
+        .\src\app\FrameScopeWebView2Runtime.cs `
         .\packaging\FrameScopeSetupNative.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeMonitor-Setup.exe" }
+
+    if (-not (Test-Path -LiteralPath $webView2StandaloneInstaller)) {
+        Write-Host "Downloading WebView2 Evergreen Standalone Installer x64..."
+        Invoke-WebRequest -UseBasicParsing -Uri $webView2StandaloneUrl -OutFile $webView2StandaloneInstaller
+    }
+    if (-not (Test-Path -LiteralPath $webView2StandaloneInstaller)) {
+        throw "WebView2 Evergreen Standalone Installer x64 was not found: $webView2StandaloneInstaller"
+    }
+    $runtimeInstallerInfo = Get-Item -LiteralPath $webView2StandaloneInstaller
+    if ($runtimeInstallerInfo.Length -lt 50000000) {
+        throw "WebView2 installer is too small for the offline x64 standalone package ($($runtimeInstallerInfo.Length) bytes): $webView2StandaloneInstaller"
+    }
+
+    $fullSetupExe = Join-Path $dist 'FrameScopeMonitor-Full-Setup.exe'
+    & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /out:$fullSetupExe `
+        /reference:System.Windows.Forms.dll `
+        /reference:System.Drawing.dll `
+        /reference:System.IO.Compression.dll `
+        /reference:System.IO.Compression.FileSystem.dll `
+        /resource:$payloadZip,FrameScopePayload `
+        /resource:$webView2StandaloneInstaller,FrameScopeWebView2RuntimeInstaller `
+        .\src\app\FrameScopeWebView2Runtime.cs `
+        .\packaging\FrameScopeSetupNative.cs
+    if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeMonitor-Full-Setup.exe" }
 
     $legacyCleanupExe = Join-Path $dist 'FrameScopeMonitor-LegacyCleanup.exe'
     $distReadme = Join-Path $dist 'README-FrameScopeMonitor.txt'
@@ -190,9 +219,10 @@ try {
 
     $releaseZip = Join-Path $dist 'FrameScopeMonitor-Installer.zip'
     if (Test-Path -LiteralPath $releaseZip) { Remove-Item -LiteralPath $releaseZip -Force }
-    Compress-Archive -LiteralPath @($setupExe, $legacyCleanupExe, $distReadme) -DestinationPath $releaseZip -Force
+    Compress-Archive -LiteralPath @($setupExe, $fullSetupExe, $legacyCleanupExe, $distReadme) -DestinationPath $releaseZip -Force
 
     "Build complete: $setupExe"
+    "Full setup complete: $fullSetupExe"
 }
 finally {
     Pop-Location

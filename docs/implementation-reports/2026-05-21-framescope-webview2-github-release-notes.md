@@ -1,55 +1,34 @@
-# FrameScope Monitor v1.1.2 更新说明
+# FrameScope Monitor v1.1.3 更新说明
 
-本次发布把 WebView2 React 新界面切换为默认界面，并移除旧 WinForms 主界面的构建路径。安装后直接打开 `FrameScopeMonitor.exe` 就会进入新界面，不再需要 `--web-ui` 参数。
+FrameScope Monitor v1.1.3 默认使用新的 WebView2 React 界面，并新增完整安装包。这个版本重点解决安装后启动环境不一致的问题：普通安装包适合大多数 Windows 系统，完整安装包适合缺少 WebView2 Runtime、离线环境或精简系统。
 
 ## 本次更新
 
-- 默认启动 WebView2 React UI：`FrameScopeMonitor.exe` 直接加载安装目录中的 `frontend`。
-- 移除旧 WinForms 主界面代码和主程序构建引用，避免安装后继续打开旧界面。
-- 保留 watcher、monitor session、PresentMon 采样、报告生成、诊断报告、GameLite 边界等后端行为不变。
-- React / Vite / Framer Motion 前端会打入 `dist\FrameScopeMonitor-payload\frontend`。
-- C# WebView2 bridge 使用 `requestId` 对齐前端请求和 C# 响应。
-- WebView2 bridge 已接入 `state.snapshot`、`config.get`、`config.save`、`processes.refresh`、`reports.list`、`reports.open`、`reports.openDirectory`、`reports.regenerate`、`targets.get`、`targets.save`、`monitor.start`、`monitor.stop` 和 `diagnostics.generate`。
-- 报告打开、目录打开、重新生成、目标配置保存、诊断生成和监控启停都由 C# host 校验，不信任前端传入的本地路径。
-- 修复页面切换时的新旧页面混绘、空白帧和整页转圈等待问题。
-- 修复前端依赖复现问题，`tools\Run-Frontend.ps1 verify` 可以完成安装、类型检查、测试和构建。
-- 修复 Reports 页面 `Size` 在窄布局下竖向换行的问题。
-- 修复 packaged payload 未包含 React dist 的打包缺口。
-- 安装器版本提升到 `1.1.2`。
+- 默认启动 WebView2 React 新界面，安装后直接打开 `FrameScopeMonitor.exe` 即可使用。
+- 旧 WinForms 主界面已移除，界面和 Windows 桌面宿主的视觉体验更统一。
+- 优化页面切换过程，减少切换时的空白、闪动和卡顿感。
+- Reports、Targets、Settings、Diagnostics 等页面继续接入真实功能，可查看报告、管理目标、保存设置并生成诊断信息。
+- 安装包已修复新界面资源打包问题，安装完成后默认就是新界面。
+- 新增 `FrameScopeMonitor-Full-Setup.exe`，内置 Microsoft Edge WebView2 Runtime 安装器。
 
-## 验证内容
+## 下载建议
 
-本轮发布前已重新执行并通过：
+- 推荐大多数用户下载 `FrameScopeMonitor-Setup.exe`。
+- 如果打开失败，或系统提示缺少 Microsoft Edge WebView2 Runtime，请下载 `FrameScopeMonitor-Full-Setup.exe`。
+- `FrameScopeMonitor-Installer.zip` 适合想保存完整发布包的用户。
+- `FrameScopeMonitor-LegacyCleanup.exe` 只用于清理早期版本残留，正常安装不需要运行。
 
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Run-Frontend.ps1 verify`
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1`
-- `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Build-FrameScopeTests.ps1`
-- `.\tests\FrameScopeReportProgressTests.exe`
-- `.\tests\FrameScopeReportManifestTests.exe`
-- `.\tests\FrameScopeWebBridgeTests.exe`
-- bundled Node 运行 `.\tests\chart-sampling-tests.js`
-- `dotnet build .\tools\FrameScopeRenderProbe\FrameScopeRenderProbe.csproj -c Release --nologo`
-- packaged payload WebView2 live smoke
-- 安装目录 WebView2 live smoke
-- Reports open / openDirectory / regenerate 真实 UI 点击链路
-- reduced motion 验证
-- payload 与安装目录关键文件 SHA256 比对
-- 残留进程检查
+## WebView2 Runtime 说明
 
-## 发布产物
+FrameScope Monitor 的新界面依赖 Microsoft Edge WebView2 Runtime。大多数 Windows 系统已经自带该组件。
 
-- `FrameScopeMonitor-Setup.exe`
-- `FrameScopeMonitor-Installer.zip`
-- `FrameScopeMonitor-LegacyCleanup.exe`
+完整安装包会先检查系统是否已有 WebView2 Runtime。已经存在时不会重复安装；缺少时会先安装 Runtime，再继续安装 FrameScope Monitor。
 
-## 安装和启动
+卸载 FrameScope Monitor 不会删除系统里的 WebView2 Runtime，因为它可能被其他软件共用。
 
-- 推荐下载 `FrameScopeMonitor-Setup.exe` 并运行安装。
-- 默认安装目录是 `%LOCALAPPDATA%\FrameScopeMonitor`。
-- 默认数据目录是 `%LOCALAPPDATA%\FrameScopeMonitorData\framescope-runs`。
-- 安装后直接运行 `FrameScopeMonitor.exe`，默认进入 WebView2 React 新界面。
+## 校验信息
 
-## 已知说明
-
-- 本次发布不改变监测采样语义、报告数据结构、诊断报告语义、GameLite、WMI 或 SGuard 行为。
-- 本机开发环境更新使用的是 payload copy 同步，不是完整交互安装器流程；Release 中的安装器是本轮重新构建的发布产物。
+- `FrameScopeMonitor-Setup.exe`: `AB483C71C349A1B69AE876B0553D3BA7FCCA364BD6167DC3531D5A58B4AA70D0`
+- `FrameScopeMonitor-Full-Setup.exe`: `806CF3DF8AE8FD2F03257FDF999064E256D4DDC320DEEF6944F67DFEC5845D98`
+- `FrameScopeMonitor-Installer.zip`: `1DB395F98A14CBC945C2A99264FB2FEB2F8B796FDC5F4611D3A79ECE673F4F07`
+- `FrameScopeMonitor-LegacyCleanup.exe`: `96B5DF9D2663CAF569AC56D7CEE1BFA08C6640C9EA2F002CB0C735811AD5F974`

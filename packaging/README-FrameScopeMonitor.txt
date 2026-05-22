@@ -6,6 +6,17 @@ FrameScope Monitor 安装说明
 
   FrameScopeMonitor.exe
 
+安装包选择：
+  FrameScopeMonitor-Setup.exe
+    推荐普通用户下载。适合大多数已经带有 Microsoft Edge WebView2 Runtime 的系统。
+
+  FrameScopeMonitor-Full-Setup.exe
+    完整安装包，内置 Microsoft Edge WebView2 Runtime 安装器。
+    适合打开失败、提示缺少 WebView2 Runtime、离线环境或精简系统。
+    安装器会先检测 WebView2 Runtime；已存在时不会重复安装，缺失时会静默安装 Runtime 后继续安装 FrameScope Monitor。
+
+如果启动时提示系统缺少 Microsoft Edge WebView2 Runtime，请安装完整安装包，或前往 Microsoft 官网安装 WebView2 Runtime。
+
 主要文件：
 
   FrameScopeMonitor.exe
@@ -39,3 +50,4 @@ FrameScope Monitor 安装说明
 卸载：
 
   运行 Uninstall-FrameScopeMonitor.cmd 或 FrameScopeUninstaller.exe。
+  卸载 FrameScope Monitor 不会删除系统里的 Microsoft Edge WebView2 Runtime。
