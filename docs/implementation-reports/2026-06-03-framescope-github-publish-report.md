@@ -8,7 +8,7 @@ Final status: PASS
 
 ## Scope
 
-This publish pass updated GitHub-facing documentation, regenerated setup artifacts, reran the requested validation commands, and prepared the commit/push to `origin main`.
+This publish pass updated GitHub-facing documentation, regenerated setup artifacts, reran the requested validation commands, and pushed the release documentation update to `origin main`.
 
 No GitHub Release was created or updated. No installer was run in this pass. No real game or BF6 validation was performed in this pass.
 
@@ -94,9 +94,11 @@ Command logs were written to local-only `smoke-temp\publish-20260603\logs` and a
 
 ## Git result
 
-Commit hash captured before self-reference amend: `4efdeb37b0ee9eaa78b172c4c495484face556a6`. The final assistant response records the final HEAD hash because a Git commit cannot contain its own final content-addressed hash inside a file in that same commit.
+Release documentation commit pushed to GitHub: `a31bac557feeec42a66e9ee897044c136b8ff7b1`.
 
-Push result: pending until `git push origin main` completes. The final assistant response records the actual push result.
+Push result: PASS, `git push origin main` completed successfully with `a17cd18..a31bac5  main -> main`.
+
+This report was updated after the release documentation push so the report itself records the push result. The final assistant response records the final HEAD hash for this report-finalization commit because a Git commit cannot contain its own final content-addressed hash inside the file being committed.
 
 ## Explicit non-actions
 
