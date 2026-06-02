@@ -15,18 +15,25 @@ public static class FrameScopeWebBridgeTests
         {
             MissingRequestIdReturnsContractError();
             StateSnapshotReturnsMatchingResponse();
+            StateSnapshotIncludesHostWindowState();
             ConfigGetReadsRealConfig();
             ConfigSaveWritesOnlyConfiguredPath();
+            ConfigSaveRoundTripsThemeWindowAndCpuTelemetryFields();
             ProcessesRefreshReturnsAcceptedThenEvent();
             MonitorStartReturnsAcceptedThenEvent();
             MonitorStopReturnsAcceptedThenEvent();
             ReportsListReadsValidatedHistory();
+            ReportsListSkipsNoisyFallbackButKeepsHistoryAndExpectedReports();
             ReportOpenRejectsFrontendPathPayload();
             ReportOpenUsesValidatedReportId();
             ReportOpenDirectoryUsesValidatedReportId();
+            LogsOpenDirectoryRejectsFrontendPathPayload();
+            LogsOpenDirectoryUsesHostResolvedLogDirectory();
+            LogsOpenDirectoryCreatesMissingLogDirectory();
             ReportRegenerateReturnsAcceptedThenProgressEvent();
             DiagnosticsGenerateReturnsAcceptedThenProgressEvent();
             TargetsGetAndSaveRoundTripThroughConfigStore();
+            TargetsSavePreservesThemeWindowAndCpuTelemetryFields();
             Console.WriteLine("FrameScopeWebBridgeTests: PASS");
             return 0;
         }
@@ -61,6 +68,40 @@ public static class FrameScopeWebBridgeTests
         AssertEqual("ready", AsString(payload, "bridgeStatus"), "snapshot bridge status");
         AssertEqual(false, AsBool((Dictionary<string, object>)payload["watcher"], "running"), "snapshot watcher running");
         AssertEqual(true, AsBool((Dictionary<string, object>)payload["config"], "exists"), "snapshot config exists");
+    }
+
+    private static void StateSnapshotIncludesHostWindowState()
+    {
+        string root = CreateTempRoot("state-snapshot-host");
+        string configPath = Path.Combine(root, "framescope-config.json");
+        FrameScopeConfig config = FrameScopeConfigStore.CreateDefaultConfig();
+        config.CloseWindowBehavior = "exit";
+        config.TrayEnabled = true;
+        FrameScopeConfigStore.Save(configPath, config);
+
+        var bridge = new FrameScopeWebBridge(new FrameScopeWebBridgeOptions
+        {
+            Root = root,
+            ConfigPath = configPath,
+            StatePath = Path.Combine(root, "framescope-watcher-state.json"),
+            HistoryPath = Path.Combine(root, "framescope-history.jsonl"),
+            HostStateProvider = delegate
+            {
+                return new FrameScopeWebBridgeHostState
+                {
+                    WindowVisible = false,
+                    TrayAvailable = true
+                };
+            }
+        }, null);
+
+        var response = Decode(bridge.HandleJsonMessage(Request("state-host-1", "state.snapshot", "{}")));
+        var payload = (Dictionary<string, object>)response["payload"];
+        var host = (Dictionary<string, object>)payload["host"];
+
+        AssertEqual(false, AsBool(host, "windowVisible"), "snapshot host window visible");
+        AssertEqual(true, AsBool(host, "trayAvailable"), "snapshot host tray available");
+        AssertEqual("exit", AsString(host, "closeWindowBehavior"), "snapshot host close behavior");
     }
 
     private static void ConfigGetReadsRealConfig()
@@ -112,6 +153,41 @@ public static class FrameScopeWebBridgeTests
         AssertEqual(true, AsBool(response, "ok"), "save ok");
         AssertEqual(false, saved.OpenReportOnComplete, "saved auto open");
         AssertEqual("SavedGame.exe", saved.Targets[0].ProcessName, "saved target");
+    }
+
+    private static void ConfigSaveRoundTripsThemeWindowAndCpuTelemetryFields()
+    {
+        string root = CreateTempRoot("config-save-theme");
+        string configPath = Path.Combine(root, "framescope-config.json");
+        FrameScopeConfigStore.Save(configPath, FrameScopeConfigStore.CreateDefaultConfig());
+
+        var bridge = CreateBridge(root);
+        string payload = "{\"config\":{\"DataRoot\":\"" + Escape(Path.Combine(root, "runs")) + "\",\"TelemetrySampleIntervalMs\":1500,\"ThemeMode\":\"dark\",\"CloseWindowBehavior\":\"exit\",\"TrayEnabled\":false,\"CpuTelemetry\":{\"CollectPerCoreFrequency\":true,\"CollectCpuVoltage\":true,\"PerCoreSampleIntervalMs\":1500,\"PerCoreVoltageSampleIntervalMs\":1750,\"VoltageProvider\":\"disabled\"},\"Targets\":[{\"Enabled\":true,\"Name\":\"Saved Game\",\"ProcessName\":\"SavedGame.exe\",\"SampleIntervalMs\":300,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}]}}";
+        var response = Decode(bridge.HandleJsonMessage(Request("save-theme-1", "config.save", payload)));
+        var payloadMap = (Dictionary<string, object>)response["payload"];
+        var returnedConfig = (Dictionary<string, object>)payloadMap["config"];
+        var returnedTelemetry = (Dictionary<string, object>)returnedConfig["CpuTelemetry"];
+        FrameScopeConfig saved = FrameScopeConfigStore.Load(configPath);
+
+        AssertEqual(true, AsBool(response, "ok"), "theme config save ok");
+        AssertEqual("dark", saved.ThemeMode, "saved theme mode");
+        AssertEqual("exit", saved.CloseWindowBehavior, "saved close behavior");
+        AssertEqual(false, saved.TrayEnabled, "saved tray enabled");
+        AssertEqual(true, saved.CpuTelemetry.CollectPerCoreFrequency, "saved per-core frequency toggle");
+        AssertEqual(true, saved.CpuTelemetry.CollectCpuVoltage, "saved voltage toggle");
+        AssertEqual(1500, saved.TelemetrySampleIntervalMs, "saved global telemetry interval");
+        AssertEqual(1500, saved.CpuTelemetry.PerCoreSampleIntervalMs, "saved per-core interval");
+        AssertEqual(1500, saved.CpuTelemetry.PerCoreVoltageSampleIntervalMs, "saved per-core voltage interval");
+        AssertEqual("disabled", saved.CpuTelemetry.VoltageProvider, "saved voltage provider");
+        AssertEqual("dark", AsString(returnedConfig, "ThemeMode"), "returned theme mode");
+        AssertEqual("exit", AsString(returnedConfig, "CloseWindowBehavior"), "returned close behavior");
+        AssertEqual(false, AsBool(returnedConfig, "TrayEnabled"), "returned tray enabled");
+        AssertEqual(true, AsBool(returnedTelemetry, "CollectPerCoreFrequency"), "returned per-core toggle");
+        AssertEqual(true, AsBool(returnedTelemetry, "CollectCpuVoltage"), "returned voltage toggle");
+        AssertEqual(1500, AsInt(returnedConfig, "TelemetrySampleIntervalMs"), "returned global telemetry interval");
+        AssertEqual(1500, AsInt(returnedTelemetry, "PerCoreSampleIntervalMs"), "returned per-core interval");
+        AssertEqual(1500, AsInt(returnedTelemetry, "PerCoreVoltageSampleIntervalMs"), "returned per-core voltage interval");
+        AssertEqual("disabled", AsString(returnedTelemetry, "VoltageProvider"), "returned voltage provider");
     }
 
     private static void ProcessesRefreshReturnsAcceptedThenEvent()
@@ -219,6 +295,44 @@ public static class FrameScopeWebBridgeTests
         AssertEqual(true, AsBool(report, "canOpenReport"), "report can open");
     }
 
+    private static void ReportsListSkipsNoisyFallbackButKeepsHistoryAndExpectedReports()
+    {
+        string root = CreateTempRoot("reports-list-noise");
+        CreateReportRun(root, "History Game", true);
+        CreateReportRun(root, "Discovered Game", false);
+
+        string dataRoot = Path.Combine(root, "runs");
+        string noisyRun = Path.Combine(dataRoot, "node_modules", "package", "fake-run");
+        string noisyCharts = Path.Combine(noisyRun, "charts");
+        Directory.CreateDirectory(noisyCharts);
+        File.WriteAllText(Path.Combine(noisyRun, "status.json"), "{\"Phase\":\"done\",\"ReportKind\":\"full\",\"ReportFrameCount\":999}");
+        File.WriteAllText(Path.Combine(noisyRun, "presentmon.csv"), "Application,MsBetweenPresents" + Environment.NewLine);
+        File.WriteAllText(Path.Combine(noisyCharts, "framescope-interactive-report.html"), "<html><body>noise</body></html>");
+        File.SetLastWriteTime(Path.Combine(noisyCharts, "framescope-interactive-report.html"), DateTime.Now.AddMinutes(10));
+
+        var bridge = CreateBridge(root);
+        var response = Decode(bridge.HandleJsonMessage(Request("reports-list-noise-1", "reports.list", "{}")));
+        var payload = (Dictionary<string, object>)response["payload"];
+        var reports = (IList)payload["reports"];
+
+        bool foundHistory = false;
+        bool foundDiscovered = false;
+        bool foundNoise = false;
+        foreach (object item in reports)
+        {
+            var report = (Dictionary<string, object>)item;
+            string game = AsString(report, "game");
+            if (game == "History Game") foundHistory = true;
+            if (game == "Discovered Game") foundDiscovered = true;
+            if (game == "package" || AsString(report, "runDir").IndexOf("node_modules", StringComparison.OrdinalIgnoreCase) >= 0) foundNoise = true;
+        }
+
+        AssertEqual(true, AsBool(response, "ok"), "reports list with noise ok");
+        AssertEqual(true, foundHistory, "history report remains visible");
+        AssertEqual(true, foundDiscovered, "expected-layout report remains discoverable");
+        AssertEqual(false, foundNoise, "node_modules report fallback should be skipped");
+    }
+
     private static void ReportOpenRejectsFrontendPathPayload()
     {
         string root = CreateTempRoot("report-open-path");
@@ -257,6 +371,44 @@ public static class FrameScopeWebBridgeTests
         AssertEqual(true, AsBool(response, "ok"), "report open directory ok");
         AssertEqual(1, adapter.OpenDirectoryCount, "report open directory adapter count");
         AssertEqual(runDir, adapter.LastDirectoryPath, "opened directory path");
+    }
+
+    private static void LogsOpenDirectoryRejectsFrontendPathPayload()
+    {
+        string root = CreateTempRoot("logs-open-path");
+        var bridge = CreateBridge(root);
+        string payload = "{\"path\":\"" + Escape(Path.Combine(root, "other")) + "\"}";
+        var response = Decode(bridge.HandleJsonMessage(Request("logs-open-path-1", "logs.openDirectory", payload)));
+        AssertEqual(false, AsBool(response, "ok"), "logs open path rejected ok");
+        AssertEqual("path_not_allowed", AsString((Dictionary<string, object>)response["error"], "code"), "logs open path rejected code");
+    }
+
+    private static void LogsOpenDirectoryUsesHostResolvedLogDirectory()
+    {
+        string root = CreateTempRoot("logs-open-dir");
+        var adapter = new RecordingHostAdapter();
+        var bridge = CreateBridge(root, null, adapter);
+
+        var response = Decode(bridge.HandleJsonMessage(Request("logs-open-1", "logs.openDirectory", "{}")));
+        var payload = (Dictionary<string, object>)response["payload"];
+
+        AssertEqual(true, AsBool(response, "ok"), "logs open directory ok");
+        AssertEqual(1, adapter.OpenLogsDirectoryCount, "logs open adapter count");
+        AssertEqual(root, adapter.LastLogDirectoryPath, "opened host-resolved log directory");
+        AssertEqual(root, AsString(payload, "directory"), "logs response directory");
+    }
+
+    private static void LogsOpenDirectoryCreatesMissingLogDirectory()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "FrameScopeWebBridgeTests", "logs-missing", Guid.NewGuid().ToString("N"));
+        var adapter = new RecordingHostAdapter();
+        var bridge = CreateBridge(root, null, adapter);
+
+        var response = Decode(bridge.HandleJsonMessage(Request("logs-open-missing-1", "logs.openDirectory", "{}")));
+
+        AssertEqual(true, AsBool(response, "ok"), "logs open missing directory ok");
+        AssertEqual(true, Directory.Exists(root), "host adapter created missing log directory");
+        AssertEqual(root, adapter.LastLogDirectoryPath, "created log directory path");
     }
 
     private static void ReportRegenerateReturnsAcceptedThenProgressEvent()
@@ -328,6 +480,42 @@ public static class FrameScopeWebBridgeTests
         AssertEqual(1, saved.Targets.Count, "saved targets count");
         AssertEqual("TargetSaved.exe", saved.Targets[0].ProcessName, "saved target process");
         AssertEqual(false, saved.OpenReportOnComplete, "saved global auto open");
+    }
+
+    private static void TargetsSavePreservesThemeWindowAndCpuTelemetryFields()
+    {
+        string root = CreateTempRoot("targets-save-theme");
+        string configPath = Path.Combine(root, "framescope-config.json");
+        FrameScopeConfig config = FrameScopeConfigStore.CreateDefaultConfig();
+        config.TelemetrySampleIntervalMs = 1500;
+        config.ThemeMode = "dark";
+        config.CloseWindowBehavior = "exit";
+        config.TrayEnabled = false;
+        config.CpuTelemetry = new FrameScopeCpuTelemetryConfig
+        {
+            CollectPerCoreFrequency = true,
+            CollectCpuVoltage = true,
+            PerCoreSampleIntervalMs = 1500,
+            PerCoreVoltageSampleIntervalMs = 1500,
+            VoltageProvider = "disabled"
+        };
+        FrameScopeConfigStore.Save(configPath, config);
+
+        var bridge = CreateBridge(root);
+        string payload = "{\"targets\":[{\"Enabled\":true,\"Name\":\"Target Saved\",\"ProcessName\":\"TargetSaved.exe\",\"SampleIntervalMs\":275,\"ProcessSampleIntervalMs\":275,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":false}],\"dataRoot\":\"" + Escape(Path.Combine(root, "runs")) + "\",\"openReportOnComplete\":false}";
+        var saveResponse = Decode(bridge.HandleJsonMessage(Request("targets-save-theme-1", "targets.save", payload)));
+        FrameScopeConfig saved = FrameScopeConfigStore.Load(configPath);
+
+        AssertEqual(true, AsBool(saveResponse, "ok"), "targets theme save ok");
+        AssertEqual("dark", saved.ThemeMode, "targets save should preserve theme mode");
+        AssertEqual("exit", saved.CloseWindowBehavior, "targets save should preserve close behavior");
+        AssertEqual(false, saved.TrayEnabled, "targets save should preserve tray enabled");
+        AssertEqual(true, saved.CpuTelemetry.CollectPerCoreFrequency, "targets save should preserve per-core frequency toggle");
+        AssertEqual(true, saved.CpuTelemetry.CollectCpuVoltage, "targets save should preserve voltage toggle");
+        AssertEqual(1500, saved.TelemetrySampleIntervalMs, "targets save should preserve global telemetry interval");
+        AssertEqual(1500, saved.CpuTelemetry.PerCoreSampleIntervalMs, "targets save should preserve per-core interval");
+        AssertEqual(1500, saved.CpuTelemetry.PerCoreVoltageSampleIntervalMs, "targets save should preserve per-core voltage interval");
+        AssertEqual("disabled", saved.CpuTelemetry.VoltageProvider, "targets save should preserve voltage provider");
     }
 
     private static FrameScopeWebBridge CreateBridge(string root)
@@ -455,10 +643,12 @@ public static class FrameScopeWebBridgeTests
         public int StopCount;
         public int OpenReportCount;
         public int OpenDirectoryCount;
+        public int OpenLogsDirectoryCount;
         public int RegenerateCount;
         public int DiagnosticsCount;
         public string LastReportPath = "";
         public string LastDirectoryPath = "";
+        public string LastLogDirectoryPath = "";
 
         public FrameScopeWebBridgeHostResult StartMonitor(FrameScopeWebBridgeHostContext context)
         {
@@ -484,6 +674,14 @@ public static class FrameScopeWebBridgeTests
             OpenDirectoryCount++;
             LastDirectoryPath = directory;
             return FrameScopeWebBridgeHostResult.Success("report.directoryOpened", "opened", new Dictionary<string, object> { { "directory", directory } });
+        }
+
+        public FrameScopeWebBridgeHostResult OpenLogsDirectory(FrameScopeWebBridgeHostContext context)
+        {
+            OpenLogsDirectoryCount++;
+            Directory.CreateDirectory(context.LogDirectory);
+            LastLogDirectoryPath = context.LogDirectory;
+            return FrameScopeWebBridgeHostResult.Success("logs.directoryOpened", "opened", new Dictionary<string, object> { { "directory", context.LogDirectory } });
         }
 
         public FrameScopeWebBridgeHostResult RegenerateReport(FrameScopeWebBridgeHostContext context, string runDir)

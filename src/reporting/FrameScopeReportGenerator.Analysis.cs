@@ -23,9 +23,9 @@ internal static partial class FrameScopeReportGenerator
         return frames;
     }
 
-    private static Dictionary<string, object> BucketFps(List<KeyValuePair<DateTime, double>> frames, DateTime start, double bucketSeconds, double lowWindowSeconds)
+    private static Dictionary<string, object> BuildBucketedFps(List<KeyValuePair<DateTime, double>> frames, DateTime start, double bucketSeconds, double lowWindowSeconds)
     {
-        Dictionary<string, object> empty = new Dictionary<string, object>
+        Dictionary<string, object> result = new Dictionary<string, object>
         {
             { "bucketMs", (int)Math.Round(bucketSeconds * 1000) },
             { "lowWindowMs", (int)Math.Round(lowWindowSeconds * 1000) },
@@ -33,72 +33,78 @@ internal static partial class FrameScopeReportGenerator
             { "avg", new List<double?>() },
             { "low1", new List<double?>() },
             { "low01", new List<double?>() },
-            { "min", new List<double?>() }
+            { "samples", new List<int>() }
         };
-        if (frames.Count == 0) return empty;
+        if (frames.Count == 0) return result;
 
-        SortedDictionary<int, List<double>> buckets = new SortedDictionary<int, List<double>>();
-        List<double> secs = new List<double>(frames.Count);
-        List<double> msValues = new List<double>(frames.Count);
-        foreach (KeyValuePair<DateTime, double> f in frames)
+        SortedDictionary<int, FpsBucketAccumulator> buckets = new SortedDictionary<int, FpsBucketAccumulator>();
+        foreach (KeyValuePair<DateTime, double> frame in frames)
         {
-            double sec = (f.Key - start).TotalSeconds;
+            double sec = (frame.Key - start).TotalSeconds;
             if (sec < 0) continue;
             int bucket = (int)Math.Floor(sec / bucketSeconds);
-            List<double> list;
-            if (!buckets.TryGetValue(bucket, out list))
+            FpsBucketAccumulator accumulator;
+            if (!buckets.TryGetValue(bucket, out accumulator))
             {
-                list = new List<double>();
-                buckets[bucket] = list;
+                accumulator = new FpsBucketAccumulator();
+                buckets[bucket] = accumulator;
             }
-            list.Add(f.Value);
-            secs.Add(sec);
-            msValues.Add(f.Value);
+            accumulator.SumMs += frame.Value;
+            accumulator.Count++;
         }
 
-        List<double> times = new List<double>();
-        List<double?> avg = new List<double?>();
-        List<double?> low1 = new List<double?>();
-        List<double?> low01 = new List<double?>();
-        List<double?> min = new List<double?>();
+        List<double> times = new List<double>(buckets.Count);
+        List<double?> avg = new List<double?>(buckets.Count);
+        List<double?> low1 = new List<double?>(buckets.Count);
+        List<double?> low01 = new List<double?>(buckets.Count);
+        List<int> samples = new List<int>(buckets.Count);
         Fenwick fenwick = new Fenwick(100001);
         Queue<int> windowBins = new Queue<int>();
         Queue<double> windowSecs = new Queue<double>();
         int frameIndex = 0;
 
-        foreach (KeyValuePair<int, List<double>> bucket in buckets)
+        foreach (KeyValuePair<int, FpsBucketAccumulator> bucket in buckets)
         {
             double t = RoundDouble(bucket.Key * bucketSeconds, 3);
             double windowStart = t - lowWindowSeconds;
-            while (frameIndex < secs.Count && secs[frameIndex] <= t + bucketSeconds)
+            double windowEnd = t + bucketSeconds;
+            while (frameIndex < frames.Count)
             {
-                int bin = MsToBin(msValues[frameIndex]);
+                double sec = (frames[frameIndex].Key - start).TotalSeconds;
+                if (sec < 0)
+                {
+                    frameIndex++;
+                    continue;
+                }
+                if (sec > windowEnd) break;
+
+                int bin = MsToBin(frames[frameIndex].Value);
                 fenwick.Add(bin, 1);
                 windowBins.Enqueue(bin);
-                windowSecs.Enqueue(secs[frameIndex]);
+                windowSecs.Enqueue(sec);
                 frameIndex++;
             }
+
             while (windowSecs.Count > 0 && windowSecs.Peek() < windowStart)
             {
                 windowSecs.Dequeue();
                 fenwick.Add(windowBins.Dequeue(), -1);
             }
 
-            double meanMs = bucket.Value.Average();
-            double maxMs = bucket.Value.Max();
+            double meanMs = bucket.Value.Count > 0 ? bucket.Value.SumMs / bucket.Value.Count : 0;
             times.Add(t);
-            avg.Add(RoundDouble(1000.0 / meanMs, 2));
-            min.Add(RoundDouble(1000.0 / maxMs, 3));
+            avg.Add(meanMs > 0 ? RoundDouble(1000.0 / meanMs, 2) : (double?)null);
             low1.Add(FpsFromFenwick(fenwick, 0.99));
             low01.Add(FpsFromFenwick(fenwick, 0.999));
+            samples.Add(bucket.Value.Count);
         }
 
-        empty["t"] = times;
-        empty["avg"] = avg;
-        empty["low1"] = low1;
-        empty["low01"] = low01;
-        empty["min"] = min;
-        return empty;
+        result["t"] = times;
+        result["avg"] = avg;
+        result["low1"] = low1;
+        result["low01"] = low01;
+        result["samples"] = samples;
+        return result;
     }
 
     private static int MsToBin(double ms)
@@ -166,6 +172,44 @@ internal static partial class FrameScopeReportGenerator
         return averageMs > 0 ? 1000.0 / averageMs : (double?)null;
     }
 
+    private static FrameStatsSummary CalculateFrameStats(List<KeyValuePair<DateTime, double>> frames)
+    {
+        FrameStatsSummary stats = new FrameStatsSummary();
+        if (frames == null || frames.Count == 0) return stats;
+
+        List<double> sortedFrameMs = new List<double>(frames.Count);
+        foreach (KeyValuePair<DateTime, double> frame in frames)
+        {
+            double ms = frame.Value;
+            stats.Count++;
+            stats.SumMs += ms;
+            if (ms < stats.MinMs) stats.MinMs = ms;
+            if (ms > stats.MaxMs) stats.MaxMs = ms;
+            if (ms > 20.0) stats.FramesOver20++;
+            if (ms > 33.3) stats.FramesOver33++;
+            if (ms > 100.0) stats.FramesOver100++;
+            sortedFrameMs.Add(ms);
+        }
+
+        sortedFrameMs.Sort();
+        stats.Low1Fps = LowFpsFromSortedFrameMs(sortedFrameMs, 0.01);
+        stats.Low01Fps = LowFpsFromSortedFrameMs(sortedFrameMs, 0.001);
+        return stats;
+    }
+
+    private static double? LowFpsFromSortedFrameMs(List<double> sortedFrameMs, double fraction)
+    {
+        if (sortedFrameMs == null || sortedFrameMs.Count == 0) return null;
+        int count = Math.Max(1, (int)Math.Ceiling(sortedFrameMs.Count * fraction));
+        double sum = 0;
+        for (int i = sortedFrameMs.Count - 1, taken = 0; i >= 0 && taken < count; i--, taken++)
+        {
+            sum += sortedFrameMs[i];
+        }
+        double averageMs = sum / count;
+        return averageMs > 0 ? 1000.0 / averageMs : (double?)null;
+    }
+
     private static double? AverageOrNull(List<double> values)
     {
         return values.Count > 0 ? values.Average() : (double?)null;
@@ -203,6 +247,12 @@ internal static partial class FrameScopeReportGenerator
         int index;
         if (!headers.TryGetValue(name, out index) || index < 0 || index >= row.Count) return "";
         return row[index] ?? "";
+    }
+
+    private static int HeaderIndex(Dictionary<string, int> headers, string name)
+    {
+        int index;
+        return headers != null && headers.TryGetValue(name, out index) ? index : -1;
     }
 
     private static bool ListHasValue(object value)

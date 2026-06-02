@@ -25,14 +25,28 @@ internal static partial class FrameScopeNativeMonitor
         Process processSampler = null;
         Process systemSampler = null;
         MonitorSessionPaths paths = null;
+        Dictionary<string, object> presentMonPreflight = null;
+        bool verboseLogs = false;
+        bool performanceDiagnosticsLogs = false;
+        var sessionStopwatch = Stopwatch.StartNew();
 
         try
         {
+            verboseLogs = ParseBoolArgument(args, "--EnableVerboseLogs", false);
+            performanceDiagnosticsLogs = ParseBoolArgument(args, "--EnablePerformanceDiagnosticsLogs", false);
             var waitSeconds = ParseIntArgument(args, "--WaitSeconds", 600);
             var captureSeconds = ParseIntArgument(args, "--CaptureSeconds", 0);
             var sampleIntervalMs = ParseIntArgument(args, "--SampleIntervalMs", 100);
             var processSampleIntervalMs = ParseIntArgument(args, "--ProcessSampleIntervalMs", 100);
             var slowSampleIntervalMs = ParseIntArgument(args, "--SlowSampleIntervalMs", 1000);
+            var enableCpuCoreTelemetry = ParseBoolArgument(args, "--EnableCpuCoreTelemetry", false);
+            var cpuCoreSampleIntervalMs = ParseIntArgument(args, "--CpuCoreSampleIntervalMs", 1000);
+            var enableCpuVoltageTelemetry = ParseBoolArgument(args, "--EnableCpuVoltageTelemetry", false);
+            var cpuVoltageSampleIntervalMs = ParseIntArgument(args, "--CpuVoltageSampleIntervalMs", 1000);
+            var cpuVoltageProvider = GetArgValue(args, "--CpuVoltageProvider", "auto");
+            var enableCpuVidTelemetry = ParseBoolArgument(args, "--EnableCpuVidTelemetry", false);
+            var cpuVidSampleIntervalMs = ParseIntArgument(args, "--CpuVidSampleIntervalMs", 1000);
+            var cpuVidProvider = GetArgValue(args, "--CpuVidProvider", "auto");
             var controlPollIntervalMs = ParseIntArgument(args, "--ControlPollIntervalMs", 3000);
             var targetProcessName = GetArgValue(args, "--TargetProcessName", "cs2.exe");
             var runRoot = GetArgValue(args, "--RunRoot", DefaultDataRoot);
@@ -42,12 +56,18 @@ internal static partial class FrameScopeNativeMonitor
             var requestedSystemSampler = GetArgValue(args, "--SystemSamplerExe", "");
             var targetAliases = GetArgValue(args, "--TargetProcessAliases", "");
             var targetDisplayName = GetArgValue(args, "--TargetDisplayName", "");
+            var targetDisplayLabel = string.IsNullOrWhiteSpace(targetDisplayName) ? targetProcessName : targetDisplayName;
             var initialTargetPid = ParseIntArgument(args, "--InitialTargetPid", 0);
 
             if (sampleIntervalMs < 50) sampleIntervalMs = 50;
             if (processSampleIntervalMs < 100) processSampleIntervalMs = 100;
             if (controlPollIntervalMs < 1000) controlPollIntervalMs = 1000;
             if (slowSampleIntervalMs < sampleIntervalMs) slowSampleIntervalMs = Math.Max(1000, sampleIntervalMs);
+            if (cpuCoreSampleIntervalMs <= 0) cpuCoreSampleIntervalMs = 1000;
+            if (cpuCoreSampleIntervalMs < 500) cpuCoreSampleIntervalMs = 500;
+            if (cpuVidSampleIntervalMs <= 0) cpuVidSampleIntervalMs = 1000;
+            if (cpuVidSampleIntervalMs < 500) cpuVidSampleIntervalMs = 500;
+            if (cpuVidSampleIntervalMs > 5000) cpuVidSampleIntervalMs = 5000;
 
             var targetBaseName = GetTargetBaseName(targetProcessName);
             if (string.IsNullOrWhiteSpace(targetBaseName)) targetBaseName = "cs2";
@@ -71,6 +91,7 @@ internal static partial class FrameScopeNativeMonitor
             var presentMonPath = ResolvePresentMonPath(requestedPresentMon);
             var processSamplerPath = ResolveProcessSamplerPath(requestedProcessSampler);
             var systemSamplerPath = ResolveSystemSamplerPath(requestedSystemSampler);
+            presentMonPreflight = FrameScopePresentMonDiagnostics.BuildPreflightDiagnostics(presentMonPath);
             var nvidiaSmiPath = ResolveNvidiaSmiPath();
             var captureUntilTargetExit = captureSeconds <= 0;
             var captureMode = captureUntilTargetExit ? "until-target-exit" : "timed";
@@ -78,14 +99,32 @@ internal static partial class FrameScopeNativeMonitor
             var presentMonCaptureTarget = presentMonProcessName;
             var presentMonArguments = "";
 
-            WriteNativeMonitorStatus(paths, "created", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, new Dictionary<string, object>
+            var createdStatus = new Dictionary<string, object>
             {
                 { "PresentMonCaptureMode", presentMonCaptureMode },
                 { "PresentMonCaptureTarget", presentMonCaptureTarget },
                 { "PresentMonSessionName", presentMonSessionName },
+                { "TargetDisplayName", targetDisplayLabel },
                 { "TargetProcessCandidates", string.Join(";", targetProcessBases.ToArray()) },
-                { "InitialTargetPid", initialTargetPid }
-            });
+                { "InitialTargetPid", initialTargetPid },
+                { "CpuCoreTelemetryEnabled", enableCpuCoreTelemetry },
+                { "CpuCoreSampleIntervalMs", cpuCoreSampleIntervalMs },
+                { "CpuVoltageTelemetryEnabled", enableCpuVoltageTelemetry },
+                { "CpuVoltageSampleIntervalMs", cpuVoltageSampleIntervalMs },
+                { "CpuVoltageProvider", cpuVoltageProvider },
+                { "CpuVoltageAvailable", false },
+                { "CpuVoltageVcoreAvailable", false },
+                { "CpuVoltageStatus", "unavailable" },
+                { "CpuVidTelemetryEnabled", enableCpuVidTelemetry },
+                { "CpuVidSampleIntervalMs", cpuVidSampleIntervalMs },
+                { "CpuVidProvider", cpuVidProvider },
+                { "CpuVidAvailable", false },
+                { "CpuVidStatus", "unavailable" }
+            };
+            AddDictionary(createdStatus, presentMonPreflight);
+            WriteNativeMonitorStatus(paths, "created", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, createdStatus);
+            WriteVerboseFrameScopeLog(verboseLogs, delegate { return "monitor-session-created run=" + paths.RunDir + " target=" + presentMonProcessName + " captureMode=" + captureMode; });
+            WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate { return "monitor-session-created-ms=" + sessionStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " run=" + paths.RunDir; });
 
             if (string.IsNullOrWhiteSpace(presentMonPath) || !File.Exists(presentMonPath))
             {
@@ -99,7 +138,7 @@ internal static partial class FrameScopeNativeMonitor
             CleanupFrameScopePresentMonSessions(presentMonPath);
             WritePresentMonInfo(paths.PresentMonInfoPath, presentMonPath);
 
-            WriteNativeMonitorStatus(paths, "waiting-for-target", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, new Dictionary<string, object>
+            var waitingStatus = new Dictionary<string, object>
             {
                 { "WaitSeconds", waitSeconds },
                 { "CaptureSeconds", captureSeconds },
@@ -107,15 +146,45 @@ internal static partial class FrameScopeNativeMonitor
                 { "PresentMonCaptureMode", presentMonCaptureMode },
                 { "PresentMonCaptureTarget", presentMonCaptureTarget },
                 { "PresentMonSessionName", presentMonSessionName },
+                { "TargetDisplayName", targetDisplayLabel },
                 { "TargetProcessCandidates", string.Join(";", targetProcessBases.ToArray()) },
-                { "InitialTargetPid", initialTargetPid }
-            });
+                { "InitialTargetPid", initialTargetPid },
+                { "CpuCoreTelemetryEnabled", enableCpuCoreTelemetry },
+                { "CpuCoreSampleIntervalMs", cpuCoreSampleIntervalMs },
+                { "CpuVoltageTelemetryEnabled", enableCpuVoltageTelemetry },
+                { "CpuVoltageSampleIntervalMs", cpuVoltageSampleIntervalMs },
+                { "CpuVoltageProvider", cpuVoltageProvider },
+                { "CpuVoltageAvailable", false },
+                { "CpuVoltageVcoreAvailable", false },
+                { "CpuVoltageStatus", "unavailable" },
+                { "CpuVidTelemetryEnabled", enableCpuVidTelemetry },
+                { "CpuVidSampleIntervalMs", cpuVidSampleIntervalMs },
+                { "CpuVidProvider", cpuVidProvider },
+                { "CpuVidAvailable", false },
+                { "CpuVidStatus", "unavailable" }
+            };
+            AddDictionary(waitingStatus, presentMonPreflight);
+            WriteNativeMonitorStatus(paths, "waiting-for-target", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, waitingStatus);
 
             TargetProcessSnapshot selectedTarget;
+            var targetWaitStopwatch = Stopwatch.StartNew();
             var targetProc = WaitForTargetProcess(targetProcessBases, waitSeconds, initialTargetPid, out selectedTarget);
+            targetWaitStopwatch.Stop();
+            WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
+            {
+                return "monitor-target-wait-ms=" + targetWaitStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                    " found=" + (targetProc != null) +
+                    " initialPid=" + initialTargetPid.ToString(CultureInfo.InvariantCulture);
+            });
             if (targetProc == null)
             {
-                WriteNativeMonitorStatus(paths, "timeout-waiting-for-target", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, FrameScopeCapturePlanner.CreateTargetNotFoundDiagnostic(targetProcessBases, initialTargetPid, string.IsNullOrWhiteSpace(targetDisplayName) ? targetProcessName : targetDisplayName, waitSeconds));
+                var timeoutStatus = FrameScopeCapturePlanner.CreateTargetNotFoundDiagnostic(targetProcessBases, initialTargetPid, string.IsNullOrWhiteSpace(targetDisplayName) ? targetProcessName : targetDisplayName, waitSeconds);
+                timeoutStatus["TargetDisplayName"] = targetDisplayLabel;
+                AddDictionary(timeoutStatus, presentMonPreflight);
+                WriteNativeMonitorStatus(paths, "timeout-waiting-for-target", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, timeoutStatus);
+                WriteVerboseFrameScopeLog(verboseLogs, delegate { return "monitor-target-timeout target=" + presentMonProcessName + " waitSeconds=" + waitSeconds.ToString(CultureInfo.InvariantCulture); });
+                sessionStopwatch.Stop();
+                WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate { return "monitor-session-total-ms=" + sessionStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " samples=0 exit=2"; });
                 return 2;
             }
 
@@ -124,6 +193,12 @@ internal static partial class FrameScopeNativeMonitor
                 var startTime = DateTime.Now;
                 targetBaseName = selectedTarget != null && !string.IsNullOrWhiteSpace(selectedTarget.BaseName) ? selectedTarget.BaseName : targetProc.ProcessName;
                 presentMonProcessName = targetBaseName + ".exe";
+                WriteVerboseFrameScopeLog(verboseLogs, delegate
+                {
+                    return "monitor-target-selected process=" + presentMonProcessName +
+                        " pid=" + targetProc.Id.ToString(CultureInfo.InvariantCulture) +
+                        " window=" + (selectedTarget == null ? "" : selectedTarget.WindowTitle);
+                });
                 var presentMonPlan = FrameScopeCapturePlanner.CreatePresentMonPlan(
                     targetProcessBases,
                     targetProcessName,
@@ -137,10 +212,11 @@ internal static partial class FrameScopeNativeMonitor
                 presentMonCaptureTarget = presentMonPlan.CaptureTarget;
                 presentMonArguments = JoinArguments(presentMonPlan.Arguments);
 
-                WriteNativeMonitorStatus(paths, "starting-presentmon", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, new Dictionary<string, object>
+                var startingStatus = new Dictionary<string, object>
                 {
                     { "TargetPid", targetProc.Id },
                     { "TargetResolvedProcess", presentMonProcessName },
+                    { "TargetDisplayName", targetDisplayLabel },
                     { "TargetWindowTitle", selectedTarget == null ? "" : selectedTarget.WindowTitle },
                     { "TargetHasMainWindow", selectedTarget != null && selectedTarget.HasMainWindow },
                     { "StartTime", startTime.ToString("o") },
@@ -150,8 +226,17 @@ internal static partial class FrameScopeNativeMonitor
                     { "PresentMonArgs", presentMonArguments },
                     { "TargetProcessCandidates", string.Join(";", targetProcessBases.ToArray()) },
                     { "InitialTargetPid", initialTargetPid }
-                });
+                };
+                AddDictionary(startingStatus, presentMonPreflight);
+                WriteNativeMonitorStatus(paths, "starting-presentmon", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, startingStatus);
 
+                DateTime? presentMonStartedAt = null;
+                DateTime? presentMonExitedAt = null;
+                Stopwatch presentMonRuntimeStopwatch = null;
+                long? presentMonRuntimeMs = null;
+                bool? targetRunningAtPresentMonExitCheck = null;
+                bool? targetPidRunningAtPresentMonExitCheck = null;
+                var childStartStopwatch = Stopwatch.StartNew();
                 presentMon = StartNativeMonitorChild(
                     presentMonPath,
                     presentMonArguments,
@@ -159,6 +244,11 @@ internal static partial class FrameScopeNativeMonitor
                     paths.PresentMonStdout,
                     paths.PresentMonStderr,
                     ProcessPriorityClass.BelowNormal);
+                if (presentMon != null)
+                {
+                    presentMonStartedAt = DateTime.Now;
+                    presentMonRuntimeStopwatch = Stopwatch.StartNew();
+                }
 
                 processSampler = StartNativeMonitorChild(
                     processSamplerPath,
@@ -181,7 +271,21 @@ internal static partial class FrameScopeNativeMonitor
                         "--target", targetBaseName,
                         "--interval", slowSampleIntervalMs.ToString(CultureInfo.InvariantCulture),
                         "--parent-pid", Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture),
-                        "--system-csv", paths.SamplesCsv
+                        "--system-csv", paths.SamplesCsv,
+                        "--enable-cpu-core-telemetry", enableCpuCoreTelemetry ? "true" : "false",
+                        "--cpu-core-csv", paths.CpuCoreSamplesCsv,
+                        "--cpu-core-status", paths.CpuCoreTelemetryStatusPath,
+                        "--cpu-core-interval", cpuCoreSampleIntervalMs.ToString(CultureInfo.InvariantCulture),
+                        "--enable-cpu-voltage-telemetry", enableCpuVoltageTelemetry ? "true" : "false",
+                        "--cpu-voltage-csv", paths.CpuVoltageSamplesCsv,
+                        "--cpu-voltage-status", paths.CpuVoltageTelemetryStatusPath,
+                        "--cpu-voltage-interval", cpuVoltageSampleIntervalMs.ToString(CultureInfo.InvariantCulture),
+                        "--cpu-voltage-provider", cpuVoltageProvider,
+                        "--enable-cpu-vid-telemetry", enableCpuVidTelemetry ? "true" : "false",
+                        "--cpu-vid-csv", paths.CpuVidSamplesCsv,
+                        "--cpu-vid-status", paths.CpuVidTelemetryStatusPath,
+                        "--cpu-vid-interval", cpuVidSampleIntervalMs.ToString(CultureInfo.InvariantCulture),
+                        "--cpu-vid-provider", cpuVidProvider
                     };
                     if (!string.IsNullOrWhiteSpace(nvidiaSmiPath)) systemArgs.AddRange(new[] { "--nvidia-smi", nvidiaSmiPath });
                     systemSampler = StartNativeMonitorChild(systemSamplerPath, JoinArguments(systemArgs.ToArray()), Root);
@@ -190,6 +294,20 @@ internal static partial class FrameScopeNativeMonitor
                 {
                     File.WriteAllText(paths.SlowSamplerLogPath, "FrameScopeSystemSampler.exe was not found.", Encoding.UTF8);
                 }
+                childStartStopwatch.Stop();
+                WriteVerboseFrameScopeLog(verboseLogs, delegate
+                {
+                    return "monitor-children-started presentMonPid=" + (presentMon == null ? 0 : presentMon.Id).ToString(CultureInfo.InvariantCulture) +
+                        " processSamplerPid=" + (processSampler == null ? 0 : processSampler.Id).ToString(CultureInfo.InvariantCulture) +
+                        " systemSamplerPid=" + (systemSampler == null ? 0 : systemSampler.Id).ToString(CultureInfo.InvariantCulture);
+                });
+                WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
+                {
+                    return "monitor-child-start-ms=" + childStartStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                        " presentMonPid=" + (presentMon == null ? 0 : presentMon.Id).ToString(CultureInfo.InvariantCulture) +
+                        " processSamplerPid=" + (processSampler == null ? 0 : processSampler.Id).ToString(CultureInfo.InvariantCulture) +
+                        " systemSamplerPid=" + (systemSampler == null ? 0 : systemSampler.Id).ToString(CultureInfo.InvariantCulture);
+                });
 
                 var sampleIndex = 0;
                 var captureDeadline = captureUntilTargetExit ? DateTime.MaxValue : DateTime.Now.AddSeconds(captureSeconds);
@@ -198,6 +316,7 @@ internal static partial class FrameScopeNativeMonitor
                 var presentMonExitedEarly = false;
                 var presentMonForcedStop = false;
                 var presentMonStopRequested = false;
+                var captureLoopStopwatch = Stopwatch.StartNew();
 
                 while (DateTime.Now < captureDeadline)
                 {
@@ -209,6 +328,10 @@ internal static partial class FrameScopeNativeMonitor
                             {
                                 presentMonExitCode = presentMon.ExitCode;
                                 presentMonExitedEarly = true;
+                                presentMonExitedAt = DateTime.Now;
+                                presentMonRuntimeMs = presentMonRuntimeStopwatch == null ? (long?)null : presentMonRuntimeStopwatch.ElapsedMilliseconds;
+                                targetRunningAtPresentMonExitCheck = IsAnyTargetProcessRunning(targetProcessBases);
+                                targetPidRunningAtPresentMonExitCheck = IsTargetPidRunning(targetProc.Id, targetProcessBases);
                             }
                         }
                         catch { }
@@ -217,7 +340,7 @@ internal static partial class FrameScopeNativeMonitor
                     var now = DateTime.Now;
                     if ((now - lastStatusWrite).TotalSeconds >= 10)
                     {
-                        WriteNativeMonitorStatus(paths, "capturing", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, new Dictionary<string, object>
+                        var capturingStatus = new Dictionary<string, object>
                         {
                             { "TargetPid", targetProc.Id },
                             { "PresentMonPid", presentMon == null ? (int?)null : presentMon.Id },
@@ -232,7 +355,9 @@ internal static partial class FrameScopeNativeMonitor
                             { "PresentMonCaptureTarget", presentMonCaptureTarget },
                             { "PresentMonSessionName", presentMonSessionName },
                             { "PresentMonArgs", presentMonArguments }
-                        });
+                        };
+                        AddDictionary(capturingStatus, presentMonPreflight);
+                        WriteNativeMonitorStatus(paths, "capturing", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, capturingStatus);
                         lastStatusWrite = now;
                     }
 
@@ -253,30 +378,72 @@ internal static partial class FrameScopeNativeMonitor
                         Thread.Sleep(remainingMs);
                     }
                 }
+                captureLoopStopwatch.Stop();
+                WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
+                {
+                    return "monitor-capture-loop-ms=" + captureLoopStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                        " samples=" + sampleIndex.ToString(CultureInfo.InvariantCulture) +
+                        " timed=" + (!captureUntilTargetExit);
+                });
 
                 StopMonitorChild(processSampler, 5000, true);
                 StopMonitorChild(systemSampler, 5000, true);
 
                 if (presentMon != null && !ProcessExited(presentMon))
                 {
+                    targetRunningAtPresentMonExitCheck = IsAnyTargetProcessRunning(targetProcessBases);
+                    targetPidRunningAtPresentMonExitCheck = IsTargetPidRunning(targetProc.Id, targetProcessBases);
                     presentMonStopRequested = RequestPresentMonStop(presentMonPath, presentMonSessionName);
-                    if (!presentMon.WaitForExit(15000))
+                    if (!WaitForNativeMonitorChildExit(presentMon, 15000, 15000))
                     {
                         presentMonForcedStop = true;
                         StopMonitorChild(presentMon, 0, true);
                     }
+                }
+                else if (presentMon != null)
+                {
+                    if (!targetRunningAtPresentMonExitCheck.HasValue)
+                    {
+                        targetRunningAtPresentMonExitCheck = IsAnyTargetProcessRunning(targetProcessBases);
+                        targetPidRunningAtPresentMonExitCheck = IsTargetPidRunning(targetProc.Id, targetProcessBases);
+                    }
+                    WaitForNativeMonitorChildOutput(presentMon, 5000);
                 }
                 if (presentMon != null && !presentMonExitCode.HasValue)
                 {
                     try { presentMonExitCode = presentMon.ExitCode; }
                     catch { }
                 }
+                if (presentMon != null && !presentMonExitedAt.HasValue && ProcessExited(presentMon))
+                {
+                    presentMonExitedAt = DateTime.Now;
+                }
+                if (presentMon != null && !presentMonRuntimeMs.HasValue && presentMonRuntimeStopwatch != null)
+                {
+                    presentMonRuntimeMs = presentMonRuntimeStopwatch.ElapsedMilliseconds;
+                }
                 if (!presentMonExitCode.HasValue && File.Exists(paths.PresentMonCsv)) presentMonExitCode = 0;
                 CleanupFrameScopePresentMonSessions(presentMonPath);
+                long presentMonCsvPostExitWaitMs = WaitForPresentMonCsvFlush(paths.PresentMonCsv, 2000);
 
                 var endTime = DateTime.Now;
                 var reportHtml = Path.Combine(paths.RunDir, "charts", "framescope-interactive-report.html");
-                var captureDiagnostics = BuildPresentMonCaptureDiagnostics(paths, presentMonExitCode, presentMonExitedEarly, presentMonForcedStop);
+                var presentMonDiagnosticContext = new FrameScopePresentMonCaptureDiagnosticContext
+                {
+                    TargetProcessName = presentMonProcessName,
+                    TargetResolvedProcess = presentMonProcessName,
+                    TargetPid = targetProc.Id,
+                    PresentMonArgs = presentMonArguments,
+                    PresentMonRuntimeMs = presentMonRuntimeMs,
+                    PresentMonStartedAt = presentMonStartedAt.HasValue ? presentMonStartedAt.Value.ToString("o", CultureInfo.InvariantCulture) : "",
+                    PresentMonExitedAt = presentMonExitedAt.HasValue ? presentMonExitedAt.Value.ToString("o", CultureInfo.InvariantCulture) : "",
+                    TargetRunningAtPresentMonExitCheck = targetRunningAtPresentMonExitCheck,
+                    TargetPidRunningAtPresentMonExitCheck = targetPidRunningAtPresentMonExitCheck,
+                    PresentMonCsvPostExitWaitMs = presentMonCsvPostExitWaitMs
+                };
+                var captureDiagnostics = BuildPresentMonCaptureDiagnostics(paths, presentMonExitCode, presentMonExitedEarly, presentMonForcedStop, presentMonDiagnosticContext);
+                captureDiagnostics["TargetDisplayName"] = targetDisplayLabel;
+                AddDictionary(captureDiagnostics, BuildCpuCoreTelemetryDiagnostics(paths, enableCpuCoreTelemetry, enableCpuVoltageTelemetry, enableCpuVidTelemetry));
                 var finalizing = new Dictionary<string, object>
                 {
                     { "TargetPid", targetProc.Id },
@@ -296,12 +463,22 @@ internal static partial class FrameScopeNativeMonitor
                     { "PresentMonSessionName", presentMonSessionName },
                     { "PresentMonArgs", presentMonArguments },
                     { "TargetProcessCandidates", string.Join(";", targetProcessBases.ToArray()) },
-                    { "InitialTargetPid", initialTargetPid }
+                    { "InitialTargetPid", initialTargetPid },
+                    { "CpuCoreTelemetryEnabled", enableCpuCoreTelemetry },
+                    { "CpuCoreSampleIntervalMs", cpuCoreSampleIntervalMs },
+                    { "CpuVoltageTelemetryEnabled", enableCpuVoltageTelemetry },
+                    { "CpuVoltageSampleIntervalMs", cpuVoltageSampleIntervalMs },
+                    { "CpuVoltageProvider", cpuVoltageProvider },
+                    { "CpuVidTelemetryEnabled", enableCpuVidTelemetry },
+                    { "CpuVidSampleIntervalMs", cpuVidSampleIntervalMs },
+                    { "CpuVidProvider", cpuVidProvider }
                 };
                 AddDictionary(finalizing, captureDiagnostics);
+                AddDictionary(finalizing, presentMonPreflight);
                 WriteNativeMonitorStatus(paths, "finalizing", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, finalizing);
 
                 WriteEventCsvHeader(paths.EventsCsv);
+                AddDictionary(captureDiagnostics, presentMonPreflight);
                 WriteNativeMonitorSummary(paths, presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, presentMonExitCode, presentMonExitedEarly, presentMonForcedStop, reportHtml, presentMonCaptureMode, presentMonCaptureTarget, presentMonArguments, captureDiagnostics);
 
                 var done = new Dictionary<string, object>
@@ -326,10 +503,26 @@ internal static partial class FrameScopeNativeMonitor
                     { "PresentMonSessionName", presentMonSessionName },
                     { "PresentMonArgs", presentMonArguments },
                     { "TargetProcessCandidates", string.Join(";", targetProcessBases.ToArray()) },
-                    { "InitialTargetPid", initialTargetPid }
+                    { "InitialTargetPid", initialTargetPid },
+                    { "CpuCoreTelemetryEnabled", enableCpuCoreTelemetry },
+                    { "CpuCoreSampleIntervalMs", cpuCoreSampleIntervalMs },
+                    { "CpuVoltageTelemetryEnabled", enableCpuVoltageTelemetry },
+                    { "CpuVoltageSampleIntervalMs", cpuVoltageSampleIntervalMs },
+                    { "CpuVoltageProvider", cpuVoltageProvider },
+                    { "CpuVidTelemetryEnabled", enableCpuVidTelemetry },
+                    { "CpuVidSampleIntervalMs", cpuVidSampleIntervalMs },
+                    { "CpuVidProvider", cpuVidProvider }
                 };
                 AddDictionary(done, captureDiagnostics);
+                AddDictionary(done, presentMonPreflight);
                 WriteNativeMonitorStatus(paths, "done", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, done);
+                sessionStopwatch.Stop();
+                WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
+                {
+                    return "monitor-session-total-ms=" + sessionStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                        " samples=" + sampleIndex.ToString(CultureInfo.InvariantCulture) +
+                        " exit=" + (presentMonExitCode.HasValue ? presentMonExitCode.Value.ToString(CultureInfo.InvariantCulture) : "");
+                });
             }
 
             return 0;
@@ -346,16 +539,20 @@ internal static partial class FrameScopeNativeMonitor
                 catch { }
                 try
                 {
-                    WriteNativeMonitorStatus(paths, "error", "", "unknown", 100, 100, 1000, 3000, "", "", "", new Dictionary<string, object>
+                    var errorStatus = new Dictionary<string, object>
                     {
                         { "Error", ex.ToString() },
                         { "ErrorPath", paths.ErrorPath },
                         { "MonitorMode", "native-csharp" }
-                    });
+                    };
+                    AddDictionary(errorStatus, presentMonPreflight);
+                    WriteNativeMonitorStatus(paths, "error", "", "unknown", 100, 100, 1000, 3000, "", "", "", errorStatus);
                 }
                 catch { }
             }
 
+            try { sessionStopwatch.Stop(); } catch { }
+            WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate { return "monitor-session-error-ms=" + sessionStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " error=" + ex.GetType().Name; });
             WriteFrameScopeLog("native-monitor-session-error " + ex.Message);
             return 1;
         }

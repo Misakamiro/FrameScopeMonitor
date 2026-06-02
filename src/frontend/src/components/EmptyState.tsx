@@ -6,9 +6,10 @@ interface EmptyStateProps {
   title: string;
   description: string;
   actionLabel?: string;
+  onAction?: () => void;
 }
 
-export function EmptyState({ icon: Icon, title, description, actionLabel }: EmptyStateProps) {
+export function EmptyState({ icon: Icon, title, description, actionLabel, onAction }: EmptyStateProps) {
   return (
     <div className="empty-state">
       <div className="empty-state__icon">
@@ -19,9 +20,13 @@ export function EmptyState({ icon: Icon, title, description, actionLabel }: Empt
         <p>{description}</p>
       </div>
       {actionLabel ? (
-        <button className="empty-state__action" type="button" disabled>
-          {actionLabel}
-        </button>
+        onAction ? (
+          <button className="empty-state__action" type="button" onClick={onAction}>
+            {actionLabel}
+          </button>
+        ) : (
+          <span className="empty-state__note">{actionLabel}</span>
+        )
       ) : null}
     </div>
   );

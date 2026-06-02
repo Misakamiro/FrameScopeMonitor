@@ -12,6 +12,7 @@ internal sealed partial class FrameScopeWebBridge
         int watcherPid;
         bool watcherRunning = IsWatcherRunning(out watcherPid);
         Dictionary<string, object> watcherState = ReadJsonFile(options.StatePath);
+        FrameScopeWebBridgeHostState hostState = ReadHostState();
 
         return new Dictionary<string, object>
         {
@@ -38,6 +39,13 @@ internal sealed partial class FrameScopeWebBridge
                     { "dataRoot", ResolveDataRoot(config.DataRoot) }
                 }
             },
+            { "host", new Dictionary<string, object>
+                {
+                    { "windowVisible", hostState.WindowVisible },
+                    { "trayAvailable", hostState.TrayAvailable },
+                    { "closeWindowBehavior", config.CloseWindowBehavior }
+                }
+            },
             { "reports", new Dictionary<string, object>
                 {
                     { "historyPath", options.HistoryPath },
@@ -45,6 +53,20 @@ internal sealed partial class FrameScopeWebBridge
                 }
             }
         };
+    }
+
+    private FrameScopeWebBridgeHostState ReadHostState()
+    {
+        try
+        {
+            return options.HostStateProvider == null
+                ? new FrameScopeWebBridgeHostState()
+                : options.HostStateProvider() ?? new FrameScopeWebBridgeHostState();
+        }
+        catch
+        {
+            return new FrameScopeWebBridgeHostState();
+        }
     }
 
     private bool IsWatcherRunning(out int pid)

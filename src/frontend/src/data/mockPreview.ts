@@ -23,6 +23,7 @@ import type {
   FrameScopeBridgeAdapter,
   FrameScopeConfig,
   FrameScopeTargetConfig,
+  LogsOpenDirectoryPayload,
   LongActionAcceptedPayload,
   ProcessInfo,
   ProcessesRefreshedEventPayload,
@@ -37,11 +38,25 @@ import type {
 
 export const mockPreviewLabel = "Mock preview - browser-only bridge adapter";
 
+export const visualFixtureModes = [
+  "empty",
+  "loading",
+  "success",
+  "failure",
+  "dirty",
+  "saving",
+  "saved",
+  "many-results",
+  "long-strings",
+] as const;
+
+export type VisualFixtureMode = (typeof visualFixtureModes)[number];
+
 export const navigationItems: NavigationItem[] = [
   {
     id: "overview",
-    label: "概览",
-    description: "监控状态与最近会话",
+    label: "监控",
+    description: "当前状态与下一步",
     icon: CircleGauge,
   },
   {
@@ -64,8 +79,8 @@ export const navigationItems: NavigationItem[] = [
   },
   {
     id: "about",
-    label: "关于",
-    description: "连接状态与技术边界",
+    label: "帮助",
+    description: "使用帮助与本地数据",
     icon: Info,
   },
 ];
@@ -199,9 +214,9 @@ export const settingsPreview: SettingFieldPreview[] = [
     kind: "text",
   },
   {
-    label: "监听轮询间隔",
+    label: "后台进程采样",
     value: "1000 ms",
-    helper: "后端接入后由 C# 配置校验。",
+    helper: "真实数据采样间隔，保存后用于下一次监控。",
     kind: "number",
   },
   {
@@ -255,6 +270,7 @@ const mockStartedAt = new Date().toISOString();
 
 const mockConfig: FrameScopeConfig = {
   PollIntervalMs: 1000,
+  TelemetrySampleIntervalMs: 1000,
   DataRoot: "%LOCALAPPDATA%\\FrameScopeMonitorData\\framescope-runs",
   OpenReportOnComplete: true,
   EnableVerboseLogs: false,
@@ -263,12 +279,23 @@ const mockConfig: FrameScopeConfig = {
   LogRetentionDays: 14,
   MaxLogDiskMb: 100,
   MonitorScript: "native-csharp",
+  ThemeMode: "system",
+  CloseWindowBehavior: "minimize-to-tray",
+  TrayEnabled: true,
+  CpuTelemetry: {
+    CollectPerCoreFrequency: true,
+    CollectCpuVoltage: true,
+    PerCoreSampleIntervalMs: 1000,
+    PerCoreVoltageSampleIntervalMs: 1000,
+    VoltageProvider: "auto",
+  },
   Targets: targetPreview.map((target) => ({
     Enabled: target.enabled,
     Name: target.game,
     ProcessName: target.process,
-    SampleIntervalMs: target.sampleMs,
-    ProcessSampleIntervalMs: Math.max(100, target.sampleMs),
+    SampleIntervalMs: 1000,
+    ProcessSamplingMode: "normal",
+    ProcessSampleIntervalMs: 1000,
     SlowSampleIntervalMs: 1000,
     OpenReportOnComplete: true,
   })),
@@ -306,7 +333,8 @@ const mockReportItems: ReportListItem[] = reportPreview.map((report, index) => {
 
 export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
   const listeners = new Map<BridgeEventType, Set<(event: BridgeEventEnvelope) => void>>();
-  let savedConfig: FrameScopeConfig = cloneConfig(mockConfig);
+  const fixtureMode = readVisualFixtureMode();
+  let savedConfig: FrameScopeConfig = cloneConfig(applyConfigFixture(mockConfig, fixtureMode));
   let monitorRunning = false;
   let requestCounter = 0;
   const failureModes = readMockFailureModes();
@@ -328,14 +356,20 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
       await delay(120);
 
       if (type === "state.snapshot") {
+        if (fixtureMode === "loading") await delay(900);
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：状态读取失败。");
         return buildMockSnapshot(savedConfig) as TPayload;
       }
 
       if (type === "config.get") {
+        if (fixtureMode === "loading") await delay(900);
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：设置读取失败。");
         return buildMockConfigPayload(savedConfig, "loaded") as TPayload;
       }
 
       if (type === "config.save") {
+        if (fixtureMode === "saving") await delay(900);
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：设置保存失败。");
         throwIfMockFailure(failureModes, type);
         const nextConfig = (payload as { config?: FrameScopeConfig }).config;
         if (!nextConfig) {
@@ -355,11 +389,15 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
       }
 
       if (type === "targets.get") {
+        if (fixtureMode === "loading") await delay(900);
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：目标读取失败。");
         throwIfMockFailure(failureModes, type);
         return buildMockTargetsPayload(savedConfig, "loaded") as TPayload;
       }
 
       if (type === "targets.save") {
+        if (fixtureMode === "saving") await delay(900);
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：目标保存失败。");
         throwIfMockFailure(failureModes, type);
         if (payloadHasPathAuthority(payload)) {
           throw new Error("Mock targets.save rejects path authority.");
@@ -390,6 +428,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
       }
 
       if (type === "processes.refresh") {
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：进程查找失败。");
         throwIfMockFailure(failureModes, type);
         const query = String((payload as { query?: string }).query ?? "");
         const accepted = {
@@ -400,8 +439,8 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
         window.setTimeout(() => {
           const normalizedQuery = query.trim().toLowerCase();
           const processes = normalizedQuery
-            ? mockProcesses.filter((process) => process.processName.toLowerCase().includes(normalizedQuery))
-            : mockProcesses;
+            ? buildMockProcesses(fixtureMode).filter((process) => process.processName.toLowerCase().includes(normalizedQuery))
+            : buildMockProcesses(fixtureMode);
           publish({
             type: "event.processesRefreshed",
             payload: {
@@ -420,8 +459,10 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
       }
 
       if (type === "reports.list") {
+        if (fixtureMode === "loading") await delay(900);
+        if (fixtureMode === "failure") throw new Error("视觉状态夹具：报告读取失败。");
         throwIfMockFailure(failureModes, type);
-        return buildMockReportsPayload() as TPayload;
+        return buildMockReportsPayload(fixtureMode) as TPayload;
       }
 
       if (type === "reports.open" || type === "reports.openDirectory") {
@@ -478,6 +519,19 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
           });
         }, 360);
         return accepted as TPayload;
+      }
+
+      if (type === "logs.openDirectory") {
+        if (payloadHasPathAuthority(payload)) {
+          throw new Error("logs.openDirectory does not accept frontend paths in mock preview.");
+        }
+        throwIfMockFailure(failureModes, type);
+        return ({
+          status: "directory_opened",
+          message: "预览中的日志目录打开操作已完成。",
+          directory: "mock://FrameScopeMonitor/logs",
+          logFile: "mock://FrameScopeMonitor/logs/framescope-watcher.log",
+        } satisfies LogsOpenDirectoryPayload) as TPayload;
       }
 
       if (type === "diagnostics.generate") {
@@ -582,6 +636,11 @@ function buildMockSnapshot(config: FrameScopeConfig): StateSnapshotPayload {
       targetCount: config.Targets.length,
       dataRoot: config.DataRoot,
     },
+    host: {
+      windowVisible: true,
+      trayAvailable: config.TrayEnabled,
+      closeWindowBehavior: config.CloseWindowBehavior,
+    },
     reports: {
       historyPath: "mock://framescope-history.jsonl",
       historyExists: false,
@@ -615,13 +674,14 @@ function buildMockTargetsPayload(config: FrameScopeConfig, status: TargetsPayloa
   };
 }
 
-function buildMockReportsPayload(): ReportListPayload {
+function buildMockReportsPayload(fixtureMode: VisualFixtureMode | ""): ReportListPayload {
+  const reports = fixtureMode === "empty" ? [] : mockReportItems.map((report) => ({ ...report }));
   return {
     status: "loaded",
     historyPath: "mock://framescope-history.jsonl",
     dataRoot: mockConfig.DataRoot,
-    count: mockReportItems.length,
-    reports: mockReportItems.map((report) => ({ ...report })),
+    count: reports.length,
+    reports,
     loadedAt: new Date().toISOString(),
   };
 }
@@ -694,6 +754,50 @@ function readMockFailureModes() {
       .map((mode) => mode.trim())
       .filter(Boolean),
   );
+}
+
+export function readVisualFixtureMode(): VisualFixtureMode | "" {
+  if (typeof window === "undefined") return "";
+  const raw = new URLSearchParams(window.location.search).get("visualFixture") ?? "";
+  return visualFixtureModes.includes(raw as VisualFixtureMode) ? (raw as VisualFixtureMode) : "";
+}
+
+function applyConfigFixture(config: FrameScopeConfig, fixtureMode: VisualFixtureMode | ""): FrameScopeConfig {
+  const next = cloneConfig(config);
+  if (fixtureMode === "empty") {
+    next.Targets = [];
+  }
+  if (fixtureMode === "dirty" || fixtureMode === "saving" || fixtureMode === "saved" || fixtureMode === "long-strings") {
+    next.DataRoot =
+      "%LOCALAPPDATA%\\FrameScopeMonitorData\\framescope-runs\\extremely-long-preview-folder-name\\capture-output\\2026-05-23";
+  }
+  if (fixtureMode === "long-strings") {
+    next.Targets = next.Targets.map((target, index) => ({
+      ...target,
+      Name: `${target.Name || "Game"} Visual Fixture With A Very Long Display Name ${index + 1}`,
+      ProcessName: `${target.ProcessName.replace(/\.exe$/i, "")}.Very.Long.Process.Name.For.Visual.QA.${index + 1}.exe`,
+    }));
+  }
+  return next;
+}
+
+function buildMockProcesses(fixtureMode: VisualFixtureMode | ""): ProcessInfo[] {
+  if (fixtureMode === "many-results") {
+    return Array.from({ length: 250 }, (_, index) => ({
+      processName: `FixtureProcess-${String(index + 1).padStart(3, "0")}.exe`,
+      processId: 7000 + index,
+      windowTitle: index % 5 === 0 ? `Long fixture game window ${index + 1}` : "",
+      displayText: `FixtureProcess-${index + 1}`,
+    }));
+  }
+  if (fixtureMode === "long-strings") {
+    return mockProcesses.map((process, index) => ({
+      ...process,
+      processName: `${process.processName.replace(/\.exe$/i, "")}.Very.Long.Process.Name.For.Visual.QA.${index + 1}.exe`,
+      windowTitle: "FrameScope visual fixture window title with a very long process description",
+    }));
+  }
+  return mockProcesses;
 }
 
 function throwIfMockFailure(failureModes: Set<string>, type: BridgeRequestType) {

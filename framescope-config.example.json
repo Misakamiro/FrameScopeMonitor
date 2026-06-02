@@ -1,5 +1,4 @@
 {
-  "PollIntervalMs": 1000,
   "DataRoot": "framescope-runs",
   "OpenReportOnComplete": true,
   "EnableVerboseLogs": false,
@@ -8,13 +7,22 @@
   "LogRetentionDays": 14,
   "MaxLogDiskMb": 100,
   "MonitorScript": "native-csharp",
+  "TelemetrySampleIntervalMs": 1000,
+  "ThemeMode": "system",
+  "CloseWindowBehavior": "minimize-to-tray",
+  "TrayEnabled": true,
+  "CpuTelemetry": {
+    "CollectPerCoreFrequency": true,
+    "PerCoreSampleIntervalMs": 1000
+  },
   "Targets": [
     {
       "Enabled": true,
       "Name": "Counter-Strike 2",
       "ProcessName": "cs2.exe",
-      "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 100,
+      "SampleIntervalMs": 1000,
+      "ProcessSamplingMode": "normal",
+      "ProcessSampleIntervalMs": 1000,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -22,8 +30,9 @@
       "Enabled": true,
       "Name": "Delta Force",
       "ProcessName": "DeltaForceClient-Win64-Shipping.exe",
-      "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 100,
+      "SampleIntervalMs": 1000,
+      "ProcessSamplingMode": "normal",
+      "ProcessSampleIntervalMs": 1000,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -31,8 +40,9 @@
       "Enabled": true,
       "Name": "Neverness To Everness",
       "ProcessName": "HTGame.exe",
-      "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 100,
+      "SampleIntervalMs": 1000,
+      "ProcessSamplingMode": "normal",
+      "ProcessSampleIntervalMs": 1000,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     },
@@ -40,8 +50,9 @@
       "Enabled": true,
       "Name": "Valorant",
       "ProcessName": "VALORANT-Win64-Shipping.exe",
-      "SampleIntervalMs": 100,
-      "ProcessSampleIntervalMs": 100,
+      "SampleIntervalMs": 1000,
+      "ProcessSamplingMode": "normal",
+      "ProcessSampleIntervalMs": 1000,
       "SlowSampleIntervalMs": 1000,
       "OpenReportOnComplete": true
     }

@@ -11,6 +11,7 @@ export type BridgeRequestType =
   | "reports.open"
   | "reports.openDirectory"
   | "reports.regenerate"
+  | "logs.openDirectory"
   | "diagnostics.generate"
   | "targets.get"
   | "targets.save";
@@ -20,7 +21,8 @@ export type BridgeEventType =
   | "event.error"
   | "event.processesRefreshed"
   | "event.reportsChanged"
-  | "event.reportProgress";
+  | "event.reportProgress"
+  | "event.hostWindowChanged";
 
 export interface BridgeRequestEnvelope<TPayload = Record<string, unknown>> {
   requestId: string;
@@ -52,13 +54,27 @@ export interface FrameScopeTargetConfig {
   Name: string;
   ProcessName: string;
   SampleIntervalMs: number;
+  ProcessSamplingMode: "normal" | "high-precision" | string;
   ProcessSampleIntervalMs: number;
   SlowSampleIntervalMs: number;
   OpenReportOnComplete: boolean;
 }
 
+export type FrameScopeThemeMode = "light" | "dark" | "system";
+export type FrameScopeCloseWindowBehavior = "exit" | "minimize-to-tray";
+export type FrameScopeVoltageProvider = "auto" | "built-in" | "disabled" | "wmi" | "sensor";
+
+export interface FrameScopeCpuTelemetryConfig {
+  CollectPerCoreFrequency: boolean;
+  CollectCpuVoltage: boolean;
+  PerCoreSampleIntervalMs: number;
+  PerCoreVoltageSampleIntervalMs: number;
+  VoltageProvider: FrameScopeVoltageProvider;
+}
+
 export interface FrameScopeConfig {
   PollIntervalMs: number;
+  TelemetrySampleIntervalMs: number;
   DataRoot: string;
   OpenReportOnComplete: boolean;
   EnableVerboseLogs: boolean;
@@ -67,6 +83,10 @@ export interface FrameScopeConfig {
   LogRetentionDays: number;
   MaxLogDiskMb: number;
   MonitorScript: string;
+  ThemeMode: FrameScopeThemeMode;
+  CloseWindowBehavior: FrameScopeCloseWindowBehavior;
+  TrayEnabled: boolean;
+  CpuTelemetry: FrameScopeCpuTelemetryConfig;
   Targets: FrameScopeTargetConfig[];
 }
 
@@ -89,6 +109,11 @@ export interface StateSnapshotPayload {
     enabledTargetCount: number;
     targetCount: number;
     dataRoot: string;
+  };
+  host: {
+    windowVisible: boolean;
+    trayAvailable: boolean;
+    closeWindowBehavior: FrameScopeCloseWindowBehavior;
   };
   reports: {
     historyPath: string;
@@ -194,6 +219,14 @@ export interface LongActionAcceptedPayload {
   message: string;
 }
 
+export interface LogsOpenDirectoryPayload {
+  status: "directory_opened" | string;
+  message: string;
+  directory: string;
+  logFile?: string;
+  [key: string]: unknown;
+}
+
 export interface ReportProgressEventPayload {
   requestId?: string;
   status: "completed" | "error" | string;
@@ -233,6 +266,13 @@ export interface StatusEventPayload {
   status?: string;
   message?: string;
   [key: string]: unknown;
+}
+
+export interface HostWindowChangedEventPayload {
+  visible: boolean;
+  inTray: boolean;
+  closeWindowBehavior: FrameScopeCloseWindowBehavior;
+  reason?: string;
 }
 
 export interface ErrorEventPayload extends BridgeError {

@@ -22,6 +22,7 @@ FrameScopeMonitor.exe
 Microsoft.Web.WebView2.Core.dll
 Microsoft.Web.WebView2.WinForms.dll
 WebView2Loader.dll
+/*.dll
 *.pdb
 *.user
 *.suo

@@ -51,6 +51,44 @@ internal sealed partial class FrameScopeWebBridge
         return OkResponse(request.RequestId, payload);
     }
 
+    private string OpenLogsDirectory(FrameScopeWebBridgeRequest request)
+    {
+        if (PayloadContainsPathAuthority(request.Payload))
+        {
+            return ErrorResponse(request.RequestId, "path_not_allowed", "logs.openDirectory does not accept frontend paths.");
+        }
+
+        if (options.HostAdapter == null) return ErrorResponse(request.RequestId, "host_adapter_missing", "logs.openDirectory is not safely connected to the C# host.");
+
+        FrameScopeWebBridgeHostContext context = BuildHostContext();
+        FrameScopeWebBridgeHostResult result = options.HostAdapter.OpenLogsDirectory(context);
+        if (!result.Ok) return ErrorResponse(request.RequestId, result.Code, result.Message);
+
+        Dictionary<string, object> payload = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "status", "directory_opened" },
+            { "message", result.Message ?? "" },
+            { "directory", context.LogDirectory },
+            { "logFile", Path.Combine(context.LogDirectory, "framescope-watcher.log") }
+        };
+        if (result.Payload != null)
+        {
+            foreach (KeyValuePair<string, object> pair in result.Payload)
+            {
+                payload[pair.Key] = pair.Value;
+            }
+        }
+        PublishEvent("event.status", new Dictionary<string, object>
+        {
+            { "requestId", request.RequestId },
+            { "status", "logs.directoryOpened" },
+            { "action", "logs.openDirectory" },
+            { "message", result.Message ?? "" },
+            { "directory", payload["directory"] }
+        });
+        return OkResponse(request.RequestId, payload);
+    }
+
     private string RegenerateReport(FrameScopeWebBridgeRequest request)
     {
         if (PayloadContainsPathAuthority(request.Payload))
@@ -107,6 +145,7 @@ internal sealed partial class FrameScopeWebBridge
         string dataRoot = ResolveCurrentConfigDataRoot();
         List<FrameScopeWebReportEntry> reports = new List<FrameScopeWebReportEntry>();
         HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, Dictionary<string, object>> statusCache = new Dictionary<string, Dictionary<string, object>>(StringComparer.OrdinalIgnoreCase);
 
         if (File.Exists(options.HistoryPath))
         {
@@ -116,7 +155,7 @@ internal sealed partial class FrameScopeWebBridge
                 try
                 {
                     Dictionary<string, object> map = json.Deserialize<Dictionary<string, object>>(line);
-                    FrameScopeWebReportEntry entry = BuildReportEntryFromHistory(map, dataRoot);
+                    FrameScopeWebReportEntry entry = BuildReportEntryFromHistory(map, dataRoot, statusCache);
                     AddReportIfValid(reports, seen, entry);
                 }
                 catch
@@ -129,11 +168,12 @@ internal sealed partial class FrameScopeWebBridge
         {
             try
             {
-                foreach (string reportHtml in Directory.GetFiles(dataRoot, "framescope-interactive-report.html", SearchOption.AllDirectories)
-                    .OrderByDescending(File.GetLastWriteTimeUtc)
+                FrameScopeDataRootScanStats scanStats = new FrameScopeDataRootScanStats();
+                foreach (string reportHtml in FrameScopeDataRootScanner.FindReportHtmlFiles(dataRoot, scanStats)
+                    .OrderByDescending(SafeLastWriteTimeUtc)
                     .Take(50))
                 {
-                    FrameScopeWebReportEntry entry = BuildReportEntryFromReportHtml(reportHtml, dataRoot);
+                    FrameScopeWebReportEntry entry = BuildReportEntryFromReportHtml(reportHtml, dataRoot, statusCache);
                     AddReportIfValid(reports, seen, entry);
                 }
             }
@@ -154,7 +194,7 @@ internal sealed partial class FrameScopeWebBridge
         if (seen.Add(entry.ReportId)) reports.Add(entry);
     }
 
-    private FrameScopeWebReportEntry BuildReportEntryFromHistory(Dictionary<string, object> map, string dataRoot)
+    private FrameScopeWebReportEntry BuildReportEntryFromHistory(Dictionary<string, object> map, string dataRoot, Dictionary<string, Dictionary<string, object>> statusCache)
     {
         if (map == null) return null;
         string runDir = ReadString(map, "RunDir");
@@ -175,10 +215,11 @@ internal sealed partial class FrameScopeWebBridge
             ReadString(map, "Game"),
             ReadString(map, "ProcessName"),
             ReadString(map, "Time"),
-            ReadInt(map, "MonitorExitCode", 0));
+            ReadInt(map, "MonitorExitCode", 0),
+            statusCache);
     }
 
-    private FrameScopeWebReportEntry BuildReportEntryFromReportHtml(string reportHtml, string dataRoot)
+    private FrameScopeWebReportEntry BuildReportEntryFromReportHtml(string reportHtml, string dataRoot, Dictionary<string, Dictionary<string, object>> statusCache)
     {
         string runDir = GuessRunDirFromReportHtml(reportHtml);
         string game = "";
@@ -191,10 +232,10 @@ internal sealed partial class FrameScopeWebBridge
         {
         }
 
-        return CreateValidatedReportEntry(dataRoot, runDir, reportHtml, game, "", File.GetLastWriteTime(reportHtml).ToString("O", CultureInfo.InvariantCulture), 0);
+        return CreateValidatedReportEntry(dataRoot, runDir, reportHtml, game, "", SafeLastWriteTime(reportHtml).ToString("O", CultureInfo.InvariantCulture), 0, statusCache);
     }
 
-    private FrameScopeWebReportEntry CreateValidatedReportEntry(string dataRoot, string runDir, string reportHtml, string game, string processName, string time, int monitorExitCode)
+    private FrameScopeWebReportEntry CreateValidatedReportEntry(string dataRoot, string runDir, string reportHtml, string game, string processName, string time, int monitorExitCode, Dictionary<string, Dictionary<string, object>> statusCache)
     {
         try
         {
@@ -207,7 +248,7 @@ internal sealed partial class FrameScopeWebBridge
             if (!Path.GetExtension(fullReportHtml).Equals(".html", StringComparison.OrdinalIgnoreCase)) return null;
             if (!Directory.Exists(fullRunDir)) return null;
 
-            Dictionary<string, object> status = ReadJsonFile(Path.Combine(fullRunDir, "status.json"));
+            Dictionary<string, object> status = ReadCachedStatus(fullRunDir, statusCache);
             DateTime sortTime = Directory.GetLastWriteTimeUtc(fullRunDir);
             DateTime parsed;
             if (DateTime.TryParse(time, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out parsed))
@@ -239,6 +280,30 @@ internal sealed partial class FrameScopeWebBridge
         {
             return null;
         }
+    }
+
+    private Dictionary<string, object> ReadCachedStatus(string runDir, Dictionary<string, Dictionary<string, object>> statusCache)
+    {
+        string fullRunDir;
+        try { fullRunDir = Path.GetFullPath(runDir ?? ""); }
+        catch { return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase); }
+        Dictionary<string, object> cached;
+        if (statusCache != null && statusCache.TryGetValue(fullRunDir, out cached)) return cached;
+        Dictionary<string, object> status = ReadJsonFile(Path.Combine(fullRunDir, "status.json"));
+        if (statusCache != null) statusCache[fullRunDir] = status;
+        return status;
+    }
+
+    private static DateTime SafeLastWriteTime(string path)
+    {
+        try { return File.GetLastWriteTime(path); }
+        catch { return DateTime.MinValue; }
+    }
+
+    private static DateTime SafeLastWriteTimeUtc(string path)
+    {
+        try { return File.GetLastWriteTimeUtc(path); }
+        catch { return DateTime.MinValue; }
     }
 
     private string ResolveReportFromRequest(FrameScopeWebBridgeRequest request, bool requireReportHtml, out FrameScopeWebReportEntry entry)

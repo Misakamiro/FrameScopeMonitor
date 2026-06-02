@@ -10,6 +10,8 @@ public static class FrameScopeDiagnosticsTests
         ConfigNormalizesDiagnosticSettings();
         RedactsUserAndSecrets();
         GeneratesDiagnosticReportWithRequiredSections();
+        GeneratesDiagnosticReportWithPresentMonEtwAccessDeniedFields();
+        LatestRunDiscoverySkipsNoisyDataRootDirectories();
         CleanupDeletesOldArtifactsAndEnforcesSizeLimit();
         Console.WriteLine("FrameScopeDiagnosticsTests: PASS");
         return 0;
@@ -93,6 +95,104 @@ public static class FrameScopeDiagnosticsTests
             AssertTrue(markdown.Contains("Capture Chain"), "capture chain section");
             AssertTrue(json.Contains("\"fpsSummary\""), "json fps summary");
             AssertTrue(!markdown.Contains(Environment.UserName), "markdown redacts username");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void GeneratesDiagnosticReportWithPresentMonEtwAccessDeniedFields()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-diagnostics-access-denied-tests-" + Guid.NewGuid().ToString("N"));
+        string appRoot = Path.Combine(dir, "app");
+        string dataRoot = Path.Combine(dir, "data");
+        string runDir = Path.Combine(dataRoot, "Battlefield-6", "Battlefield-6-20260524-024833");
+        Directory.CreateDirectory(appRoot);
+        Directory.CreateDirectory(runDir);
+        Directory.CreateDirectory(Path.Combine(runDir, "charts"));
+
+        try
+        {
+            string message = "PresentMon 无法启动 ETW trace，需要管理员/Performance Log Users/系统 ETW 权限检查。";
+            File.WriteAllText(Path.Combine(runDir, "status.json"),
+                "{\"Phase\":\"done\",\"FrameCaptureStatus\":\"presentmon-etw-access-denied\",\"FrameCaptureMessage\":\"" + message + "\",\"PresentMonFailureCategory\":\"presentmon-etw-access-denied\",\"PresentMonEtwAccessDenied\":true,\"PresentMonExitCode\":6,\"PresentMonCsvExists\":false,\"PresentMonCsvRows\":0,\"PresentMonPreflightIsElevated\":true,\"PresentMonPreflightInPerformanceLogUsers\":false,\"PresentMonPreflightToolExists\":true}",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(runDir, "summary.json"),
+                "{\"TargetProcess\":\"bf6.exe\",\"FrameCaptureStatus\":\"presentmon-etw-access-denied\",\"FrameCaptureMessage\":\"" + message + "\",\"PresentMonFailureCategory\":\"presentmon-etw-access-denied\",\"PresentMonEtwAccessDenied\":true,\"PresentMonExitCode\":6,\"PresentMonPreflightIsElevated\":true,\"PresentMonPreflightInPerformanceLogUsers\":false,\"PresentMonPreflightToolExists\":true}",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(runDir, "charts", "framescope-interactive-manifest.json"),
+                "{\"hasFrameData\":false,\"frames\":0,\"reportKind\":\"diagnostic\",\"frameCaptureStatus\":\"presentmon-etw-access-denied\",\"frameCaptureMessage\":\"" + message + "\",\"presentMonFailureCategory\":\"presentmon-etw-access-denied\",\"presentMonEtwAccessDenied\":true,\"presentMonPreflightIsElevated\":true,\"presentMonPreflightInPerformanceLogUsers\":false,\"presentMonPreflightToolExists\":true}",
+                Encoding.UTF8);
+
+            FrameScopeConfig config = new FrameScopeConfig
+            {
+                DataRoot = dataRoot,
+                Targets = new List<FrameScopeTarget>
+                {
+                    new FrameScopeTarget { Enabled = true, Name = "Battlefield 6", ProcessName = "bf6.exe" }
+                }
+            };
+            FrameScopeConfigStore.Normalize(config);
+
+            FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, "unit-test-access-denied", runDir);
+            string markdown = File.ReadAllText(result.MarkdownPath, Encoding.UTF8);
+            string json = File.ReadAllText(result.JsonPath, Encoding.UTF8);
+
+            AssertTrue(markdown.Contains("presentmon-etw-access-denied"), "markdown access denied status");
+            AssertTrue(markdown.Contains("Performance Log Users"), "markdown remediation message");
+            AssertTrue(json.Contains("\"presentMonPreflightIsElevated\":true"), "json elevated preflight");
+            AssertTrue(json.Contains("\"presentMonPreflightInPerformanceLogUsers\":false"), "json PLU preflight");
+            AssertTrue(json.Contains("\"presentMonPreflightToolExists\":true"), "json tool preflight");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void LatestRunDiscoverySkipsNoisyDataRootDirectories()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-diagnostics-noise-tests-" + Guid.NewGuid().ToString("N"));
+        string appRoot = Path.Combine(dir, "app");
+        string dataRoot = Path.Combine(dir, "data");
+        string validRun = Path.Combine(dataRoot, "CleanGame", "CleanGame-20260602-120000");
+        string noisyRun = Path.Combine(dataRoot, "node_modules", "package", "fake-run");
+        Directory.CreateDirectory(appRoot);
+        Directory.CreateDirectory(validRun);
+        Directory.CreateDirectory(noisyRun);
+
+        try
+        {
+            string validStatus = Path.Combine(validRun, "status.json");
+            File.WriteAllText(validStatus,
+                "{\"Phase\":\"done\",\"TargetProcess\":\"Clean.exe\",\"FrameCaptureStatus\":\"captured\",\"PresentMonCsvRows\":12}",
+                Encoding.UTF8);
+            File.SetLastWriteTime(validStatus, DateTime.Now.AddMinutes(-1));
+
+            string noisyStatus = Path.Combine(noisyRun, "status.json");
+            File.WriteAllText(noisyStatus,
+                "{\"Phase\":\"done\",\"TargetProcess\":\"Noisy.exe\",\"FrameCaptureStatus\":\"captured\",\"PresentMonCsvRows\":999}",
+                Encoding.UTF8);
+            File.SetLastWriteTime(noisyStatus, DateTime.Now);
+
+            FrameScopeConfig config = new FrameScopeConfig
+            {
+                DataRoot = dataRoot,
+                Targets = new List<FrameScopeTarget>
+                {
+                    new FrameScopeTarget { Enabled = true, Name = "Clean Game", ProcessName = "Clean.exe" }
+                }
+            };
+            FrameScopeConfigStore.Normalize(config);
+
+            FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, "unit-test-noise", "");
+            string json = File.ReadAllText(result.JsonPath, Encoding.UTF8);
+
+            AssertTrue(json.Contains("Clean.exe"), "latest run should come from clean data root run");
+            AssertTrue(!json.Contains("Noisy.exe"), "latest run should skip noisy dependency directory");
         }
         finally
         {

@@ -36,6 +36,16 @@ Invoke-TestBuild `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigStoreTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeLoggingPolicyTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeConfigStore.cs', 'src\core\FrameScopeLoggingPolicy.cs', 'tests\FrameScopeLoggingPolicyTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeNativeWatcherPolicyTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeNativeWatcherPolicyTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeCapturePlannerTests.exe' `
     -Sources @('src\core\FrameScopeCapturePlanner.cs', 'tests\FrameScopeCapturePlannerTests.cs')
 
@@ -45,11 +55,51 @@ Invoke-TestBuild `
     -Sources @('src\core\FrameScopeReportProgress.cs', 'tests\FrameScopeReportProgressTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopePresentMonDiagnosticsTests.exe' `
+    -Sources @('src\core\FrameScopePresentMonDiagnostics.cs', 'tests\FrameScopePresentMonDiagnosticsTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeSystemSamplerCpuCoreTests.exe' `
+    -References @('System.Core.dll', 'System.Web.Extensions.dll', 'System.Management.dll') `
+    -MainType 'FrameScopeSystemSamplerCpuCoreTests' `
+    -Sources @(
+        'src\monitoring\FrameScopeSystemSampler.cs',
+        'src\monitoring\FrameScopeSystemSampler.Models.cs',
+        'src\monitoring\FrameScopeSystemSampler.PerfCounters.cs',
+        'src\monitoring\FrameScopeSystemSampler.CpuCoreTelemetry.cs',
+        'src\monitoring\FrameScopeSystemSampler.Gpu.cs',
+        'src\monitoring\FrameScopeSystemSampler.Processes.cs',
+        'src\monitoring\FrameScopeSystemSampler.IO.cs',
+        'tests\FrameScopeSystemSamplerCpuCoreTests.cs'
+    )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeProcessSamplerTests.exe' `
+    -MainType 'FrameScopeProcessSamplerTests' `
+    -Sources @(
+        'src\monitoring\FrameScopeProcessSampler.cs',
+        'src\monitoring\FrameScopeProcessSampler.Models.cs',
+        'src\monitoring\FrameScopeProcessSampler.Selection.cs',
+        'src\monitoring\FrameScopeProcessSampler.IO.cs',
+        'tests\FrameScopeProcessSamplerTests.cs'
+    )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeNativeMonitorChildProcessTests.exe' `
+    -References @('System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Management.dll', 'System.Web.Extensions.dll') `
+    -Sources @(
+        'src\core\FrameScopePresentMonDiagnostics.cs',
+        'src\app\FrameScopeNativeMonitor.MonitorSession.ChildProcesses.cs',
+        'tests\FrameScopeNativeMonitorChildProcessTests.cs'
+    )
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeReportManifestTests.exe' `
     -References @('System.Web.Extensions.dll', 'System.Management.dll', 'Microsoft.VisualBasic.dll') `
     -MainType 'FrameScopeReportManifestTests' `
     -Sources @(
         'src\core\FrameScopeReportProgress.cs',
+        'src\core\FrameScopePresentMonDiagnostics.cs',
         'src\reporting\FrameScopeReportGenerator.cs',
         'src\reporting\FrameScopeReportGenerator.Models.cs',
         'src\reporting\FrameScopeReportGenerator.Cli.cs',
@@ -75,6 +125,8 @@ Invoke-TestBuild `
     -Sources @(
         'src\core\FrameScopeConfigStore.cs',
         'src\core\FrameScopeCapturePlanner.cs',
+        'src\core\FrameScopePresentMonDiagnostics.cs',
+        'src\core\FrameScopeReportProgress.cs',
         'src\diagnostics\FrameScopeDiagnostics.cs',
         'src\diagnostics\FrameScopeDiagnostics.Models.cs',
         'src\diagnostics\FrameScopeDiagnostics.Sections.cs',
@@ -100,6 +152,7 @@ Invoke-TestBuild `
     -References @('System.Web.Extensions.dll') `
     -Sources @(
         'src\core\FrameScopeConfigStore.cs',
+        'src\core\FrameScopeReportProgress.cs',
         'src\core\FrameScopeProcessPicker.cs',
         'src\core\FrameScopeTargetEditRules.cs',
         'src\app\FrameScopeWebBridge.Contracts.cs',
@@ -111,7 +164,25 @@ Invoke-TestBuild `
         'src\app\FrameScopeWebBridge.Reports.cs',
         'src\app\FrameScopeWebBridge.Diagnostics.cs',
         'src\app\FrameScopeWebBridge.Targets.cs',
+        'src\app\FrameScopeWebHostLifecycle.cs',
         'tests\FrameScopeWebBridgeTests.cs'
+    )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeWebHostLifecycleTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @(
+        'src\core\FrameScopeConfigStore.cs',
+        'src\app\FrameScopeWebHostLifecycle.cs',
+        'tests\FrameScopeWebHostLifecycleTests.cs'
+    )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeProcessCleanupTests.exe' `
+    -References @('System.Management.dll', 'System.Web.Extensions.dll') `
+    -Sources @(
+        'src\app\FrameScopeNativeMonitor.ProcessCleanup.cs',
+        'tests\FrameScopeProcessCleanupTests.cs'
     )
 
 Invoke-TestBuild `
@@ -121,5 +192,10 @@ Invoke-TestBuild `
         'src\app\FrameScopeWebView2Runtime.cs',
         'tests\FrameScopeWebView2RuntimeTests.cs'
     )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeIconTests.exe' `
+    -References @('System.Drawing.dll', 'System.Windows.Forms.dll') `
+    -Sources @('src\app\FrameScopeAppIcon.cs', 'tests\FrameScopeIconTests.cs')
 
 'FrameScope tests rebuilt.'

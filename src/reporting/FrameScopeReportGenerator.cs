@@ -71,7 +71,10 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, object> hardware = LoadHardware();
         Dictionary<string, string> metadata = LoadRunMetadata(runDir);
         Dictionary<string, object> captureDiagnostics = LoadCaptureDiagnostics(runDir);
+        Dictionary<string, object> cpuCoreTelemetry = LoadCpuCoreTelemetryMetadataStrict(runDir, captureDiagnostics);
         string targetProcess = metadata.ContainsKey("targetProcess") ? metadata["targetProcess"] : "cs2.exe";
+        string targetDisplayName = metadata.ContainsKey("targetDisplayName") ? metadata["targetDisplayName"] : targetProcess;
+        if (string.IsNullOrWhiteSpace(targetDisplayName)) targetDisplayName = targetProcess;
 
         double? totalMemoryMb = GetDoubleFromHardware(hardware, "TotalMemoryMB");
         List<double> availableValues = systemRows.Where(r => r.AvailableMb.HasValue).Select(r => r.AvailableMb.Value).ToList();
@@ -81,20 +84,20 @@ internal static partial class FrameScopeReportGenerator
         WriteProgress(progressPath, "处理进程", 35, "读取后台进程 CPU、内存和峰值", progressStart, null, false);
         ProcessMatrixResult process = ReadProcessMatrix(Path.Combine(runDir, "process-samples.csv"), start, targetProcess);
         Dictionary<string, object> systemSeries = SeriesFromSystem(systemRows, start, totalMemoryMb);
+        Dictionary<string, object> cpuCoreCharts = ReadCpuCoreCharts(runDir, start, cpuCoreTelemetry);
 
-        List<double> frameMs = frames.Select(f => f.Value).ToList();
-        double? low1Fps = LowFpsFromSlowFrames(frameMs, 0.01);
-        double? low01Fps = LowFpsFromSlowFrames(frameMs, 0.001);
+        FrameStatsSummary frameSummary = CalculateFrameStats(frames);
         Dictionary<string, object> frameStats = new Dictionary<string, object>
         {
-            { "average", frameMs.Count > 0 ? Round(1000.0 / frameMs.Average(), 2) : null },
-            { "low1", Round(low1Fps, 2) },
-            { "low01", Round(low01Fps, 2) },
-            { "minInstant", frameMs.Count > 0 ? Round(1000.0 / frameMs.Max(), 3) : null },
-            { "maxFrameMs", frameMs.Count > 0 ? Round(frameMs.Max(), 3) : null },
-            { "framesOver20", frameMs.Count(ms => ms > 20.0) },
-            { "framesOver33", frameMs.Count(ms => ms > 33.3) },
-            { "framesOver100", frameMs.Count(ms => ms > 100.0) }
+            { "average", frameSummary.Count > 0 ? Round(1000.0 / (frameSummary.SumMs / frameSummary.Count), 2) : null },
+            { "low1", Round(frameSummary.Low1Fps, 2) },
+            { "low01", Round(frameSummary.Low01Fps, 2) },
+            { "minInstant", frameSummary.Count > 0 ? Round(1000.0 / frameSummary.MaxMs, 3) : null },
+            { "maxInstant", frameSummary.Count > 0 ? Round(1000.0 / frameSummary.MinMs, 3) : null },
+            { "maxFrameMs", frameSummary.Count > 0 ? Round(frameSummary.MaxMs, 3) : null },
+            { "framesOver20", frameSummary.FramesOver20 },
+            { "framesOver33", frameSummary.FramesOver33 },
+            { "framesOver100", frameSummary.FramesOver100 }
         };
 
         List<double> vramTotalValues = systemRows.Where(r => r.VramTotalMiB.HasValue).Select(r => r.VramTotalMiB.Value / 1024.0).ToList();
@@ -125,7 +128,7 @@ internal static partial class FrameScopeReportGenerator
         };
 
         WriteProgress(progressPath, "降采样", 55, "计算 FPS、1% Low、0.1% Low 和图表序列", progressStart, null, false);
-        Dictionary<string, object> fps = BucketFps(frames, start, 0.1, 2.0);
+        Dictionary<string, object> fps = BuildBucketedFps(frames, start, 1.0, 2.0);
         Dictionary<string, object> notes = new Dictionary<string, object>
         {
             { "frameDataCaptured", frames.Count > 0 },
@@ -149,7 +152,7 @@ internal static partial class FrameScopeReportGenerator
                     { "timeShiftHours", timeShiftHours }
                 }
             },
-            { "target", new Dictionary<string, object> { { "processName", targetProcess }, { "displayName", targetProcess } } },
+            { "target", new Dictionary<string, object> { { "processName", targetProcess }, { "displayName", targetDisplayName } } },
             { "hardware", hardware },
             { "hardwareDerived", new Dictionary<string, object> { { "totalMemoryGb", Round(totalMemoryGb, 2) }, { "vramTotalGb", Round(vramTotalGb, 2) } } },
             { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "processSamples", process.Times.Count }, { "processes", process.Names.Count }, { "systemSamples", systemRows.Count } } },
@@ -158,7 +161,10 @@ internal static partial class FrameScopeReportGenerator
             { "systemStats", systemStats },
             { "fps", fps },
             { "system", systemSeries },
-            { "process", new Dictionary<string, object> { { "t", process.Times }, { "names", process.Names }, { "cpu", process.Cpu }, { "mem", process.Mem }, { "stats", process.Stats } } },
+            { "cpuCore", cpuCoreCharts["frequency"] },
+            { "cpuVoltage", cpuCoreCharts["voltage"] },
+            { "cpuVid", cpuCoreCharts["vid"] },
+            { "process", new Dictionary<string, object> { { "t", process.Times }, { "names", process.Names }, { "codec", process.Codec }, { "cpu", process.Cpu }, { "mem", process.Mem }, { "stats", process.Stats } } },
             { "capture", captureDiagnostics },
             { "notes", notes }
         };
@@ -178,6 +184,8 @@ internal static partial class FrameScopeReportGenerator
         {
             { "report", htmlPath },
             { "data", dataPath },
+            { "targetDisplayName", targetDisplayName },
+            { "targetProcessName", targetProcess },
             { "frames", frames.Count },
             { "rawPresentMonRows", GetDiagnostic(present.Diagnostics, "rawRows") },
             { "validPresentMonRows", GetDiagnostic(present.Diagnostics, "validRows") },
@@ -191,8 +199,57 @@ internal static partial class FrameScopeReportGenerator
             { "cpuFrequencyCaptured", notes["cpuFrequencyCaptured"] },
             { "frameCaptureStatus", notes["frameCaptureStatus"] },
             { "frameCaptureMessage", notes["frameCaptureMessage"] },
+            { "presentMonFailureCategory", captureDiagnostics.ContainsKey("PresentMonFailureCategory") ? captureDiagnostics["PresentMonFailureCategory"] : null },
+            { "presentMonEtwAccessDenied", captureDiagnostics.ContainsKey("PresentMonEtwAccessDenied") ? captureDiagnostics["PresentMonEtwAccessDenied"] : null },
+            { "presentMonCsvPath", captureDiagnostics.ContainsKey("PresentMonCsvPath") ? captureDiagnostics["PresentMonCsvPath"] : null },
+            { "presentMonCsvLastCheckTime", captureDiagnostics.ContainsKey("PresentMonCsvLastCheckTime") ? captureDiagnostics["PresentMonCsvLastCheckTime"] : null },
             { "presentMonCsvBytes", captureDiagnostics.ContainsKey("PresentMonCsvBytes") ? captureDiagnostics["PresentMonCsvBytes"] : null },
             { "presentMonCsvRows", captureDiagnostics.ContainsKey("PresentMonCsvRows") ? captureDiagnostics["PresentMonCsvRows"] : null },
+            { "presentMonRuntimeMs", captureDiagnostics.ContainsKey("PresentMonRuntimeMs") ? captureDiagnostics["PresentMonRuntimeMs"] : null },
+            { "presentMonStartedAt", captureDiagnostics.ContainsKey("PresentMonStartedAt") ? captureDiagnostics["PresentMonStartedAt"] : null },
+            { "presentMonExitedAt", captureDiagnostics.ContainsKey("PresentMonExitedAt") ? captureDiagnostics["PresentMonExitedAt"] : null },
+            { "presentMonStdoutTail", captureDiagnostics.ContainsKey("PresentMonStdoutTail") ? captureDiagnostics["PresentMonStdoutTail"] : null },
+            { "presentMonStderrTail", captureDiagnostics.ContainsKey("PresentMonStderrTail") ? captureDiagnostics["PresentMonStderrTail"] : null },
+            { "presentMonArgs", captureDiagnostics.ContainsKey("PresentMonArgs") ? captureDiagnostics["PresentMonArgs"] : null },
+            { "presentMonCaptureMode", captureDiagnostics.ContainsKey("PresentMonCaptureMode") ? captureDiagnostics["PresentMonCaptureMode"] : null },
+            { "presentMonCaptureTarget", captureDiagnostics.ContainsKey("PresentMonCaptureTarget") ? captureDiagnostics["PresentMonCaptureTarget"] : null },
+            { "targetPid", captureDiagnostics.ContainsKey("TargetPid") ? captureDiagnostics["TargetPid"] : null },
+            { "targetResolvedProcess", captureDiagnostics.ContainsKey("TargetResolvedProcess") ? captureDiagnostics["TargetResolvedProcess"] : null },
+            { "targetRunningAtPresentMonExitCheck", captureDiagnostics.ContainsKey("TargetRunningAtPresentMonExitCheck") ? captureDiagnostics["TargetRunningAtPresentMonExitCheck"] : null },
+            { "targetPidRunningAtPresentMonExitCheck", captureDiagnostics.ContainsKey("TargetPidRunningAtPresentMonExitCheck") ? captureDiagnostics["TargetPidRunningAtPresentMonExitCheck"] : null },
+            { "presentMonPreflightIsElevated", captureDiagnostics.ContainsKey("PresentMonPreflightIsElevated") ? captureDiagnostics["PresentMonPreflightIsElevated"] : null },
+            { "presentMonPreflightInPerformanceLogUsers", captureDiagnostics.ContainsKey("PresentMonPreflightInPerformanceLogUsers") ? captureDiagnostics["PresentMonPreflightInPerformanceLogUsers"] : null },
+            { "presentMonPreflightToolExists", captureDiagnostics.ContainsKey("PresentMonPreflightToolExists") ? captureDiagnostics["PresentMonPreflightToolExists"] : null },
+            { "presentMonPreflightEtwProbeAttempted", captureDiagnostics.ContainsKey("PresentMonPreflightEtwProbeAttempted") ? captureDiagnostics["PresentMonPreflightEtwProbeAttempted"] : null },
+            { "cpuCoreSampleCount", cpuCoreTelemetry["cpuCoreSampleCount"] },
+            { "cpuCoreTelemetryAvailable", cpuCoreTelemetry["cpuCoreTelemetryAvailable"] },
+            { "cpuVoltageAvailable", cpuCoreTelemetry["cpuVoltageAvailable"] },
+            { "cpuVoltageVcoreAvailable", cpuCoreTelemetry["cpuVoltageVcoreAvailable"] },
+            { "cpuVoltagePerCoreAvailable", cpuCoreTelemetry["cpuVoltagePerCoreAvailable"] },
+            { "cpuVoltageNonPerCoreAvailable", cpuCoreTelemetry["cpuVoltageNonPerCoreAvailable"] },
+            { "cpuVoltageStatus", cpuCoreTelemetry["cpuVoltageStatus"] },
+            { "cpuVoltageReason", cpuCoreTelemetry["cpuVoltageReason"] },
+            { "cpuVoltageSource", cpuCoreTelemetry["cpuVoltageSource"] },
+            { "cpuVoltageProviderKind", cpuCoreTelemetry["cpuVoltageProviderKind"] },
+            { "cpuVoltageProviderRequested", cpuCoreTelemetry["cpuVoltageProviderRequested"] },
+            { "cpuVoltageSampleCount", cpuCoreTelemetry["cpuVoltageSampleCount"] },
+            { "cpuVoltageVcoreSampleCount", cpuCoreTelemetry["cpuVoltageVcoreSampleCount"] },
+            { "cpuVoltagePerCoreSampleCount", cpuCoreTelemetry["cpuVoltagePerCoreSampleCount"] },
+            { "cpuVoltageNonPerCoreSampleCount", cpuCoreTelemetry["cpuVoltageNonPerCoreSampleCount"] },
+            { "cpuVoltageRejectedSampleCount", cpuCoreTelemetry["cpuVoltageRejectedSampleCount"] },
+            { "cpuVoltageSampleIntervalMs", cpuCoreTelemetry["cpuVoltageSampleIntervalMs"] },
+            { "cpuVoltageSamplesCsv", cpuCoreTelemetry["cpuVoltageSamplesCsv"] },
+            { "cpuVidAvailable", cpuCoreTelemetry["cpuVidAvailable"] },
+            { "cpuVidStatus", cpuCoreTelemetry["cpuVidStatus"] },
+            { "cpuVidReason", cpuCoreTelemetry["cpuVidReason"] },
+            { "cpuVidNote", cpuCoreTelemetry["cpuVidNote"] },
+            { "cpuVidSource", cpuCoreTelemetry["cpuVidSource"] },
+            { "cpuVidProviderKind", cpuCoreTelemetry["cpuVidProviderKind"] },
+            { "cpuVidProviderRequested", cpuCoreTelemetry["cpuVidProviderRequested"] },
+            { "cpuVidSampleCount", cpuCoreTelemetry["cpuVidSampleCount"] },
+            { "cpuVidCoreCount", cpuCoreTelemetry["cpuVidCoreCount"] },
+            { "cpuVidSampleIntervalMs", cpuCoreTelemetry["cpuVidSampleIntervalMs"] },
+            { "cpuVidSamplesCsv", cpuCoreTelemetry["cpuVidSamplesCsv"] },
             { "generator", "native-csharp" }
         };
         string manifestJson = SerializeArtifactJson(manifest);
@@ -200,6 +257,11 @@ internal static partial class FrameScopeReportGenerator
         WriteProgress(progressPath, "完成", 100, "报告生成完成", progressStart, null, false);
         try { Console.OutputEncoding = Encoding.UTF8; } catch { }
         Console.WriteLine(manifestJson);
+    }
+
+    internal static void GenerateForTests(string runDir)
+    {
+        Generate(runDir, "");
     }
 
     internal static string SerializeArtifactJson(object value)

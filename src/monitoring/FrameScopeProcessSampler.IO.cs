@@ -46,7 +46,21 @@ internal static partial class FrameScopeProcessSampler
 
     private static void WriteCsv(StreamWriter writer, IEnumerable<object> values)
     {
-        writer.WriteLine(String.Join(",", values.Select(Csv)));
+        writer.WriteLine(BuildCsvLine(values));
+    }
+
+    private static string BuildCsvLine(IEnumerable<object> values)
+    {
+        if (values == null) return "";
+        StringBuilder builder = new StringBuilder();
+        bool first = true;
+        foreach (object value in values)
+        {
+            if (!first) builder.Append(',');
+            builder.Append(Csv(value));
+            first = false;
+        }
+        return builder.ToString();
     }
 
     private static string Csv(object value)

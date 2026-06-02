@@ -388,16 +388,16 @@ internal static class FrameScopeSetupNative
     {
         string escaped = JsonEscape(dataRoot);
         return
-            "{\"PollIntervalMs\":1000,\"DataRoot\":\"" + escaped + "\",\"OpenReportOnComplete\":true,\"MonitorScript\":\"native-csharp\",\"Targets\":[" +
-            "{\"Enabled\":true,\"Name\":\"Counter-Strike 2\",\"ProcessName\":\"cs2.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"PUBG: BATTLEGROUNDS\",\"ProcessName\":\"TslGame.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Delta Force\",\"ProcessName\":\"DeltaForceClient-Win64-Shipping.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Neverness To Everness\",\"ProcessName\":\"HTGame.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Valorant\",\"ProcessName\":\"VALORANT-Win64-Shipping.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":false,\"Name\":\"Cyberpunk 2077\",\"ProcessName\":\"Cyberpunk2077.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Battlefield 6\",\"ProcessName\":\"bf6.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":false,\"Name\":\"Hogwarts Legacy\",\"ProcessName\":\"HogwartsLegacy.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":false,\"Name\":\"OPUS Prism Peak\",\"ProcessName\":\"OPUS_ Prism Peak.exe\",\"SampleIntervalMs\":100,\"ProcessSampleIntervalMs\":100,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}" +
+            "{\"PollIntervalMs\":1000,\"TelemetrySampleIntervalMs\":1000,\"DataRoot\":\"" + escaped + "\",\"OpenReportOnComplete\":true,\"MonitorScript\":\"native-csharp\",\"Targets\":[" +
+            "{\"Enabled\":true,\"Name\":\"Counter-Strike 2\",\"ProcessName\":\"cs2.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":true,\"Name\":\"PUBG: BATTLEGROUNDS\",\"ProcessName\":\"TslGame.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":true,\"Name\":\"Delta Force\",\"ProcessName\":\"DeltaForceClient-Win64-Shipping.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":true,\"Name\":\"Neverness To Everness\",\"ProcessName\":\"HTGame.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":true,\"Name\":\"Valorant\",\"ProcessName\":\"VALORANT-Win64-Shipping.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":false,\"Name\":\"Cyberpunk 2077\",\"ProcessName\":\"Cyberpunk2077.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":true,\"Name\":\"Battlefield 6\",\"ProcessName\":\"bf6.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":false,\"Name\":\"Hogwarts Legacy\",\"ProcessName\":\"HogwartsLegacy.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
+            "{\"Enabled\":false,\"Name\":\"OPUS Prism Peak\",\"ProcessName\":\"OPUS_ Prism Peak.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}" +
             "]}";
     }
 
@@ -537,6 +537,17 @@ internal static class FrameScopeSetupNative
         form.UpdateProgress(text, Math.Max(0, Math.Min(100, percent)));
     }
 
+    private static Icon LoadInstallerIcon()
+    {
+        try
+        {
+            Icon icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (icon != null) return icon;
+        }
+        catch { }
+        return (Icon)SystemIcons.Application.Clone();
+    }
+
     private static void Log(string path, string message)
     {
         File.AppendAllText(path, DateTime.Now.ToString("o") + " " + message + Environment.NewLine);
@@ -572,6 +583,7 @@ internal static class FrameScopeSetupNative
         public InstallerForm()
         {
             Text = "FrameScope Monitor Setup";
+            Icon = FrameScopeSetupNative.LoadInstallerIcon();
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(680, 310);
             FormBorderStyle = FormBorderStyle.FixedDialog;

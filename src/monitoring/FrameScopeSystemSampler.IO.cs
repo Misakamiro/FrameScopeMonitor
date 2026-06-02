@@ -23,6 +23,26 @@ internal static partial class FrameScopeSystemSampler
         return fallback;
     }
 
+    private static bool ParseBool(string text, bool fallback)
+    {
+        if (String.IsNullOrWhiteSpace(text)) return fallback;
+        bool value;
+        if (Boolean.TryParse(text, out value)) return value;
+        if (String.Equals(text, "1", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(text, "yes", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(text, "on", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        if (String.Equals(text, "0", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(text, "no", StringComparison.OrdinalIgnoreCase) ||
+            String.Equals(text, "off", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        return fallback;
+    }
+
     private static double? ParseDouble(string text)
     {
         double value;

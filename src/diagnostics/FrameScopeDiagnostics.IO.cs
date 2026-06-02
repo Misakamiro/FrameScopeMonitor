@@ -25,7 +25,8 @@ public static partial class FrameScopeDiagnostics
         if (string.IsNullOrWhiteSpace(dataRoot) || !Directory.Exists(dataRoot)) return "";
         try
         {
-            return Directory.GetFiles(dataRoot, "status.json", SearchOption.AllDirectories)
+            FrameScopeDataRootScanStats scanStats = new FrameScopeDataRootScanStats();
+            return FrameScopeDataRootScanner.FindStatusFiles(dataRoot, scanStats)
                 .Select(path => new FileInfo(path))
                 .OrderByDescending(file => file.LastWriteTimeUtc)
                 .Select(file => file.DirectoryName)

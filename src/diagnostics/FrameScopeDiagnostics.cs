@@ -14,8 +14,11 @@ using System.Web.Script.Serialization;
 public static partial class FrameScopeDiagnostics
 {
     private const string ProductVersion = "1.1.3";
+    private const int AppendLogTrimCheckInterval = 64;
+    private const int AppendLogLongRunGuardMaxMegabytes = 16;
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     private static readonly object LogLock = new object();
+    private static int appendLogWriteCount;
 
     public static string DefaultDiagnosticRoot
     {
@@ -41,6 +44,11 @@ public static partial class FrameScopeDiagnostics
                 lock (LogLock)
                 {
                     File.AppendAllText(logPath, line, Encoding.UTF8);
+                    appendLogWriteCount++;
+                    if (appendLogWriteCount % AppendLogTrimCheckInterval == 0)
+                    {
+                        TrimLogFile(logPath, AppendLogLongRunGuardMaxMegabytes);
+                    }
                 }
             }
             catch { }

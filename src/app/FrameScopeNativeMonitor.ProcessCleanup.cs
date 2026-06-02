@@ -1,9 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Management;
+using System.Threading;
 
 internal static partial class FrameScopeNativeMonitor
 {
@@ -33,10 +35,25 @@ internal static partial class FrameScopeNativeMonitor
         return EnumerateFrameScopeBackgroundPids().Count > 0;
     }
 
-    private static void StopFrameScopeBackgroundProcesses()
+    internal static bool HasActiveFrameScopeMonitoring()
+    {
+        if (WatcherStateHasActiveMonitor()) return true;
+        foreach (var info in ReadProcessInfo())
+        {
+            if (IsActiveMonitoringProcess(info)) return true;
+        }
+        return false;
+    }
+
+    internal static void StopFrameScopeBackgroundProcesses()
+    {
+        StopFrameScopeBackgroundProcessesAndWait(3000);
+    }
+
+    internal static int StopFrameScopeBackgroundProcessesAndWait(int waitMs)
     {
         var pids = EnumerateFrameScopeBackgroundPids();
-        if (pids.Count == 0) return;
+        if (pids.Count == 0) return 0;
 
         var processMap = ReadProcessMap();
         var all = new HashSet<int>(pids);
@@ -55,6 +72,8 @@ internal static partial class FrameScopeNativeMonitor
             if (File.Exists(StatePath)) File.Delete(StatePath);
         }
         catch { }
+
+        return WaitForFrameScopeBackgroundProcessesToExit(waitMs);
     }
 
     private static HashSet<int> EnumerateFrameScopeBackgroundPids()
@@ -102,6 +121,59 @@ internal static partial class FrameScopeNativeMonitor
             }
         }
         return result;
+    }
+
+    private static bool WatcherStateHasActiveMonitor()
+    {
+        if (!File.Exists(StatePath)) return false;
+        try
+        {
+            var state = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(StatePath));
+            if (state == null) return false;
+
+            object phaseValue;
+            if (state.TryGetValue("Phase", out phaseValue) &&
+                string.Equals(Convert.ToString(phaseValue), "monitoring", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            object activeValue;
+            if (state.TryGetValue("ActiveMonitors", out activeValue))
+            {
+                IList active = activeValue as IList;
+                if (active != null && active.Count > 0) return true;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static bool IsActiveMonitoringProcess(ProcessInfo info)
+    {
+        if (info == null || info.ProcessId <= 0 || info.ProcessId == Process.GetCurrentProcess().Id) return false;
+
+        var rootLower = Path.GetFullPath(Root).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant();
+        var name = info.Name ?? "";
+        var commandLower = (info.CommandLine ?? "").ToLowerInvariant();
+        var exeLower = (info.ExecutablePath ?? "").ToLowerInvariant();
+
+        if (name.Equals("FrameScopeMonitor.exe", StringComparison.OrdinalIgnoreCase) &&
+            commandLower.Contains("--monitor-session") &&
+            exeLower.StartsWith(rootLower, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if ((name.Equals("FrameScopeProcessSampler.exe", StringComparison.OrdinalIgnoreCase) ||
+             name.Equals("FrameScopeSystemSampler.exe", StringComparison.OrdinalIgnoreCase)) &&
+            exeLower.StartsWith(rootLower, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return name.StartsWith("PresentMon", StringComparison.OrdinalIgnoreCase) &&
+            exeLower.StartsWith(Path.Combine(rootLower, "tools"), StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class ProcessInfo
@@ -182,5 +254,20 @@ internal static partial class FrameScopeNativeMonitor
             }
         }
         catch { }
+    }
+
+    internal static int WaitForFrameScopeBackgroundProcessesToExit(int waitMs)
+    {
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(1, waitMs));
+        int remaining = 0;
+        do
+        {
+            remaining = EnumerateFrameScopeBackgroundPids().Count;
+            if (remaining == 0) return 0;
+            Thread.Sleep(100);
+        }
+        while (DateTime.UtcNow < deadline);
+
+        return EnumerateFrameScopeBackgroundPids().Count;
     }
 }

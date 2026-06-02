@@ -10,6 +10,8 @@ interface AppShellProps {
   activePage: AppPage;
   bridgeEnvironment: BridgeEnvironment;
   snapshotStatus: AsyncStatus;
+  monitorRunning: boolean;
+  globalIssue: string;
   onNavigate: (page: AppPage) => void;
   children: ReactNode;
 }
@@ -18,6 +20,8 @@ export function AppShell({
   activePage,
   bridgeEnvironment,
   snapshotStatus,
+  monitorRunning,
+  globalIssue,
   onNavigate,
   children,
 }: AppShellProps) {
@@ -35,7 +39,12 @@ export function AppShell({
       <div className="app-shell">
         <SidebarNav activePage={activePage} bridgeEnvironment={bridgeEnvironment} onNavigate={onNavigate} />
         <div className="workspace">
-          <TopStatusBar page={activePage} bridgeEnvironment={bridgeEnvironment} snapshotStatus={snapshotStatus} />
+          <TopStatusBar
+            bridgeEnvironment={bridgeEnvironment}
+            snapshotStatus={snapshotStatus}
+            monitorRunning={monitorRunning}
+            globalIssue={globalIssue}
+          />
           <main ref={viewportRef} className="page-viewport" aria-live="polite">
             {children}
           </main>

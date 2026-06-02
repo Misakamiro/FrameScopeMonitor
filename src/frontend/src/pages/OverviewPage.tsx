@@ -1,12 +1,13 @@
-import { Clock3, Play, RefreshCw, ShieldAlert, Square, Target } from "lucide-react";
+import { FileText, Play, RefreshCw, ShieldAlert, Square, Target } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import type { ReportListItem } from "../bridge/contract";
 import { Button } from "../components/Button";
 import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { InlineStatus } from "../components/InlineStatus";
-import { MetricCard } from "../components/MetricCard";
 import { StatusPill } from "../components/StatusPill";
 import type { FrameScopeBridgeViewState } from "../state/useFrameScopeBridgeState";
-import type { Metric, Tone } from "../types";
+import type { Tone } from "../types";
 import "./pages.css";
 
 interface OverviewPageProps {
@@ -14,40 +15,61 @@ interface OverviewPageProps {
 }
 
 export function OverviewPage({ bridgeState }: OverviewPageProps) {
-  const { snapshot, config, isMockPreview, refreshSnapshot } = bridgeState;
-  const monitorBusy = bridgeState.monitorAction.status === "loading";
+  const { snapshot, config, reports, refreshSnapshot } = bridgeState;
+  const [monitorStartFeedback, setMonitorStartFeedback] = useState<"idle" | "pending" | "settled">("idle");
+  const monitorStartInFlightRef = useRef(false);
+  const monitorBusy = bridgeState.monitorAction.status === "loading" || monitorStartFeedback === "pending";
   const monitorRunning = bridgeState.monitorRuntime.running ?? snapshot.data?.watcher.running ?? false;
   const enabledTargets = getEnabledTargets(bridgeState);
-  const targetSummary = enabledTargets.length > 0 ? enabledTargets.join("、") : "尚未启用目标";
-  const metrics = buildOverviewMetrics(bridgeState, enabledTargets);
+  const latestReport = reports.data?.reports.find((report) => report.canOpenReport) ?? reports.data?.reports[0] ?? null;
+  const handleStartMonitor = async () => {
+    if (monitorStartFeedback === "pending") return;
+    if (monitorStartInFlightRef.current) return;
+    monitorStartInFlightRef.current = true;
+    setMonitorStartFeedback("pending");
+
+    try {
+      await bridgeState.startMonitor();
+    } finally {
+      monitorStartInFlightRef.current = false;
+      setMonitorStartFeedback("settled");
+    }
+  };
+  const primaryAction = getPrimaryAction({
+    monitorRunning,
+    monitorBusy,
+    enabledTargetCount: enabledTargets.length || snapshot.data?.config.enabledTargetCount || 0,
+    latestReport,
+    bridgeState,
+    monitorStartFeedback,
+    onStartMonitor: handleStartMonitor,
+  });
+
+  useEffect(() => {
+    if (bridgeState.monitorAction.status === "loading") {
+      setMonitorStartFeedback("pending");
+      return;
+    }
+    if (bridgeState.monitorAction.status === "success" || bridgeState.monitorAction.status === "error") {
+      monitorStartInFlightRef.current = false;
+      setMonitorStartFeedback("settled");
+    }
+  }, [bridgeState.monitorAction.status]);
+
+  useEffect(() => {
+    if (!monitorRunning) return;
+    monitorStartInFlightRef.current = false;
+    setMonitorStartFeedback("settled");
+  }, [monitorRunning]);
 
   return (
     <section className="page overview-page" data-smoke-page="overview">
       <div className="page__header page__header--focus">
         <div>
-          <span className="mode-ribbon">{isMockPreview ? "界面预览" : "本机数据"}</span>
           <h2>当前监控</h2>
-          <p>先看监控是否运行、正在关注哪些目标，再决定启动、停止或刷新状态。</p>
+          <p>确认状态、目标和下一步操作。</p>
         </div>
         <div className="page__actions">
-          <Button
-            icon={Play}
-            variant="primary"
-            disabled={monitorBusy || monitorRunning}
-            data-smoke-action="monitor-start"
-            onClick={() => void bridgeState.startMonitor()}
-          >
-            {monitorBusy && !monitorRunning ? "启动中" : "启动监控"}
-          </Button>
-          <Button
-            icon={Square}
-            variant="secondary"
-            disabled={monitorBusy || !monitorRunning}
-            data-smoke-action="monitor-stop"
-            onClick={() => void bridgeState.stopMonitor()}
-          >
-            {monitorBusy && monitorRunning ? "停止中" : "停止监控"}
-          </Button>
           <Button
             icon={RefreshCw}
             variant="secondary"
@@ -55,185 +77,279 @@ export function OverviewPage({ bridgeState }: OverviewPageProps) {
             data-smoke-action="refresh-snapshot"
             onClick={() => void refreshSnapshot()}
           >
-            {snapshot.status === "loading" ? "刷新中" : "刷新状态"}
+            {snapshot.status === "loading" ? "正在刷新" : "刷新状态"}
           </Button>
         </div>
       </div>
 
-      <div className="monitor-hero">
-        <GlassCard className="monitor-hero__primary">
-          <div className="monitor-status-block">
-            <div className="monitor-status-block__icon">
-              <Target aria-hidden="true" size={30} />
-            </div>
+      <div className="current-monitor-grid">
+        <GlassCard className="monitor-panel monitor-panel--primary">
+          <div className="monitor-panel__status">
+            <span className={["monitor-panel__dot", monitorRunning ? "monitor-panel__dot--running" : ""].join(" ")} />
             <div>
-              <span>{monitorRunning ? "正在监控" : "当前未启动"}</span>
-              <h3>{targetSummary}</h3>
-              <p>{monitorRunning ? "可以随时停止监控，报告会按当前配置生成。" : "确认目标后，点击启动监控开始记录帧数据。"}</p>
+              <span className="monitor-panel__eyebrow">当前状态</span>
+              <h3>{monitorStatusTitle(bridgeState, monitorRunning)}</h3>
+              <p>{monitorStatusCopy(bridgeState, monitorRunning, enabledTargets.length)}</p>
             </div>
+          </div>
+
+          <div className="monitor-panel__summary" aria-label="已启用目标">
+            <span>已启用目标</span>
+            <strong>{formatEnabledTargets(enabledTargets, snapshot.data?.config.enabledTargetCount ?? 0)}</strong>
+          </div>
+
+          <div className="monitor-panel__actions">
+            <Button
+              icon={primaryAction.icon}
+              variant={primaryAction.variant}
+              disabled={primaryAction.disabled}
+              data-smoke-action={primaryAction.smokeAction}
+              onClick={primaryAction.onClick}
+            >
+              {primaryAction.label}
+            </Button>
+            <span>{primaryAction.helper}</span>
+            {primaryAction.feedback ? (
+              <span
+                className="monitor-panel__feedback"
+                aria-live="polite"
+                data-smoke-state="monitor-start-feedback"
+              >
+                {primaryAction.feedback}
+              </span>
+            ) : null}
           </div>
         </GlassCard>
 
-        <GlassCard className="monitor-hero__side">
-          <InlineStatus
-            tone={monitorStatusTone(bridgeState, monitorRunning)}
-            title={monitorStatusTitle(bridgeState, monitorRunning)}
-            message={monitorStatusMessage(bridgeState, monitorRunning)}
-            busy={monitorBusy}
-          />
+        <GlassCard className="next-step-panel">
+          <div className="section-title">
+            <div>
+              <h3>下一步</h3>
+              <p>{nextStepLead(monitorRunning, enabledTargets.length, latestReport)}</p>
+            </div>
+            <StatusPill tone={enabledTargets.length > 0 ? "success" : "warning"}>
+              {enabledTargets.length > 0 ? "目标可用" : "需要目标"}
+            </StatusPill>
+          </div>
+          <ol className="step-list">
+            {buildNextSteps(monitorRunning, enabledTargets.length, latestReport).map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
         </GlassCard>
       </div>
 
       {snapshot.status === "error" ? (
-        <InlineStatus tone="danger" title="状态读取失败" message={snapshot.error} />
+        <InlineStatus
+          tone="danger"
+          title="状态读取失败"
+          message={snapshot.error || "请确认本机程序仍在运行，然后重新刷新状态。"}
+        />
       ) : snapshot.status === "loading" ? (
         <InlineStatus tone="diagnostics" title="正在读取状态" message="正在读取当前监控状态。" busy />
       ) : null}
 
-      {snapshot.data ? (
-        <>
-          <div className="metric-grid">
-            {metrics.map((metric, index) => (
-              <MetricCard key={metric.label} metric={metric} index={index} />
-            ))}
-          </div>
+      <div className="overview-summary-grid">
+        <GlassCard density="compact">
+          <SummaryBlock
+            title="目标摘要"
+            tone={enabledTargets.length > 0 ? "success" : "warning"}
+            value={enabledTargets.length > 0 ? `${enabledTargets.length} 个目标可监控` : "还没有启用目标"}
+            detail={
+              enabledTargets.length > 0
+                ? formatEnabledTargets(enabledTargets, enabledTargets.length)
+                : "先到目标页启用至少一个游戏。"
+            }
+          />
+        </GlassCard>
+        <GlassCard density="compact">
+          <SummaryBlock
+            title="最新报告"
+            tone={latestReport?.canOpenReport ? "success" : "warning"}
+            value={latestReport ? latestReport.game || "FrameScope 报告" : "还没有报告"}
+            detail={latestReport ? `${formatReportTime(latestReport.time || latestReport.lastWriteTime)} · 报告页可查看` : "完成一次监控后会出现在报告页。"}
+          />
+          {latestReport?.canOpenReport ? (
+            <Button
+              icon={FileText}
+              variant="secondary"
+              disabled={bridgeState.getReportOperationState("open", latestReport.reportId).status === "loading"}
+              data-smoke-action="open-latest-report"
+              onClick={() => void bridgeState.openReport(latestReport.reportId)}
+            >
+              打开最新报告
+            </Button>
+          ) : null}
+        </GlassCard>
+        <GlassCard density="compact">
+          <SummaryBlock
+            title="数据保存"
+            tone={config.status === "error" ? "danger" : "neutral"}
+            value={formatPathTail(snapshot.data?.config.dataRoot || config.data?.resolvedDataRoot || "")}
+            detail="完整位置可在设置页查看。"
+          />
+        </GlassCard>
+      </div>
 
-          <div className="overview-grid">
-            <GlassCard className="overview-grid__wide">
-              <div className="section-title">
-                <div>
-                  <h3>会话详情</h3>
-                  <p>这些信息用来确认当前监控对象、数据位置和最近报告。</p>
-                </div>
-                <StatusPill tone={monitorRunning ? "success" : "diagnostics"}>
-                  {monitorRunning ? "运行中" : "未启动"}
-                </StatusPill>
-              </div>
-              <div className="snapshot-grid">
-                <SnapshotItem label="监控目标" value={targetSummary} />
-                <SnapshotItem label="进程 ID" value={String(bridgeState.monitorRuntime.pid || snapshot.data.watcher.pid || "-")} />
-                <SnapshotItem label="数据目录" value={snapshot.data.config.dataRoot || "-"} />
-                <SnapshotItem label="最近报告" value={formatPathTail(snapshot.data.watcher.lastReport)} />
-                <SnapshotItem label="历史记录" value={snapshot.data.reports.historyExists ? "已找到" : "暂无记录"} />
-                <SnapshotItem label="更新时间" value={formatDateTime(snapshot.data.generatedAt)} />
-              </div>
-            </GlassCard>
-
-            <GlassCard>
-              <div className="section-title">
-                <div>
-                  <h3>下一步</h3>
-                  <p>根据当前状态选择最直接的操作。</p>
-                </div>
-                <Clock3 aria-hidden="true" size={18} />
-              </div>
-              <InlineStatus
-                tone={enabledTargets.length > 0 ? "success" : "warning"}
-                title={enabledTargets.length > 0 ? "目标已准备" : "还没有启用目标"}
-                message={
-                  enabledTargets.length > 0
-                    ? `已启用 ${enabledTargets.length} 个目标，可以开始监控。`
-                    : "请先到目标页启用至少一个游戏进程。"
-                }
-              />
-              <InlineStatus
-                tone={config.status === "error" ? "danger" : config.data ? "success" : "diagnostics"}
-                title={config.data ? "设置已加载" : "正在等待设置"}
-                message={config.data ? `${config.data.targetCount} 个目标，${config.data.enabledTargetCount} 个启用。` : config.message}
-                busy={config.status === "loading"}
-              />
-              {snapshot.data.watcher.lastError ? (
-                <InlineStatus tone="danger" title="最近错误" message={snapshot.data.watcher.lastError} />
-              ) : (
-                <InlineStatus tone="success" title="未发现最近错误" message="当前状态没有报告新的监控错误。" />
-              )}
-            </GlassCard>
-          </div>
-        </>
-      ) : snapshot.status !== "loading" ? (
+      {!snapshot.data && snapshot.status !== "loading" ? (
         <EmptyState
           icon={ShieldAlert}
-          title="暂无状态数据"
-          description="点击刷新状态后，如果仍没有数据，请检查本机应用是否已经启动。"
-          actionLabel="等待数据"
+          title="还没有状态"
+          description="点击刷新状态读取本机状态。如果仍失败，请重新打开 FrameScope Monitor。"
+          actionLabel="刷新状态"
         />
       ) : null}
     </section>
   );
 }
 
-function buildOverviewMetrics(bridgeState: FrameScopeBridgeViewState, enabledTargets: string[]): Metric[] {
-  const snapshot = bridgeState.snapshot.data;
-  const config = bridgeState.config.data;
-  const monitorRunning = bridgeState.monitorRuntime.running ?? snapshot?.watcher.running ?? false;
-  return [
-    {
-      label: "监控状态",
-      value: monitorRunning ? "运行中" : "未启动",
-      detail: monitorRunning ? "正在记录性能数据" : "等待启动监控",
-      tone: monitorRunning ? "success" : "neutral",
-    },
-    {
-      label: "启用目标",
-      value: String(enabledTargets.length || config?.enabledTargetCount || snapshot?.config.enabledTargetCount || "-"),
-      detail: `${config?.targetCount ?? snapshot?.config.targetCount ?? 0} 个配置目标`,
-      tone: "primary",
-    },
-    {
-      label: "最近报告",
-      value: formatPathTail(snapshot?.watcher.lastReport),
-      detail: snapshot?.watcher.completedRuns ? `${snapshot.watcher.completedRuns} 个完成会话` : "暂无完成会话",
-      tone: snapshot?.watcher.lastReport ? "success" : "warning",
-    },
-    {
-      label: "历史记录",
-      value: snapshot?.reports.historyExists ? "已找到" : "暂无",
-      detail: snapshot?.reports.historyPath || "等待状态刷新",
-      tone: snapshot?.reports.historyExists ? "success" : "warning",
-    },
-  ].map((metric) => ({ ...metric, tone: metric.tone as Tone }));
-}
-
 function getEnabledTargets(bridgeState: FrameScopeBridgeViewState) {
-  const targets = bridgeState.config.data?.config.Targets ?? [];
+  const targets = bridgeState.config.data?.config.Targets ?? bridgeState.targets.data?.targets ?? [];
   return targets.filter((target) => target.Enabled).map((target) => target.Name || target.ProcessName).filter(Boolean);
 }
 
-function monitorStatusTone(bridgeState: FrameScopeBridgeViewState, running: boolean): Tone {
-  if (bridgeState.monitorAction.status === "error") return "danger";
-  if (bridgeState.monitorAction.status === "loading") return "diagnostics";
-  return running ? "success" : "diagnostics";
+function getPrimaryAction({
+  monitorRunning,
+  monitorBusy,
+  enabledTargetCount,
+  latestReport,
+  bridgeState,
+  monitorStartFeedback,
+  onStartMonitor,
+}: {
+  monitorRunning: boolean;
+  monitorBusy: boolean;
+  enabledTargetCount: number;
+  latestReport: ReportListItem | null;
+  bridgeState: FrameScopeBridgeViewState;
+  monitorStartFeedback: "idle" | "pending" | "settled";
+  onStartMonitor: () => Promise<void>;
+}) {
+  if (monitorRunning) {
+    return {
+      label: monitorBusy ? "正在停止" : "停止监控",
+      helper: "停止后按当前设置生成报告。",
+      icon: Square,
+      variant: "danger" as const,
+      disabled: monitorBusy,
+      smokeAction: "monitor-stop",
+      onClick: () => void bridgeState.stopMonitor(),
+      feedback: "",
+    };
+  }
+
+  if (enabledTargetCount > 0) {
+    const startPending = monitorStartFeedback === "pending" || monitorBusy;
+    return {
+      label: startPending || monitorBusy ? "正在启动" : "启动监控",
+      helper: startPending ? "启动请求已发送，正在等待本机程序确认。" : "启动后保持软件运行，然后进入游戏。",
+      feedback: startPending ? "已收到点击，正在启动监控..." : "",
+      icon: Play,
+      variant: "primary" as const,
+      disabled: startPending || monitorBusy,
+      smokeAction: "monitor-start",
+      onClick: () => void onStartMonitor(),
+    };
+  }
+
+  if (latestReport?.canOpenReport) {
+    return {
+      label: "打开最新报告",
+      helper: "可以先查看最近一次结果。",
+      icon: FileText,
+      variant: "primary" as const,
+      disabled: bridgeState.getReportOperationState("open", latestReport.reportId).status === "loading",
+      smokeAction: "open-latest-report",
+      onClick: () => void bridgeState.openReport(latestReport.reportId),
+      feedback: "",
+    };
+  }
+
+  return {
+    label: "去设置目标",
+    helper: "先启用至少一个游戏进程。",
+    icon: Target,
+    variant: "primary" as const,
+    disabled: true,
+    smokeAction: "go-targets-disabled",
+    onClick: undefined,
+    feedback: "",
+  };
 }
 
 function monitorStatusTitle(bridgeState: FrameScopeBridgeViewState, running: boolean) {
-  if (bridgeState.monitorAction.status === "error") return "监控操作失败";
-  if (bridgeState.monitorAction.status === "loading") return "正在执行监控操作";
-  return running ? "监控服务运行中" : "监控服务未启动";
+  if (bridgeState.monitorAction.status === "error") return "需要处理";
+  return running ? "正在监控" : "未启动";
 }
 
-function monitorStatusMessage(bridgeState: FrameScopeBridgeViewState, running: boolean) {
-  if (bridgeState.monitorAction.status === "error") return bridgeState.monitorAction.error;
-  if (bridgeState.monitorAction.status === "loading") return "请求已发送，正在等待本机应用返回状态。";
-  if (running) return "正在记录已启用目标的性能数据。";
-  return "启动前请确认目标页里的游戏进程名称和开关。";
+function monitorStatusCopy(bridgeState: FrameScopeBridgeViewState, running: boolean, enabledTargetCount: number) {
+  if (bridgeState.monitorAction.status === "error") {
+    return bridgeState.monitorAction.error || "监控操作失败。请检查权限或目标进程后重试。";
+  }
+  if (bridgeState.monitorAction.status === "loading") return "操作已发送，正在等待本机程序确认。";
+  if (running) return "正在记录帧表现和系统占用。";
+  if (enabledTargetCount > 0) return `已启用 ${enabledTargetCount} 个目标，可以开始监控。`;
+  return "先启用至少一个游戏进程，才能开始记录。";
 }
 
-function SnapshotItem({ label, value }: { label: string; value: string }) {
+function formatEnabledTargets(targets: string[], fallbackCount: number) {
+  if (targets.length === 0 && fallbackCount > 0) return `${fallbackCount} 个目标已启用`;
+  if (targets.length === 0) return "没有启用目标";
+  const visible = targets.slice(0, 3).join("、");
+  return targets.length > 3 ? `${visible} 等 ${targets.length} 个` : visible;
+}
+
+function buildNextSteps(running: boolean, enabledTargetCount: number, latestReport: ReportListItem | null) {
+  if (running) return ["进入游戏复现卡顿", "结束后停止监控", "到报告页查看结果"];
+  if (enabledTargetCount === 0) return ["打开目标页", "启用或添加游戏进程", "回到这里启动监控"];
+  if (latestReport?.canOpenReport) return ["启动监控记录新会话", "或打开最新报告", "报告页可查看历史结果"];
+  return ["启动监控", "进入游戏复现问题", "回到报告页查看结果"];
+}
+
+function nextStepLead(running: boolean, enabledTargetCount: number, latestReport: ReportListItem | null) {
+  if (running) return "正在记录，结束后看报告。";
+  if (enabledTargetCount === 0) return "先添加或启用目标。";
+  if (latestReport?.canOpenReport) return "可以监控，也可以看报告。";
+  return "目标已准备，可以开始。";
+}
+
+function SummaryBlock({
+  title,
+  tone,
+  value,
+  detail,
+}: {
+  title: string;
+  tone: Tone;
+  value: string;
+  detail: string;
+}) {
   return (
-    <div className="snapshot-item">
-      <span>{label}</span>
-      <strong>{value || "-"}</strong>
+    <div className="summary-block">
+      <div>
+        <span>{title}</span>
+        <strong title={value}>{value || "-"}</strong>
+      </div>
+      <StatusPill tone={tone}>{statusLabel(tone)}</StatusPill>
+      <p title={detail}>{detail}</p>
     </div>
   );
+}
+
+function statusLabel(tone: Tone) {
+  if (tone === "success") return "正常";
+  if (tone === "warning") return "注意";
+  if (tone === "danger") return "失败";
+  return "信息";
 }
 
 function formatPathTail(value?: string) {
   if (!value) return "-";
   const parts = value.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? value;
+  return parts.slice(-2).join("\\") || value;
 }
 
-function formatDateTime(value: string) {
+function formatReportTime(value: string) {
   if (!value) return "-";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();

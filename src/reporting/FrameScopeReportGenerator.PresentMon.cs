@@ -13,6 +13,7 @@ internal static partial class FrameScopeReportGenerator
     {
         PresentReadResult result = new PresentReadResult();
         int totalRows = 0;
+        int validRows = 0;
         int invalidRows = 0;
         int outOfRangeRows = 0;
         if (!File.Exists(path))
@@ -24,17 +25,27 @@ internal static partial class FrameScopeReportGenerator
             return result;
         }
 
-        List<PresentRecord> records = new List<PresentRecord>();
+        Dictionary<string, PresentTrack> tracks = new Dictionary<string, PresentTrack>();
         using (CsvTable table = CsvTable.Open(path))
         {
             Dictionary<string, int> h = table.Headers;
-            List<string> row;
-            while ((row = table.ReadRow()) != null)
+            int[] columns = new[]
+            {
+                HeaderIndex(h, "TimeInDateTime"),
+                HeaderIndex(h, "MsBetweenPresents"),
+                HeaderIndex(h, "Application"),
+                HeaderIndex(h, "ProcessID"),
+                HeaderIndex(h, "SwapChainAddress"),
+                HeaderIndex(h, "PresentMode"),
+                HeaderIndex(h, "AllowsTearing")
+            };
+            string[] row;
+            while ((row = table.ReadFields(columns)) != null)
             {
                 totalRows++;
                 DateTime t;
-                double? ms = ParseNullableDouble(Get(row, h, "MsBetweenPresents"));
-                if (!TryParseDate(Get(row, h, "TimeInDateTime"), out t) || !ms.HasValue)
+                double? ms = ParseNullableDouble(row[1]);
+                if (!TryParseDate(row[0], out t) || !ms.HasValue)
                 {
                     invalidRows++;
                     continue;
@@ -44,68 +55,56 @@ internal static partial class FrameScopeReportGenerator
                     outOfRangeRows++;
                     continue;
                 }
-                records.Add(new PresentRecord
+                validRows++;
+
+                string application = row[2].Trim();
+                string processId = row[3].Trim();
+                string swapChain = row[4].Trim();
+                string presentMode = row[5].Trim();
+                string allowsTearing = row[6].Trim();
+                string key = processId + "|" + swapChain + "|" + application;
+                PresentTrack track;
+                if (!tracks.TryGetValue(key, out track))
                 {
-                    RowIndex = totalRows - 1,
-                    Time = t,
-                    FrameMs = ms.Value,
-                    Application = Get(row, h, "Application").Trim(),
-                    ProcessId = Get(row, h, "ProcessID").Trim(),
-                    SwapChain = Get(row, h, "SwapChainAddress").Trim(),
-                    PresentMode = Get(row, h, "PresentMode").Trim(),
-                    AllowsTearing = Get(row, h, "AllowsTearing").Trim()
-                });
+                    track = new PresentTrack { ProcessId = processId, SwapChain = swapChain, Application = application };
+                    tracks[key] = track;
+                }
+
+                bool isHardware = IsHardwarePresentMode(presentMode);
+                track.Rows++;
+                if (isHardware) track.HardwareRows++;
+                if (allowsTearing == "1" || allowsTearing.Equals("true", StringComparison.OrdinalIgnoreCase)) track.AllowsTearingRows++;
+                if (ms.Value > 1000) track.ArtifactRowsOver1000ms++;
+                track.Frames.Add(new PresentFrame { Time = t, FrameMs = ms.Value, IsHardware = isHardware });
             }
         }
 
-        SelectPresentMonFrames(records, result);
+        SelectPresentMonFrames(tracks.Values, validRows, result);
         result.Diagnostics["rawRows"] = totalRows;
-        result.Diagnostics["validRows"] = records.Count;
+        result.Diagnostics["validRows"] = validRows;
         result.Diagnostics["invalidRows"] = invalidRows;
         result.Diagnostics["outOfRangeRows"] = outOfRangeRows;
         return result;
     }
 
-    private static void SelectPresentMonFrames(List<PresentRecord> records, PresentReadResult result)
+    private static void SelectPresentMonFrames(IEnumerable<PresentTrack> tracks, int validRows, PresentReadResult result)
     {
-        if (records.Count == 0)
+        List<PresentTrack> summaries = new List<PresentTrack>();
+        foreach (PresentTrack track in tracks)
+        {
+            summaries.Add(track);
+        }
+
+        if (summaries.Count == 0)
         {
             result.Diagnostics["selectedRows"] = 0;
             result.Diagnostics["selectionMode"] = "empty";
             return;
         }
 
-        Dictionary<string, PresentTrack> tracks = new Dictionary<string, PresentTrack>();
-        foreach (PresentRecord r in records)
+        foreach (PresentTrack track in summaries)
         {
-            string key = r.ProcessId + "|" + r.SwapChain + "|" + r.Application;
-            PresentTrack track;
-            if (!tracks.TryGetValue(key, out track))
-            {
-                track = new PresentTrack { ProcessId = r.ProcessId, SwapChain = r.SwapChain, Application = r.Application };
-                tracks[key] = track;
-            }
-            track.Records.Add(r);
-        }
-
-        List<PresentTrack> summaries = new List<PresentTrack>();
-        foreach (PresentTrack track in tracks.Values)
-        {
-            track.Rows = track.Records.Count;
-            List<double> values = new List<double>();
-            List<double> hardware = new List<double>();
-            foreach (PresentRecord r in track.Records)
-            {
-                values.Add(r.FrameMs);
-                if (IsHardwarePresent(r))
-                {
-                    hardware.Add(r.FrameMs);
-                    track.HardwareRows++;
-                }
-                if (r.AllowsTearing == "1" || r.AllowsTearing.Equals("true", StringComparison.OrdinalIgnoreCase)) track.AllowsTearingRows++;
-                if (r.FrameMs > 1000) track.ArtifactRowsOver1000ms++;
-            }
-            List<double> scoring = hardware.Count > 0 ? hardware : values;
+            List<double> scoring = PresentTrackFrameValues(track, track.HardwareRows > 0);
             double? medianMs = PercentileHigh(scoring, 0.5);
             double? p99 = PercentileHigh(scoring, 0.99);
             track.MedianFps = medianMs.HasValue && medianMs.Value > 0 ? 1000.0 / medianMs.Value : (double?)null;
@@ -113,45 +112,64 @@ internal static partial class FrameScopeReportGenerator
             track.Score = track.HardwareRows * 3.0 + track.Rows;
             if (track.MedianFps.HasValue) track.Score += Math.Min(240.0, track.MedianFps.Value) * 20.0;
             if (track.P99FrameMs.HasValue) track.Score -= Math.Min(1000.0, track.P99FrameMs.Value) * 2.0;
-            summaries.Add(track);
         }
         summaries.Sort(delegate(PresentTrack a, PresentTrack b) { return b.Score.CompareTo(a.Score); });
         PresentTrack selected = summaries[0];
         bool multiTrack = summaries.Count > 1;
         bool useHardwareOnly = multiTrack && selected.HardwareRows > 0;
 
-        List<PresentRecord> selectedRecords = new List<PresentRecord>();
+        List<PresentFrame> selectedFrames = new List<PresentFrame>();
         int droppedModeRows = 0;
-        foreach (PresentRecord r in selected.Records)
+        foreach (PresentFrame frame in selected.Frames)
         {
-            if (useHardwareOnly && !IsHardwarePresent(r))
+            if (useHardwareOnly && !frame.IsHardware)
             {
                 droppedModeRows++;
                 continue;
             }
-            if (r.FrameMs > 1000)
+            if (frame.FrameMs > 1000)
             {
                 droppedModeRows++;
                 continue;
             }
-            selectedRecords.Add(r);
+            selectedFrames.Add(frame);
         }
-        selectedRecords.Sort(delegate(PresentRecord a, PresentRecord b) { return a.Time.CompareTo(b.Time); });
-        foreach (PresentRecord r in selectedRecords) result.Frames.Add(new KeyValuePair<DateTime, double>(r.Time, r.FrameMs));
+        selectedFrames.Sort(delegate(PresentFrame a, PresentFrame b) { return a.Time.CompareTo(b.Time); });
+        foreach (PresentFrame frame in selectedFrames) result.Frames.Add(new KeyValuePair<DateTime, double>(frame.Time, frame.FrameMs));
 
-        int droppedTrackRows = records.Count - selected.Records.Count;
-        result.Diagnostics["selectedRows"] = selectedRecords.Count;
+        int droppedTrackRows = validRows - selected.Rows;
+        result.Diagnostics["selectedRows"] = selectedFrames.Count;
         result.Diagnostics["selectionMode"] = multiTrack ? "primary-hardware-track" : "all";
         result.Diagnostics["selectedTrack"] = selected.ToJson();
         result.Diagnostics["tracks"] = summaries.Select(t => t.ToJson()).ToList();
         result.Diagnostics["trackCount"] = summaries.Count;
         result.Diagnostics["droppedTrackRows"] = Math.Max(0, droppedTrackRows);
         result.Diagnostics["droppedModeRows"] = Math.Max(0, droppedModeRows);
-        result.Diagnostics["droppedResumeArtifactRows"] = selected.Records.Count(r => r.FrameMs > 1000);
+        result.Diagnostics["droppedResumeArtifactRows"] = selected.ArtifactRowsOver1000ms;
     }
 
-    private static bool IsHardwarePresent(PresentRecord record)
+    private static List<double> PresentTrackFrameValues(PresentTrack track, bool hardwareOnly)
     {
-        return record.PresentMode != null && record.PresentMode.StartsWith("Hardware:", StringComparison.OrdinalIgnoreCase);
+        List<double> values = new List<double>(hardwareOnly ? track.HardwareRows : track.Rows);
+        foreach (PresentFrame frame in track.Frames)
+        {
+            if (!hardwareOnly || frame.IsHardware) values.Add(frame.FrameMs);
+        }
+        return values;
+    }
+
+    private static bool IsHardwarePresentMode(string presentMode)
+    {
+        return presentMode != null && presentMode.StartsWith("Hardware:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static Dictionary<string, object> ReadPresentMonForTests(string path)
+    {
+        PresentReadResult result = ReadPresentMon(path);
+        return new Dictionary<string, object>
+        {
+            { "frames", result.Frames.Count },
+            { "diagnostics", result.Diagnostics }
+        };
     }
 }

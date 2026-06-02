@@ -14,16 +14,28 @@ internal static partial class FrameScopeNativeMonitor
 {
     private static int RunWebUi(string[] args)
     {
+        string webConfigPath = GetArgValue(args, "--config", ConfigPath);
+        string webConfigDir = Path.GetDirectoryName(Path.GetFullPath(webConfigPath));
+        if (string.IsNullOrWhiteSpace(webConfigDir)) webConfigDir = Root;
+        bool targetSettingsEvidenceSmoke = HasArg(args, "--web-ui-target-settings-evidence-smoke");
+        bool settingsPersistenceReadSmoke = HasArg(args, "--web-ui-settings-persistence-read-smoke");
+        bool smoke = HasArg(args, "--web-ui-smoke") || targetSettingsEvidenceSmoke || settingsPersistenceReadSmoke;
+
         using (var host = new FrameScopeWebHostForm(new FrameScopeWebHostOptions
         {
             Root = Root,
-            ConfigPath = ConfigPath,
-            StatePath = StatePath,
-            HistoryPath = HistoryPath,
+            ConfigPath = webConfigPath,
+            DefaultConfigPath = ConfigPath,
+            StatePath = GetArgValue(args, "--state", string.Equals(Path.GetFullPath(webConfigPath), Path.GetFullPath(ConfigPath), StringComparison.OrdinalIgnoreCase) ? StatePath : Path.Combine(webConfigDir, "framescope-watcher-state.json")),
+            HistoryPath = GetArgValue(args, "--history", string.Equals(Path.GetFullPath(webConfigPath), Path.GetFullPath(ConfigPath), StringComparison.OrdinalIgnoreCase) ? HistoryPath : Path.Combine(webConfigDir, "framescope-history.jsonl")),
             HostAdapter = CreateWebBridgeHostAdapter(),
             FrontendPath = ResolveWebFrontendPath(Root),
-            Smoke = HasArg(args, "--web-ui-smoke"),
+            Smoke = smoke,
+            TraySmoke = HasArg(args, "--web-ui-tray-smoke"),
             ReducedMotion = HasArg(args, "--web-ui-reduced-motion"),
+            TargetSettingsEvidenceSmoke = targetSettingsEvidenceSmoke,
+            SettingsPersistenceReadSmoke = settingsPersistenceReadSmoke,
+            ExpectedTelemetrySampleIntervalMs = ParseIntArg(args, "--web-ui-expected-telemetry-sample", 1375),
             EvidencePath = GetArgValue(args, "--web-ui-evidence", Path.Combine(Root, "artifacts", "webview2-bridge", "smoke.json")),
             ScreenshotPath = GetArgValue(args, "--web-ui-screenshot", Path.Combine(Root, "artifacts", "webview2-bridge", "smoke.png")),
             TimeoutMs = ParseIntArg(args, "--web-ui-timeout-ms", 15000)
@@ -121,12 +133,16 @@ internal static partial class FrameScopeNativeMonitor
             try
             {
                 int before = EnumerateFrameScopeBackgroundPids().Count;
+                int after;
                 if (before > 0)
                 {
-                    StopFrameScopeBackgroundProcesses();
+                    after = StopFrameScopeBackgroundProcessesAndWait(8000);
+                }
+                else
+                {
+                    after = WaitForFrameScopeBackgroundProcessesToExit(1000);
                 }
 
-                int after = EnumerateFrameScopeBackgroundPids().Count;
                 WriteFrameScopeLog("web-bridge-monitor-stopped before=" + before.ToString(CultureInfo.InvariantCulture) + " after=" + after.ToString(CultureInfo.InvariantCulture));
                 return FrameScopeWebBridgeHostResult.Success(
                     "monitor.stopped",
@@ -196,6 +212,51 @@ internal static partial class FrameScopeNativeMonitor
             }
         }
 
+        public FrameScopeWebBridgeHostResult OpenLogsDirectory(FrameScopeWebBridgeHostContext context)
+        {
+            try
+            {
+                string directory = context == null ? "" : context.LogDirectory;
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    return FrameScopeWebBridgeHostResult.Failure("log_directory_missing", "Log directory could not be resolved by the host.", null);
+                }
+
+                directory = Path.GetFullPath(directory);
+                try
+                {
+                    Directory.CreateDirectory(directory);
+                }
+                catch (Exception ex)
+                {
+                    WriteFrameScopeLog("web-bridge-open-logs-create-failed directory=" + directory + " error=" + ex.Message);
+                    return FrameScopeWebBridgeHostResult.Failure("log_directory_create_failed", "日志目录创建失败：" + ex.Message, new Dictionary<string, object>
+                    {
+                        { "directory", directory }
+                    });
+                }
+
+                if (!TryOpenPath(directory))
+                {
+                    return FrameScopeWebBridgeHostResult.Failure("log_directory_open_failed", "日志目录无法通过 Windows Explorer 打开。", new Dictionary<string, object>
+                    {
+                        { "directory", directory }
+                    });
+                }
+
+                WriteFrameScopeLog("web-bridge-open-logs-directory directory=" + directory);
+                return FrameScopeWebBridgeHostResult.Success("logs.directoryOpened", "日志目录已打开。", new Dictionary<string, object>
+                {
+                    { "directory", directory },
+                    { "logFile", Path.Combine(directory, "framescope-watcher.log") }
+                });
+            }
+            catch (Exception ex)
+            {
+                return FrameScopeWebBridgeHostResult.Failure("log_directory_open_failed", ex.Message, null);
+            }
+        }
+
         public FrameScopeWebBridgeHostResult RegenerateReport(FrameScopeWebBridgeHostContext context, string runDir)
         {
             try
@@ -210,8 +271,9 @@ internal static partial class FrameScopeNativeMonitor
                     return FrameScopeWebBridgeHostResult.Failure("missing_monitor_data", "Run directory has no monitor CSV data.", null);
                 }
 
+                FrameScopeConfig config = FrameScopeConfigStore.Load(ConfigPath);
                 var status = ReadStatusDictionary(runDir);
-                var result = RunReportGeneration(runDir);
+                var result = RunReportGeneration(runDir, config);
                 UpdateStatusAfterReportGeneration(runDir, status, result, StatusInt(status, "ExitCode", 0));
                 if (result.ExitCode != 0)
                 {
@@ -275,19 +337,26 @@ internal sealed class FrameScopeWebHostOptions
         StatePath = "";
         HistoryPath = "";
         FrontendPath = "";
+        DefaultConfigPath = "";
         EvidencePath = "";
         ScreenshotPath = "";
         TimeoutMs = 15000;
+        ExpectedTelemetrySampleIntervalMs = 1375;
     }
 
     public string Root { get; set; }
     public string ConfigPath { get; set; }
+    public string DefaultConfigPath { get; set; }
     public string StatePath { get; set; }
     public string HistoryPath { get; set; }
     public IFrameScopeWebBridgeHostAdapter HostAdapter { get; set; }
     public string FrontendPath { get; set; }
     public bool Smoke { get; set; }
+    public bool TraySmoke { get; set; }
     public bool ReducedMotion { get; set; }
+    public bool TargetSettingsEvidenceSmoke { get; set; }
+    public bool SettingsPersistenceReadSmoke { get; set; }
+    public int ExpectedTelemetrySampleIntervalMs { get; set; }
     public string EvidencePath { get; set; }
     public string ScreenshotPath { get; set; }
     public int TimeoutMs { get; set; }
@@ -313,13 +382,24 @@ internal sealed class FrameScopeWebHostForm : Form
     private readonly WebView2 webView;
     private readonly Stopwatch stopwatch = Stopwatch.StartNew();
     private readonly List<string> messages = new List<string>();
+    private readonly List<Dictionary<string, object>> navigationEvents = new List<Dictionary<string, object>>();
+    private readonly List<Dictionary<string, object>> consoleEvents = new List<Dictionary<string, object>>();
+    private readonly List<Dictionary<string, object>> webErrors = new List<Dictionary<string, object>>();
     private readonly FrameScopeWebBridge bridge;
+    private readonly NotifyIcon trayIcon;
+    private readonly ContextMenuStrip trayMenu;
     private System.Windows.Forms.Timer timeoutTimer;
     private bool pageLoaded;
     private bool pageReady;
     private bool finishStarted;
+    private bool explicitCloseRequested;
+    private bool disposingForm;
+    private bool trayIconDisposed;
     private bool usingReactFrontend;
     private bool reactSmokeStarted;
+    private bool trayWindowHidden;
+    private bool activeMonitoringOverride;
+    private bool activeMonitoringOverrideEnabled;
     private Dictionary<string, object> smokePayload = new Dictionary<string, object>();
     private bool smokeConfigSnapshotCaptured;
     private bool smokeConfigExisted;
@@ -329,13 +409,14 @@ internal sealed class FrameScopeWebHostForm : Form
     public FrameScopeWebHostForm(FrameScopeWebHostOptions options)
     {
         this.options = options ?? new FrameScopeWebHostOptions();
-        ExitCode = this.options.Smoke ? 2 : 0;
+        ExitCode = (this.options.Smoke || this.options.TraySmoke) ? 2 : 0;
         Text = "FrameScope Monitor Web UI";
         Width = 1180;
         Height = 760;
         MinimumSize = new Size(900, 560);
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = !this.options.Smoke;
+        Icon = FrameScopeAppIcon.LoadWindowIcon(this.options.Root);
 
         webView = new WebView2
         {
@@ -343,24 +424,55 @@ internal sealed class FrameScopeWebHostForm : Form
         };
         Controls.Add(webView);
 
+        trayMenu = new ContextMenuStrip();
+        trayMenu.Items.Add("\u663e\u793a\u7a97\u53e3", null, delegate { ShowWindowFromTray(); });
+        trayMenu.Items.Add("\u9000\u51fa", null, delegate { RequestExplicitExitFromTray(); });
+        trayIcon = new NotifyIcon
+        {
+            Text = "FrameScope Monitor",
+            Icon = FrameScopeAppIcon.LoadTrayIcon(this.options.Root),
+            ContextMenuStrip = trayMenu,
+            Visible = false
+        };
+        trayIcon.DoubleClick += delegate { ShowWindowFromTray(); };
+
         bridge = new FrameScopeWebBridge(new FrameScopeWebBridgeOptions
         {
             Root = this.options.Root,
             ConfigPath = this.options.ConfigPath,
             StatePath = this.options.StatePath,
             HistoryPath = this.options.HistoryPath,
-            HostAdapter = this.options.HostAdapter
+            HostAdapter = this.options.HostAdapter,
+            HostStateProvider = GetHostState
         }, PostBridgeEvent);
     }
 
     public int ExitCode { get; private set; }
 
+    private FrameScopeWebBridgeHostState GetHostState()
+    {
+        return new FrameScopeWebBridgeHostState
+        {
+            WindowVisible = Visible && !trayWindowHidden,
+            TrayAvailable = trayIcon != null && !trayIconDisposed && LoadCurrentConfig().TrayEnabled
+        };
+    }
+
     protected override async void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        ApplyTrayIconVisibilityFromConfig();
         try
         {
             StartTimeout();
+            if (options.TraySmoke)
+            {
+                pageLoaded = true;
+                pageReady = true;
+                await RunTrayWindowLifecycleSmokeAsync();
+                return;
+            }
+
             string userDataFolder = Path.Combine(Path.GetTempPath(), "FrameScopeMonitorWebView2", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(userDataFolder);
             CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
@@ -370,7 +482,12 @@ internal sealed class FrameScopeWebHostForm : Form
             webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
             webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
             webView.CoreWebView2.NavigationStarting += OnNavigationStarting;
+            webView.CoreWebView2.ContentLoading += OnContentLoading;
+            webView.CoreWebView2.DOMContentLoaded += OnDomContentLoaded;
+            webView.CoreWebView2.ProcessFailed += OnProcessFailed;
+            webView.CoreWebView2.WebResourceResponseReceived += OnWebResourceResponseReceived;
             webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            await AttachDevToolsDiagnosticsAsync();
             await ApplyReducedMotionIfRequestedAsync();
 
             if (!string.IsNullOrWhiteSpace(options.FrontendPath) &&
@@ -400,6 +517,13 @@ internal sealed class FrameScopeWebHostForm : Form
     private void OnNavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
     {
         string uri = e.Uri ?? "";
+        AddNavigationEvent("navigation-starting", new Dictionary<string, object>
+        {
+            { "uri", uri },
+            { "navigationId", e.NavigationId },
+            { "isRedirected", e.IsRedirected },
+            { "isUserInitiated", e.IsUserInitiated }
+        });
         if (uri.Length == 0 ||
             uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
             uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
@@ -423,10 +547,120 @@ internal sealed class FrameScopeWebHostForm : Form
     {
         pageLoaded = e.IsSuccess;
         Log("host:navigation-completed success=" + e.IsSuccess.ToString(CultureInfo.InvariantCulture) + " status=" + e.HttpStatusCode.ToString(CultureInfo.InvariantCulture));
+        AddNavigationEvent("navigation-completed", new Dictionary<string, object>
+        {
+            { "navigationId", e.NavigationId },
+            { "success", e.IsSuccess },
+            { "status", e.HttpStatusCode },
+            { "webErrorStatus", e.WebErrorStatus.ToString() }
+        });
         if (!e.IsSuccess)
         {
             await FinishAsync(false, "WebView2 navigation failed: " + e.WebErrorStatus);
         }
+    }
+
+    private void OnContentLoading(object sender, CoreWebView2ContentLoadingEventArgs e)
+    {
+        Log("host:content-loading navigationId=" + e.NavigationId.ToString(CultureInfo.InvariantCulture) + " errorPage=" + e.IsErrorPage.ToString(CultureInfo.InvariantCulture));
+        AddNavigationEvent("content-loading", new Dictionary<string, object>
+        {
+            { "navigationId", e.NavigationId },
+            { "isErrorPage", e.IsErrorPage }
+        });
+    }
+
+    private void OnDomContentLoaded(object sender, CoreWebView2DOMContentLoadedEventArgs e)
+    {
+        Log("host:dom-content-loaded navigationId=" + e.NavigationId.ToString(CultureInfo.InvariantCulture));
+        AddNavigationEvent("dom-content-loaded", new Dictionary<string, object>
+        {
+            { "navigationId", e.NavigationId }
+        });
+    }
+
+    private async void OnProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)
+    {
+        string message = "WebView2 process failed: " + e.ProcessFailedKind + " reason=" + e.Reason + " exitCode=" + e.ExitCode.ToString(CultureInfo.InvariantCulture);
+        Log("host:process-failed kind=" + e.ProcessFailedKind + " reason=" + e.Reason + " exitCode=" + e.ExitCode.ToString(CultureInfo.InvariantCulture) + " description=" + (e.ProcessDescription ?? ""));
+        AddWebError("process-failed", new Dictionary<string, object>
+        {
+            { "kind", e.ProcessFailedKind.ToString() },
+            { "reason", e.Reason.ToString() },
+            { "exitCode", e.ExitCode },
+            { "processDescription", e.ProcessDescription ?? "" },
+            { "failureSourceModulePath", e.FailureSourceModulePath ?? "" }
+        });
+
+        if (options.Smoke && !finishStarted)
+        {
+            await FinishAsync(false, message);
+        }
+    }
+
+    private void OnWebResourceResponseReceived(object sender, CoreWebView2WebResourceResponseReceivedEventArgs e)
+    {
+        try
+        {
+            string uri = e.Request == null ? "" : e.Request.Uri ?? "";
+            if (!IsFrameScopeAppUri(uri)) return;
+            int status = e.Response == null ? 0 : e.Response.StatusCode;
+            AddNavigationEvent("resource-response", new Dictionary<string, object>
+            {
+                { "uri", uri },
+                { "status", status },
+                { "reasonPhrase", e.Response == null ? "" : e.Response.ReasonPhrase ?? "" }
+            });
+            if (status >= 400)
+            {
+                AddWebError("resource-response", new Dictionary<string, object>
+                {
+                    { "uri", uri },
+                    { "status", status },
+                    { "reasonPhrase", e.Response == null ? "" : e.Response.ReasonPhrase ?? "" }
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("host:resource-response-error " + ex.Message);
+        }
+    }
+
+    private async System.Threading.Tasks.Task AttachDevToolsDiagnosticsAsync()
+    {
+        if (webView.CoreWebView2 == null) return;
+        try
+        {
+            CoreWebView2DevToolsProtocolEventReceiver consoleReceiver = webView.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.consoleAPICalled");
+            consoleReceiver.DevToolsProtocolEventReceived += OnDevToolsConsoleEvent;
+            CoreWebView2DevToolsProtocolEventReceiver exceptionReceiver = webView.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.exceptionThrown");
+            exceptionReceiver.DevToolsProtocolEventReceived += OnDevToolsExceptionEvent;
+            await webView.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}");
+            Log("host:devtools-runtime enabled");
+        }
+        catch (Exception ex)
+        {
+            Log("host:devtools-runtime-error " + ex.Message);
+            AddWebError("devtools-runtime", new Dictionary<string, object>
+            {
+                { "message", ex.Message }
+            });
+        }
+    }
+
+    private void OnDevToolsConsoleEvent(object sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+    {
+        AddConsoleEvent("console", e.ParameterObjectAsJson);
+    }
+
+    private void OnDevToolsExceptionEvent(object sender, CoreWebView2DevToolsProtocolEventReceivedEventArgs e)
+    {
+        AddConsoleEvent("exception", e.ParameterObjectAsJson);
+        AddWebError("exception", new Dictionary<string, object>
+        {
+            { "details", e.ParameterObjectAsJson ?? "" }
+        });
     }
 
     private async void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -454,7 +688,18 @@ internal sealed class FrameScopeWebHostForm : Form
                 });
                 if (options.Smoke && usingReactFrontend)
                 {
-                    StartReactSmoke();
+                    if (options.TargetSettingsEvidenceSmoke)
+                    {
+                        StartTargetSettingsEvidenceSmoke();
+                    }
+                    else if (options.SettingsPersistenceReadSmoke)
+                    {
+                        StartSettingsPersistenceReadSmoke();
+                    }
+                    else
+                    {
+                        StartReactSmoke();
+                    }
                 }
                 return;
             }
@@ -529,9 +774,16 @@ internal sealed class FrameScopeWebHostForm : Form
             bool settingsLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"settings\"]') !== null", 5000);
             await CaptureSmokePreviewAsync("transition-reports-settings-03");
             await CaptureSmokePreviewAsync("settings-clean");
+            await ExecuteScriptSafeAsync("var input=document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]'); if(input){input.scrollIntoView({block:'center', inline:'nearest'});}");
+            await System.Threading.Tasks.Task.Delay(80);
+            await CaptureSmokePreviewAsync("settings-sampling");
+            Dictionary<string, object> themeSmoke = settingsLoaded
+                ? await RunThemeSmokeAsync()
+                : new Dictionary<string, object> { { "success", false }, { "error", "Settings page was not loaded before theme smoke." } };
 
             CaptureSmokeConfigSnapshot();
-            await ExecuteScriptSafeAsync("var input=document.querySelector('[data-smoke-field=\"poll-interval\"]'); if(input){window.__framescopeSmokeOriginalPoll=input.value; var next=String((parseInt(input.value,10)||1000)+1); var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; setter.call(input,next); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}");
+            await WaitForScriptBoolAsync("document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]') !== null", 5000);
+            await ExecuteScriptSafeAsync("var input=document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]'); if(input){window.__framescopeSmokeOriginalTelemetrySample=input.value; var current=parseInt(input.value,10)||1000; var next=String(current === 1000 ? 1200 : 1000); var setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set; setter.call(input,next); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}));}");
             bool configDirtyObserved = await WaitForScriptBoolAsync("document.body && document.body.innerText && document.body.innerText.indexOf('dirty') >= 0 && document.querySelector('[data-smoke-action=\"save-config\"]') && !document.querySelector('[data-smoke-action=\"save-config\"]').disabled", 5000);
             await CaptureSmokePreviewAsync("settings-dirty");
 
@@ -554,8 +806,9 @@ internal sealed class FrameScopeWebHostForm : Form
             await CaptureSmokePreviewAsync("about");
 
             bool reportLiveActionSuccess = ReadBool(reportLiveActionSmoke, "success", false);
+            bool themeSmokeSuccess = ReadBool(themeSmoke, "success", false);
             bool smokeSuccess = overviewLoaded && targetsLoaded && processRefreshObserved && reportsLoaded && reportLiveActionSuccess && aboutLoaded &&
-                settingsLoaded && targetsReloaded && configDirtyObserved && configSavingObserved && configSaveSuccessObserved;
+                settingsLoaded && themeSmokeSuccess && targetsReloaded && configDirtyObserved && configSavingObserved && configSaveSuccessObserved;
             string smokeError = "";
             if (!overviewLoaded) smokeError = "React overview page was not observed before timeout.";
             else if (!targetsLoaded) smokeError = "React targets page was not observed before timeout.";
@@ -563,6 +816,7 @@ internal sealed class FrameScopeWebHostForm : Form
             else if (!reportsLoaded) smokeError = "React reports page was not observed before timeout.";
             else if (!reportLiveActionSuccess) smokeError = "Reports live UI action smoke did not complete open/openDirectory/regenerate successfully.";
             else if (!settingsLoaded) smokeError = "React settings page was not observed before timeout.";
+            else if (!themeSmokeSuccess) smokeError = "Theme smoke did not capture light/dark/system Settings, Overview, and Reports states.";
             else if (!configDirtyObserved) smokeError = "Settings edit did not produce a dirty state.";
             else if (!configSavingObserved) smokeError = "Settings save did not expose a saving state.";
             else if (!configSaveSuccessObserved) smokeError = "Settings save success was not observed before timeout.";
@@ -581,6 +835,7 @@ internal sealed class FrameScopeWebHostForm : Form
                 { "reportLiveActionSmoke", reportLiveActionSmoke },
                 { "reactAboutLoaded", aboutLoaded },
                 { "reactSettingsLoaded", settingsLoaded },
+                { "themeSmoke", themeSmoke },
                 { "reactTargetsReloaded", targetsReloaded },
                 { "configDirtyObserved", configDirtyObserved },
                 { "configSavingObserved", configSavingObserved },
@@ -599,6 +854,252 @@ internal sealed class FrameScopeWebHostForm : Form
         catch (Exception ex)
         {
             QueueFinish(false, "React smoke failed: " + ex.Message);
+        }
+    }
+
+    private async void StartTargetSettingsEvidenceSmoke()
+    {
+        if (reactSmokeStarted) return;
+        reactSmokeStarted = true;
+
+        try
+        {
+            if (UsesDefaultConfigPath())
+            {
+                QueueFinish(false, "Target/settings evidence smoke requires a temporary --config path.");
+                return;
+            }
+
+            int expectedTelemetrySample = options.ExpectedTelemetrySampleIntervalMs <= 0 ? 1375 : options.ExpectedTelemetrySampleIntervalMs;
+            if (expectedTelemetrySample < 500) expectedTelemetrySample = 500;
+            if (expectedTelemetrySample > 5000) expectedTelemetrySample = 5000;
+
+            await System.Threading.Tasks.Task.Delay(1200);
+            await ExecuteScriptSafeAsync("var targets=document.querySelector('[data-smoke-nav=\"targets\"]'); if(targets){targets.click();}");
+            bool targetsLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"targets\"]') !== null", 8000);
+            await CaptureSmokePreviewAsync("targets-initial");
+
+            bool addButtonPresent = await EvaluateScriptBoolAsync("document.querySelector('[data-smoke-action=\"add-target\"]') !== null");
+            await ExecuteScriptSafeAsync("var add=document.querySelector('[data-smoke-action=\"add-target\"]'); if(add){add.click();}");
+            bool addEditorOpened = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-field^=\"target-name-\"]') !== null", 5000);
+            await ExecuteScriptSafeAsync(@"
+window.__framescopeTargetEvidence = window.__framescopeTargetEvidence || {};
+window.__framescopeTargetEvidence.addButtonPresent = !!document.querySelector('[data-smoke-action=""add-target""]');
+window.__framescopeTargetEvidence.addClickedAt = new Date().toISOString();
+(function(){
+  var names = Array.prototype.slice.call(document.querySelectorAll('[data-smoke-field^=""target-name-""]'));
+  var input = names.length ? names[names.length - 1] : null;
+  var match = input ? String(input.getAttribute('data-smoke-field') || '').match(/target-name-(\d+)/) : null;
+  var index = match ? parseInt(match[1], 10) : -1;
+  window.__framescopeTargetEvidence.addedIndex = index;
+  function setValue(selector, value){
+    var el = document.querySelector(selector);
+    if(!el) return false;
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  if(index >= 0){
+    setValue('[data-smoke-field=""target-name-' + index + '""]', 'QA Evidence Target Added');
+    setValue('[data-smoke-field=""target-process-' + index + '""]', 'QaEvidenceTarget.exe');
+    var report = document.querySelector('[data-smoke-field=""target-report-' + index + '""]');
+    if(report && !report.checked){ report.click(); }
+  }
+})();");
+            bool targetAddDirty = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-action=\"save-targets\"]') && !document.querySelector('[data-smoke-action=\"save-targets\"]').disabled", 5000);
+            await CaptureSmokePreviewAsync("target-add-filled");
+            await ExecuteScriptSafeAsync("var save=document.querySelector('[data-smoke-action=\"save-targets\"]'); if(save){save.click();}");
+            bool targetAddSaved = await WaitForScriptBoolAsync("document.body && document.body.innerText && document.body.innerText.indexOf('QA Evidence Target Added') >= 0 && document.body.innerText.indexOf('目标已保存') >= 0", 10000);
+            await CaptureSmokePreviewAsync("target-add-saved");
+
+            await ExecuteScriptSafeAsync(@"
+(function(){
+  var evidence = window.__framescopeTargetEvidence || {};
+  var index = evidence.addedIndex;
+  var edit = document.querySelector('[data-smoke-action=""edit-target-' + index + '""]');
+  if(edit){ edit.click(); evidence.editClickedAt = new Date().toISOString(); }
+  window.__framescopeTargetEvidence = evidence;
+})();");
+            bool targetEditOpened = await WaitForScriptBoolAsync("document.querySelector('.target-list__row--editing') !== null", 5000);
+            await ExecuteScriptSafeAsync(@"
+(function(){
+  var evidence = window.__framescopeTargetEvidence || {};
+  var row = document.querySelector('.target-list__row--editing');
+  var rowText = row ? row.innerText : '';
+  evidence.editSurfaceText = rowText;
+  evidence.noPerTargetSampling = !document.querySelector('[data-smoke-field^=""target-sample-""]') &&
+    rowText.indexOf('采样') < 0 &&
+    rowText.toLowerCase().indexOf('sample') < 0;
+  window.__framescopeTargetEvidence = evidence;
+})();");
+            await CaptureSmokePreviewAsync("target-edit-modal-no-per-target-sampling");
+            await ExecuteScriptSafeAsync(@"
+(function(){
+  var evidence = window.__framescopeTargetEvidence || {};
+  var index = evidence.addedIndex;
+  function setValue(selector, value){
+    var el = document.querySelector(selector);
+    if(!el) return false;
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  if(index >= 0){
+    setValue('[data-smoke-field=""target-name-' + index + '""]', 'QA Evidence Target Edited');
+    setValue('[data-smoke-field=""target-process-' + index + '""]', 'QaEvidenceTargetEdited.exe');
+    var done = document.querySelector('[data-smoke-action=""done-target-' + index + '""]');
+    if(done){ done.click(); }
+  }
+})();");
+            bool targetEditDirty = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-action=\"save-targets\"]') && !document.querySelector('[data-smoke-action=\"save-targets\"]').disabled", 5000);
+            await CaptureSmokePreviewAsync("target-edit-filled");
+            await ExecuteScriptSafeAsync("var save=document.querySelector('[data-smoke-action=\"save-targets\"]'); if(save){save.click();}");
+            bool targetEditSaved = await WaitForScriptBoolAsync("document.body && document.body.innerText && document.body.innerText.indexOf('QA Evidence Target Edited') >= 0 && document.body.innerText.indexOf('目标已保存') >= 0", 10000);
+            await CaptureSmokePreviewAsync("target-edit-saved");
+
+            await ExecuteScriptSafeAsync(@"
+(function(){
+  var evidence = window.__framescopeTargetEvidence || {};
+  var index = evidence.addedIndex;
+  var edit = document.querySelector('[data-smoke-action=""edit-target-' + index + '""]');
+  if(edit){ edit.click(); evidence.deleteEditClickedAt = new Date().toISOString(); }
+  window.__framescopeTargetEvidence = evidence;
+})();");
+            bool targetDeleteEditOpened = await WaitForScriptBoolAsync("document.querySelector('.target-list__row--editing') !== null", 5000);
+            await ExecuteScriptSafeAsync(@"
+(function(){
+  var evidence = window.__framescopeTargetEvidence || {};
+  var index = evidence.addedIndex;
+  var del = document.querySelector('[data-smoke-action=""delete-target-' + index + '""]');
+  if(del){ del.click(); evidence.deleteClickedAt = new Date().toISOString(); }
+  window.__framescopeTargetEvidence = evidence;
+})();");
+            bool targetDeleteDirty = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-action=\"save-targets\"]') && !document.querySelector('[data-smoke-action=\"save-targets\"]').disabled", 5000);
+            await CaptureSmokePreviewAsync("target-delete-pending");
+            await ExecuteScriptSafeAsync("var save=document.querySelector('[data-smoke-action=\"save-targets\"]'); if(save){save.click();}");
+            bool targetDeleteSaved = await WaitForScriptBoolAsync("document.body && document.body.innerText && document.body.innerText.indexOf('QA Evidence Target Edited') < 0 && document.body.innerText.indexOf('目标已保存') >= 0", 10000);
+            await CaptureSmokePreviewAsync("target-delete-saved");
+
+            await ExecuteScriptSafeAsync("var settings=document.querySelector('[data-smoke-nav=\"settings\"]'); if(settings){settings.click();}");
+            bool settingsLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"settings\"]') !== null", 5000);
+            await CaptureSmokePreviewAsync("settings-before-save");
+            await ExecuteScriptSafeAsync(@"
+(function(){
+  var input = document.querySelector('[data-smoke-field=""global-telemetry-sample-interval""]');
+  if(input){
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '" + expectedTelemetrySample.ToString(CultureInfo.InvariantCulture) + @"');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+})();");
+            bool settingsDirty = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-action=\"save-config\"]') && !document.querySelector('[data-smoke-action=\"save-config\"]').disabled", 5000);
+            await CaptureSmokePreviewAsync("settings-modified");
+            await ExecuteScriptSafeAsync("var save=document.querySelector('[data-smoke-action=\"save-config\"]'); if(save){save.click();}");
+            bool settingsSaved = await WaitForScriptBoolAsync("document.body && document.body.innerText && document.body.innerText.indexOf('Config saved.') >= 0", 10000);
+            await CaptureSmokePreviewAsync("settings-saved");
+            string savedTelemetrySample = await EvaluateScriptStringAsync("document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]') ? document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]').value : ''");
+            Dictionary<string, object> targetEvidence = await EvaluateScriptJsonDictionaryAsync("window.__framescopeTargetEvidence || {}");
+            bool noPerTargetSampling = ReadBool(targetEvidence, "noPerTargetSampling", false);
+
+            bool success = targetsLoaded && addButtonPresent && addEditorOpened && targetAddDirty && targetAddSaved &&
+                targetEditOpened && targetEditDirty && targetEditSaved && targetDeleteEditOpened && targetDeleteDirty &&
+                targetDeleteSaved && settingsLoaded && settingsDirty && settingsSaved &&
+                noPerTargetSampling &&
+                string.Equals(savedTelemetrySample, expectedTelemetrySample.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+
+            string error = "";
+            if (!targetsLoaded) error = "Targets page did not load.";
+            else if (!addButtonPresent || !addEditorOpened || !targetAddDirty || !targetAddSaved) error = "Target add evidence did not complete.";
+            else if (!targetEditOpened || !targetEditDirty || !targetEditSaved) error = "Target edit evidence did not complete.";
+            else if (!noPerTargetSampling) error = "Target edit surface exposed per-target sampling text or fields.";
+            else if (!targetDeleteEditOpened || !targetDeleteDirty || !targetDeleteSaved) error = "Target delete evidence did not complete.";
+            else if (!settingsLoaded || !settingsDirty || !settingsSaved) error = "Settings save evidence did not complete.";
+            else if (!string.Equals(savedTelemetrySample, expectedTelemetrySample.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)) error = "Saved telemetry sample value did not match expected.";
+
+            smokePayload = new Dictionary<string, object>
+            {
+                { "success", success },
+                { "frontendPath", options.FrontendPath },
+                { "configPath", options.ConfigPath },
+                { "targetsLoaded", targetsLoaded },
+                { "targetAddSaved", targetAddSaved },
+                { "targetEditSaved", targetEditSaved },
+                { "targetDeleteSaved", targetDeleteSaved },
+                { "targetEditNoPerTargetSampling", noPerTargetSampling },
+                { "settingsLoaded", settingsLoaded },
+                { "settingsSaved", settingsSaved },
+                { "expectedTelemetrySampleIntervalMs", expectedTelemetrySample },
+                { "savedTelemetrySampleIntervalMs", savedTelemetrySample },
+                { "targetEvidence", targetEvidence },
+                { "error", error }
+            };
+            await FinishAsync(success, error);
+        }
+        catch (Exception ex)
+        {
+            QueueFinish(false, "Target/settings evidence smoke failed: " + ex.Message);
+        }
+    }
+
+    private async void StartSettingsPersistenceReadSmoke()
+    {
+        if (reactSmokeStarted) return;
+        reactSmokeStarted = true;
+
+        try
+        {
+            if (UsesDefaultConfigPath())
+            {
+                QueueFinish(false, "Settings persistence read smoke requires a temporary --config path.");
+                return;
+            }
+
+            int expectedTelemetrySample = options.ExpectedTelemetrySampleIntervalMs <= 0 ? 1375 : options.ExpectedTelemetrySampleIntervalMs;
+            if (expectedTelemetrySample < 500) expectedTelemetrySample = 500;
+            if (expectedTelemetrySample > 5000) expectedTelemetrySample = 5000;
+
+            await System.Threading.Tasks.Task.Delay(1200);
+            await ExecuteScriptSafeAsync("var settings=document.querySelector('[data-smoke-nav=\"settings\"]'); if(settings){settings.click();}");
+            bool settingsLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"settings\"]') !== null", 8000);
+            bool inputLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]') !== null", 5000);
+            string actualTelemetrySample = await EvaluateScriptStringAsync("document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]') ? document.querySelector('[data-smoke-field=\"global-telemetry-sample-interval\"]').value : ''");
+            await CaptureSmokePreviewAsync("settings-restart-persisted");
+
+            bool success = settingsLoaded && inputLoaded && string.Equals(actualTelemetrySample, expectedTelemetrySample.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+            string error = success ? "" : "Settings restart persistence value did not match expected.";
+            smokePayload = new Dictionary<string, object>
+            {
+                { "success", success },
+                { "frontendPath", options.FrontendPath },
+                { "configPath", options.ConfigPath },
+                { "settingsLoaded", settingsLoaded },
+                { "inputLoaded", inputLoaded },
+                { "expectedTelemetrySampleIntervalMs", expectedTelemetrySample },
+                { "actualTelemetrySampleIntervalMs", actualTelemetrySample },
+                { "error", error }
+            };
+            await FinishAsync(success, error);
+        }
+        catch (Exception ex)
+        {
+            QueueFinish(false, "Settings persistence read smoke failed: " + ex.Message);
+        }
+    }
+
+    private bool UsesDefaultConfigPath()
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(options.ConfigPath), Path.GetFullPath(options.DefaultConfigPath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return true;
         }
     }
 
@@ -661,6 +1162,31 @@ window.__framescopeReportClickEvidence = best || fallback || {
 
             await ExecuteScriptSafeAsync(@"
 var evidence = window.__framescopeReportClickEvidence || {};
+var regenerateButton = document.querySelector('[data-smoke-action=""regenerate-report-' + evidence.reportIndex + '""]');
+if(regenerateButton && !regenerateButton.disabled){
+  regenerateButton.scrollIntoView({ block: 'center', inline: 'center' });
+  evidence.regenerateClickedAt = new Date().toISOString();
+  regenerateButton.click();
+} else {
+  evidence.regenerateClickError = regenerateButton ? 'regenerate button disabled' : 'regenerate button not found';
+}");
+            bool reportRegenerateClicked = await WaitForScriptBoolAsync("window.__framescopeReportClickEvidence && !!window.__framescopeReportClickEvidence.regenerateClickedAt", 1000);
+            await System.Threading.Tasks.Task.Delay(150);
+            await CaptureSmokePreviewAsync("reports-regenerate-clicked");
+            bool reportRegenerateClickAccepted = await WaitForScriptBoolAsync(
+                "window.__framescopeBridgeSmoke && Object.keys(window.__framescopeBridgeSmoke.responses).some(function(key){ var response = window.__framescopeBridgeSmoke.responses[key]; return response && response.ok === true && response.payload && response.payload.status === 'accepted' && response.payload.action === 'reports.regenerate'; })",
+                10000);
+            bool reportRegenerateClickInFlight = await WaitForScriptBoolAsync(
+                "window.__framescopeBridgeSmoke && window.__framescopeBridgeSmoke.events && window.__framescopeBridgeSmoke.events.some(function(event){ return event.type === 'event.reportProgress' && event.payload && event.payload.action === 'reports.regenerate' && event.payload.status === 'report.regenerating'; })",
+                5000);
+            await CaptureSmokePreviewAsync("reports-regenerate-accepted");
+            bool reportRegenerateClickCompleted = await WaitForScriptBoolAsync(
+                "window.__framescopeReportClickEvidence && window.__framescopeBridgeSmoke && window.__framescopeBridgeSmoke.events && window.__framescopeBridgeSmoke.events.some(function(event){ return event.type === 'event.reportProgress' && event.payload && event.payload.action === 'reports.regenerate' && event.payload.status === 'completed' && event.payload.reportId === window.__framescopeReportClickEvidence.reportId; })",
+                90000);
+            await CaptureSmokePreviewAsync("reports-regenerate-success");
+
+            await ExecuteScriptSafeAsync(@"
+var evidence = window.__framescopeReportClickEvidence || {};
 var openButton = document.querySelector('[data-smoke-action=""open-report-' + evidence.reportIndex + '""]');
 if(openButton && !openButton.disabled){
   openButton.scrollIntoView({ block: 'center', inline: 'center' });
@@ -694,31 +1220,6 @@ if(directoryButton && !directoryButton.disabled){
                 "window.__framescopeReportClickEvidence && window.__framescopeBridgeSmoke && Object.keys(window.__framescopeBridgeSmoke.responses).some(function(key){ var response = window.__framescopeBridgeSmoke.responses[key]; return response && response.ok === true && response.payload && response.payload.status === 'directory_opened' && response.payload.reportId === window.__framescopeReportClickEvidence.reportId; })",
                 10000);
             await CaptureSmokePreviewAsync("reports-open-directory-success");
-
-            await ExecuteScriptSafeAsync(@"
-var evidence = window.__framescopeReportClickEvidence || {};
-var regenerateButton = document.querySelector('[data-smoke-action=""regenerate-report-' + evidence.reportIndex + '""]');
-if(regenerateButton && !regenerateButton.disabled){
-  regenerateButton.scrollIntoView({ block: 'center', inline: 'center' });
-  evidence.regenerateClickedAt = new Date().toISOString();
-  regenerateButton.click();
-} else {
-  evidence.regenerateClickError = regenerateButton ? 'regenerate button disabled' : 'regenerate button not found';
-}");
-            bool reportRegenerateClicked = await WaitForScriptBoolAsync("window.__framescopeReportClickEvidence && !!window.__framescopeReportClickEvidence.regenerateClickedAt", 1000);
-            await System.Threading.Tasks.Task.Delay(150);
-            await CaptureSmokePreviewAsync("reports-regenerate-clicked");
-            bool reportRegenerateClickAccepted = await WaitForScriptBoolAsync(
-                "window.__framescopeBridgeSmoke && Object.keys(window.__framescopeBridgeSmoke.responses).some(function(key){ var response = window.__framescopeBridgeSmoke.responses[key]; return response && response.ok === true && response.payload && response.payload.status === 'accepted' && response.payload.action === 'reports.regenerate'; })",
-                10000);
-            bool reportRegenerateClickInFlight = await WaitForScriptBoolAsync(
-                "window.__framescopeBridgeSmoke && window.__framescopeBridgeSmoke.events && window.__framescopeBridgeSmoke.events.some(function(event){ return event.type === 'event.reportProgress' && event.payload && event.payload.action === 'reports.regenerate' && event.payload.status === 'report.regenerating'; })",
-                5000);
-            await CaptureSmokePreviewAsync("reports-regenerate-accepted");
-            bool reportRegenerateClickCompleted = await WaitForScriptBoolAsync(
-                "window.__framescopeReportClickEvidence && window.__framescopeBridgeSmoke && window.__framescopeBridgeSmoke.events && window.__framescopeBridgeSmoke.events.some(function(event){ return event.type === 'event.reportProgress' && event.payload && event.payload.action === 'reports.regenerate' && event.payload.status === 'completed' && event.payload.reportId === window.__framescopeReportClickEvidence.reportId; })",
-                90000);
-            await CaptureSmokePreviewAsync("reports-regenerate-success");
 
             await ExecuteScriptSafeAsync(@"
 var evidence = window.__framescopeReportClickEvidence || {};
@@ -803,20 +1304,99 @@ window.__framescopeReportClickEvidence = evidence;");
         return result;
     }
 
+    private async System.Threading.Tasks.Task<Dictionary<string, object>> RunThemeSmokeAsync()
+    {
+        var result = new Dictionary<string, object>();
+        try
+        {
+            bool settingsLight = await CaptureThemePageSmokeAsync("light", "settings", "settings-light");
+            bool settingsDark = await CaptureThemePageSmokeAsync("dark", "settings", "settings-dark");
+            bool settingsSystem = await CaptureThemePageSmokeAsync("system", "settings", "settings-system");
+
+            await ExecuteScriptSafeAsync("var overview=document.querySelector('[data-smoke-nav=\"overview\"]'); if(overview){overview.click();}");
+            bool overviewLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"overview\"]') !== null", 5000);
+            bool overviewLight = overviewLoaded && await CaptureThemePageSmokeAsync("light", "overview", "overview-light");
+            bool overviewDark = overviewLoaded && await CaptureThemePageSmokeAsync("dark", "overview", "overview-dark");
+            bool overviewSystem = overviewLoaded && await CaptureThemePageSmokeAsync("system", "overview", "overview-system");
+
+            await ExecuteScriptSafeAsync("var reports=document.querySelector('[data-smoke-nav=\"reports\"]'); if(reports){reports.click();}");
+            bool reportsLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"reports\"]') !== null", 5000);
+            bool reportsLight = reportsLoaded && await CaptureThemePageSmokeAsync("light", "reports", "reports-light");
+            bool reportsDark = reportsLoaded && await CaptureThemePageSmokeAsync("dark", "reports", "reports-dark");
+            bool reportsSystem = reportsLoaded && await CaptureThemePageSmokeAsync("system", "reports", "reports-system");
+
+            await ExecuteScriptSafeAsync("var settings=document.querySelector('[data-smoke-nav=\"settings\"]'); if(settings){settings.click();}");
+            bool settingsReloaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"settings\"]') !== null", 5000);
+
+            bool success = settingsLight && settingsDark && settingsSystem &&
+                overviewLight && overviewDark && overviewSystem &&
+                reportsLight && reportsDark && reportsSystem &&
+                settingsReloaded;
+
+            result["success"] = success;
+            result["settingsLight"] = settingsLight;
+            result["settingsDark"] = settingsDark;
+            result["settingsSystem"] = settingsSystem;
+            result["overviewLoaded"] = overviewLoaded;
+            result["overviewLight"] = overviewLight;
+            result["overviewDark"] = overviewDark;
+            result["overviewSystem"] = overviewSystem;
+            result["reportsLoaded"] = reportsLoaded;
+            result["reportsLight"] = reportsLight;
+            result["reportsDark"] = reportsDark;
+            result["reportsSystem"] = reportsSystem;
+            result["settingsReloaded"] = settingsReloaded;
+            result["resolvedSystemTheme"] = await EvaluateScriptStringAsync("document.documentElement.dataset.theme || ''");
+            result["error"] = success ? "" : "One or more theme smoke screenshots were not captured from the expected page/theme.";
+        }
+        catch (Exception ex)
+        {
+            result["success"] = false;
+            result["error"] = ex.Message;
+        }
+        await ExecuteScriptSafeAsync("document.documentElement.dataset.theme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';");
+
+        return result;
+    }
+
+    private async System.Threading.Tasks.Task<bool> CaptureThemePageSmokeAsync(string themeMode, string pageName, string screenshotSuffix)
+    {
+        string modeLiteral = json.Serialize(themeMode ?? "system");
+        await ExecuteScriptSafeAsync(@"
+var mode = " + modeLiteral + @";
+document.documentElement.dataset.theme = mode === 'dark'
+  ? 'dark'
+  : (mode === 'light'
+    ? 'light'
+    : ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'));");
+        await System.Threading.Tasks.Task.Delay(80);
+        bool pageLoaded = await WaitForScriptBoolAsync("document.querySelector('[data-smoke-page=\"" + pageName + "\"]') !== null", 2000);
+        bool themeApplied = await WaitForScriptBoolAsync("document.documentElement.dataset.theme === 'light' || document.documentElement.dataset.theme === 'dark'", 2000);
+        await CaptureSmokePreviewAsync(screenshotSuffix);
+        return pageLoaded && themeApplied;
+    }
+
     private async System.Threading.Tasks.Task<Dictionary<string, object>> RunBridgeExtensionSmokeAsync()
     {
         var result = new Dictionary<string, object>();
+        Dictionary<int, DateTime> externalProcessBaseline = CaptureSmokeExternalProcessSnapshot();
         bool monitorStartAccepted = false;
         bool monitorNeedsCleanup = false;
         try
         {
             await InitializeBridgeSmokeProbeAsync();
 
+            bool stateSnapshotOk = await SendBridgeSmokeRequestAndWaitAsync("smoke-state-snapshot", "state.snapshot", "{}", "ok", 8000);
+            bool stateSnapshotHostOk = await WaitForScriptBoolAsync(
+                "window.__framescopeBridgeSmoke && window.__framescopeBridgeSmoke.responses['smoke-state-snapshot'] && window.__framescopeBridgeSmoke.responses['smoke-state-snapshot'].payload && window.__framescopeBridgeSmoke.responses['smoke-state-snapshot'].payload.host && typeof window.__framescopeBridgeSmoke.responses['smoke-state-snapshot'].payload.host.windowVisible === 'boolean' && typeof window.__framescopeBridgeSmoke.responses['smoke-state-snapshot'].payload.host.trayAvailable === 'boolean' && !!window.__framescopeBridgeSmoke.responses['smoke-state-snapshot'].payload.host.closeWindowBehavior",
+                8000);
             bool reportsListOk = await SendBridgeSmokeRequestAndWaitAsync("smoke-reports-list", "reports.list", "{}", "ok", 8000);
             bool targetsGetOk = await SendBridgeSmokeRequestAndWaitAsync("smoke-targets-get", "targets.get", "{}", "ok", 8000);
             bool reportOpenPathRejected = await SendBridgeSmokeRequestAndWaitAsync("smoke-report-open-path", "reports.open", "{\"path\":\"C:\\\\Windows\\\\not-allowed.html\"}", "path_not_allowed", 8000);
             bool targetsSavePathRejected = await SendBridgeSmokeRequestAndWaitAsync("smoke-targets-save-path", "targets.save", "{\"path\":\"C:\\\\Windows\\\\framescope-config.json\",\"targets\":[]}", "path_not_allowed", 8000);
             bool reportRegenerateMissingRejected = await SendBridgeSmokeRequestAndWaitAsync("smoke-report-regenerate-missing", "reports.regenerate", "{\"reportId\":\"missing-report-id\"}", "report_not_found", 8000);
+            bool logsOpenPathRejected = await SendBridgeSmokeRequestAndWaitAsync("smoke-logs-open-path", "logs.openDirectory", "{\"path\":\"C:\\\\Windows\"}", "path_not_allowed", 8000);
+            bool logsOpenDirectoryOk = await SendBridgeSmokeRequestAndWaitAsync("smoke-logs-open-directory", "logs.openDirectory", "{}", "ok", 8000);
 
             bool diagnosticsAccepted = await SendBridgeSmokeRequestAndWaitAsync("smoke-diagnostics-generate", "diagnostics.generate", "{}", "accepted", 8000);
             bool diagnosticsCompleted = await WaitForBridgeSmokeEventAsync("event.reportProgress", "smoke-diagnostics-generate", "completed", 20000);
@@ -828,11 +1408,15 @@ window.__framescopeReportClickEvidence = evidence;");
             bool monitorStopped = await WaitForBridgeSmokeEventAsync("event.status", "smoke-monitor-stop", "monitor.stopped", 12000);
             if (monitorStopped) monitorNeedsCleanup = false;
 
-            bool success = reportsListOk &&
+            bool success = stateSnapshotOk &&
+                stateSnapshotHostOk &&
+                reportsListOk &&
                 targetsGetOk &&
                 reportOpenPathRejected &&
                 targetsSavePathRejected &&
                 reportRegenerateMissingRejected &&
+                logsOpenPathRejected &&
+                logsOpenDirectoryOk &&
                 diagnosticsAccepted &&
                 diagnosticsCompleted &&
                 monitorStartAccepted &&
@@ -841,11 +1425,15 @@ window.__framescopeReportClickEvidence = evidence;");
                 monitorStopped;
 
             result["success"] = success;
+            result["stateSnapshotOk"] = stateSnapshotOk;
+            result["stateSnapshotHostOk"] = stateSnapshotHostOk;
             result["reportsListOk"] = reportsListOk;
             result["targetsGetOk"] = targetsGetOk;
             result["reportOpenPathRejected"] = reportOpenPathRejected;
             result["targetsSavePathRejected"] = targetsSavePathRejected;
             result["reportRegenerateMissingRejected"] = reportRegenerateMissingRejected;
+            result["logsOpenPathRejected"] = logsOpenPathRejected;
+            result["logsOpenDirectoryOk"] = logsOpenDirectoryOk;
             result["diagnosticsAccepted"] = diagnosticsAccepted;
             result["diagnosticsCompleted"] = diagnosticsCompleted;
             result["monitorStartAccepted"] = monitorStartAccepted;
@@ -871,7 +1459,102 @@ window.__framescopeReportClickEvidence = evidence;");
             }
         }
 
+        try
+        {
+            result["externalProcessCleanup"] = CleanupSmokeExternalProcesses(FindSmokeExternalProcessesStartedAfter(externalProcessBaseline));
+        }
+        catch (Exception ex)
+        {
+            result["externalProcessCleanupError"] = ex.Message;
+        }
+
         return result;
+    }
+
+    private async System.Threading.Tasks.Task RunTrayWindowLifecycleSmokeAsync()
+    {
+        var result = new Dictionary<string, object>();
+        FrameScopeConfig originalConfig = LoadCurrentConfig();
+        bool originalActiveOverride = activeMonitoringOverride;
+        bool originalActiveOverrideEnabled = activeMonitoringOverrideEnabled;
+        bool success = false;
+        string error = "";
+        try
+        {
+            FrameScopeConfig trayConfig = FrameScopeConfigStore.CreateDefaultConfig();
+            trayConfig.CloseWindowBehavior = FrameScopeWebHostLifecycle.CloseBehaviorMinimizeToTray;
+            trayConfig.TrayEnabled = true;
+            FrameScopeConfigStore.Save(options.ConfigPath, trayConfig);
+            ApplyTrayIconVisibilityFromConfig();
+
+            bool initialVisible = Visible && !trayWindowHidden;
+            bool initialTrayVisible = IsTrayIconVisible();
+            bool firstHide = TryHideWindowToTray("tray-smoke-first-hide");
+            bool firstHidden = !Visible && trayWindowHidden && IsTrayIconVisible() && !ShowInTaskbar;
+            int trayInstanceAfterFirstHide = GetTrayIconInstanceCountForSmoke();
+            ShowWindowFromTray();
+            bool shown = Visible && !trayWindowHidden && ShowInTaskbar && IsTrayIconVisible();
+            bool secondHide = TryHideWindowToTray("tray-smoke-second-hide");
+            int trayInstanceAfterSecondHide = GetTrayIconInstanceCountForSmoke();
+            ShowWindowFromTray();
+            bool duplicateTrayIconsPrevented = trayInstanceAfterFirstHide == 1 && trayInstanceAfterSecondHide == 1;
+
+            activeMonitoringOverride = true;
+            activeMonitoringOverrideEnabled = true;
+            bool blockedExit = !TryRequestExplicitExit("tray-smoke-active-monitoring-cancel", false, false);
+            bool stillVisibleAfterBlockedExit = Visible && IsTrayIconVisible();
+            activeMonitoringOverride = false;
+            bool exitAllowedWithoutActiveMonitoring = TryRequestExplicitExit("tray-smoke-exit-no-active-monitoring", false, true);
+            bool automationCloseGuard = exitAllowedWithoutActiveMonitoring && explicitCloseRequested;
+            explicitCloseRequested = false;
+            bool disposeGuard = !FrameScopeWebHostLifecycle.ShouldHideOnUserClose(trayConfig, false, true, true);
+
+            success = initialVisible &&
+                initialTrayVisible &&
+                firstHide &&
+                firstHidden &&
+                shown &&
+                secondHide &&
+                duplicateTrayIconsPrevented &&
+                blockedExit &&
+                stillVisibleAfterBlockedExit &&
+                exitAllowedWithoutActiveMonitoring &&
+                automationCloseGuard &&
+                disposeGuard;
+
+            result["success"] = success;
+            result["initialVisible"] = initialVisible;
+            result["initialTrayVisible"] = initialTrayVisible;
+            result["firstHide"] = firstHide;
+            result["firstHidden"] = firstHidden;
+            result["shown"] = shown;
+            result["secondHide"] = secondHide;
+            result["trayInstanceAfterFirstHide"] = trayInstanceAfterFirstHide;
+            result["trayInstanceAfterSecondHide"] = trayInstanceAfterSecondHide;
+            result["duplicateTrayIconsPrevented"] = duplicateTrayIconsPrevented;
+            result["blockedExit"] = blockedExit;
+            result["stillVisibleAfterBlockedExit"] = stillVisibleAfterBlockedExit;
+            result["exitAllowedWithoutActiveMonitoring"] = exitAllowedWithoutActiveMonitoring;
+            result["automationCloseGuard"] = automationCloseGuard;
+            result["disposeGuard"] = disposeGuard;
+            result["error"] = success ? "" : "Tray window lifecycle smoke failed.";
+        }
+        catch (Exception ex)
+        {
+            result["success"] = false;
+            result["error"] = ex.Message;
+            success = false;
+        }
+        finally
+        {
+            activeMonitoringOverride = originalActiveOverride;
+            activeMonitoringOverrideEnabled = originalActiveOverrideEnabled;
+            try { FrameScopeConfigStore.Save(options.ConfigPath, originalConfig); }
+            catch { }
+        }
+        smokePayload = result;
+        error = ReadString(result, "error");
+        await FinishAsync(success, error);
     }
 
     private async System.Threading.Tasks.Task InitializeBridgeSmokeProbeAsync()
@@ -960,6 +1643,21 @@ if(!window.__framescopeBridgeSmoke){
         string script = "(function(){try{return Boolean(" + conditionScript + ");}catch(e){return false;}})();";
         string result = await webView.CoreWebView2.ExecuteScriptAsync(script);
         return string.Equals(result, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async System.Threading.Tasks.Task<string> EvaluateScriptStringAsync(string expressionScript)
+    {
+        if (webView.CoreWebView2 == null) return "";
+        string script = "(function(){try{return String(" + expressionScript + ");}catch(e){return '';}})();";
+        string result = await webView.CoreWebView2.ExecuteScriptAsync(script);
+        try
+        {
+            return json.Deserialize<string>(result) ?? "";
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     private async System.Threading.Tasks.Task<Dictionary<string, object>> EvaluateScriptJsonDictionaryAsync(string expressionScript)
@@ -1262,6 +1960,132 @@ if(!window.__framescopeBridgeSmoke){
         }
     }
 
+    private FrameScopeConfig LoadCurrentConfig()
+    {
+        try
+        {
+            return FrameScopeConfigStore.Load(options.ConfigPath);
+        }
+        catch
+        {
+            return FrameScopeConfigStore.CreateDefaultConfig();
+        }
+    }
+
+    private void ApplyTrayIconVisibilityFromConfig()
+    {
+        if (trayIcon == null || trayIconDisposed) return;
+        FrameScopeConfig config = LoadCurrentConfig();
+        trayIcon.Visible = config.TrayEnabled && !options.Smoke;
+    }
+
+    private bool TryHideWindowToTray(string reason)
+    {
+        FrameScopeConfig config = LoadCurrentConfig();
+        if (!config.TrayEnabled)
+        {
+            Log("host:hide-to-tray-skipped tray-disabled reason=" + (reason ?? ""));
+            return false;
+        }
+
+        trayWindowHidden = true;
+        ShowInTaskbar = false;
+        Hide();
+        ApplyTrayIconVisibilityFromConfig();
+        Log("host:window-hidden-to-tray reason=" + (reason ?? ""));
+        PublishHostWindowChanged(false, true, reason);
+        return true;
+    }
+
+    private void ShowWindowFromTray()
+    {
+        if (IsDisposed || disposingForm) return;
+
+        trayWindowHidden = false;
+        ShowInTaskbar = true;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show();
+        Activate();
+        ApplyTrayIconVisibilityFromConfig();
+        Log("host:window-restored-from-tray");
+        PublishHostWindowChanged(true, IsTrayIconVisible(), "tray-show-window");
+    }
+
+    private void RequestExplicitExitFromTray()
+    {
+        TryRequestExplicitExit("tray-exit", true, true);
+    }
+
+    private bool TryRequestExplicitExit(string reason, bool closeWhenAllowed, bool promptWhenActive)
+    {
+        bool activeMonitoring = IsActiveMonitoringForExit();
+        if (FrameScopeWebHostLifecycle.RequiresActiveMonitoringConfirmation(activeMonitoring))
+        {
+            if (!promptWhenActive)
+            {
+                Log("host:explicit-exit-active-monitoring-blocked reason=" + (reason ?? ""));
+                return false;
+            }
+
+            DialogResult result = MessageBox.Show(
+                "\u6b63\u5728\u91c7\u96c6 FrameScope \u76d1\u63a7\u6570\u636e\u3002\u786e\u5b9a\u8981\u9000\u51fa\u5e76\u505c\u6b62\u76d1\u63a7\u5417\uff1f",
+                "FrameScope Monitor",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.OK)
+            {
+                Log("host:explicit-exit-cancelled reason=" + (reason ?? ""));
+                return false;
+            }
+        }
+
+        if (activeMonitoring)
+        {
+            try { FrameScopeNativeMonitor.StopFrameScopeBackgroundProcesses(); }
+            catch (Exception ex) { Log("host:explicit-exit-stop-monitoring-error " + ex.Message); }
+        }
+
+        Log("host:explicit-exit-allowed reason=" + (reason ?? "") + " activeMonitoring=" + activeMonitoring.ToString(CultureInfo.InvariantCulture));
+        explicitCloseRequested = true;
+        ExitCode = 0;
+        if (closeWhenAllowed) Close();
+        return true;
+    }
+
+    private bool IsActiveMonitoringForExit()
+    {
+        if (activeMonitoringOverrideEnabled) return activeMonitoringOverride;
+        return FrameScopeNativeMonitor.HasActiveFrameScopeMonitoring();
+    }
+
+    private bool IsTrayIconVisible()
+    {
+        return trayIcon != null && !trayIconDisposed && trayIcon.Visible;
+    }
+
+    private int GetTrayIconInstanceCountForSmoke()
+    {
+        return trayIcon != null && !trayIconDisposed ? 1 : 0;
+    }
+
+    private void PublishHostWindowChanged(bool visible, bool inTray, string reason)
+    {
+        PostBridgeEvent(json.Serialize(new Dictionary<string, object>
+        {
+            { "type", "event.hostWindowChanged" },
+            { "payload", new Dictionary<string, object>
+                {
+                    { "visible", visible },
+                    { "inTray", inTray },
+                    { "closeWindowBehavior", LoadCurrentConfig().CloseWindowBehavior },
+                    { "reason", reason ?? "" }
+                }
+            },
+            { "sentAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) }
+        }));
+    }
+
     private void PostJson(Dictionary<string, object> message)
     {
         PostJson(json.Serialize(message));
@@ -1322,9 +2146,15 @@ if(!window.__framescopeBridgeSmoke){
             { "pageReady", pageReady },
             { "elapsedMs", stopwatch.ElapsedMilliseconds },
             { "error", error ?? "" },
+            { "frontendPath", options.FrontendPath ?? "" },
+            { "usingReactFrontend", usingReactFrontend },
+            { "reducedMotion", options.ReducedMotion },
             { "screenshotPath", screenshotPath },
             { "screenshotError", screenshotError },
             { "smokePayload", smokePayload },
+            { "navigation", navigationEvents.ToArray() },
+            { "console", consoleEvents.ToArray() },
+            { "errors", webErrors.ToArray() },
             { "messages", messages.ToArray() }
         };
 
@@ -1337,8 +2167,9 @@ if(!window.__framescopeBridgeSmoke){
         }
 
         ExitCode = finalSuccess ? 0 : 2;
-        if (options.Smoke)
+        if (options.Smoke || options.TraySmoke)
         {
+            explicitCloseRequested = true;
             BeginInvoke((MethodInvoker)Close);
         }
     }
@@ -1346,6 +2177,51 @@ if(!window.__framescopeBridgeSmoke){
     private void QueueFinish(bool success, string error)
     {
         System.Threading.Tasks.Task ignored = FinishAsync(success, error);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        FrameScopeConfig config = LoadCurrentConfig();
+        bool userClosing = e.CloseReason == CloseReason.UserClosing;
+        if (FrameScopeWebHostLifecycle.ShouldHideOnUserClose(config, explicitCloseRequested, disposingForm, userClosing))
+        {
+            e.Cancel = true;
+            TryHideWindowToTray("window-close");
+            return;
+        }
+
+        if (!explicitCloseRequested && userClosing && string.Equals(config.CloseWindowBehavior, FrameScopeWebHostLifecycle.CloseBehaviorExit, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryRequestExplicitExit("window-close-exit", false, true))
+            {
+                e.Cancel = true;
+                return;
+            }
+        }
+
+        base.OnFormClosing(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            disposingForm = true;
+            if (timeoutTimer != null)
+            {
+                timeoutTimer.Stop();
+                timeoutTimer.Dispose();
+                timeoutTimer = null;
+            }
+            if (trayIcon != null && !trayIconDisposed)
+            {
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                trayIconDisposed = true;
+            }
+            if (trayMenu != null) trayMenu.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     private static string BuildEmbeddedHtml(bool smoke)
@@ -1474,6 +2350,49 @@ if(!window.__framescopeBridgeSmoke){
         string line = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) + " " + message;
         messages.Add(line);
         Console.WriteLine(line);
+    }
+
+    private void AddNavigationEvent(string type, Dictionary<string, object> payload)
+    {
+        AddDiagnosticEvent(navigationEvents, type, payload);
+    }
+
+    private void AddConsoleEvent(string type, string details)
+    {
+        var payload = new Dictionary<string, object>
+        {
+            { "details", details ?? "" }
+        };
+        AddDiagnosticEvent(consoleEvents, type, payload);
+    }
+
+    private void AddWebError(string type, Dictionary<string, object> payload)
+    {
+        AddDiagnosticEvent(webErrors, type, payload);
+    }
+
+    private void AddDiagnosticEvent(List<Dictionary<string, object>> target, string type, Dictionary<string, object> payload)
+    {
+        if (target == null) return;
+        var entry = new Dictionary<string, object>
+        {
+            { "at", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) },
+            { "type", type ?? "" }
+        };
+        if (payload != null)
+        {
+            foreach (KeyValuePair<string, object> item in payload)
+            {
+                entry[item.Key] = item.Value;
+            }
+        }
+        target.Add(entry);
+    }
+
+    private static bool IsFrameScopeAppUri(string uri)
+    {
+        return !string.IsNullOrWhiteSpace(uri) &&
+            uri.StartsWith("https://app.framescope.local/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ReadString(Dictionary<string, object> map, string key)

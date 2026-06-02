@@ -7,6 +7,16 @@ using System.Web.Script.Serialization;
 public static class FrameScopeConfigStore
 {
     public const string NativeMonitorMode = "native-csharp";
+    public const int InternalPollIntervalMs = 1000;
+    public const int DefaultTelemetrySampleIntervalMs = 1000;
+    public const int TelemetrySampleIntervalMinMs = 500;
+    public const int TelemetrySampleIntervalMaxMs = 5000;
+    public const string ProcessSamplingModeNormal = "normal";
+    public const string ProcessSamplingModeHighPrecision = "high-precision";
+    public const int NormalProcessSampleIntervalMs = DefaultTelemetrySampleIntervalMs;
+    public const int HighPrecisionProcessSampleIntervalMs = 100;
+    public const int HardwareTelemetryMinSampleIntervalMs = TelemetrySampleIntervalMinMs;
+    public const int HardwareTelemetryMaxSampleIntervalMs = TelemetrySampleIntervalMaxMs;
 
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
@@ -25,7 +35,8 @@ public static class FrameScopeConfigStore
     {
         return new FrameScopeConfig
         {
-            PollIntervalMs = 1000,
+            PollIntervalMs = InternalPollIntervalMs,
+            TelemetrySampleIntervalMs = DefaultTelemetrySampleIntervalMs,
             DataRoot = DefaultDataRoot,
             OpenReportOnComplete = true,
             EnableVerboseLogs = false,
@@ -34,6 +45,10 @@ public static class FrameScopeConfigStore
             LogRetentionDays = 14,
             MaxLogDiskMb = 100,
             MonitorScript = NativeMonitorMode,
+            ThemeMode = "system",
+            CloseWindowBehavior = "minimize-to-tray",
+            TrayEnabled = true,
+            CpuTelemetry = new FrameScopeCpuTelemetryConfig(),
             Targets = new List<FrameScopeTarget>
             {
                 Target(true, "Counter-Strike 2", "cs2.exe"),
@@ -90,14 +105,18 @@ public static class FrameScopeConfigStore
         {
             config.MonitorScript = NativeMonitorMode;
         }
-        if (config.PollIntervalMs <= 0) config.PollIntervalMs = 1000;
+        config.PollIntervalMs = InternalPollIntervalMs;
+        config.TelemetrySampleIntervalMs = NormalizeTelemetrySampleInterval(config.TelemetrySampleIntervalMs);
         if (config.LogRetentionDays <= 0) config.LogRetentionDays = 14;
         if (config.LogRetentionDays > 365) config.LogRetentionDays = 365;
         if (config.MaxLogDiskMb <= 0) config.MaxLogDiskMb = 100;
         if (config.MaxLogDiskMb > 2048) config.MaxLogDiskMb = 2048;
+        config.ThemeMode = NormalizeChoice(config.ThemeMode, "system", "light", "dark", "system");
+        config.CloseWindowBehavior = NormalizeChoice(config.CloseWindowBehavior, "minimize-to-tray", "exit", "minimize-to-tray");
+        NormalizeCpuTelemetry(config);
         foreach (FrameScopeTarget target in config.Targets)
         {
-            NormalizeTarget(target);
+            NormalizeTarget(target, config.TelemetrySampleIntervalMs);
         }
     }
 
@@ -116,15 +135,12 @@ public static class FrameScopeConfigStore
             string name = string.IsNullOrWhiteSpace(editable.Name)
                 ? Path.GetFileNameWithoutExtension(processName)
                 : editable.Name.Trim();
-            int sampleMs = editable.SampleIntervalMs >= 50 ? editable.SampleIntervalMs : 100;
+            int sampleMs = existing.TelemetrySampleIntervalMs;
             FrameScopeTarget preserved = FindExistingTarget(existing, processName, name);
 
-            int processSampleMs = preserved != null && preserved.ProcessSampleIntervalMs >= 100
-                ? preserved.ProcessSampleIntervalMs
-                : Math.Max(100, editable.ProcessSampleIntervalMs);
-            int slowSampleMs = preserved != null && preserved.SlowSampleIntervalMs >= sampleMs
-                ? preserved.SlowSampleIntervalMs
-                : (editable.SlowSampleIntervalMs >= sampleMs ? editable.SlowSampleIntervalMs : Math.Max(1000, sampleMs));
+            string processSamplingMode = preserved != null && !string.IsNullOrWhiteSpace(preserved.ProcessSamplingMode)
+                ? preserved.ProcessSamplingMode
+                : editable.ProcessSamplingMode;
 
             targets.Add(new FrameScopeTarget
             {
@@ -132,15 +148,17 @@ public static class FrameScopeConfigStore
                 Name = name ?? processName,
                 ProcessName = processName,
                 SampleIntervalMs = sampleMs,
-                ProcessSampleIntervalMs = processSampleMs,
-                SlowSampleIntervalMs = slowSampleMs,
+                ProcessSamplingMode = processSamplingMode,
+                ProcessSampleIntervalMs = existing.TelemetrySampleIntervalMs,
+                SlowSampleIntervalMs = existing.TelemetrySampleIntervalMs,
                 OpenReportOnComplete = editable.OpenReportOnComplete
             });
         }
 
         FrameScopeConfig merged = new FrameScopeConfig
         {
-            PollIntervalMs = existing.PollIntervalMs > 0 ? existing.PollIntervalMs : 1000,
+            PollIntervalMs = InternalPollIntervalMs,
+            TelemetrySampleIntervalMs = existing.TelemetrySampleIntervalMs,
             DataRoot = (dataRoot ?? "").Trim(),
             OpenReportOnComplete = openReportOnComplete,
             EnableVerboseLogs = existing.EnableVerboseLogs,
@@ -149,6 +167,10 @@ public static class FrameScopeConfigStore
             LogRetentionDays = existing.LogRetentionDays,
             MaxLogDiskMb = existing.MaxLogDiskMb,
             MonitorScript = NativeMonitorMode,
+            ThemeMode = existing.ThemeMode,
+            CloseWindowBehavior = existing.CloseWindowBehavior,
+            TrayEnabled = existing.TrayEnabled,
+            CpuTelemetry = CloneCpuTelemetry(existing.CpuTelemetry),
             Targets = targets
         };
         Normalize(merged);
@@ -184,19 +206,78 @@ public static class FrameScopeConfigStore
             Enabled = enabled,
             Name = name,
             ProcessName = processName,
-            SampleIntervalMs = 100,
-            ProcessSampleIntervalMs = 100,
-            SlowSampleIntervalMs = 1000,
+            SampleIntervalMs = DefaultTelemetrySampleIntervalMs,
+            ProcessSamplingMode = ProcessSamplingModeNormal,
+            ProcessSampleIntervalMs = DefaultTelemetrySampleIntervalMs,
+            SlowSampleIntervalMs = DefaultTelemetrySampleIntervalMs,
             OpenReportOnComplete = true
         };
     }
 
-    private static void NormalizeTarget(FrameScopeTarget target)
+    private static void NormalizeTarget(FrameScopeTarget target, int telemetrySampleIntervalMs)
     {
         if (target == null) return;
-        if (target.SampleIntervalMs < 50) target.SampleIntervalMs = 100;
-        if (target.ProcessSampleIntervalMs < 100) target.ProcessSampleIntervalMs = 100;
-        if (target.SlowSampleIntervalMs < target.SampleIntervalMs) target.SlowSampleIntervalMs = Math.Max(1000, target.SampleIntervalMs);
+        target.SampleIntervalMs = telemetrySampleIntervalMs;
+        target.ProcessSamplingMode = ProcessSamplingModeNormal;
+        target.ProcessSampleIntervalMs = telemetrySampleIntervalMs;
+        target.SlowSampleIntervalMs = telemetrySampleIntervalMs;
+    }
+
+    private static string NormalizeProcessSamplingMode(string value, int processSampleIntervalMs)
+    {
+        string normalized = (value ?? "").Trim().ToLowerInvariant();
+        if (string.Equals(normalized, ProcessSamplingModeHighPrecision, StringComparison.Ordinal) ||
+            string.Equals(normalized, "highprecision", StringComparison.Ordinal) ||
+            string.Equals(normalized, "high_precision", StringComparison.Ordinal))
+        {
+            return ProcessSamplingModeHighPrecision;
+        }
+        if (string.Equals(normalized, ProcessSamplingModeNormal, StringComparison.Ordinal))
+        {
+            return ProcessSamplingModeNormal;
+        }
+        return processSampleIntervalMs == HighPrecisionProcessSampleIntervalMs
+            ? ProcessSamplingModeHighPrecision
+            : ProcessSamplingModeNormal;
+    }
+
+    private static void NormalizeCpuTelemetry(FrameScopeConfig config)
+    {
+        if (config.CpuTelemetry == null) config.CpuTelemetry = new FrameScopeCpuTelemetryConfig();
+        config.CpuTelemetry.PerCoreSampleIntervalMs = config.TelemetrySampleIntervalMs;
+        config.CpuTelemetry.PerCoreVoltageSampleIntervalMs = config.TelemetrySampleIntervalMs;
+        config.CpuTelemetry.VoltageProvider = NormalizeChoice(config.CpuTelemetry.VoltageProvider, "auto", "auto", "built-in", "disabled", "wmi", "sensor");
+    }
+
+    private static int NormalizeTelemetrySampleInterval(int value)
+    {
+        if (value <= 0) value = DefaultTelemetrySampleIntervalMs;
+        if (value < TelemetrySampleIntervalMinMs) return TelemetrySampleIntervalMinMs;
+        if (value > TelemetrySampleIntervalMaxMs) return TelemetrySampleIntervalMaxMs;
+        return value;
+    }
+
+    private static FrameScopeCpuTelemetryConfig CloneCpuTelemetry(FrameScopeCpuTelemetryConfig config)
+    {
+        if (config == null) return new FrameScopeCpuTelemetryConfig();
+        return new FrameScopeCpuTelemetryConfig
+        {
+            CollectPerCoreFrequency = config.CollectPerCoreFrequency,
+            CollectCpuVoltage = config.CollectCpuVoltage,
+            PerCoreSampleIntervalMs = config.PerCoreSampleIntervalMs,
+            PerCoreVoltageSampleIntervalMs = config.PerCoreVoltageSampleIntervalMs,
+            VoltageProvider = config.VoltageProvider
+        };
+    }
+
+    private static string NormalizeChoice(string value, string fallback, params string[] allowed)
+    {
+        string normalized = (value ?? "").Trim().ToLowerInvariant();
+        foreach (string candidate in allowed)
+        {
+            if (string.Equals(normalized, candidate, StringComparison.Ordinal)) return candidate;
+        }
+        return fallback;
     }
 
     private static string GetTargetBaseName(string processName)
@@ -211,7 +292,8 @@ public sealed class FrameScopeConfig
 {
     public FrameScopeConfig()
     {
-        PollIntervalMs = 1000;
+        PollIntervalMs = FrameScopeConfigStore.InternalPollIntervalMs;
+        TelemetrySampleIntervalMs = FrameScopeConfigStore.DefaultTelemetrySampleIntervalMs;
         DataRoot = "";
         OpenReportOnComplete = true;
         EnableVerboseLogs = false;
@@ -220,10 +302,15 @@ public sealed class FrameScopeConfig
         LogRetentionDays = 14;
         MaxLogDiskMb = 100;
         MonitorScript = "";
+        ThemeMode = "system";
+        CloseWindowBehavior = "minimize-to-tray";
+        TrayEnabled = true;
+        CpuTelemetry = new FrameScopeCpuTelemetryConfig();
         Targets = new List<FrameScopeTarget>();
     }
 
     public int PollIntervalMs { get; set; }
+    public int TelemetrySampleIntervalMs { get; set; }
     public string DataRoot { get; set; }
     public bool OpenReportOnComplete { get; set; }
     public bool EnableVerboseLogs { get; set; }
@@ -232,7 +319,29 @@ public sealed class FrameScopeConfig
     public int LogRetentionDays { get; set; }
     public int MaxLogDiskMb { get; set; }
     public string MonitorScript { get; set; }
+    public string ThemeMode { get; set; }
+    public string CloseWindowBehavior { get; set; }
+    public bool TrayEnabled { get; set; }
+    public FrameScopeCpuTelemetryConfig CpuTelemetry { get; set; }
     public List<FrameScopeTarget> Targets { get; set; }
+}
+
+public sealed class FrameScopeCpuTelemetryConfig
+{
+    public FrameScopeCpuTelemetryConfig()
+    {
+        CollectPerCoreFrequency = true;
+        CollectCpuVoltage = false;
+        PerCoreSampleIntervalMs = FrameScopeConfigStore.DefaultTelemetrySampleIntervalMs;
+        PerCoreVoltageSampleIntervalMs = FrameScopeConfigStore.DefaultTelemetrySampleIntervalMs;
+        VoltageProvider = "auto";
+    }
+
+    public bool CollectPerCoreFrequency { get; set; }
+    public bool CollectCpuVoltage { get; set; }
+    public int PerCoreSampleIntervalMs { get; set; }
+    public int PerCoreVoltageSampleIntervalMs { get; set; }
+    public string VoltageProvider { get; set; }
 }
 
 public sealed class FrameScopeTarget
@@ -241,9 +350,10 @@ public sealed class FrameScopeTarget
     {
         Name = "";
         ProcessName = "";
-        SampleIntervalMs = 100;
-        ProcessSampleIntervalMs = 100;
-        SlowSampleIntervalMs = 1000;
+        SampleIntervalMs = FrameScopeConfigStore.DefaultTelemetrySampleIntervalMs;
+        ProcessSamplingMode = "";
+        ProcessSampleIntervalMs = FrameScopeConfigStore.NormalProcessSampleIntervalMs;
+        SlowSampleIntervalMs = FrameScopeConfigStore.DefaultTelemetrySampleIntervalMs;
         OpenReportOnComplete = true;
     }
 
@@ -251,6 +361,7 @@ public sealed class FrameScopeTarget
     public string Name { get; set; }
     public string ProcessName { get; set; }
     public int SampleIntervalMs { get; set; }
+    public string ProcessSamplingMode { get; set; }
     public int ProcessSampleIntervalMs { get; set; }
     public int SlowSampleIntervalMs { get; set; }
     public bool OpenReportOnComplete { get; set; }

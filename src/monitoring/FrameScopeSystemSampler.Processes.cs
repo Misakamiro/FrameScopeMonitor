@@ -1,7 +1,46 @@
+using System;
 using System.Diagnostics;
 
 internal static partial class FrameScopeSystemSampler
 {
+    private sealed class SystemProcessSnapshot
+    {
+        public bool TargetRunning;
+        public bool Cs2Running;
+        public int ProcessCount;
+    }
+
+    private static SystemProcessSnapshot SnapshotSystemProcesses(string targetProcessName)
+    {
+        SystemProcessSnapshot snapshot = new SystemProcessSnapshot();
+        Process[] processes = null;
+        try
+        {
+            processes = Process.GetProcesses();
+            snapshot.ProcessCount = processes.Length;
+            foreach (Process process in processes)
+            {
+                string name = "";
+                try { name = process.ProcessName; }
+                catch { }
+                if (String.Equals(name, targetProcessName, System.StringComparison.OrdinalIgnoreCase)) snapshot.TargetRunning = true;
+                if (String.Equals(name, "cs2", System.StringComparison.OrdinalIgnoreCase)) snapshot.Cs2Running = true;
+            }
+        }
+        catch
+        {
+            snapshot.ProcessCount = 0;
+        }
+        finally
+        {
+            if (processes != null)
+            {
+                foreach (Process process in processes) process.Dispose();
+            }
+        }
+        return snapshot;
+    }
+
     private static int CountProcesses()
     {
         Process[] processes = null;

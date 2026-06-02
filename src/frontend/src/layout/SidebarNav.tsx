@@ -1,7 +1,5 @@
-import { motion } from "framer-motion";
 import { Activity, ShieldCheck } from "lucide-react";
 import { navigationItems } from "../data/mockPreview";
-import { motionTokens } from "../theme/motion";
 import type { BridgeEnvironment } from "../bridge/contract";
 import type { AppPage } from "../types";
 import "./layout.css";
@@ -14,14 +12,14 @@ interface SidebarNavProps {
 
 export function SidebarNav({ activePage, bridgeEnvironment, onNavigate }: SidebarNavProps) {
   return (
-    <aside className="sidebar" aria-label="FrameScope navigation">
+    <aside className="sidebar" aria-label="FrameScope 导航">
       <div className="brand-lockup">
         <div className="brand-lockup__mark">
           <Activity aria-hidden="true" size={22} />
         </div>
         <div>
           <strong>FrameScope</strong>
-          <span>Monitor Web UI</span>
+          <span>性能监控</span>
         </div>
       </div>
       <nav className="sidebar__nav">
@@ -29,32 +27,32 @@ export function SidebarNav({ activePage, bridgeEnvironment, onNavigate }: Sideba
           const Icon = item.icon;
           const active = activePage === item.id;
           return (
-            <motion.button
+            <button
               key={item.id}
               type="button"
               data-smoke-nav={item.id}
               className={["nav-item", active ? "nav-item--active" : ""].join(" ")}
+              data-compact-label={item.label}
+              title={item.label}
+              aria-label={`${item.label}：${item.description}`}
               onClick={() => onNavigate(item.id)}
-              layout
-              whileHover={{ x: 2 }}
-              whileTap={{ scale: 0.985 }}
-              transition={motionTokens.springPress}
             >
-              {active ? <motion.span className="nav-item__active-bg" layoutId="activeNav" /> : null}
+              <span className="nav-item__rail" aria-hidden="true" />
               <Icon aria-hidden="true" size={18} />
               <span>
                 <strong>{item.label}</strong>
                 <small>{item.description}</small>
               </span>
-            </motion.button>
+            </button>
           );
         })}
       </nav>
       <div className="sidebar__status">
+        <span className="sidebar__status-dot" aria-hidden="true" />
         <ShieldCheck aria-hidden="true" size={18} />
         <div>
           <strong>{bridgeEnvironment === "webview2" ? "本机功能可用" : "界面预览中"}</strong>
-          <span>{bridgeEnvironment === "webview2" ? "操作会交给宿主应用执行" : "不会读取真实系统数据"}</span>
+          <span>{bridgeEnvironment === "webview2" ? "操作由本机程序执行" : "不会读取真实系统数据"}</span>
         </div>
       </div>
     </aside>

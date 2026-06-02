@@ -32,6 +32,9 @@ internal static partial class FrameScopeNativeMonitor
             { "PresentMonErr", paths.PresentMonStderr },
             { "PresentMonInfo", paths.PresentMonInfoPath },
             { "SamplesCsv", paths.SamplesCsv },
+            { "CpuCoreSamplesCsv", paths.CpuCoreSamplesCsv },
+            { "CpuVoltageSamplesCsv", paths.CpuVoltageSamplesCsv },
+            { "CpuVidSamplesCsv", paths.CpuVidSamplesCsv },
             { "ProcessCsv", paths.ProcessCsv },
             { "TopCpuCsv", paths.TopCpuCsv },
             { "TopIoCsv", paths.TopIoCsv },
@@ -41,6 +44,7 @@ internal static partial class FrameScopeNativeMonitor
             { "ReportLog", paths.ReportLogPath },
             { "SlowSamplerLog", paths.SlowSamplerLogPath },
             { "TargetProcess", targetProcess },
+            { "TargetDisplayName", targetProcess },
             { "CaptureMode", captureMode },
             { "SampleIntervalMs", sampleIntervalMs },
             { "ProcessSampleIntervalMs", processSampleIntervalMs },
@@ -49,7 +53,10 @@ internal static partial class FrameScopeNativeMonitor
             { "ProcessSamplingMode", "native-all-process-groups" },
             { "ProcessSamplerExe", processSamplerPath },
             { "SystemSamplingMode", string.IsNullOrWhiteSpace(systemSamplerPath) ? "native-system-missing" : "native-system-slow" },
-            { "SystemSamplerExe", systemSamplerPath }
+            { "SystemSamplerExe", systemSamplerPath },
+            { "CpuCoreTelemetryStatusPath", paths.CpuCoreTelemetryStatusPath },
+            { "CpuVoltageTelemetryStatusPath", paths.CpuVoltageTelemetryStatusPath },
+            { "CpuVidTelemetryStatusPath", paths.CpuVidTelemetryStatusPath }
         };
 
         if (extra != null)
@@ -88,6 +95,9 @@ internal static partial class FrameScopeNativeMonitor
             { "PresentMonExitedEarly", presentMonExitedEarly },
             { "PresentMonForcedStop", presentMonForcedStop },
             { "SamplesCsv", paths.SamplesCsv },
+            { "CpuCoreSamplesCsv", paths.CpuCoreSamplesCsv },
+            { "CpuVoltageSamplesCsv", paths.CpuVoltageSamplesCsv },
+            { "CpuVidSamplesCsv", paths.CpuVidSamplesCsv },
             { "ProcessCsv", paths.ProcessCsv },
             { "TopCpuCsv", paths.TopCpuCsv },
             { "TopIoCsv", paths.TopIoCsv },
@@ -100,6 +110,9 @@ internal static partial class FrameScopeNativeMonitor
             { "ControlPollIntervalMs", controlPollIntervalMs },
             { "SlowSampleIntervalMs", slowSampleIntervalMs },
             { "Reports", reports },
+            { "CpuCoreTelemetryStatusPath", paths.CpuCoreTelemetryStatusPath },
+            { "CpuVoltageTelemetryStatusPath", paths.CpuVoltageTelemetryStatusPath },
+            { "CpuVidTelemetryStatusPath", paths.CpuVidTelemetryStatusPath },
             { "Notes", new[] { "Monitor session was captured by FrameScopeMonitor.exe native C# mode. Report generation is handled by the native watcher after capture." } }
         };
         AddDictionary(summary, captureDiagnostics);

@@ -6,6 +6,8 @@ import type {
   FrameScopeBridgeAdapter,
   FrameScopeConfig,
   FrameScopeTargetConfig,
+  HostWindowChangedEventPayload,
+  LogsOpenDirectoryPayload,
   LongActionAcceptedPayload,
   MonitorActionAcceptedPayload,
   ProcessInfo,
@@ -57,6 +59,7 @@ export interface FrameScopeBridgeViewState {
   processRefresh: OperationState;
   configSave: OperationState;
   targetsSave: OperationState;
+  logsOpenDirectory: OperationState;
   monitorAction: OperationState;
   monitorRuntime: MonitorRuntimeState;
   reportOperations: Record<string, OperationState>;
@@ -75,6 +78,7 @@ export interface FrameScopeBridgeViewState {
     dataRoot?: string;
     openReportOnComplete?: boolean;
   }) => Promise<TargetsPayload | null>;
+  openLogsDirectory: () => Promise<LogsOpenDirectoryPayload | null>;
   startMonitor: () => Promise<void>;
   stopMonitor: () => Promise<void>;
   openReport: (reportId: string) => Promise<ReportActionPayload | null>;
@@ -101,6 +105,9 @@ const emptyOperationState = (message: string): OperationState => ({
 });
 
 const defaultReportOperationState = emptyOperationState("尚未执行报告操作。");
+const VISIBLE_STATE_SNAPSHOT_INTERVAL_MS = 1000;
+const HIDDEN_OR_TRAY_STATE_SNAPSHOT_INTERVAL_MS = 3000;
+const IMMEDIATE_REFRESH_COALESCE_MS = 200;
 
 export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapter): FrameScopeBridgeViewState {
   const adapter = useMemo(() => adapterOverride ?? createFrameScopeBridgeAdapter(), [adapterOverride]);
@@ -125,6 +132,9 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
   );
   const [targetsSave, setTargetsSave] = useState<OperationState>(
     emptyOperationState("本次会话尚未保存目标修改。"),
+  );
+  const [logsOpenDirectory, setLogsOpenDirectory] = useState<OperationState>(
+    emptyOperationState("尚未打开日志目录。"),
   );
   const [monitorAction, setMonitorAction] = useState<OperationState>(
     emptyOperationState("尚未启动或停止监控。"),
@@ -151,6 +161,13 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
   const monitorEventTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const diagnosticsEventTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reportEventTimeouts = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const snapshotRefreshInFlight = useRef(false);
+  const snapshotRefreshQueued = useRef(false);
+  const snapshotRefreshRunner = useRef<(silent?: boolean) => Promise<void>>(async () => {});
+  const immediateSnapshotRefreshTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentSnapshotIntervalMs = useRef(VISIBLE_STATE_SNAPSHOT_INTERVAL_MS);
+  const lastWatcherReportSignature = useRef("");
+  const refreshReportsRef = useRef<() => Promise<void>>(async () => {});
 
   const clearProcessEventTimeout = useCallback(() => {
     if (!processEventTimeout.current) return;
@@ -177,6 +194,12 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     reportEventTimeouts.current.delete(requestId);
   }, []);
 
+  const clearImmediateSnapshotRefreshTimeout = useCallback(() => {
+    if (!immediateSnapshotRefreshTimeout.current) return;
+    clearTimeout(immediateSnapshotRefreshTimeout.current);
+    immediateSnapshotRefreshTimeout.current = null;
+  }, []);
+
   const setReportOperation = useCallback(
     (kind: ReportOperationKind, reportId: string, next: OperationState) => {
       setReportOperations((current) => ({
@@ -187,28 +210,49 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     [],
   );
 
-  const refreshSnapshot = useCallback(async () => {
-    setSnapshot((current) => ({
-      ...current,
-      status: "loading",
-      message: "正在读取监控状态。",
-      error: "",
-    }));
+  const requestSnapshot = useCallback(async (silent = false) => {
+    if (snapshotRefreshInFlight.current) {
+      snapshotRefreshQueued.current = true;
+      return;
+    }
+
+    snapshotRefreshInFlight.current = true;
+    if (!silent) {
+      setSnapshot((current) => ({
+        ...current,
+        status: "loading",
+        message: "正在读取监控状态。",
+        error: "",
+      }));
+    }
+
     try {
       const data = await adapter.request<StateSnapshotPayload>("state.snapshot", {}, { timeoutMs: 8000 });
+      const now = new Date().toISOString();
+      const watcherReportSignature = `${data.watcher.completedRuns}|${data.watcher.lastReport}`;
+      const hiddenOrTray = data.host.windowVisible === false;
+      currentSnapshotIntervalMs.current = hiddenOrTray
+        ? HIDDEN_OR_TRAY_STATE_SNAPSHOT_INTERVAL_MS
+        : VISIBLE_STATE_SNAPSHOT_INTERVAL_MS;
+
       setSnapshot({
         status: "success",
         data,
         message: "监控状态已读取。",
         error: "",
-        updatedAt: new Date().toISOString(),
+        updatedAt: now,
       });
       setMonitorRuntime({
         running: data.watcher.running,
         pid: data.watcher.pid,
         message: data.watcher.running ? "监控服务正在运行。" : "监控服务未启动。",
-        updatedAt: data.generatedAt || new Date().toISOString(),
+        updatedAt: data.generatedAt || now,
       });
+
+      if (lastWatcherReportSignature.current && watcherReportSignature !== lastWatcherReportSignature.current) {
+        void refreshReportsRef.current();
+      }
+      lastWatcherReportSignature.current = watcherReportSignature;
     } catch (error) {
       setSnapshot((current) => ({
         ...current,
@@ -217,8 +261,26 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         error: getErrorMessage(error),
         updatedAt: new Date().toISOString(),
       }));
+    } finally {
+      snapshotRefreshInFlight.current = false;
+      if (snapshotRefreshQueued.current) {
+        snapshotRefreshQueued.current = false;
+        void snapshotRefreshRunner.current(true);
+      }
     }
   }, [adapter]);
+
+  snapshotRefreshRunner.current = requestSnapshot;
+
+  const refreshSnapshot = useCallback(() => requestSnapshot(false), [requestSnapshot]);
+
+  const scheduleImmediateSnapshotRefresh = useCallback(() => {
+    clearImmediateSnapshotRefreshTimeout();
+    immediateSnapshotRefreshTimeout.current = setTimeout(() => {
+      immediateSnapshotRefreshTimeout.current = null;
+      void snapshotRefreshRunner.current(true);
+    }, IMMEDIATE_REFRESH_COALESCE_MS);
+  }, [clearImmediateSnapshotRefreshTimeout]);
 
   const refreshConfig = useCallback(async () => {
     setConfig((current) => ({
@@ -273,6 +335,8 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       }));
     }
   }, [adapter]);
+
+  refreshReportsRef.current = refreshReports;
 
   const refreshTargets = useCallback(async () => {
     setTargets((current) => ({
@@ -381,7 +445,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: "",
           updatedAt: new Date().toISOString(),
         });
-        void refreshSnapshot();
+        scheduleImmediateSnapshotRefresh();
         void refreshTargets();
         return data;
       } catch (error) {
@@ -392,10 +456,11 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
         return null;
       }
     },
-    [adapter, refreshSnapshot, refreshTargets],
+    [adapter, refreshTargets, scheduleImmediateSnapshotRefresh],
   );
 
   const saveTargets = useCallback(
@@ -437,7 +502,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           updatedAt: new Date().toISOString(),
         });
         void refreshConfig();
-        void refreshSnapshot();
+        scheduleImmediateSnapshotRefresh();
         return data;
       } catch (error) {
         setTargetsSave({
@@ -447,10 +512,11 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
         return null;
       }
     },
-    [adapter, refreshConfig, refreshSnapshot],
+    [adapter, refreshConfig, scheduleImmediateSnapshotRefresh],
   );
 
   const startMonitor = useCallback(async () => {
@@ -473,6 +539,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         requestId: accepted.requestId,
         updatedAt: new Date().toISOString(),
       });
+      scheduleImmediateSnapshotRefresh();
       monitorEventTimeout.current = setTimeout(() => {
         if (latestMonitorRequestId.current !== accepted.requestId) return;
         setMonitorAction({
@@ -488,11 +555,12 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         status: "error",
         message: "启动监控失败。",
         error: getErrorMessage(error),
-        requestId: error instanceof BridgeRequestError ? error.requestId : "",
-        updatedAt: new Date().toISOString(),
+          requestId: error instanceof BridgeRequestError ? error.requestId : "",
+          updatedAt: new Date().toISOString(),
       });
+      scheduleImmediateSnapshotRefresh();
     }
-  }, [adapter, clearMonitorEventTimeout, monitorAction.status]);
+  }, [adapter, clearMonitorEventTimeout, monitorAction.status, scheduleImmediateSnapshotRefresh]);
 
   const stopMonitor = useCallback(async () => {
     if (monitorAction.status === "loading") return;
@@ -514,6 +582,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         requestId: accepted.requestId,
         updatedAt: new Date().toISOString(),
       });
+      scheduleImmediateSnapshotRefresh();
       monitorEventTimeout.current = setTimeout(() => {
         if (latestMonitorRequestId.current !== accepted.requestId) return;
         setMonitorAction({
@@ -529,11 +598,45 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         status: "error",
         message: "停止监控失败。",
         error: getErrorMessage(error),
+          requestId: error instanceof BridgeRequestError ? error.requestId : "",
+          updatedAt: new Date().toISOString(),
+      });
+      scheduleImmediateSnapshotRefresh();
+    }
+  }, [adapter, clearMonitorEventTimeout, monitorAction.status, scheduleImmediateSnapshotRefresh]);
+
+  const openLogsDirectory = useCallback(async () => {
+    if (logsOpenDirectory.status === "loading") return null;
+    setLogsOpenDirectory({
+      status: "loading",
+      message: "正在打开日志目录。",
+      error: "",
+      requestId: "",
+      updatedAt: new Date().toISOString(),
+    });
+    try {
+      const data = await adapter.request<LogsOpenDirectoryPayload>("logs.openDirectory", {}, { timeoutMs: 10000 });
+      setLogsOpenDirectory({
+        status: "success",
+        message: data.message || "日志目录已打开。",
+        error: "",
+        requestId: "",
+        updatedAt: new Date().toISOString(),
+      });
+      scheduleImmediateSnapshotRefresh();
+      return data;
+    } catch (error) {
+      setLogsOpenDirectory({
+        status: "error",
+        message: "日志目录打开失败。",
+        error: getErrorMessage(error),
         requestId: error instanceof BridgeRequestError ? error.requestId : "",
         updatedAt: new Date().toISOString(),
       });
+      scheduleImmediateSnapshotRefresh();
+      return null;
     }
-  }, [adapter, clearMonitorEventTimeout, monitorAction.status]);
+  }, [adapter, logsOpenDirectory.status, scheduleImmediateSnapshotRefresh]);
 
   const runImmediateReportAction = useCallback(
     async (kind: "open" | "openDirectory", requestType: "reports.open" | "reports.openDirectory", reportId: string) => {
@@ -555,6 +658,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           updatedAt: new Date().toISOString(),
         });
         void refreshReports();
+        scheduleImmediateSnapshotRefresh();
         return data;
       } catch (error) {
         setReportOperation(kind, reportId, {
@@ -564,10 +668,11 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
         return null;
       }
     },
-    [adapter, refreshReports, setReportOperation],
+    [adapter, refreshReports, scheduleImmediateSnapshotRefresh, setReportOperation],
   );
 
   const openReport = useCallback(
@@ -606,6 +711,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: accepted.requestId,
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
         reportEventTimeouts.current.set(
           accepted.requestId,
           setTimeout(() => {
@@ -627,9 +733,10 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
       }
     },
-    [adapter, reportOperations, setReportOperation],
+    [adapter, reportOperations, scheduleImmediateSnapshotRefresh, setReportOperation],
   );
 
   const generateDiagnostics = useCallback(
@@ -658,6 +765,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: accepted.requestId,
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
         diagnosticsEventTimeout.current = setTimeout(() => {
           if (latestDiagnosticsRequestId.current !== accepted.requestId) return;
           setDiagnosticsGenerate({
@@ -676,9 +784,10 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           requestId: error instanceof BridgeRequestError ? error.requestId : "",
           updatedAt: new Date().toISOString(),
         });
+        scheduleImmediateSnapshotRefresh();
       }
     },
-    [adapter, clearDiagnosticsEventTimeout, diagnosticsGenerate.status],
+    [adapter, clearDiagnosticsEventTimeout, diagnosticsGenerate.status, scheduleImmediateSnapshotRefresh],
   );
 
   const getReportOperationState = useCallback(
@@ -687,6 +796,24 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     },
     [reportOperations],
   );
+
+  useEffect(() => {
+    let disposed = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const scheduleNextTick = () => {
+      if (disposed) return;
+      timeout = setTimeout(() => {
+        void snapshotRefreshRunner.current(true).finally(scheduleNextTick);
+      }, currentSnapshotIntervalMs.current);
+    };
+
+    scheduleNextTick();
+
+    return () => {
+      disposed = true;
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [adapter]);
 
   useEffect(() => {
     const unsubscribeProcesses = adapter.subscribe<ProcessesRefreshedEventPayload>(
@@ -734,7 +861,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           message: payload.message || "监控已启动。",
           updatedAt: new Date().toISOString(),
         });
-        void refreshSnapshot();
+        scheduleImmediateSnapshotRefresh();
       }
 
       if (payload.status === "monitor.stopped") {
@@ -753,7 +880,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           message: payload.message || "监控已停止。",
           updatedAt: new Date().toISOString(),
         });
-        void refreshSnapshot();
+        scheduleImmediateSnapshotRefresh();
       }
     });
     const unsubscribeReportProgress = adapter.subscribe<ReportProgressEventPayload>(
@@ -773,6 +900,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
               requestId,
               updatedAt: new Date().toISOString(),
             });
+            scheduleImmediateSnapshotRefresh();
           } else if (payload.status === "error" || payload.ok === false) {
             clearDiagnosticsEventTimeout();
             setDiagnosticsGenerate({
@@ -782,6 +910,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
               requestId,
               updatedAt: new Date().toISOString(),
             });
+            scheduleImmediateSnapshotRefresh();
           } else {
             setDiagnosticsGenerate({
               status: "loading",
@@ -807,6 +936,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
           });
           reportRequestMap.current.delete(requestId);
           void refreshReports();
+          scheduleImmediateSnapshotRefresh();
         } else if (payload.status === "error" || payload.ok === false) {
           clearReportEventTimeout(requestId);
           setReportOperation(reportAction.kind, reportAction.reportId, {
@@ -817,6 +947,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
             updatedAt: new Date().toISOString(),
           });
           reportRequestMap.current.delete(requestId);
+          scheduleImmediateSnapshotRefresh();
         } else {
           setReportOperation(reportAction.kind, reportAction.reportId, {
             status: "loading",
@@ -830,6 +961,15 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     );
     const unsubscribeReportsChanged = adapter.subscribe<ReportActionPayload>("event.reportsChanged", () => {
       void refreshReports();
+      scheduleImmediateSnapshotRefresh();
+    });
+    const unsubscribeHostWindowChanged = adapter.subscribe<HostWindowChangedEventPayload>("event.hostWindowChanged", (event) => {
+      const payload = event.payload;
+      const hiddenOrTray = payload.visible === false || payload.inTray === true;
+      currentSnapshotIntervalMs.current = hiddenOrTray
+        ? HIDDEN_OR_TRAY_STATE_SNAPSHOT_INTERVAL_MS
+        : VISIBLE_STATE_SNAPSHOT_INTERVAL_MS;
+      if (!hiddenOrTray) scheduleImmediateSnapshotRefresh();
     });
     const unsubscribeError = adapter.subscribe<ErrorEventPayload>("event.error", (event) => {
       const payload = event.payload;
@@ -880,6 +1020,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         });
         reportRequestMap.current.delete(payload.requestId);
       }
+      scheduleImmediateSnapshotRefresh();
     });
 
     void refreshSnapshot();
@@ -891,17 +1032,20 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       clearProcessEventTimeout();
       clearMonitorEventTimeout();
       clearDiagnosticsEventTimeout();
+      clearImmediateSnapshotRefreshTimeout();
       for (const timeout of reportEventTimeouts.current.values()) clearTimeout(timeout);
       reportEventTimeouts.current.clear();
       unsubscribeProcesses();
       unsubscribeStatus();
       unsubscribeReportProgress();
       unsubscribeReportsChanged();
+      unsubscribeHostWindowChanged();
       unsubscribeError();
     };
   }, [
     adapter,
     clearDiagnosticsEventTimeout,
+    clearImmediateSnapshotRefreshTimeout,
     clearMonitorEventTimeout,
     clearProcessEventTimeout,
     clearReportEventTimeout,
@@ -909,6 +1053,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     refreshReports,
     refreshSnapshot,
     refreshTargets,
+    scheduleImmediateSnapshotRefresh,
     setReportOperation,
   ]);
 
@@ -923,6 +1068,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     processRefresh,
     configSave,
     targetsSave,
+    logsOpenDirectory,
     monitorAction,
     monitorRuntime,
     reportOperations,
@@ -937,6 +1083,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     refreshProcesses,
     saveConfig,
     saveTargets,
+    openLogsDirectory,
     startMonitor,
     stopMonitor,
     openReport,

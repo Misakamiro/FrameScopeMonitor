@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 
 internal sealed partial class FrameScopeWebBridge
@@ -151,8 +152,14 @@ internal sealed partial class FrameScopeWebBridge
             ConfigPath = options.ConfigPath,
             StatePath = options.StatePath,
             HistoryPath = options.HistoryPath,
-            DataRoot = ResolveDataRoot(config.DataRoot)
+            DataRoot = ResolveDataRoot(config.DataRoot),
+            LogDirectory = ResolveCurrentLogDirectory()
         };
+    }
+
+    private string ResolveCurrentLogDirectory()
+    {
+        return Path.GetFullPath(options.Root);
     }
 
     private static Dictionary<string, object> BuildHostEventPayload(string requestId, string action, FrameScopeWebBridgeHostResult result)

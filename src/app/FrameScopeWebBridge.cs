@@ -94,6 +94,11 @@ internal sealed partial class FrameScopeWebBridge
                 return RegenerateReport(request);
             }
 
+            if (string.Equals(request.Type, "logs.openDirectory", StringComparison.Ordinal))
+            {
+                return OpenLogsDirectory(request);
+            }
+
             if (string.Equals(request.Type, "diagnostics.generate", StringComparison.Ordinal))
             {
                 return GenerateDiagnostics(request);
@@ -229,7 +234,8 @@ internal sealed partial class FrameScopeWebBridge
             ConfigPath = Path.GetFullPath(string.IsNullOrWhiteSpace(raw.ConfigPath) ? Path.Combine(root, "framescope-config.json") : raw.ConfigPath),
             StatePath = Path.GetFullPath(string.IsNullOrWhiteSpace(raw.StatePath) ? Path.Combine(root, "framescope-watcher-state.json") : raw.StatePath),
             HistoryPath = Path.GetFullPath(string.IsNullOrWhiteSpace(raw.HistoryPath) ? Path.Combine(root, "framescope-history.jsonl") : raw.HistoryPath),
-            HostAdapter = raw.HostAdapter
+            HostAdapter = raw.HostAdapter,
+            HostStateProvider = raw.HostStateProvider
         };
     }
 

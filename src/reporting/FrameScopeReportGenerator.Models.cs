@@ -1,18 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 
 internal static partial class FrameScopeReportGenerator
 {
-    private sealed class PresentRecord
+    private struct PresentFrame
     {
-        public int RowIndex;
         public DateTime Time;
         public double FrameMs;
-        public string Application = "";
-        public string ProcessId = "";
-        public string SwapChain = "";
-        public string PresentMode = "";
-        public string AllowsTearing = "";
+        public bool IsHardware;
     }
 
     private sealed class PresentTrack
@@ -27,7 +24,7 @@ internal static partial class FrameScopeReportGenerator
         public double? MedianFps;
         public double? P99FrameMs;
         public double Score;
-        public List<PresentRecord> Records = new List<PresentRecord>();
+        public List<PresentFrame> Frames = new List<PresentFrame>();
 
         public Dictionary<string, object> ToJson()
         {
@@ -73,12 +70,63 @@ internal static partial class FrameScopeReportGenerator
         public double? VramTotalMiB;
     }
 
+    private sealed class FrameStatsSummary
+    {
+        public int Count;
+        public double SumMs;
+        public double MinMs = Double.MaxValue;
+        public double MaxMs = Double.MinValue;
+        public int FramesOver20;
+        public int FramesOver33;
+        public int FramesOver100;
+        public double? Low1Fps;
+        public double? Low01Fps;
+    }
+
+    private sealed class FpsBucketAccumulator
+    {
+        public double SumMs;
+        public int Count;
+    }
+
+    private sealed class CpuCoreBucketValue
+    {
+        public double Sum;
+        public int Count;
+
+        public void Add(double value)
+        {
+            Sum += value;
+            Count++;
+        }
+
+        public double? Average()
+        {
+            return Count > 0 ? Sum / Count : (double?)null;
+        }
+    }
+
+    private sealed class CpuVoltageCsvCounts
+    {
+        public int Total;
+        public int Vcore;
+        public int NonPerCore;
+        public int Rejected;
+    }
+
+    private sealed class CpuVidCsvCounts
+    {
+        public int Total;
+        public int CoreCount;
+    }
+
     private sealed class ProcessMatrixResult
     {
+        public string Codec = "";
         public List<double> Times = new List<double>();
         public List<string> Names = new List<string>();
-        public List<List<double?>> Cpu = new List<List<double?>>();
-        public List<List<double?>> Mem = new List<List<double?>>();
+        public List<string> Cpu = new List<string>();
+        public List<string> Mem = new List<string>();
         public List<Dictionary<string, object>> Stats = new List<Dictionary<string, object>>();
     }
 
@@ -90,6 +138,75 @@ internal static partial class FrameScopeReportGenerator
         public int CpuSamples;
         public double MaxMem;
         public int Samples;
+    }
+
+    private sealed class ProcessRleSeriesBuilder
+    {
+        private readonly StringBuilder builder = new StringBuilder();
+        private string currentToken = null;
+        private int currentCount;
+
+        public int Length { get; private set; }
+
+        public void AppendAt(int index, double? value, int digits)
+        {
+            if (index < Length) return;
+            PadTo(index);
+            Append(value, digits);
+        }
+
+        public void PadTo(int count)
+        {
+            AppendToken("n", count - Length);
+        }
+
+        public string Finish(int count)
+        {
+            PadTo(count);
+            Flush();
+            return builder.ToString();
+        }
+
+        private void Append(double? value, int digits)
+        {
+            AppendToken(value.HasValue ? RoundDouble(value.Value, digits).ToString("0.###", CultureInfo.InvariantCulture) : "n");
+        }
+
+        private void AppendToken(string token)
+        {
+            AppendToken(token, 1);
+        }
+
+        private void AppendToken(string token, int repeat)
+        {
+            if (repeat <= 0) return;
+            if (currentToken == token)
+            {
+                currentCount += repeat;
+            }
+            else
+            {
+                Flush();
+                currentToken = token;
+                currentCount = repeat;
+            }
+            Length += repeat;
+        }
+
+        private void Flush()
+        {
+            if (currentToken == null || currentCount <= 0) return;
+            if (builder.Length > 0) builder.Append(';');
+            if (currentCount == 1) builder.Append(currentToken);
+            else
+            {
+                builder.Append(currentCount.ToString(CultureInfo.InvariantCulture));
+                builder.Append('*');
+                builder.Append(currentToken);
+            }
+            currentToken = null;
+            currentCount = 0;
+        }
     }
 
     private sealed class Fenwick

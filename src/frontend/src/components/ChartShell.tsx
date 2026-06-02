@@ -1,4 +1,3 @@
-import { motion } from "framer-motion";
 import type { ChartSeries } from "../types";
 import { toneToClass } from "./tone";
 import "./components.css";
@@ -34,7 +33,7 @@ export function ChartShell({ title, description, series, compact }: ChartShellPr
           <h3>{title}</h3>
           <p>{description}</p>
         </div>
-        <span className="chart-shell__tag">SVG mock</span>
+        <span className="chart-shell__tag">趋势预览</span>
       </div>
       <svg
         className="chart-shell__plot"
@@ -62,16 +61,10 @@ export function ChartShell({ title, description, series, compact }: ChartShellPr
           const path = linePath(item.points, width, height);
           const className = toneToClass(item.tone);
           return (
-            <motion.g
-              key={item.label}
-              initial={{ opacity: 0, pathLength: 0 }}
-              animate={{ opacity: 1, pathLength: 1 }}
-              transition={{ delay: index * 0.05, duration: 0.34, ease: "easeOut" }}
-              className={className}
-            >
+            <g key={item.label} className={className} data-series-index={index}>
               <path d={`${path} L ${width} ${height} L 0 ${height} Z`} className="chart-shell__area" />
               <path d={path} className="chart-shell__line" />
-            </motion.g>
+            </g>
           );
         })}
       </svg>

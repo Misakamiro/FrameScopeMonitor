@@ -1,4 +1,6 @@
 :root {
+  color-scheme: light;
+
   /* primitive tokens */
   --fs-color-ink-950: #111318;
   --fs-color-ink-900: #1a1d24;
@@ -31,13 +33,14 @@
   --fs-radius-2: 6px;
   --fs-radius-3: 8px;
   --fs-radius-4: 10px;
-  --fs-radius-5: 14px;
-  --fs-radius-6: 18px;
-  --fs-radius-7: 22px;
+  --fs-radius-5: 12px;
+  --fs-radius-6: 14px;
+  --fs-radius-7: 16px;
   --fs-shadow-1: 0 1px 2px rgb(17 19 24 / 0.08);
   --fs-shadow-2: 0 12px 26px rgb(17 19 24 / 0.12);
   --fs-shadow-3: 0 20px 50px rgb(17 19 24 / 0.18);
-  --fs-blur-material: blur(22px) saturate(1.18);
+  --fs-shadow-menu: 0 10px 24px rgb(15 23 42 / 0.14);
+  --fs-blur-material: none;
   --fs-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI",
     "PingFang SC", sans-serif;
   --fs-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -49,18 +52,27 @@
   --fs-type-display: 28px;
   --fs-line-tight: 1.22;
   --fs-line-normal: 1.5;
-  --fs-motion-fast: 150ms;
-  --fs-motion-base: 220ms;
-  --fs-motion-slow: 360ms;
+  --fs-motion-instant: 0ms;
+  --fs-motion-micro: 90ms;
+  --fs-motion-state: 140ms;
+  --fs-motion-content: 180ms;
+  --fs-motion-nav: 40ms;
+  --fs-motion-press: 80ms;
+  --fs-motion-fast: var(--fs-motion-micro);
+  --fs-motion-base: var(--fs-motion-state);
+  --fs-motion-slow: var(--fs-motion-content);
+  --fs-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --fs-ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --fs-ease-press: cubic-bezier(0.2, 0, 0.2, 1);
 
   /* semantic tokens */
-  --fs-surface-window: #eef2f6;
-  --fs-surface-window-accent: #e8edf3;
+  --fs-surface-window: #eef2f5;
+  --fs-surface-window-accent: #e7ecf2;
   --fs-surface-window-wash-start: rgb(255 255 255 / 0.76);
   --fs-surface-window-wash-end: rgb(223 231 240 / 0.88);
-  --fs-surface-sidebar: rgb(247 248 250 / 0.76);
-  --fs-surface-glass: rgb(255 255 255 / 0.68);
-  --fs-surface-elevated: rgb(255 255 255 / 0.86);
+  --fs-surface-sidebar: #eef3f8;
+  --fs-surface-glass: #ffffff;
+  --fs-surface-elevated: #ffffff;
   --fs-surface-solid: #ffffff;
   --fs-surface-subtle: rgb(241 244 247 / 0.72);
   --fs-surface-wash-92: rgb(255 255 255 / 0.92);
@@ -113,12 +125,12 @@
   --fs-shell-radius: 0;
   --fs-shell-bg: var(--fs-surface-window);
   --fs-shell-border: var(--fs-border-window);
-  --fs-icon-tile-bg: linear-gradient(145deg, var(--fs-surface-wash-90), var(--fs-surface-steel-72));
-  --fs-about-mark-bg: linear-gradient(145deg, var(--fs-surface-wash-92), var(--fs-surface-steel-72));
-  --fs-workspace-bg: linear-gradient(180deg, var(--fs-surface-wash-56), var(--fs-surface-panel-end));
-  --fs-sidebar-width: 260px;
-  --fs-topbar-height: 76px;
-  --fs-card-bg: var(--fs-surface-glass);
+  --fs-icon-tile-bg: #edf3f9;
+  --fs-about-mark-bg: #edf3f9;
+  --fs-workspace-bg: #f1f4f7;
+  --fs-sidebar-width: 244px;
+  --fs-topbar-height: 52px;
+  --fs-card-bg: var(--fs-surface-solid);
   --fs-card-border: var(--fs-border-subtle);
   --fs-card-radius: var(--fs-radius-3);
   --fs-card-shadow: var(--fs-shadow-1);
@@ -127,15 +139,101 @@
   --fs-button-height: 38px;
   --fs-button-padding-x: var(--fs-space-4);
   --fs-button-secondary-bg: var(--fs-surface-wash-58);
+  --fs-button-tonal-bg: #eaf3ff;
+  --fs-button-tonal-hover-bg: #dcecff;
   --fs-button-primary-shadow: 0 8px 20px rgb(49 120 198 / 0.24);
   --fs-button-danger-shadow: 0 8px 20px rgb(207 77 91 / 0.2);
   --fs-input-radius: var(--fs-radius-3);
   --fs-input-bg: var(--fs-surface-mist-76);
+  --fs-menu-radius: var(--fs-radius-3);
+  --fs-menu-shadow: var(--fs-shadow-menu);
+  --fs-nav-hover-bg: #f6faff;
+  --fs-nav-active-bg: #eaf3ff;
+  --fs-nav-active-border: rgb(49 120 198 / 0.22);
   --fs-row-radius: var(--fs-radius-3);
   --fs-row-bg: var(--fs-surface-wash-54);
   --fs-chart-radius: var(--fs-radius-3);
   --fs-toast-radius: var(--fs-radius-3);
   --fs-toast-bg: var(--fs-surface-wash-62);
+  --fs-inspector-bg: var(--fs-surface-mist-54);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --fs-surface-window: #101318;
+  --fs-surface-window-accent: #151a21;
+  --fs-surface-window-wash-start: rgb(29 35 44 / 0.86);
+  --fs-surface-window-wash-end: rgb(13 17 23 / 0.94);
+  --fs-surface-sidebar: #131820;
+  --fs-surface-glass: #181e27;
+  --fs-surface-elevated: #1c232d;
+  --fs-surface-solid: #171d25;
+  --fs-surface-subtle: rgb(35 42 52 / 0.74);
+  --fs-surface-wash-92: rgb(28 35 45 / 0.92);
+  --fs-surface-wash-90: rgb(28 35 45 / 0.9);
+  --fs-surface-wash-72: rgb(35 43 54 / 0.72);
+  --fs-surface-wash-70: rgb(35 43 54 / 0.7);
+  --fs-surface-wash-64: rgb(39 48 60 / 0.64);
+  --fs-surface-wash-62: rgb(39 48 60 / 0.62);
+  --fs-surface-wash-60: rgb(39 48 60 / 0.6);
+  --fs-surface-wash-58: rgb(39 48 60 / 0.58);
+  --fs-surface-wash-56: rgb(39 48 60 / 0.56);
+  --fs-surface-wash-54: rgb(39 48 60 / 0.54);
+  --fs-surface-wash-52: rgb(39 48 60 / 0.52);
+  --fs-surface-wash-48: rgb(39 48 60 / 0.48);
+  --fs-surface-wash-42: rgb(39 48 60 / 0.42);
+  --fs-surface-mist-76: rgb(30 37 47 / 0.76);
+  --fs-surface-mist-72: rgb(30 37 47 / 0.72);
+  --fs-surface-mist-58: rgb(30 37 47 / 0.58);
+  --fs-surface-mist-54: rgb(30 37 47 / 0.54);
+  --fs-surface-steel-72: rgb(55 66 80 / 0.72);
+  --fs-surface-panel-end: rgb(21 27 36 / 0.72);
+  --fs-border-subtle: rgb(214 222 232 / 0.12);
+  --fs-border-window: rgb(214 222 232 / 0.14);
+  --fs-border-strong: rgb(214 222 232 / 0.2);
+  --fs-border-inset: rgb(5 8 12 / 0.44);
+  --fs-text-primary: #eef3f8;
+  --fs-text-secondary: #c4ceda;
+  --fs-text-muted: #91a0b1;
+  --fs-text-inverse: #101318;
+  --fs-accent-primary: #6db7ff;
+  --fs-accent-primary-strong: #97cbff;
+  --fs-state-running: #62d6a7;
+  --fs-state-warning: #f0b663;
+  --fs-state-error: #ff7e8c;
+  --fs-state-diagnostics: #b7a3ff;
+  --fs-state-info: #67d6cf;
+  --fs-focus-ring: rgb(109 183 255 / 0.42);
+  --fs-tint-neutral: rgb(196 206 218 / 0.1);
+  --fs-tint-primary: rgb(109 183 255 / 0.16);
+  --fs-tint-primary-soft: rgb(109 183 255 / 0.12);
+  --fs-tint-success: rgb(98 214 167 / 0.14);
+  --fs-tint-warning: rgb(240 182 99 / 0.15);
+  --fs-tint-danger: rgb(255 126 140 / 0.15);
+  --fs-tint-diagnostics: rgb(183 163 255 / 0.16);
+  --fs-chart-grid: rgb(214 222 232 / 0.1);
+  --fs-shadow-1: 0 1px 2px rgb(0 0 0 / 0.28);
+  --fs-shadow-2: 0 14px 30px rgb(0 0 0 / 0.32);
+  --fs-shadow-3: 0 22px 54px rgb(0 0 0 / 0.38);
+  --fs-shadow-menu: 0 16px 34px rgb(0 0 0 / 0.34);
+  --fs-shell-bg: var(--fs-surface-window);
+  --fs-icon-tile-bg: #202936;
+  --fs-about-mark-bg: #202936;
+  --fs-workspace-bg: #111720;
+  --fs-card-bg: var(--fs-surface-solid);
+  --fs-card-border: var(--fs-border-subtle);
+  --fs-button-secondary-bg: var(--fs-surface-wash-58);
+  --fs-button-tonal-bg: rgb(109 183 255 / 0.16);
+  --fs-button-tonal-hover-bg: rgb(109 183 255 / 0.24);
+  --fs-button-primary-shadow: 0 8px 20px rgb(49 120 198 / 0.34);
+  --fs-button-danger-shadow: 0 8px 20px rgb(255 126 140 / 0.24);
+  --fs-input-bg: var(--fs-surface-mist-76);
+  --fs-nav-hover-bg: rgb(109 183 255 / 0.1);
+  --fs-nav-active-bg: rgb(109 183 255 / 0.16);
+  --fs-nav-active-border: rgb(109 183 255 / 0.32);
+  --fs-row-bg: var(--fs-surface-wash-54);
+  --fs-toast-bg: var(--fs-surface-wash-62);
+  --fs-inspector-bg: var(--fs-surface-mist-54);
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -149,6 +247,12 @@
 
 @media (prefers-reduced-motion: reduce) {
   :root {
+    --fs-motion-instant: 0ms;
+    --fs-motion-micro: 1ms;
+    --fs-motion-state: 1ms;
+    --fs-motion-content: 1ms;
+    --fs-motion-nav: 0ms;
+    --fs-motion-press: 1ms;
     --fs-motion-fast: 1ms;
     --fs-motion-base: 1ms;
     --fs-motion-slow: 1ms;

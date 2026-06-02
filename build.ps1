@@ -12,7 +12,7 @@ $webView2Package = Get-ChildItem -LiteralPath $webView2PackageRoot -Directory -E
     Sort-Object { [version]$_.Name } |
     Select-Object -Last 1
 if ($null -eq $webView2Package) {
-    throw "Microsoft.Web.WebView2 package was not found. Run: dotnet restore .\tools\WebView2Spike\WebView2Spike.csproj"
+    throw "Microsoft.Web.WebView2 package was not found. Restore the Microsoft.Web.WebView2 NuGet package into the local NuGet cache before running build.ps1."
 }
 $webView2Core = Join-Path $webView2Package.FullName 'lib\net462\Microsoft.Web.WebView2.Core.dll'
 $webView2WinForms = Join-Path $webView2Package.FullName 'lib\net462\Microsoft.Web.WebView2.WinForms.dll'
@@ -24,10 +24,74 @@ foreach ($requiredWebView2File in @($webView2Core, $webView2WinForms, $webView2L
 }
 $webView2StandaloneUrl = 'https://go.microsoft.com/fwlink/?linkid=2124701'
 $webView2StandaloneInstaller = Join-Path $root 'packaging\MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
+$appIcon = Join-Path $root 'assets\icon\framescope-icon.ico'
+$appIconPng = Join-Path $root 'assets\icon\framescope-icon.png'
+if ((-not (Test-Path -LiteralPath $appIcon)) -or (-not (Test-Path -LiteralPath $appIconPng))) {
+    $iconGenerator = Join-Path $root 'tools\Generate-FrameScopeIcon.ps1'
+    if (-not (Test-Path -LiteralPath $iconGenerator)) {
+        throw "FrameScope icon assets are missing and the generator was not found: $iconGenerator"
+    }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $iconGenerator | Out-Host
+}
+if (-not (Test-Path -LiteralPath $appIcon)) {
+    throw "FrameScope icon was not found: $appIcon"
+}
+
+function Restore-HardwareTelemetryDependencies {
+    $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
+    if ($null -eq $dotnet) {
+        throw "dotnet.exe was not found. It is required to restore LibreHardwareMonitorLib for built-in CPU voltage telemetry."
+    }
+
+    $temp = Join-Path $env:TEMP ('framescope-hardware-telemetry-deps-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    try {
+        $project = Join-Path $temp 'FrameScopeHardwareTelemetryDeps.csproj'
+        @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="LibreHardwareMonitorLib" Version="0.9.6" />
+  </ItemGroup>
+</Project>
+'@ | Set-Content -LiteralPath $project -Encoding UTF8
+        'internal static class Program { private static void Main() { } }' | Set-Content -LiteralPath (Join-Path $temp 'Program.cs') -Encoding UTF8
+        Push-Location $temp
+        try {
+            dotnet build -c Release | Out-Host
+        }
+        finally {
+            Pop-Location
+        }
+
+        $output = Join-Path $temp 'bin\Release\net472'
+        $dlls = Get-ChildItem -LiteralPath $output -Filter '*.dll' -File
+        if (-not ($dlls | Where-Object { $_.Name -eq 'LibreHardwareMonitorLib.dll' })) {
+            throw "LibreHardwareMonitorLib.dll was not produced by dependency restore."
+        }
+
+        foreach ($dll in $dlls) {
+            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $root $dll.Name) -Force
+        }
+        return @($dlls | Select-Object -ExpandProperty Name)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temp) {
+            Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$hardwareTelemetryDependencyNames = Restore-HardwareTelemetryDependencies
 
 Push-Location $root
 try {
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /win32icon:$appIcon `
         /out:FrameScopeMonitor.exe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
@@ -36,7 +100,9 @@ try {
         /reference:$webView2Core `
         /reference:$webView2WinForms `
         .\src\core\FrameScopeConfigStore.cs `
+        .\src\core\FrameScopeLoggingPolicy.cs `
         .\src\core\FrameScopeCapturePlanner.cs `
+        .\src\core\FrameScopePresentMonDiagnostics.cs `
         .\src\core\FrameScopeProcessPicker.cs `
         .\src\core\FrameScopeTargetEditRules.cs `
         .\src\diagnostics\FrameScopeDiagnostics.cs `
@@ -57,6 +123,8 @@ try {
         .\src\app\FrameScopeWebBridge.Diagnostics.cs `
         .\src\app\FrameScopeWebBridge.Targets.cs `
         .\src\app\FrameScopeWebView2Runtime.cs `
+        .\src\app\FrameScopeWebHostLifecycle.cs `
+        .\src\app\FrameScopeAppIcon.cs `
         .\src\app\FrameScopeNativeMonitor.cs `
         .\src\app\FrameScopeNativeMonitor.WebHost.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.cs `
@@ -87,9 +155,12 @@ try {
 
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
         /out:FrameScopeSystemSampler.exe `
+        /reference:System.Core.dll `
+        /reference:System.Management.dll `
         .\src\monitoring\FrameScopeSystemSampler.cs `
         .\src\monitoring\FrameScopeSystemSampler.Models.cs `
         .\src\monitoring\FrameScopeSystemSampler.PerfCounters.cs `
+        .\src\monitoring\FrameScopeSystemSampler.CpuCoreTelemetry.cs `
         .\src\monitoring\FrameScopeSystemSampler.Gpu.cs `
         .\src\monitoring\FrameScopeSystemSampler.Processes.cs `
         .\src\monitoring\FrameScopeSystemSampler.IO.cs
@@ -101,6 +172,7 @@ try {
         /reference:System.Management.dll `
         /reference:Microsoft.VisualBasic.dll `
         .\src\core\FrameScopeReportProgress.cs `
+        .\src\core\FrameScopePresentMonDiagnostics.cs `
         .\src\reporting\FrameScopeReportGenerator.cs `
         .\src\reporting\FrameScopeReportGenerator.Models.cs `
         .\src\reporting\FrameScopeReportGenerator.Cli.cs `
@@ -120,6 +192,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeReportGenerator.exe" }
 
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /win32icon:$appIcon `
         /out:FrameScopeUninstaller.exe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
@@ -127,6 +200,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeUninstaller.exe" }
 
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /win32icon:$appIcon `
         /out:FrameScopeLegacyCleanup.exe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
@@ -150,7 +224,7 @@ try {
         New-Item -ItemType Directory -Path $path -Force | Out-Null
     }
 
-    foreach ($file in @(
+    $payloadFiles = @(
         'FrameScopeMonitor.exe',
         'FrameScopeProcessSampler.exe',
         'FrameScopeSystemSampler.exe',
@@ -161,7 +235,9 @@ try {
         'WebView2Loader.dll',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt'
-    )) {
+    )
+    $payloadFiles += $hardwareTelemetryDependencyNames
+    foreach ($file in $payloadFiles) {
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $payloadRoot -Force
     }
 
@@ -172,11 +248,17 @@ try {
     $payloadFrontend = Join-Path $payloadRoot 'frontend'
     Copy-Item -LiteralPath $frontendDist -Destination $payloadFrontend -Recurse -Force
 
+    $payloadIconDir = Join-Path $payloadRoot 'assets\icon'
+    New-Item -ItemType Directory -Path $payloadIconDir -Force | Out-Null
+    Copy-Item -LiteralPath $appIcon -Destination $payloadIconDir -Force
+    Copy-Item -LiteralPath $appIconPng -Destination $payloadIconDir -Force
+
     $payloadZip = Join-Path $sourceRoot 'payload.zip'
     Compress-Archive -Path (Join-Path $payloadRoot '*') -DestinationPath $payloadZip -Force
 
     $setupExe = Join-Path $dist 'FrameScopeMonitor-Setup.exe'
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /win32icon:$appIcon `
         /out:$setupExe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
@@ -201,6 +283,7 @@ try {
 
     $fullSetupExe = Join-Path $dist 'FrameScopeMonitor-Full-Setup.exe'
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
+        /win32icon:$appIcon `
         /out:$fullSetupExe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `

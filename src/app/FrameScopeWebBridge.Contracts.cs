@@ -16,6 +16,19 @@ internal sealed class FrameScopeWebBridgeOptions
     public string StatePath { get; set; }
     public string HistoryPath { get; set; }
     public IFrameScopeWebBridgeHostAdapter HostAdapter { get; set; }
+    public Func<FrameScopeWebBridgeHostState> HostStateProvider { get; set; }
+}
+
+internal sealed class FrameScopeWebBridgeHostState
+{
+    public FrameScopeWebBridgeHostState()
+    {
+        WindowVisible = true;
+        TrayAvailable = false;
+    }
+
+    public bool WindowVisible { get; set; }
+    public bool TrayAvailable { get; set; }
 }
 
 internal sealed class FrameScopeWebBridgeRequest
@@ -41,6 +54,7 @@ internal sealed class FrameScopeWebBridgeHostContext
         StatePath = "";
         HistoryPath = "";
         DataRoot = "";
+        LogDirectory = "";
     }
 
     public string Root { get; set; }
@@ -48,6 +62,7 @@ internal sealed class FrameScopeWebBridgeHostContext
     public string StatePath { get; set; }
     public string HistoryPath { get; set; }
     public string DataRoot { get; set; }
+    public string LogDirectory { get; set; }
 }
 
 internal sealed class FrameScopeWebBridgeHostResult
@@ -98,6 +113,7 @@ internal interface IFrameScopeWebBridgeHostAdapter
     FrameScopeWebBridgeHostResult StopMonitor(FrameScopeWebBridgeHostContext context);
     FrameScopeWebBridgeHostResult OpenReport(FrameScopeWebBridgeHostContext context, string reportHtml, string runDir);
     FrameScopeWebBridgeHostResult OpenDirectory(FrameScopeWebBridgeHostContext context, string directory);
+    FrameScopeWebBridgeHostResult OpenLogsDirectory(FrameScopeWebBridgeHostContext context);
     FrameScopeWebBridgeHostResult RegenerateReport(FrameScopeWebBridgeHostContext context, string runDir);
     FrameScopeWebBridgeHostResult GenerateDiagnostics(FrameScopeWebBridgeHostContext context, string runDir);
 }

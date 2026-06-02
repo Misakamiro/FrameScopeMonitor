@@ -16,7 +16,7 @@ using System.Runtime.InteropServices;
 
 internal static partial class FrameScopeNativeMonitor
 {
-    private static void RecoverStaleMissingReports(string dataRoot)
+    private static void RecoverStaleMissingReports(string dataRoot, FrameScopeConfig config)
     {
         try
         {
@@ -44,7 +44,7 @@ internal static partial class FrameScopeNativeMonitor
                     string.IsNullOrWhiteSpace(phase))
                 {
                     WriteFrameScopeLog("recover-stale-report run=" + run.FullName + " phase=" + phase);
-                    EnsureReportForCompletedRun(run.FullName, status, StatusInt(status, "ExitCode", -1));
+                    EnsureReportForCompletedRun(run.FullName, status, StatusInt(status, "ExitCode", -1), config);
                 }
             }
         }
@@ -54,7 +54,7 @@ internal static partial class FrameScopeNativeMonitor
         }
     }
 
-    private static Dictionary<string, object> EnsureReportForCompletedRun(string runDir, Dictionary<string, object> status, int monitorExitCode)
+    private static Dictionary<string, object> EnsureReportForCompletedRun(string runDir, Dictionary<string, object> status, int monitorExitCode, FrameScopeConfig config)
     {
         var reportHtml = Path.Combine(runDir, "charts", "framescope-interactive-report.html");
         if (File.Exists(reportHtml))
@@ -84,7 +84,7 @@ internal static partial class FrameScopeNativeMonitor
             WriteFrameScopeLog("report-generate-partial missing-presentmon run=" + runDir);
         }
 
-        var result = RunReportGeneration(runDir);
+        var result = RunReportGeneration(runDir, config);
         return UpdateStatusAfterReportGeneration(runDir, status, result, monitorExitCode);
     }
 
@@ -108,8 +108,9 @@ internal static partial class FrameScopeNativeMonitor
         return latest == DateTime.MinValue ? DateTime.Now : latest;
     }
 
-    private static ReportGenerationResult RunReportGeneration(string runDir)
+    private static ReportGenerationResult RunReportGeneration(string runDir, FrameScopeConfig config = null)
     {
+        var totalTimer = Stopwatch.StartNew();
         var result = new ReportGenerationResult
         {
             Attempted = false,
@@ -129,7 +130,7 @@ internal static partial class FrameScopeNativeMonitor
             FrameScopeReportProgress.Write(result.ProgressPath, "生成失败", 100, result.Error, DateTime.Now, result.Error, true);
             WriteReportLog(result.LogPath, result.Error);
             WriteFrameScopeLog("report-generate-failed run=" + runDir + " error=" + result.Error);
-            return result;
+            return FinishReportGeneration(result, config, totalTimer);
         }
 
         result.Attempted = true;
@@ -157,7 +158,7 @@ internal static partial class FrameScopeNativeMonitor
                 {
                     result.Error = "Failed to start report generator.";
                     WriteReportLog(result.LogPath, result.Error);
-                    return result;
+                    return FinishReportGeneration(result, config, totalTimer);
                 }
                 try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
                 catch { }
@@ -212,6 +213,25 @@ internal static partial class FrameScopeNativeMonitor
             WriteFrameScopeLog("report-generate-error run=" + runDir + " error=" + ex.Message);
         }
 
+        return FinishReportGeneration(result, config, totalTimer);
+    }
+
+    private static ReportGenerationResult FinishReportGeneration(ReportGenerationResult result, FrameScopeConfig config, Stopwatch totalTimer)
+    {
+        try { if (totalTimer != null) totalTimer.Stop(); }
+        catch { }
+
+        WritePerformanceFrameScopeLog(
+            config,
+            delegate
+            {
+                return "report-generation-ms=" + (totalTimer == null ? 0 : totalTimer.ElapsedMilliseconds).ToString(CultureInfo.InvariantCulture) +
+                    " exit=" + (result == null ? -1 : result.ExitCode).ToString(CultureInfo.InvariantCulture) +
+                    " frames=" + (result == null ? 0 : result.FrameCount).ToString(CultureInfo.InvariantCulture) +
+                    " processSamples=" + (result == null ? 0 : result.ProcessSampleCount).ToString(CultureInfo.InvariantCulture) +
+                    " systemSamples=" + (result == null ? 0 : result.SystemSampleCount).ToString(CultureInfo.InvariantCulture) +
+                    " kind=" + (result == null ? "" : result.ReportKind);
+            });
         return result;
     }
 

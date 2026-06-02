@@ -34,6 +34,13 @@ internal static partial class FrameScopeReportGenerator
             return ParseLine(line);
         }
 
+        public string[] ReadFields(int[] indexes)
+        {
+            string line = reader.ReadLine();
+            if (line == null) return null;
+            return ParseSelectedFields(line, indexes);
+        }
+
         public void Dispose()
         {
             reader.Dispose();
@@ -85,6 +92,49 @@ internal static partial class FrameScopeReportGenerator
             }
             fields.Add(sb.ToString());
             return fields;
+        }
+
+        private static string[] ParseSelectedFields(string line, int[] indexes)
+        {
+            string[] values = new string[indexes.Length];
+            for (int i = 0; i < values.Length; i++) values[i] = "";
+            if (line == null) return values;
+
+            int maxIndex = -1;
+            for (int i = 0; i < indexes.Length; i++)
+            {
+                if (indexes[i] > maxIndex) maxIndex = indexes[i];
+            }
+            if (maxIndex < 0) return values;
+
+            if (line.IndexOf('"') >= 0)
+            {
+                List<string> fields = ParseLine(line);
+                for (int i = 0; i < indexes.Length; i++)
+                {
+                    int index = indexes[i];
+                    if (index >= 0 && index < fields.Count) values[i] = fields[index] ?? "";
+                }
+                return values;
+            }
+
+            int fieldIndex = 0;
+            int start = 0;
+            for (int i = 0; i <= line.Length; i++)
+            {
+                if (i < line.Length && line[i] != ',') continue;
+                for (int valueIndex = 0; valueIndex < indexes.Length; valueIndex++)
+                {
+                    if (indexes[valueIndex] == fieldIndex)
+                    {
+                        values[valueIndex] = line.Substring(start, i - start);
+                    }
+                }
+                if (fieldIndex >= maxIndex) break;
+                fieldIndex++;
+                start = i + 1;
+            }
+            return values;
         }
     }
 }

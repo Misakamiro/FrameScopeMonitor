@@ -172,53 +172,77 @@ internal static partial class FrameScopeNativeMonitor
         catch { }
     }
 
-    private static Dictionary<string, object> BuildPresentMonCaptureDiagnostics(MonitorSessionPaths paths, int? presentMonExitCode, bool presentMonExitedEarly, bool presentMonForcedStop)
+    private static long WaitForPresentMonCsvFlush(string csvPath, int waitMs)
     {
-        var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-        var exists = File.Exists(paths.PresentMonCsv);
-        var bytes = exists ? new FileInfo(paths.PresentMonCsv).Length : 0;
-        var rows = exists ? CountCsvDataRows(paths.PresentMonCsv, 2000000) : 0;
-        var stdoutTail = TailText(paths.PresentMonStdout, 2000);
-        var stderrTail = TailText(paths.PresentMonStderr, 4000);
-        var status = "captured";
-        var message = "PresentMon 已成功写入帧数据。";
+        if (string.IsNullOrWhiteSpace(csvPath) || waitMs <= 0) return 0;
+        var stopwatch = Stopwatch.StartNew();
+        long lastSize = -1;
+        int stableChecks = 0;
+        while (stopwatch.ElapsedMilliseconds < waitMs)
+        {
+            try
+            {
+                if (File.Exists(csvPath))
+                {
+                    long size = new FileInfo(csvPath).Length;
+                    if (size == lastSize)
+                    {
+                        stableChecks++;
+                        if (stableChecks >= 2) break;
+                    }
+                    else
+                    {
+                        lastSize = size;
+                        stableChecks = 0;
+                    }
+                }
+            }
+            catch
+            {
+            }
+            Thread.Sleep(100);
+        }
+        stopwatch.Stop();
+        return stopwatch.ElapsedMilliseconds;
+    }
 
-        if (!exists)
+    private static bool IsTargetPidRunning(int pid, List<string> targetProcessBases)
+    {
+        if (pid <= 0) return false;
+        try
         {
-            status = "no-presentmon-csv";
-            message = "PresentMon 已启动，但没有创建 presentmon.csv。PUBG 场景下通常是渲染进程切换、FrameScope 与游戏权限级别不一致、全屏/覆盖层采集限制，或 ETW 采集被游戏/反作弊阻断。";
+            using (Process process = Process.GetProcessById(pid))
+            {
+                if (process.HasExited) return false;
+                if (targetProcessBases == null || targetProcessBases.Count == 0) return true;
+                string processName = process.ProcessName ?? "";
+                foreach (string candidate in targetProcessBases)
+                {
+                    if (string.Equals(processName, candidate, StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                return false;
+            }
         }
-        else if (bytes <= 0)
+        catch
         {
-            status = "empty-presentmon-csv";
-            message = "PresentMon 创建了 presentmon.csv，但文件为空。下一次 PUBG 采集建议以管理员身份运行 FrameScope，并优先使用无边框或窗口化全屏。";
+            return false;
         }
-        else if (rows <= 0)
-        {
-            status = "no-presentmon-rows";
-            message = "PresentMon 创建了 presentmon.csv，但没有写入帧记录。FrameScope 仍会保留进程和系统采样数据用于诊断。";
-        }
-        else if (presentMonExitCode.HasValue && presentMonExitCode.Value != 0)
-        {
-            status = "presentmon-exit-error";
-            message = "PresentMon 写入了部分输出，但以非 0 代码退出。请查看 presentmon.stderr.log 获取具体采集错误。";
-        }
-        else if (presentMonExitedEarly)
-        {
-            status = "presentmon-exited-early";
-            message = "PresentMon 在 FrameScope 请求停止前提前退出。如果 PUBG 重启过渲染进程，请在最终游戏窗口出现后重新开始采集。";
-        }
+    }
 
-        result["PresentMonCsvExists"] = exists;
-        result["PresentMonCsvBytes"] = bytes;
-        result["PresentMonCsvRows"] = rows;
-        result["PresentMonStdoutTail"] = stdoutTail;
-        result["PresentMonStderrTail"] = stderrTail;
-        result["FrameCaptureStatus"] = status;
-        result["FrameCaptureMessage"] = message;
-        result["PresentMonExitCode"] = presentMonExitCode;
-        result["PresentMonExitedEarly"] = presentMonExitedEarly;
-        result["PresentMonForcedStop"] = presentMonForcedStop;
-        return result;
+    private static Dictionary<string, object> BuildPresentMonCaptureDiagnostics(
+        MonitorSessionPaths paths,
+        int? presentMonExitCode,
+        bool presentMonExitedEarly,
+        bool presentMonForcedStop,
+        FrameScopePresentMonCaptureDiagnosticContext context)
+    {
+        return FrameScopePresentMonDiagnostics.BuildCaptureDiagnostics(
+            paths.PresentMonCsv,
+            paths.PresentMonStdout,
+            paths.PresentMonStderr,
+            presentMonExitCode,
+            presentMonExitedEarly,
+            presentMonForcedStop,
+            context);
     }
 }

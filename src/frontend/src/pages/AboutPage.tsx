@@ -1,4 +1,4 @@
-import { Code2, Layers3, MonitorCheck } from "lucide-react";
+import { CircleHelp, Database, FolderOpen, Info, MonitorCheck, ShieldCheck } from "lucide-react";
 import { EmptyState } from "../components/EmptyState";
 import { GlassCard } from "../components/GlassCard";
 import { InlineStatus } from "../components/InlineStatus";
@@ -11,54 +11,57 @@ interface AboutPageProps {
 }
 
 export function AboutPage({ bridgeState }: AboutPageProps) {
+  const dataRoot = bridgeState.config.data?.resolvedDataRoot || bridgeState.snapshot.data?.config.dataRoot || "";
+
   return (
     <section className="page about-page" data-smoke-page="about">
       <div className="page__header">
         <div>
-          <span className="mode-ribbon">技术说明</span>
-          <h2>关于 FrameScope Web UI</h2>
-          <p>
-            这里集中说明界面运行环境、WebView2 bridge 边界和仍未接入的功能，避免主流程页面被技术细节打断。
-          </p>
+          <h2>关于与帮助</h2>
+          <p>了解用途、数据位置和常见问题。</p>
         </div>
       </div>
 
-      <div className="about-grid">
+      <div className="about-grid about-grid--user">
         <GlassCard>
           <div className="about-hero">
             <div className="about-hero__mark">
               <MonitorCheck aria-hidden="true" size={34} />
             </div>
             <div>
-              <h3>本机宿主负责真实操作</h3>
-              <p>
-                React 只负责展示和收集用户输入。启动监控、保存配置、打开报告、读取进程等系统操作仍由 C# host 校验和执行。
-              </p>
+              <h3>FrameScope Monitor</h3>
+              <p>本地记录游戏帧表现和系统占用，帮助排查卡顿和掉帧。</p>
             </div>
           </div>
+          <div className="about-facts">
+            <span>版本：1.1.3</span>
+            <span>监控数据保存在本机，不会自动上传。</span>
+            <span title={dataRoot}>数据位置：{formatPathTail(dataRoot)}</span>
+          </div>
         </GlassCard>
+
         <GlassCard>
           <InlineStatus
             tone={bridgeState.isMockPreview ? "diagnostics" : "success"}
-            title={bridgeState.isMockPreview ? "浏览器预览模式" : "WebView2 实时连接"}
+            title={bridgeState.isMockPreview ? "当前为预览" : "本机连接正常"}
             message={
               bridgeState.isMockPreview
-                ? "当前不在 WebView2 宿主中，页面只使用 mock adapter 预览状态。"
-                : "当前通过 window.chrome.webview 与 C# WebView2 bridge 通信。"
+                ? "预览不会读取真实系统数据。"
+                : "可以读取目标、报告和设置。"
             }
           />
-          <div className="about-list">
+          <div className="about-action-list">
             <span>
-              <Layers3 aria-hidden="true" size={16} />
-              请求与响应类型集中在 src/frontend/src/bridge/contract.ts
+              <FolderOpen aria-hidden="true" size={16} />
+              数据目录可在设置页查看。
             </span>
             <span>
-              <Code2 aria-hidden="true" size={16} />
-              requestId、超时和事件订阅由 webviewBridge.ts 管理
+              <Database aria-hidden="true" size={16} />
+              报告目录可在报告详情打开。
             </span>
             <span>
-              <MonitorCheck aria-hidden="true" size={16} />
-              主流程页面只显示用户需要的加载、成功和失败反馈
+              <ShieldCheck aria-hidden="true" size={16} />
+              诊断文件只在本机生成。
             </span>
           </div>
         </GlassCard>
@@ -67,24 +70,59 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
       <GlassCard>
         <div className="section-title">
           <div>
-            <h3>仍未伪装的功能边界</h3>
-            <p>没有明确后端语义的动作不会做成可点击的假功能。</p>
+            <h3>常见问题</h3>
+            <p>遇到问题时先看这里。</p>
           </div>
-          <StatusPill tone="warning">未接入</StatusPill>
+          <StatusPill tone="primary">帮助</StatusPill>
         </div>
-        <div className="scope-grid">
+        <div className="faq-grid">
           <EmptyState
-            icon={Layers3}
-            title="从进程列表直接新增目标"
-            description="目标保存已经有明确接口；从进程结果一键新增目标还没有确认写入规则，因此不在主流程里放假按钮。"
+            icon={CircleHelp}
+            title="没有自动记录怎么办？"
+            description="先确认目标已启用，再启动监控并保持软件运行。"
           />
           <EmptyState
-            icon={Code2}
-            title="搜索、通知和数据目录快捷入口"
-            description="这些快捷入口还没有完整语义时不会占据顶栏位置。需要接入时，应先补齐真实行为再进入主界面。"
+            icon={Info}
+            title="报告没有帧数据？"
+            description="重新监控一次，确认游戏进程名和权限是否正确。"
+          />
+          <EmptyState
+            icon={FolderOpen}
+            title="报告打不开？"
+            description="报告可能被移动。请在报告详情打开文件夹查看。"
+          />
+          <EmptyState
+            icon={ShieldCheck}
+            title="何时需要诊断？"
+            description="报告异常或保存失败时，再生成诊断文件。"
           />
         </div>
       </GlassCard>
+
+      <details className="advanced-details">
+        <summary>高级信息</summary>
+        <GlassCard>
+          <div className="section-title">
+            <div>
+              <h3>技术信息</h3>
+              <p>排查界面连接问题时使用。</p>
+            </div>
+            <StatusPill tone="diagnostics">高级</StatusPill>
+          </div>
+          <div className="about-list">
+            <span>运行环境：{bridgeState.isMockPreview ? "浏览器预览" : "本机应用"}</span>
+            <span>连接状态：{bridgeState.isMockPreview ? "预览模式" : "已连接"}</span>
+            <span title={dataRoot}>数据目录：{formatPathTail(dataRoot)}</span>
+            <span>问题定位：请同时提供报告时间和目标进程名。</span>
+          </div>
+        </GlassCard>
+      </details>
     </section>
   );
+}
+
+function formatPathTail(value: string) {
+  if (!value) return "设置页可查看";
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  return parts.slice(-3).join("\\") || value;
 }

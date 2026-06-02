@@ -5,9 +5,10 @@ import "./components.css";
 
 interface StatusPillProps {
   tone?: Tone;
+  className?: string;
   children: ReactNode;
 }
 
-export function StatusPill({ tone = "neutral", children }: StatusPillProps) {
-  return <span className={["status-pill", toneToClass(tone)].join(" ")}>{children}</span>;
+export function StatusPill({ tone = "neutral", className, children }: StatusPillProps) {
+  return <span className={["status-pill", toneToClass(tone), className].filter(Boolean).join(" ")}>{children}</span>;
 }
