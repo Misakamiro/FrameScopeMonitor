@@ -8,19 +8,41 @@
 - 监控 worker 说明已补齐：任务管理器中多个 `FrameScopeMonitor.exe` 是 watcher / monitor-session worker 架构的正常表现，不代表重复打开软件。
 - 普通 UI 加入单实例启动保护：软件已运行时再次点击快捷方式不会打开第二窗口，会提示“FrameScope Monitor 已在运行，请勿重复打开。”并退出第二进程。
 - worker / diagnostic 启动路径继续绕过普通 UI 单实例锁，监控和报告工作进程不会被误挡。
+- 修复图表扎底竖线：采集失败写出的无效 `0`、极低电压/频率/温度/功耗样本会被过滤或断开为 `null` gap，不再被画成真实低点。
+- downsample 保留 `null` gap，不会把无效低点重新变成 `0` 或 spike。
+- 真实低 P-state 保留，例如用户 Valorant run 中的 GPU `225 MHz` 仍作为有效 GPU clock 显示。
 - `CPU Voltage / Vcore` 和 `CPU Core VID` 继续分离，VID 仍只表示 CPU 请求/目标电压，不冒充真实 per-core Vcore。
+- AMD LibreHardwareMonitor 的 `0.4-0.7V` Core VID 被判定为不可信低区间并拒绝展示；用户期望的约 `1.08V` 已确认为 SuperIO `Vcore` / `CPU Voltage`，不会被填进 `CPU Core VID`。
 - FPS 图表仍保持 `bucketMs=1000` 的展示聚合，平均 FPS、1% Low、0.1% Low 等统计继续来自 raw PresentMon 数据口径。
+- 报告兼容键保持不变：`DATA.cpuVoltage`、`DATA.cpuVid` 和 `bucketMs=1000` 均保留。
+
+### 修复细节
+
+- `FrameScopeReportGenerator.SystemData` 现在会把无效频率、功耗、温度和电压样本转换为不可绘制 gap。
+- CPU Voltage / Vcore 只接受合理电压范围内的整体 Vcore/CPU Voltage 传感器。
+- CPU Core VID 只接受合理 VID；AMD LHM `/amdcpu/.../Core VID` 低于 `0.7V` 的样本会被拒绝。
+- 未来采样阶段也会拒绝同类低 AMD Core VID，并在状态文件中记录 `CpuVidRejectedSampleCount`。
+- 如果所有 VID 点都因低 AMD LHM 区间被拒绝，`DATA.cpuVid.available=false`，原因会明确说明拒绝逻辑和 Vcore/VID 分离。
 
 ### 安装包和验证
 
 - 已同步构建产物并确认 `dist\FrameScopeMonitor-Setup.exe`、`dist\FrameScopeMonitor-Full-Setup.exe` 和 payload 主程序 SHA256 与发布窗口记录一致。
 - 本地 `FrameScopeMonitor-Full-Setup.exe` 更新安装验证 PASS，安装后用户数据目录保留。
-- 发布前最小验证 PASS：前端 typecheck/Vitest/build、原生测试重建、单实例保护、报告 manifest、monitor child process、process cleanup、chart sampling、`git diff --check` 和残留进程检查均通过。
+- installed WebView2 smoke 的旧 PARTIAL 已澄清为 long-path smoke harness false negative；short-path fresh live/reduced、target/settings 均 PASS。
+- 发布前最小验证 PASS：前端 typecheck/Vitest/build、原生测试重建、报告 manifest、CPU core telemetry、monitor child process、process cleanup、单实例保护、chart sampling、`git diff --check` 和残留进程检查均通过。
+
+### SHA256
+
+- `FrameScopeMonitor-Setup.exe`: `8E3A301D7D2C4AC18FD2EA1F83BDDDE5FCFFB96985F303DAD09A25785B9CD5A3`
+- `FrameScopeMonitor-Full-Setup.exe`: `0C724E50BE1DC133BC39F188199810F4400340AD5540B656A8DAE2855ACC0901`
+- `FrameScopeMonitor.exe` payload: `EEA59166F2FEAB7A89DD3580A62481B520976BCD9D5FD0445A7D0B744FB3165C`
+- frontend JS: `2DB69188D6FD4A6B2CA08379BFE38C89833C4188A427D3734B3719842BF302CE`
 
 ### 已知边界
 
 - 本轮没有启动真实游戏。
 - 本轮没有进行 BF6 真实游戏测试。
+- 本轮没有重新安装 FrameScope；安装验证沿用同日已完成并澄清的本地 installed evidence。
 
 ## 2026-06-03 - FrameScope Monitor v1.1.3 发布收尾
 

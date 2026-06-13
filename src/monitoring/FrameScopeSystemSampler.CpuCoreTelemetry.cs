@@ -418,6 +418,7 @@ internal static partial class FrameScopeSystemSampler
         private StreamWriter writer;
         private int rowCount;
         private int coreCount;
+        private int rejectedVidRowCount;
         private long nextDueElapsedMs;
         private bool statusWritten;
 
@@ -476,7 +477,11 @@ internal static partial class FrameScopeSystemSampler
             {
                 if (sample == null || !sample.VidV.HasValue) continue;
                 double vid = sample.VidV.Value;
-                if (vid <= 0 || vid >= 5) continue;
+                if (vid <= 0.2 || vid >= 5 || IsImplausibleLowAmdLibreHardwareMonitorVid(sample.SensorName, sample.SensorIdentifier, vid))
+                {
+                    rejectedVidRowCount++;
+                    continue;
+                }
                 string status = NormalizeVidSampleStatus(sample);
                 if (!String.Equals(status, "core-vid", StringComparison.OrdinalIgnoreCase)) continue;
                 string providerKind = String.IsNullOrWhiteSpace(sample.ProviderKind) ? provider.ProviderKind : sample.ProviderKind;
@@ -508,7 +513,7 @@ internal static partial class FrameScopeSystemSampler
 
             if (rowCount == rowsBefore)
             {
-                WriteStatusIfDue(sampleIndex, false, NoCpuVidReason());
+                WriteStatusIfDue(sampleIndex, false, rejectedVidRowCount > 0 ? RejectedCpuVidReason() : NoCpuVidReason());
                 return false;
             }
 
@@ -528,7 +533,7 @@ internal static partial class FrameScopeSystemSampler
             }
             if (options.Enabled && provider.Available)
             {
-                WriteStatus(rowCount > 0, rowCount > 0 ? "" : NoCpuVidReason());
+                WriteStatus(rowCount > 0, rowCount > 0 ? "" : (rejectedVidRowCount > 0 ? RejectedCpuVidReason() : NoCpuVidReason()));
             }
             IDisposable disposable = provider as IDisposable;
             if (disposable != null) disposable.Dispose();
@@ -563,7 +568,8 @@ internal static partial class FrameScopeSystemSampler
                     { "CpuVidNote", CpuVidNote() },
                     { "CpuVidSampleIntervalMs", options.SampleIntervalMs },
                     { "CpuVidSampleCount", rowCount },
-                    { "CpuVidCoreCount", coreCount }
+                    { "CpuVidCoreCount", coreCount },
+                    { "CpuVidRejectedSampleCount", rejectedVidRowCount }
                 };
                 File.WriteAllText(options.StatusPath, SerializeSimpleJson(map), new UTF8Encoding(false));
                 statusWritten = true;
@@ -916,6 +922,15 @@ internal static partial class FrameScopeSystemSampler
         return text.IndexOf("vid", StringComparison.Ordinal) >= 0;
     }
 
+    private static bool IsImplausibleLowAmdLibreHardwareMonitorVid(string sensorName, string sensorIdentifier, double value)
+    {
+        if (value >= 0.7) return false;
+        string text = NormalizeCpuVoltageSensorText((sensorName ?? "") + " " + (sensorIdentifier ?? ""));
+        return text.IndexOf("core", StringComparison.Ordinal) >= 0 &&
+               text.IndexOf("vid", StringComparison.Ordinal) >= 0 &&
+               text.IndexOf("amdcpu", StringComparison.Ordinal) >= 0;
+    }
+
     private static string CpuVidNote()
     {
         return "VID \u662f CPU \u8bf7\u6c42/\u76ee\u6807\u7535\u538b\uff0c\u4e0d\u662f\u771f\u5b9e per-core Vcore\u3002";
@@ -924,6 +939,11 @@ internal static partial class FrameScopeSystemSampler
     private static string NoCpuVidReason()
     {
         return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
+    }
+
+    private static string RejectedCpuVidReason()
+    {
+        return "AMD LibreHardwareMonitor Core VID samples were rejected because values were in the implausible low 0.4-0.7V range; CPU Voltage / Vcore remains separate and is not used as VID.";
     }
 
     private static string NoCpuVcoreReason()

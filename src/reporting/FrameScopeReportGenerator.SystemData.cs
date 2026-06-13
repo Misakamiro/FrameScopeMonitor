@@ -65,14 +65,14 @@ internal static partial class FrameScopeReportGenerator
             double? vramPct = null;
             if (row.VramTotalMiB.HasValue && row.VramTotalMiB.Value > 0 && row.VramUsedMiB.HasValue) vramPct = row.VramUsedMiB.Value / row.VramTotalMiB.Value * 100.0;
             vram.Add(RoundNullable(vramPct, 2));
-            cpuFreq.Add(RoundNullable(EffectiveCpuFrequency(row), 0));
-            gpuClock.Add(RoundNullable(row.GpuClock, 0));
-            memClock.Add(RoundNullable(row.MemClock, 0));
+            cpuFreq.Add(RoundNullable(ValidFrequencyOrNull(EffectiveCpuFrequency(row)), 0));
+            gpuClock.Add(RoundNullable(ValidFrequencyOrNull(row.GpuClock), 0));
+            memClock.Add(RoundNullable(ValidFrequencyOrNull(row.MemClock), 0));
             disk.Add(RoundNullable(row.DiskBytesPerSec.HasValue ? row.DiskBytesPerSec.Value / 1024.0 / 1024.0 : (double?)null, 3));
             net.Add(RoundNullable(row.NetBytesPerSec.HasValue ? row.NetBytesPerSec.Value / 1024.0 / 1024.0 : (double?)null, 3));
             diskLatency.Add(RoundNullable(row.DiskAvgSecPerTransfer.HasValue ? row.DiskAvgSecPerTransfer.Value * 1000.0 : (double?)null, 3));
-            power.Add(RoundNullable(row.Power, 2));
-            temp.Add(RoundNullable(row.GpuTemp, 1));
+            power.Add(RoundNullable(ValidPositiveTelemetryOrNull(row.Power), 2));
+            temp.Add(RoundNullable(ValidPositiveTelemetryOrNull(row.GpuTemp), 1));
         }
 
         return new Dictionary<string, object>
@@ -89,6 +89,43 @@ internal static partial class FrameScopeReportGenerator
         if (!row.CpuFrequency.HasValue) return null;
         if (row.CpuPerformancePct.HasValue && row.CpuPerformancePct.Value > 0) return row.CpuFrequency.Value * row.CpuPerformancePct.Value / 100.0;
         return row.CpuFrequency.Value;
+    }
+
+    private static double? ValidFrequencyOrNull(double? value)
+    {
+        return IsValidFrequencyValue(value) ? value : null;
+    }
+
+    private static double? ValidPositiveTelemetryOrNull(double? value)
+    {
+        return value.HasValue && value.Value > 0 && !Double.IsNaN(value.Value) && !Double.IsInfinity(value.Value)
+            ? value
+            : null;
+    }
+
+    private static bool IsValidFrequencyValue(double? value)
+    {
+        return value.HasValue && value.Value > 0 && !Double.IsNaN(value.Value) && !Double.IsInfinity(value.Value);
+    }
+
+    private static bool IsValidVoltageValue(double? value)
+    {
+        return value.HasValue && value.Value > 0.2 && value.Value < 5 && !Double.IsNaN(value.Value) && !Double.IsInfinity(value.Value);
+    }
+
+    private static bool IsValidCpuVidValue(string sensorName, string sensorIdentifier, double? value)
+    {
+        if (!IsValidVoltageValue(value)) return false;
+        return !IsImplausibleLowAmdLibreHardwareMonitorVid(sensorName, sensorIdentifier, value.Value);
+    }
+
+    private static bool IsImplausibleLowAmdLibreHardwareMonitorVid(string sensorName, string sensorIdentifier, double value)
+    {
+        if (value >= 0.7) return false;
+        string text = NormalizeCpuVoltageSensorText((sensorName ?? "") + " " + (sensorIdentifier ?? ""));
+        return text.IndexOf("core", StringComparison.Ordinal) >= 0 &&
+               text.IndexOf("vid", StringComparison.Ordinal) >= 0 &&
+               text.IndexOf("amdcpu", StringComparison.Ordinal) >= 0;
     }
 
     private static Dictionary<string, object> ReadCpuCoreCharts(string runDir, DateTime start, Dictionary<string, object> metadata)
@@ -118,7 +155,7 @@ internal static partial class FrameScopeReportGenerator
                 if (String.IsNullOrWhiteSpace(coreKey)) continue;
 
                 double? actual = ParseNullableDouble(Get(row, h, "ActualFrequencyMHz"));
-                if (actual.HasValue)
+                if (IsValidFrequencyValue(actual))
                 {
                     AddCpuCorePoint(frequencyPoints, pointTime, coreKey, actual.Value);
                     frequencyCores.Add(coreKey);
@@ -181,7 +218,7 @@ internal static partial class FrameScopeReportGenerator
                 string sensorIdentifier = Get(row, h, "SensorIdentifier");
                 if (!IsCpuVcoreVoltageCsvRow(sensorName, sensorIdentifier, status)) continue;
                 double? volts = ParseNullableDouble(Get(row, h, voltageHeader));
-                if (!volts.HasValue || volts.Value <= 0 || volts.Value >= 5) continue;
+                if (!IsValidVoltageValue(volts)) continue;
 
                 AddCpuVoltagePoint(voltagePoints, pointTime, volts.Value);
                 rowCount++;
@@ -211,6 +248,7 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, string> names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         string source = GetStringDiagnostic(metadata, "cpuVidSource", "");
         int rowCount = 0;
+        bool rejectedLowAmdVid = false;
 
         using (CsvTable table = CsvTable.Open(path))
         {
@@ -233,19 +271,33 @@ internal static partial class FrameScopeReportGenerator
 
                 string coreKey = CpuVidCoreKey(Get(row, h, "ProcessorGroup"), Get(row, h, "LogicalProcessor"), Get(row, h, "CoreIndex"));
                 if (String.IsNullOrWhiteSpace(coreKey)) continue;
+                string sensorName = Get(row, h, "SensorName");
+                string sensorIdentifier = Get(row, h, "SensorIdentifier");
                 double? volts = ParseNullableDouble(Get(row, h, vidHeader));
-                if (!volts.HasValue || volts.Value <= 0 || volts.Value >= 5) continue;
+                if (!IsValidCpuVidValue(sensorName, sensorIdentifier, volts))
+                {
+                    if (volts.HasValue && IsImplausibleLowAmdLibreHardwareMonitorVid(sensorName, sensorIdentifier, volts.Value))
+                    {
+                        rejectedLowAmdVid = true;
+                    }
+                    continue;
+                }
 
                 AddCpuCorePoint(points, pointTime, coreKey, volts.Value);
                 cores.Add(coreKey);
-                string sensorName = Get(row, h, "SensorName");
                 names[coreKey] = CpuVidDisplayName(sensorName, coreKey);
                 rowCount++;
                 if (String.IsNullOrWhiteSpace(source)) source = Get(row, h, "Source");
             }
         }
 
-        if (cores.Count == 0) return vid;
+        if (cores.Count == 0)
+        {
+            vid["reason"] = rejectedLowAmdVid
+                ? "AMD LibreHardwareMonitor Core VID samples were rejected because every value was in the implausible low 0.4-0.7V range; CPU Voltage / Vcore remains separate and is not used as VID."
+                : CpuVidUnavailableReason(metadata);
+            return vid;
+        }
 
         vid = BuildCpuVidChart(points, cores, names, "");
         vid["sourceField"] = "VidVolts";

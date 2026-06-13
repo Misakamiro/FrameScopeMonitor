@@ -24,6 +24,7 @@ public static class FrameScopeSystemSamplerCpuCoreTests
             SyntheticCpuVoltageTelemetryWritesVcoreCsvAndStatus();
             NonVcoreCpuVoltageTelemetryDoesNotCreateCpuVoltageData();
             SyntheticCpuVidTelemetryWritesDedicatedCsvAndStatus();
+            ImplausibleLowAmdLibreHardwareMonitorVidDoesNotCreateCsv();
             CpuVidCoreIndexParserKeepsZeroBasedAndOneBasedNamesDistinct();
             CpuVoltageTelemetryDoesNotRecordVidAsVoltage();
             BuiltInCpuVoltageProviderMissingDependencyIsUnavailable();
@@ -583,6 +584,54 @@ public static class FrameScopeSystemSamplerCpuCoreTests
             AssertEqual(2, Convert.ToInt32(map["CpuVidSampleCount"]), "vid sample count");
             AssertEqual(2, Convert.ToInt32(map["CpuVidCoreCount"]), "vid core count");
             AssertTrue(Convert.ToString(map["CpuVidNote"]).IndexOf("请求", StringComparison.OrdinalIgnoreCase) >= 0, "vid status note should say VID is requested voltage");
+        }
+        finally
+        {
+            TryDelete(dir);
+        }
+    }
+
+    private static void ImplausibleLowAmdLibreHardwareMonitorVidDoesNotCreateCsv()
+    {
+        string dir = CreateTempDir("framescope-cpu-vid-low-amd-tests-");
+        try
+        {
+            string csv = Path.Combine(dir, "cpu-vid-samples.csv");
+            string status = Path.Combine(dir, "cpu-vid-telemetry-status.json");
+            FrameScopeSystemSampler.CpuVidSample[] samples = new[]
+            {
+                new FrameScopeSystemSampler.CpuVidSample
+                {
+                    ProcessorGroup = "0",
+                    LogicalProcessor = "0",
+                    CoreIndex = "0",
+                    PhysicalCoreId = "0",
+                    VidV = 0.538,
+                    Source = "builtin-librehardwaremonitor",
+                    ProviderKind = "built-in",
+                    SensorName = "Core #1 VID",
+                    SensorIdentifier = "/amdcpu/0/voltage/2"
+                }
+            };
+
+            using (FrameScopeSystemSampler.CpuVidTelemetrySession session = FrameScopeSystemSampler.CreateCpuVidTelemetrySessionForTests(new FrameScopeSystemSampler.CpuVidTelemetryOptions
+            {
+                Enabled = true,
+                CsvPath = csv,
+                StatusPath = status,
+                SampleIntervalMs = 1000,
+                Provider = "built-in"
+            }, new FrameScopeSystemSampler.StaticCpuVidTelemetryProvider(samples, "", "builtin-librehardwaremonitor", "built-in")))
+            {
+                session.TryWriteSample(7, 1234);
+            }
+
+            AssertTrue(!File.Exists(csv), "implausible low AMD LHM VID should not create cpu-vid-samples.csv");
+            Dictionary<string, object> map = ReadJson(status);
+            AssertEqual(false, Convert.ToBoolean(map["CpuVidAvailable"]), "low AMD VID should not be available");
+            AssertEqual(0, Convert.ToInt32(map["CpuVidSampleCount"]), "low AMD VID should not count as sample");
+            AssertEqual(1, Convert.ToInt32(map["CpuVidRejectedSampleCount"]), "low AMD VID should count as rejected evidence");
+            AssertTrue(Convert.ToString(map["CpuVidUnavailableReason"]).IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0, "low AMD VID reason should mention AMD rejection");
         }
         finally
         {

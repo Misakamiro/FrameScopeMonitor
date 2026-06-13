@@ -21,6 +21,8 @@ public static class FrameScopeReportManifestTests
         CpuVoltageNonPerCoreTelemetryDoesNotCreateChartSeries();
         CpuVoltageSidecarOverridesStaleRunStatus();
         CpuVidTelemetryFlowsFromDedicatedCsvIntoManifestAndChartData();
+        InvalidVoltageFrequencyAndVidSamplesBecomeNullGaps();
+        LowAmdLibreHardwareMonitorVidSamplesAreRejectedAsUnreliable();
         CpuVidZeroBasedAndOneBasedNamesRemainIndependentWhenValuesMatch();
         CpuVidOnlyDoesNotMakeCpuVoltagePerCoreAvailable();
         CpuPackageSocAndAggregateVcoreDoNotEnterCpuVidChart();
@@ -885,6 +887,141 @@ public static class FrameScopeReportManifestTests
         }
     }
 
+    private static void InvalidVoltageFrequencyAndVidSamplesBecomeNullGaps()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-invalid-telemetry-gap-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            DateTime start = new DateTime(2026, 6, 13, 14, 0, 0, DateTimeKind.Local);
+            File.WriteAllText(Path.Combine(dir, "status.json"),
+                new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(new Dictionary<string, object>
+                {
+                    { "Phase", "done" },
+                    { "TargetProcess", "Valorant.exe" },
+                    { "CpuVoltageAvailable", true },
+                    { "CpuVoltageVcoreAvailable", true },
+                    { "CpuVoltageStatus", "vcore-available" },
+                    { "CpuVidAvailable", true },
+                    { "CpuVidStatus", "core-vid-available" },
+                    { "CpuVidSampleCount", 3 },
+                    { "CpuVidCoreCount", 1 }
+                }),
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "system-samples.csv"),
+                "Time,SampleIndex,TargetRunning,TotalCpuPct,CpuFrequencyMHz,CpuPerformancePct,AvailableMB,GpuClockMHz,MemClockMHz,PowerW,GpuTempC\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,True,10,4200,100,16000,1800,9501,88,55\r\n"
+                + start.AddSeconds(1).ToString("o", CultureInfo.InvariantCulture) + ",1,True,11,0,0,15900,0,0,0,0\r\n"
+                + start.AddSeconds(2).ToString("o", CultureInfo.InvariantCulture) + ",2,True,12,4300,100,15800,1900,9501,90,56\r\n",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "process-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,ProcessName,InstanceCount,CpuPct,WorkingSetMB,ReadMBps,WriteMBps,WindowTitle,Pid\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,Valorant,1,1.0,512,0,0,,1234\r\n",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "cpu-voltage-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,Source,Provider,SensorName,ProcessorGroup,LogicalProcessor,CoreId,PhysicalCoreId,ThreadIndex,VoltageVolts,Status,Reason,SensorIdentifier\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,builtin-librehardwaremonitor,built-in,Vcore,,,,,,1.080,vcore,,/lpc/it8689e/0/voltage/0\r\n"
+                + start.AddSeconds(1).ToString("o", CultureInfo.InvariantCulture) + ",1,1000,builtin-librehardwaremonitor,built-in,Vcore,,,,,,0,vcore,read failed,/lpc/it8689e/0/voltage/0\r\n"
+                + start.AddSeconds(2).ToString("o", CultureInfo.InvariantCulture) + ",2,2000,builtin-librehardwaremonitor,built-in,Vcore,,,,,,1.092,vcore,,/lpc/it8689e/0/voltage/0\r\n",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "cpu-vid-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,Source,Provider,SensorName,ProcessorGroup,LogicalProcessor,CoreIndex,PhysicalCoreId,ThreadIndex,VidVolts,Status,Reason,SensorIdentifier\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,builtin-librehardwaremonitor,built-in,Core #1 VID,0,0,0,0,,1.050,core-vid,VID is request/target voltage,/test/cpu/vid/0\r\n"
+                + start.AddSeconds(1).ToString("o", CultureInfo.InvariantCulture) + ",1,1000,builtin-librehardwaremonitor,built-in,Core #1 VID,0,0,0,0,,0,core-vid,read failed,/test/cpu/vid/0\r\n"
+                + start.AddSeconds(2).ToString("o", CultureInfo.InvariantCulture) + ",2,2000,builtin-librehardwaremonitor,built-in,Core #1 VID,0,0,0,0,,1.060,core-vid,VID is request/target voltage,/test/cpu/vid/0\r\n",
+                Encoding.UTF8);
+
+            FrameScopeReportGenerator.GenerateForTests(dir);
+
+            Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            System.Collections.ArrayList cpuFreq = GetObjectList(GetMap(GetMap(data, "system"), "perf"), "cpuFreq");
+            System.Collections.ArrayList gpuClock = GetObjectList(GetMap(GetMap(data, "system"), "perf"), "gpuClock");
+            System.Collections.ArrayList memClock = GetObjectList(GetMap(GetMap(data, "system"), "perf"), "memClock");
+            System.Collections.ArrayList power = GetObjectList(GetMap(GetMap(data, "system"), "io"), "power");
+            System.Collections.ArrayList temp = GetObjectList(GetMap(GetMap(data, "system"), "io"), "temp");
+            AssertEqual(null, cpuFreq[1], "invalid zero CPU frequency should become a null gap");
+            AssertEqual(null, gpuClock[1], "invalid zero GPU clock should become a null gap");
+            AssertEqual(null, memClock[1], "invalid zero memory clock should become a null gap");
+            AssertEqual(null, power[1], "invalid zero GPU power should become a null gap");
+            AssertEqual(null, temp[1], "invalid zero GPU temperature should become a null gap");
+
+            Dictionary<string, object> cpuVoltage = GetMap(data, "cpuVoltage");
+            Dictionary<string, object> cpuVid = GetMap(data, "cpuVid");
+            System.Collections.ArrayList voltageSeries = GetObjectList(cpuVoltage, "series");
+            System.Collections.ArrayList vidSeries = GetObjectList(cpuVid, "series");
+            AssertNoNumericZero(GetObjectList((Dictionary<string, object>)voltageSeries[0], "data"), "invalid zero Vcore should be skipped instead of drawn");
+            AssertNoNumericZero(GetObjectList((Dictionary<string, object>)vidSeries[0], "data"), "invalid zero VID should be skipped instead of drawn");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void LowAmdLibreHardwareMonitorVidSamplesAreRejectedAsUnreliable()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-low-amd-vid-report-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            DateTime start = new DateTime(2026, 6, 13, 14, 10, 0, DateTimeKind.Local);
+            File.WriteAllText(Path.Combine(dir, "status.json"),
+                new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(new Dictionary<string, object>
+                {
+                    { "Phase", "done" },
+                    { "TargetProcess", "Valorant.exe" },
+                    { "CpuVoltageAvailable", true },
+                    { "CpuVoltageVcoreAvailable", true },
+                    { "CpuVoltageStatus", "vcore-available" },
+                    { "CpuVidAvailable", true },
+                    { "CpuVidStatus", "core-vid-available" },
+                    { "CpuVidSampleCount", 8 },
+                    { "CpuVidCoreCount", 8 }
+                }),
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "system-samples.csv"),
+                "Time,SampleIndex,TargetRunning,TotalCpuPct,AvailableMB\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,True,10,16000\r\n",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "process-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,ProcessName,InstanceCount,CpuPct,WorkingSetMB,ReadMBps,WriteMBps,WindowTitle,Pid\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,Valorant,1,1.0,512,0,0,,1234\r\n",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "cpu-voltage-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,Source,Provider,SensorName,ProcessorGroup,LogicalProcessor,CoreId,PhysicalCoreId,ThreadIndex,VoltageVolts,Status,Reason,SensorIdentifier\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,builtin-librehardwaremonitor,built-in,Vcore,,,,,,1.080,vcore,,/lpc/it8689e/0/voltage/0\r\n",
+                Encoding.UTF8);
+            StringBuilder vid = new StringBuilder();
+            vid.AppendLine("Time,SampleIndex,ElapsedMs,Source,Provider,SensorName,ProcessorGroup,LogicalProcessor,CoreIndex,PhysicalCoreId,ThreadIndex,VidVolts,Status,Reason,SensorIdentifier");
+            for (int core = 0; core < 8; core++)
+            {
+                vid.AppendFormat(CultureInfo.InvariantCulture,
+                    "{0},0,0,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,0.538,core-vid,VID is request/target voltage,/amdcpu/0/voltage/{3}\r\n",
+                    start.ToString("o", CultureInfo.InvariantCulture),
+                    core + 1,
+                    core,
+                    core + 2);
+            }
+            File.WriteAllText(Path.Combine(dir, "cpu-vid-samples.csv"), vid.ToString(), Encoding.UTF8);
+
+            FrameScopeReportGenerator.GenerateForTests(dir);
+
+            Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            Dictionary<string, object> cpuVoltage = GetMap(data, "cpuVoltage");
+            Dictionary<string, object> cpuVid = GetMap(data, "cpuVid");
+            AssertEqual(true, Convert.ToBoolean(cpuVoltage["available"]), "Vcore should remain available");
+            AssertEqual(false, Convert.ToBoolean(cpuVid["available"]), "implausible low AMD Core VID should not be shown as accurate VID");
+            AssertEqual(0, GetObjectList(cpuVid, "series").Count, "implausible low AMD Core VID should not create series");
+            AssertTrue(Convert.ToString(cpuVid["reason"]).IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0, "cpu vid reason should explain AMD low-range rejection");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
     private static void CpuVidZeroBasedAndOneBasedNamesRemainIndependentWhenValuesMatch()
     {
         AssertCpuVidNamePatternCreatesEightSeries("zero-based", false);
@@ -1149,6 +1286,18 @@ public static class FrameScopeReportManifestTests
     private static void AssertTrue(bool condition, string label)
     {
         if (!condition) throw new Exception(label);
+    }
+
+    private static void AssertNoNumericZero(System.Collections.ArrayList values, string label)
+    {
+        foreach (object value in values)
+        {
+            if (value == null) continue;
+            if (Convert.ToDouble(value, CultureInfo.InvariantCulture) == 0)
+            {
+                throw new Exception(label + ": found numeric zero");
+            }
+        }
     }
 
     private static Dictionary<string, object> LoadReportData(string path)

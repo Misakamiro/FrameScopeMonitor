@@ -60,6 +60,15 @@ assert(
   `process spike mode should keep each process series bounded for large reports, got ${processSpike.y.length}`,
 );
 
+view = "perf";
+readMode.value = "spike";
+currentTimes = [0, 1, 2, 3, 4, 5];
+currentSeries = [{ key: "perf:cpu", name: "CPU frequency", data: [4200, null, 4300, null, 4400, 4500] }];
+renderCache = new Map();
+const gapSample = getRenderablePoints(currentSeries[0], 2, { start: 0, end: 5, span: 5, full: { start: 0, end: 5, span: 5 } });
+assert(gapSample.y.includes(null), "downsample should keep null gaps for invalid telemetry points");
+assert(!gapSample.y.includes(0), "downsample should not turn invalid telemetry null gaps into zero-value spikes");
+
 assert(source.includes("framescope-${view}-${readMode.value}.png"), "exported PNG name should include chart mode");
 assert(source.includes("function decodeRleSeries"), "process chart should decode lossless RLE process series");
 assert(source.includes("DATA.process.codec"), "process chart should branch on encoded process payloads");
