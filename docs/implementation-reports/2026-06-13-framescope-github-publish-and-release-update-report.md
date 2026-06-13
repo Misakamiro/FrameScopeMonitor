@@ -46,4 +46,18 @@
 
 ## Git 和 GitHub Release
 
-此部分在提交、推送和 GitHub Release 更新完成后补充最终 commit、push 结果、Release URL、tag、target commit 和资产上传状态。
+- 发布 commit：`aa93b3e2a7addbe0c72281ed6fa17bb215bb62da`
+- push 结果：`main -> main` 成功，本地 `main` 与 `origin/main` 一致。
+- Release URL：`https://github.com/Misakamiro/FrameScopeMonitor/releases/tag/v1.2`
+- Release tag：`v1.2`
+- Release target commit：`aa93b3e2a7addbe0c72281ed6fa17bb215bb62da`
+- tag ref：`refs/tags/v1.2` 已更新到 `aa93b3e2a7addbe0c72281ed6fa17bb215bb62da`。
+- Release notes：已覆盖中文图表文案、监控 worker 说明、单实例启动保护、本地安装更新验证 PASS、SHA256 和已知边界。
+- Release assets：已删除旧的两个 installer 资产并重新上传。
+  - `FrameScopeMonitor-Setup.exe`：uploaded，大小 `2706432` bytes。
+  - `FrameScopeMonitor-Full-Setup.exe`：uploaded，大小 `201885696` bytes。
+
+## 未执行事项
+
+- 未启动真实游戏。
+- 未测试 BF6。
