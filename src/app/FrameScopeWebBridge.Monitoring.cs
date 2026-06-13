@@ -63,14 +63,14 @@ internal sealed partial class FrameScopeWebBridge
                 { "requestId", request.RequestId },
                 { "status", inFlightStatus },
                 { "action", action },
-                { "message", action + " is already running." }
+                { "message", HostActionMessage(action, "in_flight") }
             });
             return OkResponse(request.RequestId, new Dictionary<string, object>
             {
                 { "status", "in_flight" },
                 { "requestId", request.RequestId },
                 { "action", action },
-                { "message", action + " is already running." }
+                { "message", HostActionMessage(action, "in_flight") }
             });
         }
 
@@ -83,7 +83,7 @@ internal sealed partial class FrameScopeWebBridge
                     { "requestId", request.RequestId },
                     { "status", runningStatus },
                     { "action", action },
-                    { "message", action + " is running." },
+                    { "message", HostActionMessage(action, "running") },
                     { "percent", completionEventType == "event.reportProgress" ? 5 : 0 }
                 });
 
@@ -130,8 +130,29 @@ internal sealed partial class FrameScopeWebBridge
             { "status", "accepted" },
             { "requestId", request.RequestId },
             { "action", action },
-            { "message", action + " accepted. Completion will be pushed as an event." }
+            { "message", HostActionMessage(action, "accepted") }
         });
+    }
+
+    private static string HostActionMessage(string action, string phase)
+    {
+        if (string.Equals(action, "monitor.start", StringComparison.Ordinal))
+        {
+            if (string.Equals(phase, "accepted", StringComparison.Ordinal)) return "启动请求已接受，正在由本机程序启动监控 worker。";
+            if (string.Equals(phase, "running", StringComparison.Ordinal)) return "正在启动监控 worker。";
+            return "监控操作正在执行。";
+        }
+
+        if (string.Equals(action, "monitor.stop", StringComparison.Ordinal))
+        {
+            if (string.Equals(phase, "accepted", StringComparison.Ordinal)) return "停止请求已接受，正在清理监控 worker。";
+            if (string.Equals(phase, "running", StringComparison.Ordinal)) return "正在停止监控 worker。";
+            return "监控操作正在执行。";
+        }
+
+        if (string.Equals(phase, "accepted", StringComparison.Ordinal)) return action + " accepted. Completion will be pushed as an event.";
+        if (string.Equals(phase, "running", StringComparison.Ordinal)) return action + " is running.";
+        return action + " is already running.";
     }
 
     private IFrameScopeWebBridgeHostAdapter RequireHostAdapter()

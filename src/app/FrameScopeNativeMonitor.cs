@@ -55,32 +55,47 @@ internal static partial class FrameScopeNativeMonitor
             return;
         }
 
+        Mutex interactiveUiMutex = null;
+        if (IsInteractiveUiLaunch(args) && !TryAcquireInteractiveUiSingleInstanceLock(out interactiveUiMutex))
+        {
+            NotifyInteractiveUiAlreadyRunning();
+            Environment.Exit(0);
+            return;
+        }
+
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
-        if (HasArg(args, "--webview2-runtime-self-test"))
+        try
         {
-            FrameScopeWebView2RuntimeStatus runtimeStatus = FrameScopeWebView2Runtime.GetRuntimeStatus();
-            try { File.WriteAllText(GetArgValue(args, "--webview2-runtime-evidence", ""), runtimeStatus.IsAvailable ? "available:" + runtimeStatus.Version : "missing:" + FrameScopeWebView2Runtime.MissingRuntimeMessage); }
-            catch { }
-            Environment.Exit(runtimeStatus.IsAvailable ? 0 : 3);
+            if (HasArg(args, "--webview2-runtime-self-test"))
+            {
+                FrameScopeWebView2RuntimeStatus runtimeStatus = FrameScopeWebView2Runtime.GetRuntimeStatus();
+                try { File.WriteAllText(GetArgValue(args, "--webview2-runtime-evidence", ""), runtimeStatus.IsAvailable ? "available:" + runtimeStatus.Version : "missing:" + FrameScopeWebView2Runtime.MissingRuntimeMessage); }
+                catch { }
+                Environment.Exit(runtimeStatus.IsAvailable ? 0 : 3);
+                return;
+            }
+
+            FrameScopeWebView2RuntimeStatus webView2RuntimeStatus = FrameScopeWebView2Runtime.GetRuntimeStatus();
+            if (!webView2RuntimeStatus.IsAvailable)
+            {
+                MessageBox.Show(
+                    FrameScopeWebView2Runtime.MissingRuntimeMessage,
+                    "FrameScope Monitor",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                Environment.Exit(3);
+                return;
+            }
+
+            Environment.Exit(RunWebUi(args));
             return;
         }
-
-        FrameScopeWebView2RuntimeStatus webView2RuntimeStatus = FrameScopeWebView2Runtime.GetRuntimeStatus();
-        if (!webView2RuntimeStatus.IsAvailable)
+        finally
         {
-            MessageBox.Show(
-                FrameScopeWebView2Runtime.MissingRuntimeMessage,
-                "FrameScope Monitor",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-            Environment.Exit(3);
-            return;
+            ReleaseInteractiveUiSingleInstanceLock(interactiveUiMutex);
         }
-
-        Environment.Exit(RunWebUi(args));
-        return;
     }
 
     private static FrameScopeConfig LoadConfig()

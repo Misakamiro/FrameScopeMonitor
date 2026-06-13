@@ -123,6 +123,13 @@
   font-weight: 800;
 }
 
+.monitor-panel__worker-note {
+  padding: var(--fs-space-2) var(--fs-space-3);
+  border: 1px solid var(--fs-border-subtle);
+  border-radius: var(--fs-row-radius);
+  background: var(--fs-tint-primary-soft);
+}
+
 .next-step-panel {
   display: grid;
   gap: var(--fs-space-4);

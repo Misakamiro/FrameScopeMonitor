@@ -24,6 +24,9 @@ internal sealed partial class FrameScopeWebBridge
                 {
                     { "running", watcherRunning },
                     { "pid", watcherPid },
+                    { "processName", "FrameScopeMonitor.exe" },
+                    { "processRole", "watcher-worker" },
+                    { "workerExplanation", "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。" },
                     { "statePath", options.StatePath },
                     { "completedRuns", ReadInt(watcherState, "CompletedRuns", 0) },
                     { "lastReport", ReadString(watcherState, "LastReport") },

@@ -239,7 +239,7 @@ internal static partial class FrameScopeReportGenerator
                 AddCpuCorePoint(points, pointTime, coreKey, volts.Value);
                 cores.Add(coreKey);
                 string sensorName = Get(row, h, "SensorName");
-                names[coreKey] = String.IsNullOrWhiteSpace(sensorName) ? CpuVidDisplayName(coreKey) : sensorName;
+                names[coreKey] = CpuVidDisplayName(sensorName, coreKey);
                 rowCount++;
                 if (String.IsNullOrWhiteSpace(source)) source = Get(row, h, "Source");
             }
@@ -291,7 +291,7 @@ internal static partial class FrameScopeReportGenerator
         }
         vid["providerKind"] = GetStringDiagnostic(metadata, "cpuVidProviderKind", "");
         vid["providerRequested"] = GetStringDiagnostic(metadata, "cpuVidProviderRequested", "");
-        vid["note"] = GetStringDiagnostic(metadata, "cpuVidNote", "VID \u662f CPU \u8bf7\u6c42/\u76ee\u6807\u7535\u538b\uff0c\u4e0d\u662f\u771f\u5b9e per-core Vcore\u3002");
+        vid["note"] = LocalizeCpuVidNote(GetStringDiagnostic(metadata, "cpuVidNote", ""));
         vid["sampleIntervalMs"] = GetIntDiagnostic(metadata, "cpuVidSampleIntervalMs", 0);
         vid["samplesCsv"] = GetStringDiagnostic(metadata, "cpuVidSamplesCsv", "");
         if (!vid.ContainsKey("sampleCount"))
@@ -337,7 +337,7 @@ internal static partial class FrameScopeReportGenerator
             series.Add(new Dictionary<string, object>
             {
                 { "key", "cpu-core:" + core },
-                { "name", "CPU " + core },
+                { "name", "CPU 核心 " + core },
                 { "color", Colors[colorIndex % Colors.Length] },
                 { "data", data }
             });
@@ -416,7 +416,7 @@ internal static partial class FrameScopeReportGenerator
                     new Dictionary<string, object>
                     {
                         { "key", "cpu-voltage:vcore" },
-                        { "name", "CPU Voltage / Vcore" },
+                        { "name", "CPU 电压 / Vcore" },
                         { "color", "#009dff" },
                         { "data", data }
                     }
@@ -504,15 +504,30 @@ internal static partial class FrameScopeReportGenerator
 
     private static string CpuVidDisplayName(string core)
     {
-        if (String.IsNullOrWhiteSpace(core)) return "Core VID";
+        if (String.IsNullOrWhiteSpace(core)) return "核心 VID";
         string value = core;
         if (value.StartsWith("core:", StringComparison.OrdinalIgnoreCase)) value = value.Substring(5);
         int parsed;
         if (Int32.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
         {
-            return "Core #" + (parsed + 1).ToString(CultureInfo.InvariantCulture) + " VID";
+            return "核心 #" + (parsed + 1).ToString(CultureInfo.InvariantCulture) + " VID";
         }
-        return "Core " + core + " VID";
+        return "核心 " + core + " VID";
+    }
+
+    private static string CpuVidDisplayName(string sensorName, string core)
+    {
+        string name = (sensorName ?? "").Trim();
+        if (String.IsNullOrWhiteSpace(name)) return CpuVidDisplayName(core);
+        if (name.StartsWith("CPU Core", StringComparison.OrdinalIgnoreCase))
+        {
+            return "CPU 核心" + name.Substring("CPU Core".Length);
+        }
+        if (name.StartsWith("Core", StringComparison.OrdinalIgnoreCase))
+        {
+            return "核心" + name.Substring("Core".Length);
+        }
+        return name;
     }
 
     private static string CpuCoreSortKey(string core)
@@ -664,7 +679,7 @@ internal static partial class FrameScopeReportGenerator
         if (metadata != null && metadata.TryGetValue("cpuVidReason", out reason) && reason != null)
         {
             string text = Convert.ToString(reason, CultureInfo.InvariantCulture);
-            if (!String.IsNullOrWhiteSpace(text)) return text;
+            if (!String.IsNullOrWhiteSpace(text)) return LocalizeCpuVidReason(text);
         }
         return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
     }
@@ -675,8 +690,54 @@ internal static partial class FrameScopeReportGenerator
         if (metadata != null && metadata.TryGetValue("cpuVoltageReason", out reason) && reason != null)
         {
             string text = Convert.ToString(reason, CultureInfo.InvariantCulture);
-            if (!String.IsNullOrWhiteSpace(text)) return text;
+            if (!String.IsNullOrWhiteSpace(text)) return LocalizeCpuVoltageReason(text);
         }
-        return "No explicit CPU Vcore/CPU Voltage sensor was recorded; VID/SOC/Package/VBAT/VIN are not used as CPU Voltage.";
+        return "未记录明确的 CPU Vcore/CPU Voltage 传感器；VID/SOC/Package/VBAT/VIN 不会作为 CPU 电压使用。";
+    }
+
+    private static string LocalizeCpuVoltageReason(string reason)
+    {
+        string text = reason ?? "";
+        if (String.IsNullOrWhiteSpace(text)) return "未记录明确的 CPU Vcore/CPU Voltage 传感器；VID/SOC/Package/VBAT/VIN 不会作为 CPU 电压使用。";
+        if (text.IndexOf("No explicit CPU Vcore/CPU Voltage sensor was recorded", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "未记录明确的 CPU Vcore/CPU Voltage 传感器；VID/SOC/Package/VBAT/VIN 不会作为 CPU 电压使用。";
+        }
+        if (text.IndexOf("CPU Voltage / Vcore telemetry status was not recorded", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("CPU Voltage / Vcore telemetry was not recorded in this status file", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "未记录 CPU 电压 / Vcore 遥测状态；VID 不会作为 Vcore 使用。";
+        }
+        if (text.IndexOf("CPU Voltage / Vcore telemetry is disabled", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "CPU 电压 / Vcore 遥测已禁用。";
+        }
+        return text;
+    }
+
+    private static string LocalizeCpuVidReason(string reason)
+    {
+        string text = reason ?? "";
+        if (String.IsNullOrWhiteSpace(text)) return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
+        if (text.IndexOf("No Core VID sensors", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("CPU Core VID telemetry provider is missing", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("CPU Core VID telemetry is disabled", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("CPU Core VID telemetry status was not recorded", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
+        }
+        return text;
+    }
+
+    private static string LocalizeCpuVidNote(string note)
+    {
+        string text = note ?? "";
+        if (String.IsNullOrWhiteSpace(text) ||
+            text.IndexOf("VID is CPU request/target voltage", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("VID \u662f CPU \u8bf7\u6c42/\u76ee\u6807\u7535\u538b", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "VID 是 CPU 每核心请求/目标电压，不是真实 Vcore；它与 CPU 电压 / Vcore 分开显示。";
+        }
+        return text;
     }
 }

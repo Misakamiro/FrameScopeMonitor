@@ -94,6 +94,15 @@ Invoke-TestBuild `
     )
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeSingleInstanceLaunchGuardTests.exe' `
+    -References @('System.Windows.Forms.dll') `
+    -MainType 'FrameScopeSingleInstanceLaunchGuardTests' `
+    -Sources @(
+        'src\app\FrameScopeNativeMonitor.SingleInstance.cs',
+        'tests\FrameScopeSingleInstanceLaunchGuardTests.cs'
+    )
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeReportManifestTests.exe' `
     -References @('System.Web.Extensions.dll', 'System.Management.dll', 'Microsoft.VisualBasic.dll') `
     -MainType 'FrameScopeReportManifestTests' `

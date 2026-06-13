@@ -126,6 +126,7 @@ try {
         .\src\app\FrameScopeWebHostLifecycle.cs `
         .\src\app\FrameScopeAppIcon.cs `
         .\src\app\FrameScopeNativeMonitor.cs `
+        .\src\app\FrameScopeNativeMonitor.SingleInstance.cs `
         .\src\app\FrameScopeNativeMonitor.WebHost.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.Models.cs `

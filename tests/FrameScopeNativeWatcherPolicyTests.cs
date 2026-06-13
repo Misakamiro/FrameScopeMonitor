@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 public static class FrameScopeNativeWatcherPolicyTests
 {
@@ -10,6 +11,7 @@ public static class FrameScopeNativeWatcherPolicyTests
         {
             WatcherLoopUsesFixedInternalPollInterval();
             WatcherStartArgumentsKeepSamplerIntervalsSeparateFromPollInterval();
+            WorkerProcessRoleIsVisibleInSources();
             Console.WriteLine("FrameScopeNativeWatcherPolicyTests: PASS");
             return 0;
         }
@@ -53,11 +55,34 @@ public static class FrameScopeNativeWatcherPolicyTests
         AssertDoesNotContain(monitorStartArgumentsSource, "config.PollIntervalMs", "sampler arguments should not read legacy PollIntervalMs");
     }
 
+    private static void WorkerProcessRoleIsVisibleInSources()
+    {
+        string watcherSource = ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
+        string webHostSource = ReadSource("src", "app", "FrameScopeNativeMonitor.WebHost.cs");
+        string cleanupSource = ReadSource("src", "app", "FrameScopeNativeMonitor.ProcessCleanup.cs");
+
+        AssertContains(webHostSource, "FileName = Application.ExecutablePath", "UI start should launch the same executable as watcher worker");
+        AssertContains(webHostSource, "--watcher --config", "UI start should mark the worker with watcher mode");
+        AssertContains(webHostSource, "monitor-worker-start role=watcher-worker", "start log should name watcher worker role");
+        AssertContains(webHostSource, "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程", "start message should explain the Task Manager child process");
+
+        AssertContains(watcherSource, "FileName = Application.ExecutablePath", "watcher should launch the same executable for monitor-session worker");
+        AssertContains(watcherSource, "\" --MonitorProcessRole monitor-session-worker\"", "monitor-session launch should carry a readable worker role");
+        AssertContains(watcherSource, "monitor-worker-start role=monitor-session-worker", "watcher log should name monitor-session worker role");
+
+        AssertContains(cleanupSource, "commandLower.Contains(\"--watcher\") || commandLower.Contains(\"--monitor-session\")", "stop policy should include watcher and monitor-session workers");
+    }
+
     private static string ReadWatcherSource()
     {
+        return ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
+    }
+
+    private static string ReadSource(params string[] parts)
+    {
         string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
-        string path = Path.Combine(root, "src", "app", "FrameScopeNativeMonitor.Watcher.cs");
-        if (!File.Exists(path)) throw new Exception("Watcher source not found: " + path);
+        string path = Path.Combine(new[] { root }.Concat(parts).ToArray());
+        if (!File.Exists(path)) throw new Exception("Source not found: " + path);
         return File.ReadAllText(path);
     }
 

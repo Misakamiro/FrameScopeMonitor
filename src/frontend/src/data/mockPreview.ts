@@ -590,7 +590,7 @@ export function createMockBridgeAdapter(): FrameScopeBridgeAdapter {
               requestId,
               status: monitorRunning ? "monitor.started" : "monitor.stopped",
               action: type,
-              message: monitorRunning ? "预览中的监控已启动。" : "预览中的监控已停止。",
+              message: monitorRunning ? "预览中的监控 worker 已启动。" : "预览中的监控 worker 已停止。",
               pid: monitorRunning ? 4242 : 0,
             } satisfies StatusEventPayload,
             sentAt: new Date().toISOString(),
@@ -624,6 +624,9 @@ function buildMockSnapshot(config: FrameScopeConfig): StateSnapshotPayload {
     watcher: {
       running: false,
       pid: 0,
+      processName: "FrameScopeMonitor.exe",
+      processRole: "watcher-worker",
+      workerExplanation: "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。",
       statePath: "mock://framescope-watcher-state.json",
       completedRuns: reportPreview.filter((report) => report.status === "ready").length,
       lastReport: reportPreview[0]?.path ?? "",

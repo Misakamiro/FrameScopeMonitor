@@ -82,11 +82,14 @@ internal static partial class FrameScopeNativeMonitor
                 {
                     return FrameScopeWebBridgeHostResult.Success(
                         "monitor.started",
-                        "FrameScope watcher is already running.",
+                        "监控 worker 已在运行。任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。",
                         new Dictionary<string, object>
                         {
                             { "pid", existingPid },
-                            { "alreadyRunning", true }
+                            { "alreadyRunning", true },
+                            { "processRole", "watcher-worker" },
+                            { "workerProcessName", "FrameScopeMonitor.exe" },
+                            { "workerExplanation", "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。" }
                         });
                 }
 
@@ -111,14 +114,17 @@ internal static partial class FrameScopeNativeMonitor
                     DisposeProcess(process);
                 }
 
-                WriteFrameScopeLog("web-bridge-monitor-started pid=" + pid.ToString(CultureInfo.InvariantCulture));
+                WriteFrameScopeLog("monitor-worker-start role=watcher-worker process=FrameScopeMonitor.exe pid=" + pid.ToString(CultureInfo.InvariantCulture) + " explanation=TaskManagerChildProcessExpected");
                 return FrameScopeWebBridgeHostResult.Success(
                     "monitor.started",
-                    pid > 0 ? "FrameScope watcher started." : "FrameScope watcher start was requested.",
+                    pid > 0 ? "监控 worker 已启动。任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。" : "监控 worker 启动请求已发送。任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。",
                     new Dictionary<string, object>
                     {
                         { "pid", pid },
-                        { "alreadyRunning", false }
+                        { "alreadyRunning", false },
+                        { "processRole", "watcher-worker" },
+                        { "workerProcessName", "FrameScopeMonitor.exe" },
+                        { "workerExplanation", "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。" }
                     });
             }
             catch (Exception ex)
@@ -146,11 +152,14 @@ internal static partial class FrameScopeNativeMonitor
                 WriteFrameScopeLog("web-bridge-monitor-stopped before=" + before.ToString(CultureInfo.InvariantCulture) + " after=" + after.ToString(CultureInfo.InvariantCulture));
                 return FrameScopeWebBridgeHostResult.Success(
                     "monitor.stopped",
-                    before == 0 ? "No FrameScope watcher was running." : "FrameScope watcher stopped.",
+                    before == 0 ? "未发现正在运行的监控 worker。" : "监控 worker 已停止，watcher / monitor-session 子进程已清理。",
                     new Dictionary<string, object>
                     {
                         { "stoppedProcessCount", before },
-                        { "remainingProcessCount", after }
+                        { "remainingProcessCount", after },
+                        { "processRole", "watcher-worker" },
+                        { "workerProcessName", "FrameScopeMonitor.exe" },
+                        { "workerExplanation", "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。" }
                     });
             }
             catch (Exception ex)

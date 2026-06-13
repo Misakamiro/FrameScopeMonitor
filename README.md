@@ -1,5 +1,16 @@
 # FrameScope Monitor
 
+## 2026-06-13 用户可见更新
+
+- 报告和图表界面完成中文化：报告/图表 tab、标题、tooltip、summary、legend、空状态、参考线和 Top 进程等用户可见文案现在使用中文表达。
+- 任务管理器中出现多个 `FrameScopeMonitor.exe` 属于正常架构：其中一部分是 watcher / monitor-session worker，用来监听目标进程、采样和生成报告，不代表重复打开了多个软件主窗口。
+- 普通 UI 启动加入单实例保护：软件已经运行时，再次点击桌面快捷方式或开始菜单入口不会打开第二个窗口，而是提示“FrameScope Monitor 已在运行，请勿重复打开。”，随后第二个进程退出。
+- worker / diagnostic 启动不会被普通 UI 单实例锁误挡，后台监控流程仍可正常创建需要的工作进程。
+- `CPU Voltage / Vcore` 与 `CPU Core VID` 继续分离展示：真实整体 Vcore/CPU Voltage 不会被 VID、SOC、Package、VBAT、VIN 或编号核心电压冒充；CPU Core VID 仍表示 CPU 请求/目标电压。
+- FPS 图表展示仍使用 `bucketMs=1000` 的 1 秒聚合；平均 FPS、1% Low、0.1% Low 等统计语义继续来自 raw PresentMon 数据，不改写原始统计口径。
+- 本轮已完成本地 Full Setup 更新安装验证，结论 PASS，用户数据目录保留。
+- 已知边界：本轮没有启动真实游戏，没有进行 BF6 真实游戏测试。
+
 FrameScope Monitor 是一个面向 Windows 游戏玩家的本地游戏性能排查工具。它会在游戏运行时记录帧时间、FPS、后台进程占用和系统资源变化，帮助你判断卡顿、掉帧、加载异常或后台程序抢占资源的原因。
 
 当前发布版本为 v1.1.3，WebView2 React UI 是默认界面。旧 WinForms 主界面已移除，安装后直接启动软件就会进入新界面。

@@ -15,7 +15,7 @@ internal static partial class FrameScopeReportGenerator
     {
         return @"  <main class='main'>
     <div class='topbar'><div class='game'><div class='game-icon' id='gameIcon'>FS</div><div><div class='game-name' id='gameName'>-</div><div class='meta'><span id='runStart'>-</span><span id='runEnd'>-</span><span id='runDuration'>-</span></div></div></div>
-      <div class='tabs'><button class='tab active' data-view='fps'>帧率</button><button class='tab' data-view='cpuCore'>CPU 核心频率</button><button class='tab' data-view='cpuVoltage'>CPU Voltage / Vcore</button><button class='tab' data-view='cpuVid'>CPU Core VID</button><button class='tab' data-view='perf'>性能图表</button><button class='tab' data-view='system'>系统占用</button><button class='tab' data-view='process'>后台进程</button><button class='tab' data-view='io'>IO/温度</button></div>
+      <div class='tabs'><button class='tab active' data-view='fps'>帧率</button><button class='tab' data-view='cpuCore'>CPU 核心频率</button><button class='tab' data-view='cpuVoltage'>CPU 电压 / Vcore</button><button class='tab' data-view='cpuVid'>CPU 核心 VID（请求电压）</button><button class='tab' data-view='perf'>性能图表</button><button class='tab' data-view='system'>系统占用</button><button class='tab' data-view='process'>后台进程</button><button class='tab' data-view='io'>IO/温度</button></div>
     </div>
     <div class='title'><h2 id='viewTitle'>帧率波动</h2><span id='viewNote'>完整数据保留在本地 data.js，图表按宽度自适应绘制。</span></div>
     <div class='alert' id='captureAlert'></div>

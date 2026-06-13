@@ -98,6 +98,15 @@ export function OverviewPage({ bridgeState }: OverviewPageProps) {
             <strong>{formatEnabledTargets(enabledTargets, snapshot.data?.config.enabledTargetCount ?? 0)}</strong>
           </div>
 
+          {(monitorRunning || bridgeState.monitorAction.status === "loading") ? (
+            <p
+              className="monitor-panel__worker-note"
+              title="任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。"
+            >
+              任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程；这是监控 worker，不是重复打开软件。
+            </p>
+          ) : null}
+
           <div className="monitor-panel__actions">
             <Button
               icon={primaryAction.icon}
@@ -287,7 +296,7 @@ function monitorStatusCopy(bridgeState: FrameScopeBridgeViewState, running: bool
     return bridgeState.monitorAction.error || "监控操作失败。请检查权限或目标进程后重试。";
   }
   if (bridgeState.monitorAction.status === "loading") return "操作已发送，正在等待本机程序确认。";
-  if (running) return "正在记录帧表现和系统占用。";
+  if (running) return "监控 worker 正在记录帧表现和系统占用。";
   if (enabledTargetCount > 0) return `已启用 ${enabledTargetCount} 个目标，可以开始监控。`;
   return "先启用至少一个游戏进程，才能开始记录。";
 }

@@ -98,6 +98,9 @@ export interface StateSnapshotPayload {
   watcher: {
     running: boolean;
     pid: number;
+    processName: string;
+    processRole: string;
+    workerExplanation: string;
     statePath: string;
     completedRuns: number;
     lastReport: string;

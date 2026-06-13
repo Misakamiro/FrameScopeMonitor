@@ -245,7 +245,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       setMonitorRuntime({
         running: data.watcher.running,
         pid: data.watcher.pid,
-        message: data.watcher.running ? "监控服务正在运行。" : "监控服务未启动。",
+        message: data.watcher.running ? "监控 worker 正在运行。" : "监控 worker 未启动。",
         updatedAt: data.generatedAt || now,
       });
 
@@ -524,7 +524,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     clearMonitorEventTimeout();
     setMonitorAction({
       status: "loading",
-      message: "正在启动监控。",
+      message: "正在启动监控 worker。",
       error: "",
       requestId: "",
       updatedAt: new Date().toISOString(),
@@ -545,7 +545,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setMonitorAction({
           status: "error",
           message: "启动监控超时。",
-          error: "等待监控启动状态超时。",
+          error: "等待监控 worker 启动状态超时。",
           requestId: accepted.requestId,
           updatedAt: new Date().toISOString(),
         });
@@ -567,7 +567,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     clearMonitorEventTimeout();
     setMonitorAction({
       status: "loading",
-      message: "正在停止监控。",
+      message: "正在停止监控 worker。",
       error: "",
       requestId: "",
       updatedAt: new Date().toISOString(),
@@ -588,7 +588,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setMonitorAction({
           status: "error",
           message: "停止监控超时。",
-          error: "等待监控停止状态超时。",
+          error: "等待监控 worker 停止状态超时。",
           requestId: accepted.requestId,
           updatedAt: new Date().toISOString(),
         });
@@ -850,7 +850,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
         setMonitorAction({
           status: "success",
-          message: payload.message || "监控已启动。",
+          message: payload.message || "监控 worker 已启动。",
           error: "",
           requestId: latestMonitorRequestId.current,
           updatedAt: new Date().toISOString(),
@@ -858,7 +858,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setMonitorRuntime({
           running: true,
           pid: readNumericPayload(payload, "pid"),
-          message: payload.message || "监控已启动。",
+          message: payload.message || "监控 worker 已启动。",
           updatedAt: new Date().toISOString(),
         });
         scheduleImmediateSnapshotRefresh();
@@ -869,7 +869,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
         setMonitorAction({
           status: "success",
-          message: payload.message || "监控已停止。",
+          message: payload.message || "监控 worker 已停止。",
           error: "",
           requestId: latestMonitorRequestId.current,
           updatedAt: new Date().toISOString(),
@@ -877,7 +877,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         setMonitorRuntime({
           running: false,
           pid: 0,
-          message: payload.message || "监控已停止。",
+          message: payload.message || "监控 worker 已停止。",
           updatedAt: new Date().toISOString(),
         });
         scheduleImmediateSnapshotRefresh();

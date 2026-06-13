@@ -226,6 +226,7 @@ internal static partial class FrameScopeNativeMonitor
             " --EnableCpuVidTelemetry " + (enableCpuVidTelemetry ? "true" : "false") +
             " --CpuVidSampleIntervalMs " + cpuVidSampleMs.ToString(CultureInfo.InvariantCulture) +
             " --CpuVidProvider " + Quote(cpuVidProvider) +
+            " --MonitorProcessRole monitor-session-worker" +
             " --EnableVerboseLogs " + (FrameScopeLoggingPolicy.IsVerboseEnabled(config) ? "true" : "false") +
             " --EnablePerformanceDiagnosticsLogs " + (FrameScopeLoggingPolicy.IsPerformanceDiagnosticsEnabled(config) ? "true" : "false") +
             " --ControlPollIntervalMs 3000" +
@@ -259,6 +260,7 @@ internal static partial class FrameScopeNativeMonitor
             if (process == null) return null;
             try { process.PriorityClass = ProcessPriorityClass.Idle; }
             catch { }
+            WriteFrameScopeLog("monitor-worker-start role=monitor-session-worker process=FrameScopeMonitor.exe game=" + target.Name + " pid=" + process.Id.ToString(CultureInfo.InvariantCulture));
             return new ActiveMonitor
             {
                 Target = target,
@@ -322,6 +324,9 @@ internal static partial class FrameScopeNativeMonitor
             Key = GetTargetBaseName(item.Target.ProcessName).ToLowerInvariant(),
             Game = item.Target.Name,
             ProcessName = item.Target.ProcessName,
+            WorkerRole = "monitor-session-worker",
+            WorkerProcessName = "FrameScopeMonitor.exe",
+            WorkerExplanation = "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。",
             MonitorPid = MonitorHasExited(item) ? (int?)null : item.MonitorPid,
             RunRoot = item.RunRoot
         }).ToArray();

@@ -960,8 +960,9 @@ public static class FrameScopeReportManifestTests
             {
                 Dictionary<string, object> item = series[core] as Dictionary<string, object>;
                 if (item == null) throw new Exception(scenario + " series item " + core.ToString(CultureInfo.InvariantCulture) + " missing");
-                string expectedName = oneBasedHashNames ? "Core #" + (core + 1).ToString(CultureInfo.InvariantCulture) + " VID" : "Core " + core.ToString(CultureInfo.InvariantCulture) + " VID";
-                AssertEqual(expectedName, Convert.ToString(item["name"]), scenario + " should preserve raw SensorName for core " + core.ToString(CultureInfo.InvariantCulture));
+                string expectedName = oneBasedHashNames ? "\u6838\u5fc3 #" + (core + 1).ToString(CultureInfo.InvariantCulture) + " VID" : "\u6838\u5fc3 " + core.ToString(CultureInfo.InvariantCulture) + " VID";
+                AssertEqual(expectedName, Convert.ToString(item["name"]), scenario + " should localize the visible VID series name for core " + core.ToString(CultureInfo.InvariantCulture));
+                AssertTrue(Convert.ToString(item["name"]).IndexOf("Core", StringComparison.OrdinalIgnoreCase) < 0, scenario + " visible VID series name should not remain English");
                 AssertEqual("cpu-vid:" + core.ToString(CultureInfo.InvariantCulture), Convert.ToString(item["key"]), scenario + " series key for core " + core.ToString(CultureInfo.InvariantCulture));
                 System.Collections.ArrayList values = item["data"] as System.Collections.ArrayList;
                 if (values == null) throw new Exception(scenario + " series data missing for core " + core.ToString(CultureInfo.InvariantCulture));

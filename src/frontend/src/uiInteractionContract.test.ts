@@ -102,6 +102,14 @@ describe("FrameScope UI interaction contract", () => {
     expect(overviewPageSource).toMatch(/await bridgeState\.startMonitor\(\)/);
   });
 
+  it("explains the FrameScopeMonitor worker process shown in Task Manager", () => {
+    expect(overviewPageSource).toContain("monitor-panel__worker-note");
+    expect(overviewPageSource).toContain("任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程");
+    expect(overviewPageSource).toContain("这是监控 worker，不是重复打开软件");
+    expect(bridgeStateSource).toContain("监控 worker 已启动");
+    expect(mockPreviewSource).toContain("监控 worker 已启动");
+  });
+
   it("keeps report smoke action indexes stable after live report refreshes reorder the list", () => {
     expect(reportsPageSource).toContain("reportSmokeIndexByIdRef");
     expect(reportsPageSource).toContain("smokeIndexByReportId");

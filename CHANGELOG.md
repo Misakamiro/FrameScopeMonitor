@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 2026-06-13 - FrameScope Monitor 发布窗口
+
+### 用户可见变化
+
+- 报告和图表用户界面完成中文化，覆盖报告/图表 tab、标题、tooltip、summary、legend、空状态、参考线和 Top 进程等用户可见文案。
+- 监控 worker 说明已补齐：任务管理器中多个 `FrameScopeMonitor.exe` 是 watcher / monitor-session worker 架构的正常表现，不代表重复打开软件。
+- 普通 UI 加入单实例启动保护：软件已运行时再次点击快捷方式不会打开第二窗口，会提示“FrameScope Monitor 已在运行，请勿重复打开。”并退出第二进程。
+- worker / diagnostic 启动路径继续绕过普通 UI 单实例锁，监控和报告工作进程不会被误挡。
+- `CPU Voltage / Vcore` 和 `CPU Core VID` 继续分离，VID 仍只表示 CPU 请求/目标电压，不冒充真实 per-core Vcore。
+- FPS 图表仍保持 `bucketMs=1000` 的展示聚合，平均 FPS、1% Low、0.1% Low 等统计继续来自 raw PresentMon 数据口径。
+
+### 安装包和验证
+
+- 已同步构建产物并确认 `dist\FrameScopeMonitor-Setup.exe`、`dist\FrameScopeMonitor-Full-Setup.exe` 和 payload 主程序 SHA256 与发布窗口记录一致。
+- 本地 `FrameScopeMonitor-Full-Setup.exe` 更新安装验证 PASS，安装后用户数据目录保留。
+- 发布前最小验证 PASS：前端 typecheck/Vitest/build、原生测试重建、单实例保护、报告 manifest、monitor child process、process cleanup、chart sampling、`git diff --check` 和残留进程检查均通过。
+
+### 已知边界
+
+- 本轮没有启动真实游戏。
+- 本轮没有进行 BF6 真实游戏测试。
+
 ## 2026-06-03 - FrameScope Monitor v1.1.3 发布收尾
 
 ### 新增功能
