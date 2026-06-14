@@ -477,7 +477,7 @@ internal static partial class FrameScopeSystemSampler
             {
                 if (sample == null || !sample.VidV.HasValue) continue;
                 double vid = sample.VidV.Value;
-                if (vid <= 0.2 || vid >= 5 || IsImplausibleLowAmdLibreHardwareMonitorVid(sample.SensorName, sample.SensorIdentifier, vid))
+                if (vid <= 0.2 || vid >= 5 || IsUnreliableAmdLibreHardwareMonitorCoreVidSource(sample.SensorName, sample.SensorIdentifier))
                 {
                     rejectedVidRowCount++;
                     continue;
@@ -922,9 +922,8 @@ internal static partial class FrameScopeSystemSampler
         return text.IndexOf("vid", StringComparison.Ordinal) >= 0;
     }
 
-    private static bool IsImplausibleLowAmdLibreHardwareMonitorVid(string sensorName, string sensorIdentifier, double value)
+    private static bool IsUnreliableAmdLibreHardwareMonitorCoreVidSource(string sensorName, string sensorIdentifier)
     {
-        if (value >= 0.7) return false;
         string text = NormalizeCpuVoltageSensorText((sensorName ?? "") + " " + (sensorIdentifier ?? ""));
         return text.IndexOf("core", StringComparison.Ordinal) >= 0 &&
                text.IndexOf("vid", StringComparison.Ordinal) >= 0 &&
@@ -943,7 +942,7 @@ internal static partial class FrameScopeSystemSampler
 
     private static string RejectedCpuVidReason()
     {
-        return "AMD LibreHardwareMonitor Core VID samples were rejected because values were in the implausible low 0.4-0.7V range; CPU Voltage / Vcore remains separate and is not used as VID.";
+        return "AMD LibreHardwareMonitor Core VID samples were rejected because this sensor source does not match the validated CPU Voltage / Vcore reading on this system; CPU Voltage / Vcore remains separate and is not used as VID.";
     }
 
     private static string NoCpuVcoreReason()

@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const net = require("net");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 function readArg(name, fallback = "") {
   const index = process.argv.indexOf(name);
@@ -11,6 +11,45 @@ function readArg(name, fallback = "") {
 
 function hasArg(name) {
   return process.argv.includes(name);
+}
+
+function stringifyJsonForPowerShell(value) {
+  return JSON.stringify(value, null, 2).replace(/[\u007f-\uffff]/g, (char) => {
+    const code = char.charCodeAt(0);
+    return `\\u${code.toString(16).padStart(4, "0")}`;
+  });
+}
+
+function quotePowerShellString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function assertPowerShellJsonEvidence(jsonPath, allowOverflow) {
+  const command = [
+    "$ErrorActionPreference='Stop'",
+    `$jsonPath=${quotePowerShellString(jsonPath)}`,
+    "$probe=Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json",
+    "if(-not $probe){ throw 'Probe JSON parsed to an empty value.' }",
+    "if($probe.allNoOverflow -ne $true -and -not $allowOverflow){ throw 'Probe JSON allNoOverflow is not true.' }",
+    "foreach($item in $probe.results){",
+    "  if(-not $item.screenshot){ throw ('Missing screenshot path for scenario: ' + $item.label) }",
+    "  $shot=Get-Item -LiteralPath $item.screenshot -ErrorAction Stop",
+    "  if($shot.Length -le 0){ throw ('Empty screenshot file: ' + $item.screenshot) }",
+    "}",
+    "$true",
+  ]
+    .join("; ")
+    .replace("$allowOverflow", allowOverflow ? "$true" : "$false");
+
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", command], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+
+  if (result.status !== 0) {
+    const message = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+    throw new Error(`PowerShell JSON evidence validation failed for ${jsonPath}: ${message}`);
+  }
 }
 
 function fileUrl(filePath) {
@@ -308,7 +347,8 @@ async function main() {
       results,
     };
     const jsonPath = path.join(outputDir, "report-overflow-probe.json");
-    fs.writeFileSync(jsonPath, JSON.stringify(summary, null, 2));
+    fs.writeFileSync(jsonPath, stringifyJsonForPowerShell(summary), "utf8");
+    assertPowerShellJsonEvidence(jsonPath, hasArg("--allow-overflow"));
     process.stdout.write(`${jsonPath}\n`);
 
     if (!summary.allNoOverflow && !hasArg("--allow-overflow")) process.exitCode = 2;

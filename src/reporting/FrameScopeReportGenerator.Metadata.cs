@@ -235,12 +235,18 @@ internal static partial class FrameScopeReportGenerator
         string voltageReason = voltageAvailable
             ? ""
             : GetStringDiagnostic(telemetryStatus, "CpuVoltageUnavailableReason", "No explicit CPU Vcore/CPU Voltage sensor was recorded; VID/SOC/Package/VBAT/VIN are not used as CPU Voltage.");
-        int vidSampleCount = Math.Max(vidCsvRows.Total, GetIntDiagnostic(telemetryStatus, "CpuVidSampleCount", 0));
+        bool vidCsvHasRows = vidCsvRows.Total > 0 || vidCsvRows.Rejected > 0;
+        int vidStatusSampleCount = GetIntDiagnostic(telemetryStatus, "CpuVidSampleCount", 0);
+        int vidStatusRejectedCount = GetIntDiagnostic(telemetryStatus, "CpuVidRejectedSampleCount", 0);
+        int vidSampleCount = vidCsvHasRows
+            ? vidCsvRows.Total
+            : (vidStatusRejectedCount > 0 && vidStatusSampleCount <= vidStatusRejectedCount ? 0 : vidStatusSampleCount);
         int vidCoreCount = Math.Max(vidCsvRows.CoreCount, GetIntDiagnostic(telemetryStatus, "CpuVidCoreCount", 0));
-        bool vidAvailable = vidSampleCount > 0 || GetBoolDiagnostic(telemetryStatus, "CpuVidAvailable", false);
+        bool vidAvailable = vidSampleCount > 0 || (!vidCsvHasRows && GetBoolDiagnostic(telemetryStatus, "CpuVidAvailable", false));
         string vidReason = vidAvailable
             ? ""
-            : GetStringDiagnostic(telemetryStatus, "CpuVidUnavailableReason", "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002");
+            : LocalizeCpuVidReason(GetStringDiagnostic(telemetryStatus, "CpuVidUnavailableReason", vidCsvRows.Rejected > 0 ? UnreliableAmdLibreHardwareMonitorCoreVidReason() : "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002"));
+        string vidStatus = CpuVidMetadataStatus(telemetryStatus, vidAvailable);
 
         return new Dictionary<string, object>
         {
@@ -263,7 +269,7 @@ internal static partial class FrameScopeReportGenerator
             { "cpuVoltageSampleIntervalMs", GetIntDiagnostic(telemetryStatus, "CpuVoltageSampleIntervalMs", 0) },
             { "cpuVoltageSamplesCsv", GetStringDiagnostic(telemetryStatus, "CpuVoltageSamplesCsv", Path.Combine(runDir, "cpu-voltage-samples.csv")) },
             { "cpuVidAvailable", vidAvailable },
-            { "cpuVidStatus", GetStringDiagnostic(telemetryStatus, "CpuVidStatus", vidAvailable ? "core-vid-available" : "unavailable") },
+            { "cpuVidStatus", vidStatus },
             { "cpuVidReason", vidReason },
             { "cpuVidNote", GetStringDiagnostic(telemetryStatus, "CpuVidNote", "VID \u662f CPU \u8bf7\u6c42/\u76ee\u6807\u7535\u538b\uff0c\u4e0d\u662f\u771f\u5b9e per-core Vcore\u3002") },
             { "cpuVidSource", GetStringDiagnostic(telemetryStatus, "CpuVidSource", GetStringDiagnostic(telemetryStatus, "CpuVidTelemetrySource", "")) },
@@ -274,6 +280,16 @@ internal static partial class FrameScopeReportGenerator
             { "cpuVidSampleIntervalMs", GetIntDiagnostic(telemetryStatus, "CpuVidSampleIntervalMs", 0) },
             { "cpuVidSamplesCsv", GetStringDiagnostic(telemetryStatus, "CpuVidSamplesCsv", Path.Combine(runDir, "cpu-vid-samples.csv")) }
         };
+    }
+
+    private static string CpuVidMetadataStatus(Dictionary<string, object> telemetryStatus, bool vidAvailable)
+    {
+        string status = GetStringDiagnostic(telemetryStatus, "CpuVidStatus", vidAvailable ? "core-vid-available" : "unavailable");
+        if (vidAvailable) return status;
+        return String.Equals(status, "core-vid-available", StringComparison.OrdinalIgnoreCase) ||
+               String.Equals(status, "vid-available", StringComparison.OrdinalIgnoreCase)
+            ? "unavailable"
+            : status;
     }
 
     private static Dictionary<string, object> LoadCpuCoreTelemetryStatusStrict(string runDir)
@@ -479,8 +495,10 @@ internal static partial class FrameScopeReportGenerator
                 List<string> row;
                 while ((row = table.ReadRow()) != null)
                 {
+                    string sensorName = Get(row, h, "SensorName");
+                    string sensorIdentifier = Get(row, h, "SensorIdentifier");
                     double? volts = String.IsNullOrWhiteSpace(vidHeader) ? null : ParseNullableDouble(Get(row, h, vidHeader));
-                    if (!volts.HasValue || volts.Value <= 0 || volts.Value >= 5) continue;
+                    if (!IsValidVoltageValue(volts)) continue;
                     string status = (Get(row, h, "Status") ?? "").Trim();
                     if (!String.IsNullOrWhiteSpace(status) &&
                         !String.Equals(status, "core-vid", StringComparison.OrdinalIgnoreCase) &&
@@ -491,6 +509,11 @@ internal static partial class FrameScopeReportGenerator
 
                     string key = CpuVidCoreKey(Get(row, h, "ProcessorGroup"), Get(row, h, "LogicalProcessor"), Get(row, h, "CoreIndex"));
                     if (String.IsNullOrWhiteSpace(key)) continue;
+                    if (IsUnreliableAmdLibreHardwareMonitorCoreVidSource(sensorName, sensorIdentifier))
+                    {
+                        result.Rejected++;
+                        continue;
+                    }
                     result.Total++;
                     cores.Add(key);
                 }

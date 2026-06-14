@@ -22,7 +22,7 @@ public static class FrameScopeReportManifestTests
         CpuVoltageSidecarOverridesStaleRunStatus();
         CpuVidTelemetryFlowsFromDedicatedCsvIntoManifestAndChartData();
         InvalidVoltageFrequencyAndVidSamplesBecomeNullGaps();
-        LowAmdLibreHardwareMonitorVidSamplesAreRejectedAsUnreliable();
+        AmdLibreHardwareMonitorCoreVidSamplesAreRejectedAsUnreliable();
         CpuVidZeroBasedAndOneBasedNamesRemainIndependentWhenValuesMatch();
         CpuVidOnlyDoesNotMakeCpuVoltagePerCoreAvailable();
         CpuPackageSocAndAggregateVcoreDoNotEnterCpuVidChart();
@@ -841,13 +841,13 @@ public static class FrameScopeReportManifestTests
             for (int core = 1; core <= 8; core++)
             {
                 vid.AppendFormat(CultureInfo.InvariantCulture,
-                    "{0},0,0,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,{3},core-vid,VID is request/target voltage not real per-core Vcore,/amdcpu/0/voltage/{2}\r\n",
+                    "{0},0,0,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,{3},core-vid,VID is request/target voltage not real per-core Vcore,/intelcpu/0/voltage/{2}\r\n",
                     start.ToString("o", CultureInfo.InvariantCulture),
                     core,
                     core - 1,
                     (1.000 + core * 0.01).ToString("0.000", CultureInfo.InvariantCulture));
                 vid.AppendFormat(CultureInfo.InvariantCulture,
-                    "{0},1,500,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,{3},core-vid,VID is request/target voltage not real per-core Vcore,/amdcpu/0/voltage/{2}\r\n",
+                    "{0},1,500,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,{3},core-vid,VID is request/target voltage not real per-core Vcore,/intelcpu/0/voltage/{2}\r\n",
                     start.AddMilliseconds(500).ToString("o", CultureInfo.InvariantCulture),
                     core,
                     core - 1,
@@ -959,7 +959,7 @@ public static class FrameScopeReportManifestTests
         }
     }
 
-    private static void LowAmdLibreHardwareMonitorVidSamplesAreRejectedAsUnreliable()
+    private static void AmdLibreHardwareMonitorCoreVidSamplesAreRejectedAsUnreliable()
     {
         string dir = Path.Combine(Path.GetTempPath(), "framescope-low-amd-vid-report-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -997,7 +997,7 @@ public static class FrameScopeReportManifestTests
             for (int core = 0; core < 8; core++)
             {
                 vid.AppendFormat(CultureInfo.InvariantCulture,
-                    "{0},0,0,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,0.538,core-vid,VID is request/target voltage,/amdcpu/0/voltage/{3}\r\n",
+                    "{0},0,0,builtin-librehardwaremonitor,built-in,Core #{1} VID,0,{2},{2},{2},,0.762,core-vid,VID is request/target voltage,/amdcpu/0/voltage/{3}\r\n",
                     start.ToString("o", CultureInfo.InvariantCulture),
                     core + 1,
                     core,
@@ -1007,13 +1007,27 @@ public static class FrameScopeReportManifestTests
 
             FrameScopeReportGenerator.GenerateForTests(dir);
 
+            Dictionary<string, object> manifest = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                .Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(dir, "charts", "framescope-interactive-manifest.json"), Encoding.UTF8));
+            string expectedReason = ExpectedAmdLhmCpuVidUnavailableReason();
+            AssertEqual(false, Convert.ToBoolean(manifest["cpuVidAvailable"]), "manifest should not keep stale VID availability");
+            AssertEqual("unavailable", Convert.ToString(manifest["cpuVidStatus"]), "manifest should not keep stale AMD LHM Core VID status");
+            AssertEqual(0, Convert.ToInt32(manifest["cpuVidSampleCount"]), "manifest should count only accepted VID rows");
+            AssertEqual(expectedReason, Convert.ToString(manifest["cpuVidReason"]), "manifest should expose the Chinese AMD LHM VID rejection reason");
+
             Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            string reportText = File.ReadAllText(Path.Combine(dir, "charts", "framescope-interactive-report.html"), Encoding.UTF8);
             Dictionary<string, object> cpuVoltage = GetMap(data, "cpuVoltage");
             Dictionary<string, object> cpuVid = GetMap(data, "cpuVid");
+            System.Collections.ArrayList voltageSeries = GetObjectList(cpuVoltage, "series");
             AssertEqual(true, Convert.ToBoolean(cpuVoltage["available"]), "Vcore should remain available");
-            AssertEqual(false, Convert.ToBoolean(cpuVid["available"]), "implausible low AMD Core VID should not be shown as accurate VID");
-            AssertEqual(0, GetObjectList(cpuVid, "series").Count, "implausible low AMD Core VID should not create series");
-            AssertTrue(Convert.ToString(cpuVid["reason"]).IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0, "cpu vid reason should explain AMD low-range rejection");
+            AssertEqual(1, voltageSeries.Count, "Vcore should remain visible in CPU Voltage / Vcore");
+            AssertEqual("cpu-voltage:vcore", Convert.ToString(((Dictionary<string, object>)voltageSeries[0])["key"]), "Vcore should stay in the CPU Voltage chart series");
+            AssertEqual(false, Convert.ToBoolean(cpuVid["available"]), "AMD Core VID from LHM should not be shown as accurate VID");
+            AssertEqual(0, GetObjectList(cpuVid, "series").Count, "AMD Core VID from LHM should not create series");
+            AssertEqual(expectedReason, Convert.ToString(cpuVid["reason"]), "cpu vid chart reason should explain AMD source rejection in Chinese");
+            AssertTrue(reportText.IndexOf("data-view='cpuVid'", StringComparison.OrdinalIgnoreCase) >= 0, "unavailable CPU VID report should keep the CPU Core VID tab");
+            AssertTrue(reportText.IndexOf("tab-disabled' data-view='cpuVid'", StringComparison.OrdinalIgnoreCase) < 0, "unavailable CPU VID tab should not be disabled");
         }
         finally
         {
@@ -1070,7 +1084,7 @@ public static class FrameScopeReportManifestTests
             {
                 string sensorName = oneBasedHashNames ? "Core #" + (core + 1).ToString(CultureInfo.InvariantCulture) + " VID" : "Core " + core.ToString(CultureInfo.InvariantCulture) + " VID";
                 vid.AppendFormat(CultureInfo.InvariantCulture,
-                    "{0},0,0,builtin-librehardwaremonitor,built-in,{1},0,{2},{2},{2},,0.975,core-vid,VID is request/target voltage not real Vcore,/amdcpu/0/voltage/{2}\r\n",
+                    "{0},0,0,builtin-librehardwaremonitor,built-in,{1},0,{2},{2},{2},,0.975,core-vid,VID is request/target voltage not real Vcore,/intelcpu/0/voltage/{2}\r\n",
                     start.ToString("o", CultureInfo.InvariantCulture),
                     sensorName,
                     core);
@@ -1145,7 +1159,7 @@ public static class FrameScopeReportManifestTests
                 Encoding.UTF8);
             File.WriteAllText(Path.Combine(dir, "cpu-vid-samples.csv"),
                 "Time,SampleIndex,ElapsedMs,Source,Provider,SensorName,ProcessorGroup,LogicalProcessor,CoreIndex,PhysicalCoreId,ThreadIndex,VidVolts,Status,Reason,SensorIdentifier\r\n"
-                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,builtin-librehardwaremonitor,built-in,Core #1 VID,0,0,0,0,,1.112,core-vid,VID is request/target voltage not real per-core Vcore,/amdcpu/0/voltage/0\r\n",
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,builtin-librehardwaremonitor,built-in,Core #1 VID,0,0,0,0,,1.112,core-vid,VID is request/target voltage not real per-core Vcore,/intelcpu/0/voltage/0\r\n",
                 Encoding.UTF8);
 
             FrameScopeReportGenerator.GenerateForTests(dir);
@@ -1265,6 +1279,11 @@ public static class FrameScopeReportManifestTests
             try { Directory.Delete(dir, true); }
             catch { }
         }
+    }
+
+    private static string ExpectedAmdLhmCpuVidUnavailableReason()
+    {
+        return "\u8fd9\u4e0d\u662f\u8f6f\u4ef6\u6f0f\u753b\u56fe\u3002\u5f53\u524d\u786c\u4ef6\u7684 AMD LibreHardwareMonitor Core VID \u6765\u6e90\u4e0d\u53ef\u4fe1\uff0c\u5df2\u505c\u6b62\u663e\u793a\u8be5\u9519\u8bef VID\uff08\u7ea6 0.5V\uff09\u3002CPU Voltage / Vcore \u4ecd\u53ef\u5728 CPU \u7535\u538b / Vcore \u56fe\u8868\u4e2d\u67e5\u770b\uff1bVcore \u4e0d\u4f1a\u5192\u5145 VID\u3002\u672a\u6765\u68c0\u6d4b\u5230\u5408\u6cd5 VID \u6765\u6e90\u65f6\uff0cCPU Core VID \u56fe\u8868\u4f1a\u6b63\u5e38\u663e\u793a\u3002";
     }
 
     private static void AssertAsciiOnly(string value, string label)

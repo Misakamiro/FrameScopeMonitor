@@ -24,7 +24,7 @@ public static class FrameScopeSystemSamplerCpuCoreTests
             SyntheticCpuVoltageTelemetryWritesVcoreCsvAndStatus();
             NonVcoreCpuVoltageTelemetryDoesNotCreateCpuVoltageData();
             SyntheticCpuVidTelemetryWritesDedicatedCsvAndStatus();
-            ImplausibleLowAmdLibreHardwareMonitorVidDoesNotCreateCsv();
+            AmdLibreHardwareMonitorCoreVidSourceDoesNotCreateCsv();
             CpuVidCoreIndexParserKeepsZeroBasedAndOneBasedNamesDistinct();
             CpuVoltageTelemetryDoesNotRecordVidAsVoltage();
             BuiltInCpuVoltageProviderMissingDependencyIsUnavailable();
@@ -542,7 +542,7 @@ public static class FrameScopeSystemSamplerCpuCoreTests
                     Source = "builtin-librehardwaremonitor",
                     ProviderKind = "built-in",
                     SensorName = "Core #1 VID",
-                    SensorIdentifier = "/amdcpu/0/voltage/0"
+                    SensorIdentifier = "/intelcpu/0/voltage/0"
                 },
                 new FrameScopeSystemSampler.CpuVidSample
                 {
@@ -555,7 +555,7 @@ public static class FrameScopeSystemSamplerCpuCoreTests
                     Source = "builtin-librehardwaremonitor",
                     ProviderKind = "built-in",
                     SensorName = "Core #2 VID",
-                    SensorIdentifier = "/amdcpu/0/voltage/1"
+                    SensorIdentifier = "/intelcpu/0/voltage/1"
                 }
             };
 
@@ -591,7 +591,7 @@ public static class FrameScopeSystemSamplerCpuCoreTests
         }
     }
 
-    private static void ImplausibleLowAmdLibreHardwareMonitorVidDoesNotCreateCsv()
+    private static void AmdLibreHardwareMonitorCoreVidSourceDoesNotCreateCsv()
     {
         string dir = CreateTempDir("framescope-cpu-vid-low-amd-tests-");
         try
@@ -606,7 +606,7 @@ public static class FrameScopeSystemSamplerCpuCoreTests
                     LogicalProcessor = "0",
                     CoreIndex = "0",
                     PhysicalCoreId = "0",
-                    VidV = 0.538,
+                    VidV = 0.762,
                     Source = "builtin-librehardwaremonitor",
                     ProviderKind = "built-in",
                     SensorName = "Core #1 VID",
@@ -626,12 +626,12 @@ public static class FrameScopeSystemSamplerCpuCoreTests
                 session.TryWriteSample(7, 1234);
             }
 
-            AssertTrue(!File.Exists(csv), "implausible low AMD LHM VID should not create cpu-vid-samples.csv");
+            AssertTrue(!File.Exists(csv), "AMD LHM Core VID source should not create cpu-vid-samples.csv even when the value is not low");
             Dictionary<string, object> map = ReadJson(status);
-            AssertEqual(false, Convert.ToBoolean(map["CpuVidAvailable"]), "low AMD VID should not be available");
-            AssertEqual(0, Convert.ToInt32(map["CpuVidSampleCount"]), "low AMD VID should not count as sample");
-            AssertEqual(1, Convert.ToInt32(map["CpuVidRejectedSampleCount"]), "low AMD VID should count as rejected evidence");
-            AssertTrue(Convert.ToString(map["CpuVidUnavailableReason"]).IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0, "low AMD VID reason should mention AMD rejection");
+            AssertEqual(false, Convert.ToBoolean(map["CpuVidAvailable"]), "AMD LHM Core VID source should not be available");
+            AssertEqual(0, Convert.ToInt32(map["CpuVidSampleCount"]), "AMD LHM Core VID should not count as sample");
+            AssertEqual(1, Convert.ToInt32(map["CpuVidRejectedSampleCount"]), "AMD LHM Core VID should count as rejected evidence");
+            AssertTrue(Convert.ToString(map["CpuVidUnavailableReason"]).IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0, "AMD LHM Core VID reason should mention AMD source rejection");
         }
         finally
         {

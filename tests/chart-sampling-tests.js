@@ -10,7 +10,7 @@ const source = fs
   .map((name) => fs.readFileSync(path.join(reportSourceDir, name), "utf8"))
   .join("\n");
 const start = source.indexOf("function hms");
-const end = source.indexOf("function syncVidTab", start);
+const end = source.indexOf("function draw(){", start);
 assert(start > 0 && end > start, "embedded chart sampling functions not found");
 
 let view = "fps";
@@ -18,6 +18,13 @@ let currentTimes = [];
 let currentSeries = [];
 let renderCache = new Map();
 let readMode = { value: "spike" };
+let fpsMetric = "all";
+let perfMetric = "all";
+let systemMetric = "all";
+let ioMetric = "diskNet";
+let processMetric = "cpu";
+let cpuCoreMetric = "summary";
+let cpuVidMetric = "summary";
 const PROCESS_TOP_N = 10;
 const PAD = { l: 64, r: 24, t: 34, b: 46 };
 let DATA = null;
@@ -65,9 +72,254 @@ readMode.value = "spike";
 currentTimes = [0, 1, 2, 3, 4, 5];
 currentSeries = [{ key: "perf:cpu", name: "CPU frequency", data: [4200, null, 4300, null, 4400, 4500] }];
 renderCache = new Map();
-const gapSample = getRenderablePoints(currentSeries[0], 2, { start: 0, end: 5, span: 5, full: { start: 0, end: 5, span: 5 } });
+const gapSample = getRenderablePoints(currentSeries[0], 6, { start: 0, end: 5, span: 5, full: { start: 0, end: 5, span: 5 } });
 assert(gapSample.y.includes(null), "downsample should keep null gaps for invalid telemetry points");
 assert(!gapSample.y.includes(0), "downsample should not turn invalid telemetry null gaps into zero-value spikes");
+
+function countFiniteSameXJumps(points) {
+  let count = 0;
+  for (let i = 1; i < points.y.length; i++) {
+    if (
+      Number(points.t[i]) === Number(points.t[i - 1]) &&
+      Number.isFinite(Number(points.y[i])) &&
+      Number.isFinite(Number(points.y[i - 1])) &&
+      Number(points.y[i]) !== Number(points.y[i - 1])
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
+function screenXForTime(t, range, pixelWidth) {
+  return Math.round(((Number(t) - range.start) / range.span) * pixelWidth);
+}
+
+function countFiniteSameScreenXJumps(points, range, pixelWidth) {
+  let count = 0;
+  for (let i = 1; i < points.y.length; i++) {
+    if (
+      screenXForTime(points.t[i], range, pixelWidth) === screenXForTime(points.t[i - 1], range, pixelWidth) &&
+      Number.isFinite(Number(points.y[i])) &&
+      Number.isFinite(Number(points.y[i - 1])) &&
+      Number(points.y[i]) !== Number(points.y[i - 1])
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
+function countDuplicateAdjacentScreenX(points, range, pixelWidth) {
+  let count = 0;
+  for (let i = 1; i < points.y.length; i++) {
+    if (screenXForTime(points.t[i], range, pixelWidth) === screenXForTime(points.t[i - 1], range, pixelWidth)) count++;
+  }
+  return count;
+}
+
+view = "cpuVoltage";
+readMode.value = "spike";
+currentTimes = Array.from({ length: 180 }, (_, i) => i);
+const stableVoltageWithShortInvalids = Array.from({ length: 180 }, (_, i) => 1.08 + (i % 5) * 0.003);
+stableVoltageWithShortInvalids[41] = null;
+stableVoltageWithShortInvalids[97] = null;
+currentSeries = [{ key: "cpuVoltage:vcore", name: "CPU Voltage / Vcore", data: stableVoltageWithShortInvalids }];
+renderCache = new Map();
+const stableVoltageRange = {
+  start: 0,
+  end: 179,
+  span: 179,
+  full: { start: 0, end: 179, span: 179 },
+};
+const stableVoltageSample = getRenderablePoints(currentSeries[0], 90, {
+  start: 0,
+  end: 179,
+  span: 179,
+  full: { start: 0, end: 179, span: 179 },
+});
+assert.strictEqual(
+  countFiniteSameXJumps(stableVoltageSample),
+  0,
+  "stable Vcore downsample should not create same-x min/max vertical artifacts",
+);
+assert.strictEqual(
+  countFiniteSameScreenXJumps(stableVoltageSample, stableVoltageRange, 90),
+  0,
+  "stable Vcore render points should not create same-screen-x vertical artifacts",
+);
+assert.strictEqual(
+  countDuplicateAdjacentScreenX(stableVoltageSample, stableVoltageRange, 90),
+  0,
+  "stable Vcore render points should be compacted to one draw point per adjacent screen x",
+);
+assert(
+  stableVoltageSample.y.filter((v) => v === null).length <= 2,
+  "isolated invalid Vcore samples should not create repeated vertical fill cuts",
+);
+
+view = "cpuVoltage";
+readMode.value = "spike";
+currentTimes = Array.from({ length: 946 }, (_, i) => i);
+const denseVcore = Array.from({ length: 946 }, (_, i) => 1.08 + Math.sin(i / 12) * 0.018 + (i % 7) * 0.001);
+currentSeries = [{ key: "cpuVoltage:vcore-dense", name: "CPU Voltage / Vcore", data: denseVcore }];
+renderCache = new Map();
+const denseVcoreRange = {
+  start: 0,
+  end: 945,
+  span: 945,
+  full: { start: 0, end: 945, span: 945 },
+};
+const denseVcoreSample = getRenderablePoints(currentSeries[0], 533, denseVcoreRange);
+assert.strictEqual(
+  countFiniteSameScreenXJumps(denseVcoreSample, denseVcoreRange, 533),
+  0,
+  "dense Vcore data should be screen-space compacted before line/area drawing",
+);
+assert.strictEqual(
+  countDuplicateAdjacentScreenX(denseVcoreSample, denseVcoreRange, 533),
+  0,
+  "dense Vcore data should not produce adjacent duplicate screen x render points",
+);
+
+const voltageWithLongGap = Array.from({ length: 180 }, () => 1.08);
+for (let i = 70; i < 84; i++) voltageWithLongGap[i] = null;
+currentSeries = [{ key: "cpuVoltage:vcore-gap", name: "CPU Voltage / Vcore", data: voltageWithLongGap }];
+renderCache = new Map();
+const longGapVoltageSample = getRenderablePoints(currentSeries[0], 90, {
+  start: 0,
+  end: 179,
+  span: 179,
+  full: { start: 0, end: 179, span: 179 },
+});
+assert(longGapVoltageSample.y.includes(null), "long invalid Vcore gaps should still break the rendered segment");
+
+const amdLhmRejectedReason =
+  "AMD LibreHardwareMonitor Core VID samples were rejected because this sensor source does not match the validated CPU Voltage / Vcore reading on this system; CPU Voltage / Vcore remains separate and is not used as VID.";
+const expectedAmdLhmNoDataMessage =
+  "\u8fd9\u4e0d\u662f\u8f6f\u4ef6\u6f0f\u753b\u56fe\u3002\u5f53\u524d\u786c\u4ef6\u7684 AMD LibreHardwareMonitor Core VID \u6765\u6e90\u4e0d\u53ef\u4fe1\uff0c\u5df2\u505c\u6b62\u663e\u793a\u8be5\u9519\u8bef VID\uff08\u7ea6 0.5V\uff09\u3002CPU Voltage / Vcore \u4ecd\u53ef\u5728 CPU \u7535\u538b / Vcore \u56fe\u8868\u4e2d\u67e5\u770b\uff1bVcore \u4e0d\u4f1a\u5192\u5145 VID\u3002\u672a\u6765\u68c0\u6d4b\u5230\u5408\u6cd5 VID \u6765\u6e90\u65f6\uff0cCPU Core VID \u56fe\u8868\u4f1a\u6b63\u5e38\u663e\u793a\u3002";
+
+DATA = {
+  fps: { t: [], avg: [], low1: [], low01: [] },
+  cpuCore: { t: [], series: [] },
+  cpuVoltage: {
+    available: true,
+    t: [0, 1],
+    series: [{ key: "cpu-voltage:vcore", name: "CPU Voltage / Vcore", data: [1.074, 1.092] }],
+  },
+  cpuVid: {
+    available: false,
+    status: "unavailable",
+    reason: amdLhmRejectedReason,
+    source: "builtin-librehardwaremonitor",
+    rejectedSampleCount: 496,
+    t: [],
+    series: [],
+  },
+  system: { t: [], usage: {}, perf: {}, io: {} },
+  process: { t: [], names: [], cpu: [], mem: [] },
+  frameStats: {},
+  notes: {},
+};
+view = "cpuVid";
+cpuVidMetric = "summary";
+assert.strictEqual(
+  emptyMessage(),
+  expectedAmdLhmNoDataMessage,
+  "AMD LibreHardwareMonitor rejected CPU VID should show the clear Chinese no-data reason",
+);
+const emptyMessageMeasureContext = { measureText: (text) => ({ width: Array.from(String(text)).length * 8 }) };
+const emptyMessageWrappedLines = emptyMessageLines(expectedAmdLhmNoDataMessage, 360, emptyMessageMeasureContext);
+assert(emptyMessageWrappedLines.length > 1, "long CPU VID no-data reason should be wrapped across multiple canvas lines");
+assert(
+  emptyMessageWrappedLines.every((line) => emptyMessageMeasureContext.measureText(line).width <= 360),
+  "each wrapped CPU VID no-data line should fit inside the available canvas width",
+);
+buildSeries();
+assert.strictEqual(currentSeries.length, 0, "unavailable CPU VID should still avoid drawing rejected AMD LHM series");
+assert(source.includes("data-view='cpuVid'"), "CPU Core VID tab should still exist when CPU VID data is unavailable");
+
+view = "cpuVoltage";
+buildSeries();
+assert.strictEqual(currentSeries.length, 1, "CPU Voltage / Vcore should still render from DATA.cpuVoltage");
+assert.strictEqual(currentSeries[0].key, "cpu-voltage:vcore", "Vcore should stay in the CPU Voltage chart");
+assert.strictEqual(currentSeries[0].data[0], 1.074, "Vcore sample should not be copied through DATA.cpuVid");
+
+DATA.cpuVid = {
+  available: true,
+  status: "core-vid-available",
+  reason: "",
+  note: "VID is CPU request/target voltage, not real Vcore.",
+  t: [0, 1],
+  series: [{ key: "cpu-vid:0", name: "Core #1 VID", color: "#009dff", data: [1.112, 1.12] }],
+};
+view = "cpuVid";
+cpuVidMetric = "summary";
+buildSeries();
+assert.strictEqual(currentSeries.length, 3, "valid CPU VID fixture should still display summary series");
+assert.deepStrictEqual(currentSeries[0].data, [1.112, 1.12], "valid CPU VID values should still reach the rendered series");
+
+view = "process";
+readMode.value = "spike";
+currentTimes = Array.from({ length: 1000 }, (_, i) => i);
+const sparseProcess = Array.from({ length: 1000 }, () => 0);
+for (const [idx, value] of [
+  [120, 1.2],
+  [350, 5.5],
+  [351, 3.2],
+  [700, 2.4],
+]) {
+  sparseProcess[idx] = value;
+}
+currentSeries = [{ key: "process:cpu:0", name: "Sparse process", data: sparseProcess }];
+renderCache = new Map();
+const sparseProcessSample = getRenderablePoints(currentSeries[0], 180, {
+  start: 0,
+  end: 999,
+  span: 999,
+  full: { start: 0, end: 999, span: 999 },
+});
+assert(sparseProcessSample.y.includes(5.5), "process sparse spike downsample should preserve the true peak");
+assert.strictEqual(
+  countFiniteSameXJumps(sparseProcessSample),
+  0,
+  "process sparse spike downsample should not turn low occupancy into same-x needle artifacts",
+);
+assert.strictEqual(
+  countFiniteSameScreenXJumps(sparseProcessSample, { start: 0, end: 999, span: 999 }, 180),
+  0,
+  "process sparse spike drawing should not contain same-screen-x vertical segments",
+);
+
+view = "process";
+readMode.value = "spike";
+currentTimes = Array.from({ length: 951 }, (_, i) => i);
+const denseProcess = Array.from({ length: 951 }, () => 0);
+for (const [idx, value] of [
+  [120, 1.2],
+  [350, 5.5],
+  [351, 3.2],
+  [514, 7.9],
+  [515, 0.3],
+  [700, 2.4],
+]) {
+  denseProcess[idx] = value;
+}
+currentSeries = [{ key: "process:cpu:0", name: "Dense process", data: denseProcess }];
+renderCache = new Map();
+const denseProcessRange = {
+  start: 0,
+  end: 950,
+  span: 950,
+  full: { start: 0, end: 950, span: 950 },
+};
+const denseProcessSample = getRenderablePoints(currentSeries[0], 328, denseProcessRange);
+assert(denseProcessSample.y.includes(7.9), "process screen compaction should preserve the visible peak value");
+assert.strictEqual(
+  countFiniteSameScreenXJumps(denseProcessSample, denseProcessRange, 328),
+  0,
+  "dense process series should be screen-space compacted before line drawing",
+);
 
 assert(source.includes("framescope-${view}-${readMode.value}.png"), "exported PNG name should include chart mode");
 assert(source.includes("function decodeRleSeries"), "process chart should decode lossless RLE process series");
@@ -86,6 +338,7 @@ assert(!source.includes("color='#ff4f78'"), "fps chart should not keep the red a
 assert(source.includes("function drawFpsArea"), "fps chart should draw a blue filled area under the primary FPS line");
 assert(source.includes("function drawFpsReferenceLines"), "fps chart should draw Min/Max/Average horizontal reference lines");
 assert(source.includes("function drawGameppArea"), "non-FPS charts should use a shared GamePP area helper");
+assert(source.includes("if(view==='process')return;"), "background process chart should avoid filled area needles by drawing lines only");
 assert(source.includes("function drawGameppReferenceLines"), "non-FPS charts should draw shared dashed reference lines and right-side labels");
 assert(source.includes("function fixedYAxisMax"), "percentage charts should support fixed Y-axis domains");
 assert(source.includes("return view==='system'?100:null"), "system usage chart Y-axis should be fixed to 0-100 percent");

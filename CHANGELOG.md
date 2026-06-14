@@ -1,5 +1,56 @@
 # CHANGELOG
 
+## 2026-06-14 - FrameScope Monitor v1.2 发布窗口
+
+### 用户可见变化
+
+- 修复报告图表 screen-space 竖向伪影：不同时间点落到同一个 canvas/screen x 像素时会先合并为一个绘制点，不再连接成扎眼竖线。
+- 修复 `Number(null)` 把 telemetry gap 当成 `0` 的问题，CPU Voltage / Vcore 面积图不会因为缺口被拉到 0。
+- Vcore 图表验证结果为 duplicate screen x `0`、same-x vertical `0`。
+- 后台进程图保持 line-only，不再用面积填充遮挡视图；真实短 spike 仍保留。
+- `report-overflow-probe.json` 现在可以被 Windows PowerShell 默认 `Get-Content -Raw | ConvertFrom-Json` 解析，布局探针仍保持 `allNoOverflow=true`。
+- AMD LibreHardwareMonitor `/amdcpu/0/voltage/2..9` Core VID 现在按来源拒绝，不再使用 `0.7V` 阈值策略。
+- 不再显示错误的约 `0.5V` AMD LHM Core VID；约 `1.08V` 的 CPU Voltage / Vcore 不会冒充 CPU Core VID。
+- CPU Core VID tab 保留；当 VID 来源不可信时显示中文说明，引导用户查看 CPU 电压 / Vcore，不再空白。
+- 合法 Intel、synthetic 或非 AMD LibreHardwareMonitor VID 来源仍可显示。
+- 兼容语义保持不变：`DATA.cpuVoltage`、`DATA.cpuVid`、`bucketMs=1000` 和 FPS raw PresentMon 统计口径均保持。
+
+### 修复细节
+
+- `FrameScopeReportGenerator.Html.Scripts` 在 downsample 后增加 screen-space compaction，按当前视图宽度合并同屏 x bin。
+- 连续系统指标在同屏 x bin 内选取稳定代表值；process 视图保留峰值代表值以保留真实 spike。
+- `null`、`undefined` 和空字符串不再参与数值转换，真实数值 `0` 仍保留给语义允许的指标。
+- CPU Core VID 的 AMD LHM 拒绝逻辑从“低于 0.7V”改为“来源不可信”，覆盖 `/amdcpu/0/voltage/2..9` Core VID。
+- 报告 manifest 和 `DATA.cpuVid.reason` 对不可信 AMD LHM VID 来源统一输出中文说明；VID 不可用时不会回填 Vcore。
+- layout probe 写出的 JSON 经过编码修复，Windows PowerShell 默认解析链路通过。
+
+### 验证
+
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Run-Frontend.ps1 verify`：PASS。
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Build-FrameScopeTests.ps1`：PASS。
+- `.\tests\FrameScopeReportManifestTests.exe`：PASS。
+- `.\tests\FrameScopeSystemSamplerCpuCoreTests.exe`：PASS。
+- `.\tests\FrameScopeNativeMonitorChildProcessTests.exe`：PASS。
+- `.\tests\FrameScopeProcessCleanupTests.exe`：PASS。
+- `.\tests\FrameScopeSingleInstanceLaunchGuardTests.exe`：PASS。
+- bundled Node `.\tests\chart-sampling-tests.js`：PASS。
+- bundled Node `.\tools\Probe-ReportHtmlLayout.js`：PASS，`ConvertFrom-Json` 可解析，`allNoOverflow=true`。
+- `git diff --check`：PASS。
+- 残留进程检查：PASS，`NO_MATCHING_RESIDUAL_PROCESSES`。
+
+### SHA256
+
+- `FrameScopeMonitor-Setup.exe`: `BB1C023317BAF16F7CFD9584F3DF598BE3288BA11398BC1947A1897AF8B3BAB8`
+- `FrameScopeMonitor-Full-Setup.exe`: `26C106925D4C2A5031A7E17DD3BA5FA520D727F16117622F7A72EA8E2D0DEBA9`
+- `FrameScopeMonitor.exe` payload: `0919ABE1125F430CCD9B15F039745E3733B0334F04313497DE483C43F5122A09`
+
+### 已知边界
+
+- 本轮没有重新安装 FrameScope。
+- 本轮没有启动真实游戏。
+- 本轮没有进行 BF6 真实游戏测试。
+- 本轮没有修改 GameLite/lightweight 文件。
+
 ## 2026-06-13 - FrameScope Monitor 发布窗口
 
 ### 用户可见变化

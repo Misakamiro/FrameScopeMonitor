@@ -118,6 +118,7 @@ internal static partial class FrameScopeReportGenerator
     {
         public int Total;
         public int CoreCount;
+        public int Rejected;
     }
 
     private sealed class ProcessMatrixResult

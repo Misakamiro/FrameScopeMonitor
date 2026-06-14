@@ -116,12 +116,11 @@ internal static partial class FrameScopeReportGenerator
     private static bool IsValidCpuVidValue(string sensorName, string sensorIdentifier, double? value)
     {
         if (!IsValidVoltageValue(value)) return false;
-        return !IsImplausibleLowAmdLibreHardwareMonitorVid(sensorName, sensorIdentifier, value.Value);
+        return !IsUnreliableAmdLibreHardwareMonitorCoreVidSource(sensorName, sensorIdentifier);
     }
 
-    private static bool IsImplausibleLowAmdLibreHardwareMonitorVid(string sensorName, string sensorIdentifier, double value)
+    private static bool IsUnreliableAmdLibreHardwareMonitorCoreVidSource(string sensorName, string sensorIdentifier)
     {
-        if (value >= 0.7) return false;
         string text = NormalizeCpuVoltageSensorText((sensorName ?? "") + " " + (sensorIdentifier ?? ""));
         return text.IndexOf("core", StringComparison.Ordinal) >= 0 &&
                text.IndexOf("vid", StringComparison.Ordinal) >= 0 &&
@@ -248,7 +247,7 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, string> names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         string source = GetStringDiagnostic(metadata, "cpuVidSource", "");
         int rowCount = 0;
-        bool rejectedLowAmdVid = false;
+        bool rejectedAmdLhmCoreVid = false;
 
         using (CsvTable table = CsvTable.Open(path))
         {
@@ -276,9 +275,9 @@ internal static partial class FrameScopeReportGenerator
                 double? volts = ParseNullableDouble(Get(row, h, vidHeader));
                 if (!IsValidCpuVidValue(sensorName, sensorIdentifier, volts))
                 {
-                    if (volts.HasValue && IsImplausibleLowAmdLibreHardwareMonitorVid(sensorName, sensorIdentifier, volts.Value))
+                    if (volts.HasValue && IsUnreliableAmdLibreHardwareMonitorCoreVidSource(sensorName, sensorIdentifier))
                     {
-                        rejectedLowAmdVid = true;
+                        rejectedAmdLhmCoreVid = true;
                     }
                     continue;
                 }
@@ -293,8 +292,8 @@ internal static partial class FrameScopeReportGenerator
 
         if (cores.Count == 0)
         {
-            vid["reason"] = rejectedLowAmdVid
-                ? "AMD LibreHardwareMonitor Core VID samples were rejected because every value was in the implausible low 0.4-0.7V range; CPU Voltage / Vcore remains separate and is not used as VID."
+            vid["reason"] = rejectedAmdLhmCoreVid
+                ? UnreliableAmdLibreHardwareMonitorCoreVidReason()
                 : CpuVidUnavailableReason(metadata);
             return vid;
         }
@@ -736,6 +735,11 @@ internal static partial class FrameScopeReportGenerator
         return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
     }
 
+    private static string UnreliableAmdLibreHardwareMonitorCoreVidReason()
+    {
+        return CpuVidAmdLhmUnavailableReason();
+    }
+
     private static string CpuVoltageUnavailableReason(Dictionary<string, object> metadata)
     {
         object reason;
@@ -771,6 +775,10 @@ internal static partial class FrameScopeReportGenerator
     {
         string text = reason ?? "";
         if (String.IsNullOrWhiteSpace(text)) return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
+        if (IsAmdLhmCpuVidUnavailableReason(text))
+        {
+            return CpuVidAmdLhmUnavailableReason();
+        }
         if (text.IndexOf("No Core VID sensors", StringComparison.OrdinalIgnoreCase) >= 0 ||
             text.IndexOf("CPU Core VID telemetry provider is missing", StringComparison.OrdinalIgnoreCase) >= 0 ||
             text.IndexOf("CPU Core VID telemetry is disabled", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -779,6 +787,21 @@ internal static partial class FrameScopeReportGenerator
             return "\u672a\u68c0\u6d4b\u5230 CPU \u6838\u5fc3 VID \u4f20\u611f\u5668\uff1b\u4e0d\u751f\u6210\u5047\u6570\u636e\u3002";
         }
         return text;
+    }
+
+    private static bool IsAmdLhmCpuVidUnavailableReason(string reason)
+    {
+        string text = reason ?? "";
+        if (text.IndexOf("AMD LibreHardwareMonitor Core VID", StringComparison.OrdinalIgnoreCase) < 0) return false;
+        return text.IndexOf("rejected", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               text.IndexOf("not match", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               text.IndexOf("unreliable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+               text.IndexOf("\u4e0d\u53ef\u4fe1", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string CpuVidAmdLhmUnavailableReason()
+    {
+        return "\u8fd9\u4e0d\u662f\u8f6f\u4ef6\u6f0f\u753b\u56fe\u3002\u5f53\u524d\u786c\u4ef6\u7684 AMD LibreHardwareMonitor Core VID \u6765\u6e90\u4e0d\u53ef\u4fe1\uff0c\u5df2\u505c\u6b62\u663e\u793a\u8be5\u9519\u8bef VID\uff08\u7ea6 0.5V\uff09\u3002CPU Voltage / Vcore \u4ecd\u53ef\u5728 CPU \u7535\u538b / Vcore \u56fe\u8868\u4e2d\u67e5\u770b\uff1bVcore \u4e0d\u4f1a\u5192\u5145 VID\u3002\u672a\u6765\u68c0\u6d4b\u5230\u5408\u6cd5 VID \u6765\u6e90\u65f6\uff0cCPU Core VID \u56fe\u8868\u4f1a\u6b63\u5e38\u663e\u793a\u3002";
     }
 
     private static string LocalizeCpuVidNote(string note)
