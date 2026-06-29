@@ -1,6 +1,6 @@
 # FrameScope Monitor
 
-## 2026-06-14 用户可见更新
+## 2026-06-14 更新
 
 - 报告和图表界面完成中文化：报告/图表 tab、标题、tooltip、summary、legend、空状态、参考线和 Top 进程等用户可见文案现在使用中文表达。
 - 任务管理器中出现多个 `FrameScopeMonitor.exe` 属于正常架构：其中一部分是 watcher / monitor-session worker，用来监听目标进程、采样和生成报告，不代表重复打开了多个软件主窗口。
