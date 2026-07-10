@@ -171,5 +171,10 @@ describe("FrameScope UI interaction contract", () => {
     expect(reportListItemSource).toContain("processSamplerValidRows?: number;");
     expect(reportListItemSource).toContain("systemSamplerStatus?: string;");
     expect(reportListItemSource).toContain("systemSamplerValidRows?: number;");
+    expect(reportListItemSource).toContain("reportGenerationStartedAt?: string;");
+    expect(reportListItemSource).toContain("reportGenerationEndedAt?: string;");
+    expect(reportListItemSource).toContain("reportGenerationTimedOut?: boolean;");
+    expect(reportListItemSource).toContain("reportCanRetry?: boolean;");
+    expect(reportListItemSource).toContain("reportGenerationExitCode?: number;");
   });
 });

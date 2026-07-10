@@ -33,6 +33,10 @@ internal static partial class FrameScopeNativeMonitor
         map["ReportGeneratedByWatcher"] = true;
         map["ReportGenerationAttempted"] = result.Attempted;
         map["ReportGenerationExitCode"] = result.ExitCode;
+        map["ReportGenerationStartedAt"] = FormatReportGenerationTime(result.GenerationStartedAt);
+        map["ReportGenerationEndedAt"] = FormatReportGenerationTime(result.GenerationEndedAt);
+        map["ReportGenerationTimedOut"] = result.TimedOut;
+        map["ReportCanRetry"] = result.CanRetry;
         map["ReportFrameCount"] = result.FrameCount;
         map["ReportHasFrameData"] = result.HasFrameData;
         map["ReportProcessSampleCount"] = result.ProcessSampleCount;
@@ -62,6 +66,10 @@ internal static partial class FrameScopeNativeMonitor
             map["ReportError"] = result.Error;
             map["ReportGenerationAttempted"] = result.Attempted;
             map["ReportGenerationExitCode"] = result.ExitCode;
+            map["ReportGenerationStartedAt"] = FormatReportGenerationTime(result.GenerationStartedAt);
+            map["ReportGenerationEndedAt"] = FormatReportGenerationTime(result.GenerationEndedAt);
+            map["ReportGenerationTimedOut"] = result.TimedOut;
+            map["ReportCanRetry"] = result.CanRetry;
             map["ReportFrameCount"] = result.FrameCount;
             map["ReportHasFrameData"] = result.HasFrameData;
             map["ReportProcessSampleCount"] = result.ProcessSampleCount;
@@ -75,6 +83,10 @@ internal static partial class FrameScopeNativeMonitor
             if (reports == null) reports = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             reports["Attempted"] = result.Attempted;
             reports["ExitCode"] = result.ExitCode;
+            reports["StartedAt"] = FormatReportGenerationTime(result.GenerationStartedAt);
+            reports["EndedAt"] = FormatReportGenerationTime(result.GenerationEndedAt);
+            reports["TimedOut"] = result.TimedOut;
+            reports["CanRetry"] = result.CanRetry;
             reports["ReportHtml"] = result.ReportHtml;
             reports["LogPath"] = result.LogPath;
             reports["Error"] = result.Error;
@@ -98,6 +110,11 @@ internal static partial class FrameScopeNativeMonitor
     {
         if (target == null || result == null || result.SamplerEvidenceFields == null) return;
         foreach (KeyValuePair<string, object> pair in result.SamplerEvidenceFields) target[pair.Key] = pair.Value;
+    }
+
+    private static string FormatReportGenerationTime(DateTime value)
+    {
+        return value == DateTime.MinValue ? "" : value.ToString("o", CultureInfo.InvariantCulture);
     }
 
     private static void UpdateStatusFromReportProgress(string runDir, string progressPath, string reportHtml, string logPath)
@@ -258,6 +275,11 @@ internal static partial class FrameScopeNativeMonitor
             SystemSamplerValidRows = StatusInt(status, "SystemSamplerValidRows", 0),
             SystemSamplerStatus = StatusString(status, "SystemSamplerStatus", "missing"),
             SystemSamplerErrorTail = StatusString(status, "SystemSamplerErrorTail", ""),
+            ReportGenerationStartedAt = StatusString(status, "ReportGenerationStartedAt", ""),
+            ReportGenerationEndedAt = StatusString(status, "ReportGenerationEndedAt", ""),
+            ReportGenerationTimedOut = StatusBool(status, "ReportGenerationTimedOut", false),
+            ReportCanRetry = StatusBool(status, "ReportCanRetry", false),
+            ReportGenerationExitCode = StatusInt(status, "ReportGenerationExitCode", -1),
             MonitorExitCode = monitorExitCode
         };
 

@@ -40,6 +40,8 @@ public sealed class FrameScopeHistoryEntry
         SystemSamplerCsvPath = "";
         SystemSamplerStatus = "";
         SystemSamplerErrorTail = "";
+        ReportGenerationStartedAt = "";
+        ReportGenerationEndedAt = "";
         MonitorExitCode = 0;
     }
 
@@ -91,6 +93,11 @@ public sealed class FrameScopeHistoryEntry
     public int SystemSamplerValidRows { get; set; }
     public string SystemSamplerStatus { get; set; }
     public string SystemSamplerErrorTail { get; set; }
+    public string ReportGenerationStartedAt { get; set; }
+    public string ReportGenerationEndedAt { get; set; }
+    public bool ReportGenerationTimedOut { get; set; }
+    public bool ReportCanRetry { get; set; }
+    public int ReportGenerationExitCode { get; set; }
     public int MonitorExitCode { get; set; }
 }
 
@@ -112,5 +119,9 @@ internal sealed class ReportGenerationResult
     public int SystemSampleCount;
     public bool HasFrameData;
     public string ReportKind;
+    public DateTime GenerationStartedAt;
+    public DateTime GenerationEndedAt;
+    public bool TimedOut;
+    public bool CanRetry;
     public Dictionary<string, object> SamplerEvidenceFields;
 }

@@ -288,7 +288,12 @@ public static class FrameScopeWebBridgeTests
             { "ProcessSamplerStatus", "healthy" },
             { "ProcessSamplerValidRows", 10 },
             { "SystemSamplerStatus", "failed" },
-            { "SystemSamplerValidRows", 0 }
+            { "SystemSamplerValidRows", 0 },
+            { "ReportGenerationStartedAt", "2026-07-11T01:02:03.0000000Z" },
+            { "ReportGenerationEndedAt", "2026-07-11T01:02:05.0000000Z" },
+            { "ReportGenerationTimedOut", true },
+            { "ReportCanRetry", true },
+            { "ReportGenerationExitCode", -1 }
         }));
         string unsafeRun = Path.Combine(Path.GetTempPath(), "FrameScopeWebBridgeTests-outside-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(unsafeRun);
@@ -310,6 +315,9 @@ public static class FrameScopeWebBridgeTests
         AssertEqual("failed", AsString(report, "systemSamplerStatus"), "report system sampler status");
         AssertEqual(10, Convert.ToInt32(report["processSamplerValidRows"]), "report process sampler rows");
         AssertEqual(0, Convert.ToInt32(report["systemSamplerValidRows"]), "report system sampler rows");
+        AssertEqual(true, AsBool(report, "reportGenerationTimedOut"), "report timeout");
+        AssertEqual(true, AsBool(report, "reportCanRetry"), "report retry");
+        AssertEqual(-1, Convert.ToInt32(report["reportGenerationExitCode"]), "report generation exit code");
     }
 
     private static void ReportsListSkipsNoisyFallbackButKeepsHistoryAndExpectedReports()

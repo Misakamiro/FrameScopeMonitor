@@ -45,6 +45,10 @@ Invoke-TestBuild `
     )
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeReportProcessTests.exe' `
+    -Sources @('src\core\FrameScopeBoundedProcessRunner.cs', 'tests\FrameScopeReportProcessTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeConfigStoreTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigStoreTests.cs')

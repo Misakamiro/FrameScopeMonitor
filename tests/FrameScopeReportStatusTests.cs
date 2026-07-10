@@ -59,7 +59,11 @@ internal static partial class FrameScopeNativeMonitor
                 ProcessSampleCount = 4,
                 SystemSampleCount = 3,
                 HasFrameData = true,
-                ReportKind = "partial"
+                ReportKind = "partial",
+                GenerationStartedAt = new DateTime(2026, 7, 11, 1, 2, 3, DateTimeKind.Utc),
+                GenerationEndedAt = new DateTime(2026, 7, 11, 1, 2, 5, DateTimeKind.Utc),
+                TimedOut = true,
+                CanRetry = true
             };
             result.SamplerEvidenceFields["ProcessSamplerStatus"] = "healthy";
             result.SamplerEvidenceFields["ProcessSamplerValidRows"] = 8;
@@ -91,6 +95,12 @@ internal static partial class FrameScopeNativeMonitor
             AssertEqual(8, Convert.ToInt32(reports["ProcessSamplerValidRows"]), "nested process sampler rows");
             AssertEqual("failed", Convert.ToString(reports["SystemSamplerStatus"]), "nested system sampler status");
             AssertEqual(0, Convert.ToInt32(reports["SystemSamplerValidRows"]), "nested system sampler rows");
+            AssertEqual(true, Convert.ToBoolean(updated["ReportGenerationTimedOut"]), "status timeout");
+            AssertEqual(true, Convert.ToBoolean(updated["ReportCanRetry"]), "status retry");
+            AssertEqual(result.GenerationStartedAt.ToString("o"), Convert.ToString(reports["StartedAt"]), "nested started at");
+            AssertEqual(result.GenerationEndedAt.ToString("o"), Convert.ToString(reports["EndedAt"]), "nested ended at");
+            AssertEqual(true, Convert.ToBoolean(reports["TimedOut"]), "nested timeout");
+            AssertEqual(true, Convert.ToBoolean(reports["CanRetry"]), "nested retry");
             AssertEqual(Convert.ToBoolean(summary["ReportGenerationAttempted"]), Convert.ToBoolean(reports["Attempted"]), "top-level and nested attempted agree");
             AssertEqual(Convert.ToInt32(summary["ReportGenerationExitCode"]), Convert.ToInt32(reports["ExitCode"]), "top-level and nested exit code agree");
             AssertEqual(Convert.ToInt32(summary["ReportFrameCount"]), Convert.ToInt32(reports["FrameCount"]), "top-level and nested frame count agree");

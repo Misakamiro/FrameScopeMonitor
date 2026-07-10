@@ -334,7 +334,11 @@ internal static partial class FrameScopeNativeMonitor
                 { "processSampleCount", result.ProcessSampleCount },
                 { "systemSampleCount", result.SystemSampleCount },
                 { "hasFrameData", result.HasFrameData },
-                { "reportKind", result.ReportKind ?? "" }
+                { "reportKind", result.ReportKind ?? "" },
+                { "reportGenerationStartedAt", result.GenerationStartedAt == DateTime.MinValue ? "" : result.GenerationStartedAt.ToString("o", CultureInfo.InvariantCulture) },
+                { "reportGenerationEndedAt", result.GenerationEndedAt == DateTime.MinValue ? "" : result.GenerationEndedAt.ToString("o", CultureInfo.InvariantCulture) },
+                { "reportGenerationTimedOut", result.TimedOut },
+                { "reportCanRetry", result.CanRetry }
             };
         }
     }

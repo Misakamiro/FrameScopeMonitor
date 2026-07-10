@@ -116,7 +116,7 @@ internal static partial class FrameScopeNativeMonitor
         return latest == DateTime.MinValue ? DateTime.Now : latest;
     }
 
-    private static ReportGenerationResult RunReportGeneration(string runDir, FrameScopeConfig config = null)
+    private static ReportGenerationResult RunReportGenerationLegacy(string runDir, FrameScopeConfig config = null)
     {
         var totalTimer = Stopwatch.StartNew();
         var result = new ReportGenerationResult

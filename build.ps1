@@ -100,6 +100,7 @@ try {
         /reference:$webView2Core `
         /reference:$webView2WinForms `
         .\src\core\FrameScopeJsonFile.cs `
+        .\src\core\FrameScopeBoundedProcessRunner.cs `
         .\src\core\FrameScopeReportArtifacts.cs `
         .\src\core\FrameScopeReportRecoveryPolicy.cs `
         .\src\core\FrameScopeConfigStore.cs `
@@ -135,6 +136,7 @@ try {
         .\src\app\FrameScopeNativeMonitor.SingleInstance.cs `
         .\src\app\FrameScopeNativeMonitor.WebHost.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.cs `
+        .\src\app\FrameScopeNativeMonitor.ReportProcess.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOrchestration.Models.cs `
         .\src\app\FrameScopeNativeMonitor.ReportStatus.cs `
         .\src\app\FrameScopeNativeMonitor.ReportOpen.cs `

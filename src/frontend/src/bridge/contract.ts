@@ -203,6 +203,11 @@ export interface ReportListItem {
   processSamplerValidRows?: number;
   systemSamplerStatus?: string;
   systemSamplerValidRows?: number;
+  reportGenerationStartedAt?: string;
+  reportGenerationEndedAt?: string;
+  reportGenerationTimedOut?: boolean;
+  reportCanRetry?: boolean;
+  reportGenerationExitCode?: number;
 }
 
 export interface ReportActionRequestPayload {
