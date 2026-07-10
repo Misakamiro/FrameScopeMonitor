@@ -87,6 +87,29 @@ function Test-StaticSourceArrayDefinition {
     return $dynamicNodes.Count -eq 0
 }
 
+function Get-RestoreNativeRuntimeVerificationCallCount {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.Language.ScriptBlockAst]$Ast
+    )
+
+    $restoreFunctions = @($Ast.FindAll({
+                param($node)
+                return $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -ieq 'Restore-NativeDependencies'
+            }, $true))
+    if ($restoreFunctions.Count -ne 1) {
+        return -1
+    }
+
+    $runtimeVerificationCalls = @($restoreFunctions[0].Body.FindAll({
+                param($node)
+                return $node -is [System.Management.Automation.Language.CommandAst] -and
+                    $node.GetCommandName() -ieq 'Assert-LockedRuntimeFiles'
+            }, $true))
+    return $runtimeVerificationCalls.Count
+}
+
 function Test-LockedFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -159,7 +182,6 @@ Assert-Contract ($buildText.Contains('<PackageReference Include="LibreHardwareMo
 Assert-Contract ($buildText.Contains("Join-Path (Join-Path `$nugetCache 'microsoft.web.webview2') `$webView2Version")) 'build.ps1 must locate only the exact locked WebView2 package directory.'
 Assert-Contract ($buildText.Contains("Join-Path (Join-Path `$nugetCache 'librehardwaremonitorlib') `$libreHardwareMonitorVersion")) 'build.ps1 must locate only the exact locked LibreHardwareMonitor package directory.'
 Assert-Contract ($buildText.Contains('Assert-LockedFileHash')) 'build.ps1 must verify pinned file hashes before compiling.'
-Assert-Contract ($buildText.Contains('Assert-LockedRuntimeFiles')) 'build.ps1 must verify every shipped NuGet runtime file before compiling.'
 Assert-Contract ($buildText.Contains('<RestoreLockedMode>true</RestoreLockedMode>')) 'build.ps1 must enable NuGet locked restore mode.'
 Assert-Contract ($buildText.Contains('--locked-mode')) 'build.ps1 must invoke dotnet restore in locked mode.'
 Assert-Contract ($buildText.Contains('--source $NugetSource')) 'build.ps1 must pass the pinned NuGet source explicitly.'
@@ -173,6 +195,30 @@ $tokens = $null
 $parseErrors = $null
 $buildAst = [System.Management.Automation.Language.Parser]::ParseFile($buildPath, [ref]$tokens, [ref]$parseErrors)
 Assert-Contract ($parseErrors.Count -eq 0) "build.ps1 must parse successfully (parse errors: $($parseErrors.Count))."
+
+$runtimeVerificationFixtureTokens = $null
+$runtimeVerificationFixtureErrors = $null
+$runtimeVerificationFixtureAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    @'
+function Assert-LockedRuntimeFiles { }
+function Restore-NativeDependencies {
+    # Assert-LockedRuntimeFiles is intentionally not invoked.
+    $message = 'Assert-LockedRuntimeFiles'
+}
+'@,
+    [ref]$runtimeVerificationFixtureTokens,
+    [ref]$runtimeVerificationFixtureErrors
+)
+$runtimeVerificationFixtureCallCount = Get-RestoreNativeRuntimeVerificationCallCount -Ast $runtimeVerificationFixtureAst
+Assert-Contract (
+    $runtimeVerificationFixtureErrors.Count -eq 0 -and
+    $runtimeVerificationFixtureCallCount -ne 1
+) "Build-contract self-test must reject a Restore-NativeDependencies body without an Assert-LockedRuntimeFiles call, even when declarations, strings, and comments retain that text (found: $runtimeVerificationFixtureCallCount)."
+
+$runtimeVerificationCallCount = Get-RestoreNativeRuntimeVerificationCallCount -Ast $buildAst
+Assert-Contract (
+    $runtimeVerificationCallCount -eq 1
+) "Restore-NativeDependencies must call Assert-LockedRuntimeFiles exactly once (found: $runtimeVerificationCallCount)."
 
 $assignments = @($buildAst.FindAll({
             param($node)
