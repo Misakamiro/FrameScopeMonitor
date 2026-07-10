@@ -294,7 +294,7 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         string statePath = Path.Combine(fixture, "framescope-watcher-state.json");
         Process foo = null;
         Process watcher = null;
-        List<int> monitorPids = new List<int>();
+        HashSet<int> monitorPids = new HashSet<int>();
         bool passed = false;
 
         try
@@ -306,26 +306,54 @@ public static class FrameScopeTargetLifecycleIntegrationTests
                 JoinArguments("--watcher", "--config", configPath, "--exit-after-first-run"),
                 fixture);
 
+            string expectedKey = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { fooBaseName });
+            string expectedAlias = fooBaseName.ToLowerInvariant();
             List<Dictionary<string, object>> active = null;
+            int monitorPid = 0;
             WaitUntil(delegate
             {
-                active = TryReadActiveMonitors(statePath);
-                return active != null && active.Count > 0;
-            }, 15000, "overlap watcher active state");
-            Thread.Sleep(FrameScopeConfigStore.InternalPollIntervalMs + 300);
-            active = TryReadActiveMonitors(statePath);
+                List<Dictionary<string, object>> observed = TryReadActiveMonitors(statePath);
+                if (observed == null) return false;
+
+                foreach (Dictionary<string, object> monitor in observed)
+                {
+                    int observedPid;
+                    if (TryReadMonitorPid(monitor, out observedPid)) monitorPids.Add(observedPid);
+                }
+
+                if (observed.Count != 1) return false;
+                Dictionary<string, object> candidate = observed[0];
+                object keyValue;
+                object aliasesValue;
+                int candidatePid;
+                if (!candidate.TryGetValue("Key", out keyValue) ||
+                    !string.Equals(expectedKey, Convert.ToString(keyValue, CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
+                    !candidate.TryGetValue("Aliases", out aliasesValue) ||
+                    !TryReadMonitorPid(candidate, out candidatePid))
+                {
+                    return false;
+                }
+
+                List<string> candidateAliases = ReadStringList(aliasesValue);
+                if (candidateAliases.Count != 1 ||
+                    !string.Equals(expectedAlias, candidateAliases[0], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                active = observed;
+                monitorPid = candidatePid;
+                return true;
+            }, 15000, "overlap watcher matching active state");
 
             AssertTrue(active != null, "overlap watcher state parses");
             AssertEqual(1, active.Count, "overlapping targets claim exactly one active monitor");
             Dictionary<string, object> claimed = active[0];
-            string expectedKey = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { fooBaseName });
             AssertEqual(expectedKey, Convert.ToString(claimed["Key"], CultureInfo.InvariantCulture), "overlap state canonical key");
             List<string> aliases = ReadStringList(claimed["Aliases"]);
             AssertEqual(1, aliases.Count, "overlap state claimed alias count");
-            AssertEqual(fooBaseName.ToLowerInvariant(), aliases[0], "overlap state normalized alias");
+            AssertEqual(expectedAlias, aliases[0], "overlap state normalized alias");
 
-            int monitorPid = Convert.ToInt32(claimed["MonitorPid"], CultureInfo.InvariantCulture);
-            monitorPids.Add(monitorPid);
             AssertTrue(IsProcessRunning(monitorPid), "overlap claimed monitor is running");
 
             TrySignal(fooStop);
@@ -459,6 +487,18 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         if (items == null || value is string) return result;
         foreach (object item in items) result.Add(Convert.ToString(item, CultureInfo.InvariantCulture));
         return result;
+    }
+
+    private static bool TryReadMonitorPid(Dictionary<string, object> monitor, out int monitorPid)
+    {
+        monitorPid = 0;
+        object value;
+        if (monitor == null || !monitor.TryGetValue("MonitorPid", out value)) return false;
+        return int.TryParse(
+            Convert.ToString(value, CultureInfo.InvariantCulture),
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out monitorPid) && monitorPid > 0;
     }
 
     private static string FindRunDirectory(string dataRoot)
