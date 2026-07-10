@@ -1,0 +1,12 @@
+{
+  "microsoftWebView2": "1.0.3967.48",
+  "libreHardwareMonitorLib": "0.9.6",
+  "presentMon": {
+    "file": "tools/PresentMon-2.4.1-x64.exe",
+    "sha256": "D74183E7AE630F72CD3690BE0373ECBFDC6CBB86578148AAB8FA2A7166068F34"
+  },
+  "webView2StandaloneInstaller": {
+    "file": "packaging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+    "sha256": "3A08103BED8A3D9AEFDFC9AC10A672EA69605163F2DCB08D76CFD3E0444511C9"
+  }
+}
