@@ -16,10 +16,11 @@ internal static partial class FrameScopeSystemSampler
             try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.Idle; }
             catch { }
 
-            string target = BaseName(Arg(args, "--target", "cs2"));
+            List<string> targetAliases = ResolveTargetAliases(args);
             int intervalMs = ParseInt(Arg(args, "--interval", "1000"), 1000);
             if (intervalMs < 500) intervalMs = 500;
             int parentPid = ParseInt(Arg(args, "--parent-pid", "0"), 0);
+            string stopFile = Arg(args, "--stop-file", "");
             string systemCsv = Arg(args, "--system-csv", "system-samples.csv");
             string cpuCoreCsv = Arg(args, "--cpu-core-csv", "cpu-core-samples.csv");
             string cpuCoreStatus = Arg(args, "--cpu-core-status", "");
@@ -123,7 +124,7 @@ internal static partial class FrameScopeSystemSampler
                     "ProcessCount"
                 });
 
-                RunLoop(target, intervalMs, loopIntervalMs, parentPid, nvidiaSmi, counters, writer, cpuCore, cpuVoltage, cpuVid);
+                RunLoop(targetAliases, intervalMs, loopIntervalMs, parentPid, stopFile, nvidiaSmi, counters, writer, cpuCore, cpuVoltage, cpuVid);
             }
 
             return 0;
@@ -135,7 +136,7 @@ internal static partial class FrameScopeSystemSampler
         }
     }
 
-    private static void RunLoop(string target, int intervalMs, int loopIntervalMs, int parentPid, string nvidiaSmi, PerfCounters counters, StreamWriter writer, CpuCoreTelemetrySession cpuCore, CpuVoltageTelemetrySession cpuVoltage, CpuVidTelemetrySession cpuVid)
+    private static void RunLoop(List<string> targetAliases, int intervalMs, int loopIntervalMs, int parentPid, string stopFile, string nvidiaSmi, PerfCounters counters, StreamWriter writer, CpuCoreTelemetrySession cpuCore, CpuVoltageTelemetrySession cpuVoltage, CpuVidTelemetrySession cpuVid)
     {
         int sampleIndex = 0;
         int loopIndex = 0;
@@ -144,12 +145,14 @@ internal static partial class FrameScopeSystemSampler
 
         while (true)
         {
-            if (parentPid > 0 && !IsProcessRunning(parentPid)) break;
+            bool parentOwned = parentPid > 0;
+            bool parentRunning = !parentOwned || IsProcessRunning(parentPid);
+            if (ShouldStopSampling(parentOwned, parentRunning, true, StopRequested(stopFile))) break;
 
             Stopwatch loop = Stopwatch.StartNew();
             long elapsedMs = elapsed.ElapsedMilliseconds;
-            SystemProcessSnapshot processSnapshot = SnapshotSystemProcesses(target);
-            if (!processSnapshot.TargetRunning) break;
+            SystemProcessSnapshot processSnapshot = SnapshotSystemProcesses(targetAliases);
+            if (ShouldStopSampling(parentOwned, parentRunning, processSnapshot.TargetRunning, StopRequested(stopFile))) break;
 
             if (elapsedMs >= nextSystemDueElapsedMs)
             {

@@ -37,6 +37,7 @@ internal static partial class FrameScopeNativeMonitor
             TopCpuCsv = Path.Combine(runDir, "topcpu-samples.csv"),
             TopIoCsv = Path.Combine(runDir, "topio-samples.csv"),
             AlertsCsv = Path.Combine(runDir, "sample-alerts.csv"),
+            SamplerStopPath = Path.Combine(runDir, "sampler-stop.signal"),
             EventsCsv = Path.Combine(runDir, "event-samples.csv"),
             SummaryPath = Path.Combine(runDir, "summary.json"),
             ReportLogPath = Path.Combine(runDir, "report-generation.log"),

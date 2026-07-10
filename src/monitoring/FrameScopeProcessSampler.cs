@@ -16,10 +16,11 @@ internal static partial class FrameScopeProcessSampler
             try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.Idle; }
             catch { }
 
-            string target = BaseName(Arg(args, "--target", "cs2"));
+            List<string> targetAliases = ResolveTargetAliases(args);
             int intervalMs = ParseInt(Arg(args, "--interval", "100"), 100);
             if (intervalMs < 100) intervalMs = 100;
             int parentPid = ParseInt(Arg(args, "--parent-pid", "0"), 0);
+            string stopFile = Arg(args, "--stop-file", "");
 
             string processCsv = Arg(args, "--process-csv", "process-samples.csv");
             string topCpuCsv = Arg(args, "--top-cpu-csv", "topcpu-samples.csv");
@@ -41,7 +42,7 @@ internal static partial class FrameScopeProcessSampler
                 WriteCsv(topIoWriter, new object[] { "Time", "SampleIndex", "ElapsedMs", "ProcessName", "Id", "CpuPct", "ReadMBps", "WriteMBps", "WorkingSetMB" });
                 WriteCsv(alertsWriter, new object[] { "Time", "SampleIndex", "ElapsedMs", "Alerts", "TotalCpuPct", "GpuUtilPct", "GpuClockMHz", "GpuTempC", "AvailableMB", "DiskLatencySec", "TopCpuProcess", "TopCpuPct", "TopIoProcess", "TopIoReadMBps", "TopIoWriteMBps" });
 
-                RunLoop(target, intervalMs, parentPid, processWriter, topWriter, topIoWriter, alertsWriter);
+                RunLoop(targetAliases, intervalMs, parentPid, stopFile, processWriter, topWriter, topIoWriter, alertsWriter);
             }
 
             return 0;
@@ -53,7 +54,7 @@ internal static partial class FrameScopeProcessSampler
         }
     }
 
-    private static void RunLoop(string target, int intervalMs, int parentPid, StreamWriter processWriter, StreamWriter topWriter, StreamWriter topIoWriter, StreamWriter alertsWriter)
+    private static void RunLoop(List<string> targetAliases, int intervalMs, int parentPid, string stopFile, StreamWriter processWriter, StreamWriter topWriter, StreamWriter topIoWriter, StreamWriter alertsWriter)
     {
         Dictionary<int, double> prevCpu = new Dictionary<int, double>();
         Dictionary<int, ulong> prevRead = new Dictionary<int, ulong>();
@@ -65,7 +66,9 @@ internal static partial class FrameScopeProcessSampler
 
         while (true)
         {
-            if (parentPid > 0 && !IsProcessRunning(parentPid)) break;
+            bool parentOwned = parentPid > 0;
+            bool parentRunning = !parentOwned || IsProcessRunning(parentPid);
+            if (ShouldStopSampling(parentOwned, parentRunning, true, StopRequested(stopFile))) break;
 
             Stopwatch loop = Stopwatch.StartNew();
             DateTime now = DateTime.Now;
@@ -84,7 +87,7 @@ internal static partial class FrameScopeProcessSampler
                     string name = process.ProcessName;
                     int pid = process.Id;
                     seenPids.Add(pid);
-                    if (StringComparer.OrdinalIgnoreCase.Equals(name, target)) targetRunning = true;
+                    if (FrameScopeTargetLifecycle.MatchesAnyAlias(name, targetAliases)) targetRunning = true;
 
                     double? cpuPct = null;
                     double cpuNow = process.TotalProcessorTime.TotalSeconds;
@@ -142,7 +145,7 @@ internal static partial class FrameScopeProcessSampler
             Prune(prevRead, seenPids);
             Prune(prevWrite, seenPids);
 
-            if (!targetRunning) break;
+            if (ShouldStopSampling(parentOwned, parentRunning, targetRunning, StopRequested(stopFile))) break;
 
             string nowText = now.ToString("o", CultureInfo.InvariantCulture);
             WriteGroupedRows(processWriter, rows, nowText, sampleIndex, elapsedMs);
@@ -158,7 +161,7 @@ internal static partial class FrameScopeProcessSampler
                 WriteCsv(topIoWriter, new object[] { nowText, sampleIndex, Round(elapsedMs, 1), row.ProcessName, row.Id, Round(row.CpuPct, 2), Round(row.ReadMBps, 3), Round(row.WriteMBps, 3), Round(row.WorkingSet / 1048576.0, 1) });
             }
 
-            WriteAlerts(alertsWriter, rows, topCpu, topIo, target, nowText, sampleIndex, elapsedMs);
+            WriteAlerts(alertsWriter, rows, topCpu, topIo, targetAliases, nowText, sampleIndex, elapsedMs);
 
             if (sampleIndex % 10 == 0)
             {
@@ -219,7 +222,7 @@ internal static partial class FrameScopeProcessSampler
         }
     }
 
-    private static void WriteAlerts(StreamWriter writer, List<ProcRow> allRows, List<ProcRow> topCpu, List<ProcRow> topIo, string target, string nowText, int sampleIndex, double elapsedMs)
+    private static void WriteAlerts(StreamWriter writer, List<ProcRow> allRows, List<ProcRow> topCpu, List<ProcRow> topIo, List<string> targetAliases, string nowText, int sampleIndex, double elapsedMs)
     {
         double totalCpu = 0.0;
         foreach (ProcRow row in allRows) totalCpu += Value(row.CpuPct);
@@ -229,7 +232,7 @@ internal static partial class FrameScopeProcessSampler
         ProcRow topIoRow = topIo.FirstOrDefault();
         List<string> alerts = new List<string>();
         if (totalCpu > 85.0) alerts.Add("high-total-cpu");
-        if (topCpuRow != null && !StringComparer.OrdinalIgnoreCase.Equals(topCpuRow.ProcessName, target) && Value(topCpuRow.CpuPct) > 25.0) alerts.Add("background-cpu-spike");
+        if (topCpuRow != null && !FrameScopeTargetLifecycle.MatchesAnyAlias(topCpuRow.ProcessName, targetAliases) && Value(topCpuRow.CpuPct) > 25.0) alerts.Add("background-cpu-spike");
         if (topIoRow != null && (Value(topIoRow.ReadMBps) + Value(topIoRow.WriteMBps)) > 100.0) alerts.Add("heavy-process-io");
         if (alerts.Count == 0) return;
 

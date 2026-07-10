@@ -12,6 +12,9 @@ public static class FrameScopeSystemSamplerCpuCoreTests
         {
             CpuCoreHeaderMatchesPhaseOneSchema();
             CpuVidHeaderMatchesDedicatedSchema();
+            AliasMatchingUsesTheCompleteBaseNameSet();
+            ParentMonitorOwnsSamplerLifetime();
+            SamplerCliResolvesAllAliases();
             CpuCoreInstanceParserKeepsLogicalProcessorSemantics();
             DisabledCpuCoreTelemetryDoesNotCreateCsvOrStatusNoise();
             CpuCoreSampleIntervalDefaultsTo1000AndClampsTo500();
@@ -53,6 +56,38 @@ public static class FrameScopeSystemSamplerCpuCoreTests
             "Time,SampleIndex,ElapsedMs,Source,Provider,SensorName,ProcessorGroup,LogicalProcessor,CoreIndex,PhysicalCoreId,ThreadIndex,VidVolts,Status,Reason,SensorIdentifier",
             FrameScopeSystemSampler.CpuVidCsvHeaderLine,
             "cpu-vid header");
+    }
+
+    private static void AliasMatchingUsesTheCompleteBaseNameSet()
+    {
+        List<string> aliases = FrameScopeTargetLifecycle.ParseBaseNameAliases(" AliasB ; AliasA ; aliasb ", "fallback");
+        AssertEqual(2, aliases.Count, "normalized system sampler alias count");
+        AssertEqual("aliasa", aliases[0], "normalized system sampler first alias");
+        AssertEqual("aliasb", aliases[1], "normalized system sampler second alias");
+        AssertTrue(FrameScopeTargetLifecycle.MatchesAnyAlias("ALIASB", aliases), "secondary alias matches system sampler target");
+        AssertTrue(!FrameScopeTargetLifecycle.MatchesAnyAlias("other", aliases), "unrelated process does not match system sampler target");
+    }
+
+    private static void ParentMonitorOwnsSamplerLifetime()
+    {
+        AssertEqual(false, FrameScopeTargetLifecycle.ShouldStopSampler(true, true, false), "live parent keeps system sampler alive through a target gap");
+        AssertEqual(true, FrameScopeTargetLifecycle.ShouldStopSampler(true, false, true), "dead parent stops parent-owned system sampler");
+        AssertEqual(true, FrameScopeTargetLifecycle.ShouldStopSampler(false, true, false), "standalone system sampler stops when aliases are absent");
+        AssertEqual(false, FrameScopeTargetLifecycle.ShouldStopSampler(false, true, true), "standalone system sampler continues while an alias is present");
+    }
+
+    private static void SamplerCliResolvesAllAliases()
+    {
+        List<string> aliases = FrameScopeSystemSampler.TestResolveTargetAliases(new[]
+        {
+            "--target", "AliasA.exe",
+            "--target-aliases", "AliasB;AliasA"
+        });
+        AssertEqual(2, aliases.Count, "system sampler CLI alias count");
+        AssertEqual("aliasa", aliases[0], "system sampler CLI first alias");
+        AssertEqual("aliasb", aliases[1], "system sampler CLI second alias");
+        AssertEqual(false, FrameScopeSystemSampler.TestShouldStopSampling(true, true, false, false), "system sampler live parent owns a target gap");
+        AssertEqual(true, FrameScopeSystemSampler.TestShouldStopSampling(true, true, true, true), "system sampler explicit stop request wins");
     }
 
     private static void CpuCoreInstanceParserKeepsLogicalProcessorSemantics()
@@ -778,5 +813,18 @@ public static class FrameScopeSystemSamplerCpuCoreTests
     private static void AssertTrue(bool condition, string label)
     {
         if (!condition) throw new Exception(label);
+    }
+}
+
+internal static partial class FrameScopeSystemSampler
+{
+    internal static List<string> TestResolveTargetAliases(string[] args)
+    {
+        return ResolveTargetAliases(args);
+    }
+
+    internal static bool TestShouldStopSampling(bool parentOwned, bool parentRunning, bool anyAliasRunning, bool stopRequested)
+    {
+        return ShouldStopSampling(parentOwned, parentRunning, anyAliasRunning, stopRequested);
     }
 }

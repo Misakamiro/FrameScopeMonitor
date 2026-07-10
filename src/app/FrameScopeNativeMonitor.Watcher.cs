@@ -17,6 +17,7 @@ using System.Runtime.InteropServices;
 internal sealed class ActiveMonitor
 {
     public FrameScopeTarget Target;
+    public List<string> TargetAliases;
     public Process Process;
     public int MonitorPid;
     public string RunRoot;
@@ -118,9 +119,13 @@ internal static partial class FrameScopeNativeMonitor
                 var processBases = BuildTargetProcessBaseNames(target.ProcessName, target.Name);
                 if (processBases.Count == 0) continue;
                 var processBase = processBases[0];
-                var key = FrameScopeTargetLifecycle.CanonicalTargetKey(processBases);
+                var normalizedAliases = FrameScopeTargetLifecycle.NormalizeBaseNames(processBases);
+                var key = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(normalizedAliases);
                 if (string.IsNullOrWhiteSpace(key)) continue;
                 if (activeMonitors.ContainsKey(key)) continue;
+                if (!FrameScopeTargetLifecycle.CanClaimAliases(
+                    normalizedAliases,
+                    activeMonitors.Values.Select(item => (IEnumerable<string>)item.TargetAliases))) continue;
                 var detected = FindBestTargetProcess(processBases, 0);
                 var detectedText = detected == null ? "none" : detected.BaseName + ":" + detected.ProcessId.ToString(CultureInfo.InvariantCulture);
                 WriteRateLimitedVerboseFrameScopeLog(
@@ -265,6 +270,7 @@ internal static partial class FrameScopeNativeMonitor
             return new ActiveMonitor
             {
                 Target = target,
+                TargetAliases = FrameScopeTargetLifecycle.NormalizeBaseNames(processBaseNames),
                 Process = process,
                 MonitorPid = process.Id,
                 RunRoot = runRoot,
@@ -323,6 +329,7 @@ internal static partial class FrameScopeNativeMonitor
         var active = activeMonitors.Select(entry => new
         {
             Key = entry.Key,
+            Aliases = entry.Value.TargetAliases,
             Game = entry.Value.Target.Name,
             ProcessName = entry.Value.Target.ProcessName,
             WorkerRole = "monitor-session-worker",

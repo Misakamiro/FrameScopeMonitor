@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 
 internal static partial class FrameScopeSystemSampler
@@ -10,7 +11,7 @@ internal static partial class FrameScopeSystemSampler
         public int ProcessCount;
     }
 
-    private static SystemProcessSnapshot SnapshotSystemProcesses(string targetProcessName)
+    private static SystemProcessSnapshot SnapshotSystemProcesses(List<string> targetProcessNames)
     {
         SystemProcessSnapshot snapshot = new SystemProcessSnapshot();
         Process[] processes = null;
@@ -23,7 +24,7 @@ internal static partial class FrameScopeSystemSampler
                 string name = "";
                 try { name = process.ProcessName; }
                 catch { }
-                if (String.Equals(name, targetProcessName, System.StringComparison.OrdinalIgnoreCase)) snapshot.TargetRunning = true;
+                if (FrameScopeTargetLifecycle.MatchesAnyAlias(name, targetProcessNames)) snapshot.TargetRunning = true;
                 if (String.Equals(name, "cs2", System.StringComparison.OrdinalIgnoreCase)) snapshot.Cs2Running = true;
             }
         }

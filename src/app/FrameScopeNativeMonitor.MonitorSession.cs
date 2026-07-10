@@ -258,8 +258,10 @@ internal static partial class FrameScopeNativeMonitor
                     JoinArguments(new[]
                     {
                         "--target", targetBaseName,
+                        "--target-aliases", string.Join(";", targetProcessBases.ToArray()),
                         "--interval", processSampleIntervalMs.ToString(CultureInfo.InvariantCulture),
                         "--parent-pid", Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture),
+                        "--stop-file", paths.SamplerStopPath,
                         "--process-csv", paths.ProcessCsv,
                         "--top-cpu-csv", paths.TopCpuCsv,
                         "--top-io-csv", paths.TopIoCsv,
@@ -272,8 +274,10 @@ internal static partial class FrameScopeNativeMonitor
                     var systemArgs = new List<string>
                     {
                         "--target", targetBaseName,
+                        "--target-aliases", string.Join(";", targetProcessBases.ToArray()),
                         "--interval", slowSampleIntervalMs.ToString(CultureInfo.InvariantCulture),
                         "--parent-pid", Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture),
+                        "--stop-file", paths.SamplerStopPath,
                         "--system-csv", paths.SamplesCsv,
                         "--enable-cpu-core-telemetry", enableCpuCoreTelemetry ? "true" : "false",
                         "--cpu-core-csv", paths.CpuCoreSamplesCsv,
@@ -322,16 +326,26 @@ internal static partial class FrameScopeNativeMonitor
                 var captureLoopStopwatch = Stopwatch.StartNew();
                 var selectedPidExited = false;
                 var anyAliasRunning = true;
+                long aliasQuiescenceStartedMs = -1;
 
                 while (true)
                 {
                     var selectedPidExitedAtIterationStart = selectedPidExited;
                     var deadlineReached = DateTime.Now >= captureDeadline;
-                    if (selectedPidExited)
+                    if (captureUntilTargetExit && selectedPidExited)
                     {
                         anyAliasRunning = IsAnyTargetProcessRunning(targetProcessBases);
+                        aliasQuiescenceStartedMs = FrameScopeTargetLifecycle.UpdateQuiescenceStartMilliseconds(
+                            aliasQuiescenceStartedMs,
+                            anyAliasRunning,
+                            captureLoopStopwatch.ElapsedMilliseconds);
                     }
-                    if (FrameScopeTargetLifecycle.ShouldStopCapture(captureUntilTargetExit, selectedPidExited, anyAliasRunning, deadlineReached)) break;
+                    var aliasQuiescenceConfirmed = FrameScopeTargetLifecycle.IsQuiescenceConfirmed(
+                        aliasQuiescenceStartedMs,
+                        captureLoopStopwatch.ElapsedMilliseconds,
+                        FrameScopeTargetLifecycle.DefaultAliasQuiescenceMilliseconds);
+                    var effectiveAnyAliasRunning = anyAliasRunning || (captureUntilTargetExit && selectedPidExited && !aliasQuiescenceConfirmed);
+                    if (FrameScopeTargetLifecycle.ShouldStopCapture(captureUntilTargetExit, selectedPidExited, effectiveAnyAliasRunning, deadlineReached)) break;
 
                     if (presentMon != null)
                     {
@@ -395,15 +409,26 @@ internal static partial class FrameScopeNativeMonitor
                     }
 
                     deadlineReached = DateTime.Now >= captureDeadline;
-                    if (selectedPidExited && !selectedPidExitedAtIterationStart)
+                    if (captureUntilTargetExit && selectedPidExited && !selectedPidExitedAtIterationStart)
                     {
                         anyAliasRunning = IsAnyTargetProcessRunning(targetProcessBases);
+                        aliasQuiescenceStartedMs = FrameScopeTargetLifecycle.UpdateQuiescenceStartMilliseconds(
+                            aliasQuiescenceStartedMs,
+                            anyAliasRunning,
+                            captureLoopStopwatch.ElapsedMilliseconds);
                     }
-                    if (FrameScopeTargetLifecycle.ShouldStopCapture(captureUntilTargetExit, selectedPidExited, anyAliasRunning, deadlineReached)) break;
+                    aliasQuiescenceConfirmed = FrameScopeTargetLifecycle.IsQuiescenceConfirmed(
+                        aliasQuiescenceStartedMs,
+                        captureLoopStopwatch.ElapsedMilliseconds,
+                        FrameScopeTargetLifecycle.DefaultAliasQuiescenceMilliseconds);
+                    effectiveAnyAliasRunning = anyAliasRunning || (captureUntilTargetExit && selectedPidExited && !aliasQuiescenceConfirmed);
+                    if (FrameScopeTargetLifecycle.ShouldStopCapture(captureUntilTargetExit, selectedPidExited, effectiveAnyAliasRunning, deadlineReached)) break;
 
                     if (selectedPidExited)
                     {
-                        var aliasWaitMs = remainingMs;
+                        var aliasWaitMs = captureUntilTargetExit
+                            ? Math.Min(remainingMs, FrameScopeTargetLifecycle.AliasProbeIntervalMilliseconds)
+                            : remainingMs;
                         if (!captureUntilTargetExit)
                         {
                             aliasWaitMs = Math.Max(1, Math.Min(controlPollIntervalMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
@@ -419,8 +444,12 @@ internal static partial class FrameScopeNativeMonitor
                         " timed=" + (!captureUntilTargetExit);
                 });
 
+                try { File.WriteAllText(paths.SamplerStopPath, DateTime.Now.ToString("o", CultureInfo.InvariantCulture), Encoding.UTF8); }
+                catch { }
                 StopMonitorChild(processSampler, 5000, true);
                 StopMonitorChild(systemSampler, 5000, true);
+                try { if (File.Exists(paths.SamplerStopPath)) File.Delete(paths.SamplerStopPath); }
+                catch { }
 
                 if (presentMon != null && !ProcessExited(presentMon))
                 {

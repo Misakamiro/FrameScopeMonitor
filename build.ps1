@@ -150,6 +150,7 @@ try {
 
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
         /out:FrameScopeProcessSampler.exe `
+        .\src\core\FrameScopeTargetLifecycle.cs `
         .\src\monitoring\FrameScopeProcessSampler.cs `
         .\src\monitoring\FrameScopeProcessSampler.Models.cs `
         .\src\monitoring\FrameScopeProcessSampler.Selection.cs `
@@ -160,6 +161,7 @@ try {
         /out:FrameScopeSystemSampler.exe `
         /reference:System.Core.dll `
         /reference:System.Management.dll `
+        .\src\core\FrameScopeTargetLifecycle.cs `
         .\src\monitoring\FrameScopeSystemSampler.cs `
         .\src\monitoring\FrameScopeSystemSampler.Models.cs `
         .\src\monitoring\FrameScopeSystemSampler.PerfCounters.cs `

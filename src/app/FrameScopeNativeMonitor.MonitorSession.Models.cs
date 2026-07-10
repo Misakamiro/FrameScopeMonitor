@@ -33,6 +33,7 @@ internal sealed class MonitorSessionPaths
     public string TopCpuCsv;
     public string TopIoCsv;
     public string AlertsCsv;
+    public string SamplerStopPath;
     public string EventsCsv;
     public string SummaryPath;
     public string ReportLogPath;

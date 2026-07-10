@@ -30,6 +30,24 @@ internal static partial class FrameScopeProcessSampler
         catch { return processName; }
     }
 
+    private static List<string> ResolveTargetAliases(string[] args)
+    {
+        string fallback = BaseName(Arg(args, "--target", "cs2"));
+        return FrameScopeTargetLifecycle.ParseBaseNameAliases(Arg(args, "--target-aliases", ""), fallback);
+    }
+
+    private static bool ShouldStopSampling(bool parentOwned, bool parentRunning, bool anyAliasRunning, bool stopRequested)
+    {
+        return stopRequested || FrameScopeTargetLifecycle.ShouldStopSampler(parentOwned, parentRunning, anyAliasRunning);
+    }
+
+    private static bool StopRequested(string stopFile)
+    {
+        if (String.IsNullOrWhiteSpace(stopFile)) return false;
+        try { return File.Exists(stopFile); }
+        catch { return false; }
+    }
+
     private static void EnsureParent(string path)
     {
         string dir = Path.GetDirectoryName(Path.GetFullPath(path));

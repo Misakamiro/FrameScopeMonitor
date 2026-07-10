@@ -17,11 +17,13 @@ public static class FrameScopeMonitoringReliabilityTests
             StartupStopTargetsOnlyStaleOwnedSessions();
             OwnedShutdownTargetsOnlyTheExplicitSession();
             FailedOwnedShutdownReportsFailure();
-            UntilTargetExitRequiresAllAliasesToExit();
-            TimedCaptureStopsOnlyAtDeadline();
+            CaptureStopTruthTableCoversAllInputs();
+            AliasQuiescenceRequiresAStableEmptyWindow();
             CanonicalTargetKeyNormalizesAliasSets();
+            BaseNameCanonicalizationDoesNotStripAgain();
             CanonicalTargetKeyDistinguishesAliasSets();
             CanonicalTargetKeyHandlesEmptyInput();
+            OverlappingAliasesCannotBeClaimedTwice();
             WatcherUsesCanonicalAliasIdentity();
             CaptureLoopUsesFullAliasLifetimePolicy();
             Console.WriteLine("FrameScopeMonitoringReliabilityTests: PASS");
@@ -214,17 +216,33 @@ public static class FrameScopeMonitoringReliabilityTests
         AssertFalse(result.Succeeded, "failed shutdown combined result");
     }
 
-    private static void UntilTargetExitRequiresAllAliasesToExit()
+    private static void CaptureStopTruthTableCoversAllInputs()
     {
-        AssertFalse(FrameScopeTargetLifecycle.ShouldStopCapture(true, true, true, false), "replacement alias alive");
-        AssertTrue(FrameScopeTargetLifecycle.ShouldStopCapture(true, true, false, false), "all aliases gone");
-        AssertFalse(FrameScopeTargetLifecycle.ShouldStopCapture(true, false, false, false), "selected pid still alive");
+        bool[] values = { false, true };
+        int cases = 0;
+        foreach (bool untilTargetExit in values)
+        foreach (bool selectedPidExited in values)
+        foreach (bool anyAliasRunning in values)
+        foreach (bool deadlineReached in values)
+        {
+            bool expected = untilTargetExit
+                ? selectedPidExited && !anyAliasRunning
+                : deadlineReached;
+            bool actual = FrameScopeTargetLifecycle.ShouldStopCapture(untilTargetExit, selectedPidExited, anyAliasRunning, deadlineReached);
+            AssertEqual(expected, actual, "capture stop truth table case " + cases);
+            cases++;
+        }
+        AssertEqual(16, cases, "capture stop truth table case count");
     }
 
-    private static void TimedCaptureStopsOnlyAtDeadline()
+    private static void AliasQuiescenceRequiresAStableEmptyWindow()
     {
-        AssertTrue(FrameScopeTargetLifecycle.ShouldStopCapture(false, true, true, true), "timed deadline");
-        AssertFalse(FrameScopeTargetLifecycle.ShouldStopCapture(false, true, false, false), "timed capture before deadline");
+        long started = FrameScopeTargetLifecycle.UpdateQuiescenceStartMilliseconds(-1, false, 1000);
+        AssertEqual(1000L, started, "first empty alias probe starts quiescence");
+        AssertEqual(1000L, FrameScopeTargetLifecycle.UpdateQuiescenceStartMilliseconds(started, false, 1500), "continued empty probes preserve quiescence start");
+        AssertFalse(FrameScopeTargetLifecycle.IsQuiescenceConfirmed(started, 2999, 2000), "quiescence before threshold");
+        AssertTrue(FrameScopeTargetLifecycle.IsQuiescenceConfirmed(started, 3000, 2000), "quiescence at threshold");
+        AssertEqual(-1L, FrameScopeTargetLifecycle.UpdateQuiescenceStartMilliseconds(started, true, 3200), "live alias resets quiescence immediately");
     }
 
     private static void CanonicalTargetKeyNormalizesAliasSets()
@@ -234,6 +252,17 @@ public static class FrameScopeMonitoringReliabilityTests
 
         AssertEqual("tslgame;tslgame_be", configured, "canonical key normalization");
         AssertEqual(configured, reordered, "alias order, casing, whitespace, suffix, and duplicates must not affect identity");
+    }
+
+    private static void BaseNameCanonicalizationDoesNotStripAgain()
+    {
+        string ordinaryRaw = FrameScopeTargetLifecycle.CanonicalTargetKey(new[] { "foo.exe" });
+        string ordinaryBase = FrameScopeTargetLifecycle.CanonicalTargetKey(new[] { "foo" });
+        string plannerFoo = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { "foo" });
+        string plannerFooExe = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { "foo.exe" });
+
+        AssertEqual(ordinaryRaw, ordinaryBase, "ordinary raw .exe equivalence");
+        AssertNotEqual(plannerFoo, plannerFooExe, "distinct planner base names must remain distinct");
     }
 
     private static void CanonicalTargetKeyDistinguishesAliasSets()
@@ -250,13 +279,30 @@ public static class FrameScopeMonitoringReliabilityTests
         AssertEqual("", FrameScopeTargetLifecycle.CanonicalTargetKey(new string[] { null, "", "   ", ".exe" }), "empty normalized aliases");
     }
 
+    private static void OverlappingAliasesCannotBeClaimedTwice()
+    {
+        string[][] active = { new[] { "foo", "bar" } };
+
+        AssertFalse(FrameScopeTargetLifecycle.CanClaimAliases(new[] { " BAR ", "FOO" }, active), "reordered aliases overlap");
+        AssertFalse(FrameScopeTargetLifecycle.CanClaimAliases(new[] { "foo" }, active), "subset aliases overlap");
+        AssertTrue(FrameScopeTargetLifecycle.CanClaimAliases(new[] { "baz" }, active), "disjoint aliases can be claimed");
+
+        string oldKey = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { "foo" });
+        string editedKey = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { "foo", "baz" });
+        AssertNotEqual(oldKey, editedKey, "config edit changes exact-set key");
+        AssertFalse(FrameScopeTargetLifecycle.CanClaimAliases(new[] { "foo", "baz" }, new[] { new[] { "foo" } }), "config edit cannot duplicate an existing alias claim");
+    }
+
     private static void WatcherUsesCanonicalAliasIdentity()
     {
         string source = ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
 
-        AssertContains(source, "var key = FrameScopeTargetLifecycle.CanonicalTargetKey(processBases);", "watcher active-monitor key");
+        AssertContains(source, "var key = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(normalizedAliases);", "watcher active-monitor key");
+        AssertContains(source, "FrameScopeTargetLifecycle.CanClaimAliases", "watcher overlap claim policy");
+        AssertContains(source, "TargetAliases", "active monitor stores normalized aliases");
         AssertContains(source, "var active = activeMonitors.Select(entry => new", "watcher state must preserve dictionary identity");
         AssertContains(source, "Key = entry.Key", "watcher state canonical key");
+        AssertContains(source, "Aliases = entry.Value.TargetAliases", "watcher state normalized aliases");
         AssertDoesNotContain(source, "var key = processBase.ToLowerInvariant();", "watcher must not use the first alias as identity");
         AssertDoesNotContain(source, "Key = GetTargetBaseName(item.Target.ProcessName).ToLowerInvariant()", "watcher state must not reconstruct identity from one process name");
     }
@@ -268,7 +314,24 @@ public static class FrameScopeMonitoringReliabilityTests
         AssertContains(source, "FrameScopeTargetLifecycle.ShouldStopCapture(", "capture loop lifecycle policy");
         AssertContains(source, "selectedPidExited", "capture loop selected PID state");
         AssertContains(source, "anyAliasRunning = IsAnyTargetProcessRunning(targetProcessBases)", "capture loop alias liveness query");
+        AssertContains(source, "captureUntilTargetExit && selectedPidExited", "timed capture must not enumerate aliases");
+        AssertContains(source, "UpdateQuiescenceStartMilliseconds", "capture loop quiescence tracking");
+        AssertContains(source, "IsQuiescenceConfirmed", "capture loop quiescence confirmation");
+        AssertEqual(2, CountOccurrences(source, "\"--target-aliases\""), "monitor session forwards aliases to both samplers");
         AssertDoesNotContain(source, "if (targetProc.WaitForExit(remainingMs)) break;", "selected PID exit must not stop capture directly");
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(value)) return 0;
+        int count = 0;
+        int index = 0;
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+        return count;
     }
 
     private static string ReadSource(params string[] parts)

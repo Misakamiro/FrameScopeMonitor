@@ -163,12 +163,31 @@ internal static partial class FrameScopeNativeMonitor
                 try { process.PriorityClass = ProcessPriorityClass.BelowNormal; }
                 catch { }
 
+                string output = "";
+                string error = "";
+                var outputThread = new Thread(new ThreadStart(delegate
+                {
+                    try { output = process.StandardOutput.ReadToEnd(); }
+                    catch { }
+                }));
+                var errorThread = new Thread(new ThreadStart(delegate
+                {
+                    try { error = process.StandardError.ReadToEnd(); }
+                    catch { }
+                }));
+                outputThread.IsBackground = true;
+                errorThread.IsBackground = true;
+                outputThread.Start();
+                errorThread.Start();
+
                 while (!process.WaitForExit(250))
                 {
                     UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath);
                 }
-                var output = process.StandardOutput.ReadToEnd();
-                var error = process.StandardError.ReadToEnd();
+                try { outputThread.Join(5000); }
+                catch { }
+                try { errorThread.Join(5000); }
+                catch { }
                 result.ExitCode = process.ExitCode;
                 WriteReportLog(result.LogPath, output + (string.IsNullOrWhiteSpace(error) ? "" : Environment.NewLine + error));
                 if (result.ExitCode != 0)

@@ -67,6 +67,7 @@ Invoke-TestBuild `
     -References @('System.Core.dll', 'System.Web.Extensions.dll', 'System.Management.dll') `
     -MainType 'FrameScopeSystemSamplerCpuCoreTests' `
     -Sources @(
+        'src\core\FrameScopeTargetLifecycle.cs',
         'src\monitoring\FrameScopeSystemSampler.cs',
         'src\monitoring\FrameScopeSystemSampler.Models.cs',
         'src\monitoring\FrameScopeSystemSampler.PerfCounters.cs',
@@ -81,6 +82,7 @@ Invoke-TestBuild `
     -OutputName 'FrameScopeProcessSamplerTests.exe' `
     -MainType 'FrameScopeProcessSamplerTests' `
     -Sources @(
+        'src\core\FrameScopeTargetLifecycle.cs',
         'src\monitoring\FrameScopeProcessSampler.cs',
         'src\monitoring\FrameScopeProcessSampler.Models.cs',
         'src\monitoring\FrameScopeProcessSampler.Selection.cs',
@@ -158,6 +160,26 @@ Invoke-TestBuild `
         'src\core\FrameScopeCapturePlanner.cs',
         'tools\FrameScopePubgSimulator\FrameScopePubgSimulationCommon.cs',
         'tests\FrameScopePubgSimulatorTests.cs'
+    )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopePubgFakePresentMon.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @(
+        'src\core\FrameScopeConfigStore.cs',
+        'tools\FrameScopePubgSimulator\FrameScopePubgSimulationCommon.cs',
+        'tools\FrameScopePubgSimulator\FakePresentMon.cs'
+    )
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeTargetLifecycleIntegrationTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -MainType 'FrameScopeTargetLifecycleIntegrationTests' `
+    -Sources @(
+        'src\core\FrameScopeConfigStore.cs',
+        'src\core\FrameScopeTargetLifecycle.cs',
+        'tools\FrameScopePubgSimulator\FrameScopePubgSimulationCommon.cs',
+        'tests\FrameScopeTargetLifecycleIntegrationTests.cs'
     )
 
 Invoke-TestBuild `
