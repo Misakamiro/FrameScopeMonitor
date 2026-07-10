@@ -9,6 +9,9 @@ public static class FrameScopeReportManifestTests
 {
     public static int Main()
     {
+        FailedPublicationAfterBackupRestoresPreviousReport();
+        InterruptedBackupIsRecovered();
+        SuccessfulPublicationCleansStagingDirectories();
         ManifestJsonSurvivesPowerShellDefaultRead();
         AccessDeniedCaptureDiagnosticsFlowIntoManifestAndReportData();
         SilentNoCsvDiagnosticsStayTargetNeutralAndDiagnostic();
@@ -36,6 +39,104 @@ public static class FrameScopeReportManifestTests
         NoCpuVidSensorUsesChineseReasonAndNoFakeData();
         Console.WriteLine("FrameScopeReportManifestTests: PASS");
         return 0;
+    }
+
+    private static void FailedPublicationAfterBackupRestoresPreviousReport()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-publish-rollback-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string charts = Path.Combine(dir, "charts");
+            WritePublisherArtifactSet(dir, charts, "old-marker");
+            bool failed = false;
+            try
+            {
+                FrameScopeReportPublisher.PublishForTests(
+                    dir,
+                    delegate(string output) { WritePublisherArtifactSet(dir, output, "new-marker"); },
+                    delegate(string source, string destination)
+                    {
+                        string name = Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar));
+                        if (name.StartsWith(".framescope-report-", StringComparison.OrdinalIgnoreCase) &&
+                            !name.StartsWith(".framescope-report-backup-", StringComparison.OrdinalIgnoreCase) &&
+                            Path.GetFileName(destination).Equals("charts", StringComparison.OrdinalIgnoreCase))
+                        {
+                            throw new IOException("synthetic publish move failure");
+                        }
+                        Directory.Move(source, destination);
+                    });
+            }
+            catch (IOException)
+            {
+                failed = true;
+            }
+
+            AssertTrue(failed, "publish failure was injected after backup");
+            AssertTrue(File.ReadAllText(Path.Combine(charts, FrameScopeReportArtifacts.ReportFileName)).Contains("old-marker"), "previous report restored");
+            AssertTrue(FrameScopeReportArtifacts.Inspect(dir).IsComplete, "restored report remains complete");
+            AssertNoPublisherDirectories(dir, "rollback cleanup");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    private static void InterruptedBackupIsRecovered()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-publish-recovery-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string charts = Path.Combine(dir, "charts");
+            string backup = Path.Combine(dir, ".framescope-report-backup-interrupted");
+            WritePublisherArtifactSet(dir, charts, "backup-marker");
+            Directory.Move(charts, backup);
+
+            FrameScopeReportPublisher.RecoverInterruptedPublication(dir);
+
+            AssertTrue(FrameScopeReportArtifacts.Inspect(dir).IsComplete, "backup restored after interrupted publication");
+            AssertTrue(File.ReadAllText(Path.Combine(charts, FrameScopeReportArtifacts.ReportFileName)).Contains("backup-marker"), "restored backup content");
+            AssertNoPublisherDirectories(dir, "interrupted backup cleanup");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    private static void SuccessfulPublicationCleansStagingDirectories()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-publish-success-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            FrameScopeReportPublisher.Publish(dir, delegate(string output)
+            {
+                WritePublisherArtifactSet(dir, output, "published-marker");
+            });
+
+            AssertTrue(FrameScopeReportArtifacts.Inspect(dir).IsComplete, "published artifact set complete");
+            AssertNoPublisherDirectories(dir, "successful publish cleanup");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    private static void WritePublisherArtifactSet(string runDir, string outputDirectory, string marker)
+    {
+        Directory.CreateDirectory(outputDirectory);
+        string finalCharts = Path.Combine(runDir, "charts");
+        string finalReport = Path.Combine(finalCharts, FrameScopeReportArtifacts.ReportFileName);
+        string finalData = Path.Combine(finalCharts, FrameScopeReportArtifacts.DataFileName);
+        File.WriteAllText(Path.Combine(outputDirectory, FrameScopeReportArtifacts.ReportFileName), "<html>" + marker + "</html>");
+        File.WriteAllText(Path.Combine(outputDirectory, FrameScopeReportArtifacts.DataFileName), "window.FRAMESCOPE_DATA = {};");
+        File.WriteAllText(Path.Combine(outputDirectory, FrameScopeReportArtifacts.ManifestFileName),
+            new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+            {
+                { "report", finalReport },
+                { "data", finalData },
+                { "frames", 1 }
+            }));
+    }
+
+    private static void AssertNoPublisherDirectories(string runDir, string label)
+    {
+        AssertEqual(0, Directory.GetDirectories(runDir, ".framescope-report-*", SearchOption.TopDirectoryOnly).Length, label);
     }
 
     private static void ProcessOnlyReportUsesValidProcessTimeRange()

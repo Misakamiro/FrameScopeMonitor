@@ -37,17 +37,32 @@ internal static class FrameScopeReportArtifacts
 
     internal static FrameScopeReportArtifactState Inspect(string runDirectory)
     {
+        return InspectDirectory(runDirectory, null);
+    }
+
+    internal static FrameScopeReportArtifactState InspectGeneratedDirectory(string runDirectory, string generatedDirectory)
+    {
+        return InspectDirectory(runDirectory, generatedDirectory);
+    }
+
+    private static FrameScopeReportArtifactState InspectDirectory(string runDirectory, string generatedDirectory)
+    {
         var state = new FrameScopeReportArtifactState();
         try
         {
             string run = Path.GetFullPath(runDirectory ?? "");
-            string charts = Path.Combine(run, "charts");
+            string finalCharts = Path.Combine(run, "charts");
+            string actualCharts = string.IsNullOrWhiteSpace(generatedDirectory)
+                ? finalCharts
+                : Path.GetFullPath(generatedDirectory);
             state.RunDirectory = run;
-            state.HtmlPath = Path.Combine(charts, ReportFileName);
-            state.DataPath = Path.Combine(charts, DataFileName);
-            state.ManifestPath = Path.Combine(charts, ManifestFileName);
-            state.HtmlExists = File.Exists(state.HtmlPath);
-            state.DataExists = File.Exists(state.DataPath);
+            state.HtmlPath = Path.Combine(finalCharts, ReportFileName);
+            state.DataPath = Path.Combine(finalCharts, DataFileName);
+            state.ManifestPath = Path.Combine(actualCharts, ManifestFileName);
+            string actualHtmlPath = Path.Combine(actualCharts, ReportFileName);
+            string actualDataPath = Path.Combine(actualCharts, DataFileName);
+            state.HtmlExists = File.Exists(actualHtmlPath);
+            state.DataExists = File.Exists(actualDataPath);
 
             if (!state.HtmlExists)
             {

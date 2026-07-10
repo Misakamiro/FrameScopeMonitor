@@ -40,8 +40,16 @@ internal static partial class FrameScopeReportGenerator
 
     private static void Generate(string runDir, string progressPath)
     {
+        FrameScopeReportPublisher.Publish(runDir, delegate(string outputDirectory)
+        {
+            GenerateArtifacts(runDir, progressPath, outputDirectory);
+        });
+    }
+
+    private static void GenerateArtifacts(string runDir, string progressPath, string chartsDir)
+    {
         DateTime progressStart = DateTime.Now;
-        Directory.CreateDirectory(Path.Combine(runDir, "charts"));
+        Directory.CreateDirectory(chartsDir);
         WriteProgress(progressPath, "读取数据", 5, "读取 PresentMon、系统和进程 CSV", progressStart, null, false);
 
         PresentReadResult present = ReadPresentMon(Path.Combine(runDir, "presentmon.csv"));
@@ -184,10 +192,12 @@ internal static partial class FrameScopeReportGenerator
             { "notes", notes }
         };
 
-        string chartsDir = Path.Combine(runDir, "charts");
         string dataPath = Path.Combine(chartsDir, "framescope-interactive-data.js");
         string htmlPath = Path.Combine(chartsDir, "framescope-interactive-report.html");
         string manifestPath = Path.Combine(chartsDir, "framescope-interactive-manifest.json");
+        string finalChartsDir = Path.Combine(runDir, "charts");
+        string finalDataPath = Path.Combine(finalChartsDir, "framescope-interactive-data.js");
+        string finalHtmlPath = Path.Combine(finalChartsDir, "framescope-interactive-report.html");
 
         JavaScriptSerializer serializer = CreateArtifactJsonSerializer();
 
@@ -197,8 +207,8 @@ internal static partial class FrameScopeReportGenerator
 
         Dictionary<string, object> manifest = new Dictionary<string, object>
         {
-            { "report", htmlPath },
-            { "data", dataPath },
+            { "report", finalHtmlPath },
+            { "data", finalDataPath },
             { "targetDisplayName", targetDisplayName },
             { "targetProcessName", targetProcess },
             { "frames", frames.Count },

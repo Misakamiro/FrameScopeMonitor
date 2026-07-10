@@ -146,6 +146,8 @@ Invoke-TestBuild `
     -Sources @(
         'src\core\FrameScopeReportProgress.cs',
         'src\core\FrameScopePresentMonDiagnostics.cs',
+        'src\core\FrameScopeReportArtifacts.cs',
+        'src\core\FrameScopeReportPublisher.cs',
         'src\core\FrameScopeRunContract.cs',
         'src\reporting\FrameScopeReportGenerator.cs',
         'src\reporting\FrameScopeReportGenerator.Models.cs',
