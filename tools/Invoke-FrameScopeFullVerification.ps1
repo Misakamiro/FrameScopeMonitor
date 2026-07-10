@@ -2,7 +2,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OriginalWorkspace,
 
-    [string]$RepoRoot = ''
+    [string]$RepoRoot = '',
+
+    [ValidateRange(1, 86400)]
+    [int]$CheckTimeoutSeconds = 1800
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,9 +32,14 @@ $results = New-Object Collections.ArrayList
 $startedAt = [DateTime]::UtcNow
 $failure = $null
 $script:SimulationResult = $null
+$script:SimulationOwnershipPath = Join-Path $verificationRoot 'pubg-simulator-ownership.json'
 $script:NativeTestCount = 0
 $script:OriginalAfter = $null
 $script:CurrentCheckExitCode = 0
+$script:CurrentCheckName = ''
+$script:CurrentCheckTimeoutSeconds = $CheckTimeoutSeconds
+$script:CurrentCheckDeadlineUtc = [DateTime]::MaxValue
+$script:CurrentCheckTimedOut = $false
 
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Value)
@@ -71,30 +79,148 @@ function Get-GitStatusSnapshot {
     }
 }
 
+function Stop-OwnedProcessTree {
+    param(
+        [Diagnostics.Process]$Process,
+        [int]$WaitMilliseconds = 5000
+    )
+
+    if ($null -eq $Process) { return }
+    try { $Process.Refresh() }
+    catch { return }
+    if ($Process.HasExited) { return }
+
+    & taskkill.exe /PID $Process.Id /T /F *> $null
+    try { $Process.Refresh() }
+    catch { return }
+    if (-not $Process.HasExited) {
+        try { $Process.Kill() }
+        catch { }
+    }
+    if (-not $Process.WaitForExit($WaitMilliseconds)) {
+        throw "Timed out waiting for owned process tree PID $($Process.Id) to exit."
+    }
+}
+
+function Write-AvailableProcessOutput {
+    param([IO.StreamReader]$Reader)
+    while ($null -ne $Reader -and $Reader.Peek() -ge 0) {
+        $Reader.ReadLine()
+    }
+}
+
 function Invoke-External {
     param(
         [string]$FilePath,
         [string[]]$Arguments = @(),
         [string]$WorkingDirectory = $root
     )
-    Push-Location $WorkingDirectory
+
+    $remainingMilliseconds = [long]($script:CurrentCheckDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+    if ($remainingMilliseconds -le 0) {
+        $script:CurrentCheckTimedOut = $true
+        $script:CurrentCheckExitCode = 124
+        throw "Check '$($script:CurrentCheckName)' timed out after $($script:CurrentCheckTimeoutSeconds)s before starting $FilePath."
+    }
+
+    $exitCodePath = Join-Path $checksRoot ('process-' + [guid]::NewGuid().ToString('N') + '.exitcode')
+    $payload = [ordered]@{
+        filePath = $FilePath
+        arguments = @($Arguments)
+        workingDirectory = $WorkingDirectory
+        exitCodePath = $exitCodePath
+    }
+    $payloadJson = $payload | ConvertTo-Json -Depth 4 -Compress
+    $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payloadJson))
+    $wrapper = @"
+`$ErrorActionPreference = 'Continue'
+`$childExitCode = 1
+try {
+    `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadBase64'))
+    `$payload = `$payloadJson | ConvertFrom-Json
+    Set-Location -LiteralPath ([string]`$payload.workingDirectory)
+    `$childArguments = @(`$payload.arguments | ForEach-Object { [string]`$_ })
+    & ([string]`$payload.filePath) @childArguments
+    `$childExitCode = if (`$null -eq `$LASTEXITCODE) { 0 } else { [int]`$LASTEXITCODE }
+}
+catch {
+    Write-Error `$_.Exception.Message
+    `$childExitCode = 1
+}
+finally {
+    `$exitCodeTemp = ([string]`$payload.exitCodePath) + '.tmp.' + [guid]::NewGuid().ToString('N')
     try {
-        & $FilePath @Arguments
-        $exitCode = $LASTEXITCODE
+        [IO.File]::WriteAllText(`$exitCodeTemp, `$childExitCode.ToString(), (New-Object Text.UTF8Encoding(`$false)))
+        Move-Item -LiteralPath `$exitCodeTemp -Destination ([string]`$payload.exitCodePath) -Force
+    }
+    finally {
+        Remove-Item -LiteralPath `$exitCodeTemp -Force -ErrorAction SilentlyContinue
+    }
+}
+exit `$childExitCode
+"@
+    $encodedWrapper = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapper))
+    $stdoutPath = Join-Path $checksRoot ('process-' + [guid]::NewGuid().ToString('N') + '.stdout.log')
+    $stderrPath = Join-Path $checksRoot ('process-' + [guid]::NewGuid().ToString('N') + '.stderr.log')
+    $process = $null
+    $stdoutReader = $null
+    $stderrReader = $null
+    try {
+        $process = Start-Process -FilePath (Get-Command powershell.exe -ErrorAction Stop).Source `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedWrapper) `
+            -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+        $stdoutReader = New-Object IO.StreamReader([IO.File]::Open($stdoutPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
+        $stderrReader = New-Object IO.StreamReader([IO.File]::Open($stderrPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
+
+        while ($true) {
+            Write-AvailableProcessOutput -Reader $stdoutReader
+            Write-AvailableProcessOutput -Reader $stderrReader
+            if ($process.WaitForExit(100)) { break }
+            $remainingMilliseconds = [long]($script:CurrentCheckDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+            if ($remainingMilliseconds -le 0) {
+                $script:CurrentCheckTimedOut = $true
+                $script:CurrentCheckExitCode = 124
+                "TIMEOUT check=$($script:CurrentCheckName) timeoutSeconds=$($script:CurrentCheckTimeoutSeconds) ownedRootPid=$($process.Id)"
+                Stop-OwnedProcessTree -Process $process
+                Write-AvailableProcessOutput -Reader $stdoutReader
+                Write-AvailableProcessOutput -Reader $stderrReader
+                throw "Check '$($script:CurrentCheckName)' timed out after $($script:CurrentCheckTimeoutSeconds)s while running $FilePath."
+            }
+        }
+        $process.WaitForExit()
+        Write-AvailableProcessOutput -Reader $stdoutReader
+        Write-AvailableProcessOutput -Reader $stderrReader
+        if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
+            $script:CurrentCheckExitCode = 1
+            throw "$FilePath did not publish child exit-code evidence."
+        }
+        $exitCodeText = [IO.File]::ReadAllText($exitCodePath).Trim()
+        $exitCode = 0
+        if (-not [int]::TryParse($exitCodeText, [ref]$exitCode)) {
+            $script:CurrentCheckExitCode = 1
+            throw "$FilePath published invalid child exit-code evidence: $exitCodeText"
+        }
         if ($exitCode -ne 0) {
             $script:CurrentCheckExitCode = $exitCode
             throw "$FilePath exited with code $exitCode."
         }
     }
     finally {
-        Pop-Location
+        if ($null -ne $stdoutReader) { $stdoutReader.Dispose() }
+        if ($null -ne $stderrReader) { $stderrReader.Dispose() }
+        if ($null -ne $process) { $process.Dispose() }
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $exitCodePath -Force -ErrorAction SilentlyContinue
     }
 }
 
 function Invoke-Check {
     param(
         [string]$Name,
-        [scriptblock]$Action
+        [scriptblock]$Action,
+        [int]$TimeoutSeconds = $CheckTimeoutSeconds
     )
 
     $safeName = $Name -replace '[^A-Za-z0-9_.-]', '-'
@@ -102,6 +228,10 @@ function Invoke-Check {
     $checkStarted = [DateTime]::UtcNow
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $script:CurrentCheckExitCode = 0
+    $script:CurrentCheckName = $Name
+    $script:CurrentCheckTimeoutSeconds = $TimeoutSeconds
+    $script:CurrentCheckDeadlineUtc = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $script:CurrentCheckTimedOut = $false
     try {
         & $Action *>&1 | Out-File -LiteralPath $logPath -Encoding UTF8
         $timer.Stop()
@@ -113,6 +243,8 @@ function Invoke-Check {
                 durationMs = $timer.ElapsedMilliseconds
                 exitCode = 0
                 result = 'passed'
+                timeoutSeconds = $TimeoutSeconds
+                timedOut = $false
                 log = Get-RelativeArtifactPath -Path $logPath
             })
         Add-Content -LiteralPath $summaryLog -Encoding UTF8 -Value ("PASS {0} {1}ms" -f $Name, $timer.ElapsedMilliseconds)
@@ -128,7 +260,9 @@ function Invoke-Check {
                 endedAt = $checkEnded.ToString('o')
                 durationMs = $timer.ElapsedMilliseconds
                 exitCode = if ($script:CurrentCheckExitCode -ne 0) { $script:CurrentCheckExitCode } else { 1 }
-                result = 'failed'
+                result = if ($script:CurrentCheckTimedOut) { 'timed-out' } else { 'failed' }
+                timeoutSeconds = $TimeoutSeconds
+                timedOut = $script:CurrentCheckTimedOut
                 error = $_.Exception.Message
                 log = Get-RelativeArtifactPath -Path $logPath
             })
@@ -174,13 +308,56 @@ function Assert-NoResidualProcesses {
     'No FrameScope/FakePresentMon/PubgGameSimulator processes remain.'
 }
 
-function Assert-NoResidualEtwSession {
-    $output = & logman.exe query -ets 2>&1
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        $script:CurrentCheckExitCode = $exitCode
-        throw "logman query -ets failed with code $exitCode"
+function Get-RunningProcessExecutablePath {
+    param([Diagnostics.Process]$Process)
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) { return $null }
+        return $Process.MainModule.FileName
     }
+    catch {
+        $cim = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f $Process.Id) -ErrorAction SilentlyContinue
+        if ($null -ne $cim -and -not [string]::IsNullOrWhiteSpace([string]$cim.ExecutablePath)) {
+            return [string]$cim.ExecutablePath
+        }
+        throw "Unable to resolve executable path for PID $($Process.Id)."
+    }
+}
+
+function Assert-OwnedSimulatorProcessExited {
+    param([string]$OwnershipPath)
+    if ([string]::IsNullOrWhiteSpace($OwnershipPath) -or -not (Test-Path -LiteralPath $OwnershipPath -PathType Leaf)) {
+        'No PUBG simulator ownership record was created.'
+        return
+    }
+
+    $ownership = Get-Content -Raw -LiteralPath $OwnershipPath | ConvertFrom-Json
+    $ownedPid = [int]$ownership.gamePid
+    $expectedPath = [string]$ownership.gameExecutable
+    if ($ownedPid -le 0 -or [string]::IsNullOrWhiteSpace($expectedPath)) {
+        throw "Invalid PUBG simulator ownership record: $OwnershipPath"
+    }
+
+    $process = Get-Process -Id $ownedPid -ErrorAction SilentlyContinue
+    if ($null -eq $process) {
+        "Owned PUBG simulator process exited: PID=$ownedPid path=$expectedPath"
+        return
+    }
+
+    $actualPath = Get-RunningProcessExecutablePath -Process $process
+    if ([string]::IsNullOrWhiteSpace($actualPath)) {
+        "Owned PUBG simulator process exited during verification: PID=$ownedPid path=$expectedPath"
+        return
+    }
+    if (-not [string]::Equals([IO.Path]::GetFullPath($expectedPath), [IO.Path]::GetFullPath($actualPath), [StringComparison]::OrdinalIgnoreCase)) {
+        "Owned PUBG simulator PID was reused by another executable: PID=$ownedPid expected=$expectedPath actual=$actualPath"
+        return
+    }
+    throw "Owned PUBG simulator process remains: PID=$ownedPid path=$actualPath"
+}
+
+function Assert-NoResidualEtwSession {
+    $output = @(Invoke-External -FilePath 'logman.exe' -Arguments @('query', '-ets'))
     $matches = @($output | Where-Object { [string]$_ -match '^\s*FrameScopeNativePresentMon_' })
     if ($matches.Count -gt 0) { throw ('Residual ETW sessions: ' + ($matches -join ', ')) }
     'No FrameScopeNativePresentMon_* ETW session remains.'
@@ -228,11 +405,7 @@ try {
         foreach ($name in $names) {
             $path = Join-Path (Join-Path $root 'tests') $name
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Native test executable missing: $name" }
-            & $path
-            if ($LASTEXITCODE -ne 0) {
-                $script:CurrentCheckExitCode = $LASTEXITCODE
-                throw "$name failed with code $LASTEXITCODE"
-            }
+            Invoke-External -FilePath $path
         }
         $script:NativeTestCount = $names.Count
         "Native test executables passed: $($names.Count)"
@@ -252,11 +425,13 @@ try {
         Invoke-External -FilePath $dotnetExe -Arguments @('build', (Join-Path $root 'tools\FrameScopeRenderProbe\FrameScopeRenderProbe.csproj'), '-c', 'Release', '--nologo')
     }
     Invoke-Check -Name 'pubg-fake-presentmon-simulator' -Action {
-        $simulationOutput = & $powershellExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\FrameScopePubgSimulator\Run-PubgSimulation.ps1') -Scenario stable -DurationSeconds 4
-        if ($LASTEXITCODE -ne 0) {
-            $script:CurrentCheckExitCode = $LASTEXITCODE
-            throw "PUBG simulator failed with code $LASTEXITCODE"
-        }
+        $simulationOutput = Invoke-External -FilePath $powershellExe -Arguments @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', (Join-Path $root 'tools\FrameScopePubgSimulator\Run-PubgSimulation.ps1'),
+            '-Scenario', 'stable',
+            '-DurationSeconds', '4',
+            '-OwnershipPath', $script:SimulationOwnershipPath
+        )
         $script:SimulationResult = ($simulationOutput | Out-String | ConvertFrom-Json)
         if ([int]$script:SimulationResult.monitorExit -ne 0 -or [int]$script:SimulationResult.reportExit -ne 0) {
             throw 'PUBG simulator monitor/report exit code was nonzero.'
@@ -305,7 +480,10 @@ catch {
 }
 
 foreach ($guard in @(
-        @{ Name = 'residual-processes'; Action = { Assert-NoResidualProcesses } },
+        @{ Name = 'residual-processes'; Action = {
+                Assert-NoResidualProcesses
+                Assert-OwnedSimulatorProcessExited -OwnershipPath $script:SimulationOwnershipPath
+            } },
         @{ Name = 'residual-etw-sessions'; Action = { Assert-NoResidualEtwSession } },
         @{ Name = 'original-workspace-integrity'; Action = {
                 if ($null -eq $originalRoot -or $null -eq $originalBefore) {
