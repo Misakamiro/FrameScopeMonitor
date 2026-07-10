@@ -64,14 +64,127 @@ function Get-Sha256Text {
     }
 }
 
-function Get-GitStatusSnapshot {
-    param([string]$Workspace)
-    $lines = @(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $Workspace, 'status', '--porcelain=v1', '--untracked-files=all'))
-    $text = if ($lines.Count -eq 0) { '' } else { ($lines -join "`n") + "`n" }
+function Get-OrdinalSortedStrings {
+    param([string[]]$Values)
+    $sorted = @($Values)
+    [Array]::Sort($sorted, [StringComparer]::Ordinal)
+    return $sorted
+}
+
+function Get-GitNullSeparatedRecords {
+    param(
+        [string]$Workspace,
+        [string[]]$Arguments
+    )
+    $gitArguments = @('-C', $Workspace) + $Arguments
+    $chunks = @(Invoke-External -FilePath 'git.exe' -Arguments $gitArguments -StandardOutputOnly)
+    $text = $chunks -join ''
+    if ([string]::IsNullOrEmpty($text)) { return @() }
+    $records = $text.Split(@([char]0), [StringSplitOptions]::RemoveEmptyEntries)
+    return @(Get-OrdinalSortedStrings -Values $records)
+}
+
+function Get-GitRecordPath {
+    param([string]$Record)
+    $tab = $Record.IndexOf([char]9)
+    if ($tab -lt 0 -or $tab -eq ($Record.Length - 1)) {
+        throw "Invalid null-separated Git record: $Record"
+    }
+    return $Record.Substring($tab + 1)
+}
+
+function Get-WorkspaceContentRecord {
+    param(
+        [string]$Workspace,
+        [string]$RelativePath,
+        [string]$Kind
+    )
+    $fullPath = Join-Path $Workspace ($RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        return [pscustomobject]@{
+            Text = "$Kind`0$RelativePath`0MISSING`00`0"
+            Missing = $true
+        }
+    }
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            Text = "$Kind`0$RelativePath`0NONFILE`00`0"
+            Missing = $false
+        }
+    }
+    $hash = (Get-FileHash -LiteralPath $fullPath -Algorithm SHA256).Hash.ToUpperInvariant()
+    $length = (Get-Item -LiteralPath $fullPath -Force).Length
     return [pscustomobject]@{
-        Text = $text
-        Sha256 = Get-Sha256Text -Value $text
-        LineCount = $lines.Count
+        Text = "$Kind`0$RelativePath`0FILE`0$length`0$hash"
+        Missing = $false
+    }
+}
+
+function ConvertTo-GitWorkspaceFingerprintSummary {
+    param($Snapshot)
+    return [ordered]@{
+        sha256 = $Snapshot.Sha256
+        headCommit = $Snapshot.HeadCommit
+        headSha256 = $Snapshot.HeadSha256
+        headEntryCount = $Snapshot.HeadEntryCount
+        indexSha256 = $Snapshot.IndexSha256
+        indexEntryCount = $Snapshot.IndexEntryCount
+        trackedWorktreeSha256 = $Snapshot.TrackedWorktreeSha256
+        trackedPathCount = $Snapshot.TrackedPathCount
+        missingTrackedPathCount = $Snapshot.MissingTrackedPathCount
+        untrackedSha256 = $Snapshot.UntrackedSha256
+        untrackedPathCount = $Snapshot.UntrackedPathCount
+    }
+}
+
+function Get-GitWorkspaceFingerprint {
+    param([string]$Workspace)
+
+    $headCommit = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $Workspace, 'rev-parse', '--verify', 'HEAD') -StandardOutputOnly) -join "`n").Trim()
+    $headEntries = @(Get-GitNullSeparatedRecords -Workspace $Workspace -Arguments @('ls-tree', '-r', '-z', '--full-tree', 'HEAD'))
+    $indexEntries = @(Get-GitNullSeparatedRecords -Workspace $Workspace -Arguments @('ls-files', '--stage', '-z'))
+    $untrackedPaths = @(Get-GitNullSeparatedRecords -Workspace $Workspace -Arguments @('ls-files', '--others', '--exclude-standard', '-z'))
+
+    $trackedPathMap = New-Object 'Collections.Generic.Dictionary[string,bool]'
+    foreach ($entry in $headEntries) { $trackedPathMap[(Get-GitRecordPath -Record $entry)] = $true }
+    foreach ($entry in $indexEntries) { $trackedPathMap[(Get-GitRecordPath -Record $entry)] = $true }
+    $trackedPaths = @(Get-OrdinalSortedStrings -Values @($trackedPathMap.Keys))
+
+    $headManifest = if ($headEntries.Count -eq 0) { '' } else { ($headEntries -join "`0") + "`0" }
+    $indexManifest = if ($indexEntries.Count -eq 0) { '' } else { ($indexEntries -join "`0") + "`0" }
+    $trackedRecords = New-Object Collections.Generic.List[string]
+    $missingTrackedPathCount = 0
+    foreach ($path in $trackedPaths) {
+        $record = Get-WorkspaceContentRecord -Workspace $Workspace -RelativePath $path -Kind 'tracked'
+        $trackedRecords.Add($record.Text)
+        if ($record.Missing) { $missingTrackedPathCount++ }
+    }
+    $untrackedRecords = New-Object Collections.Generic.List[string]
+    foreach ($path in $untrackedPaths) {
+        $record = Get-WorkspaceContentRecord -Workspace $Workspace -RelativePath $path -Kind 'untracked'
+        $untrackedRecords.Add($record.Text)
+    }
+
+    $trackedManifest = if ($trackedRecords.Count -eq 0) { '' } else { ($trackedRecords -join "`0") + "`0" }
+    $untrackedManifest = if ($untrackedRecords.Count -eq 0) { '' } else { ($untrackedRecords -join "`0") + "`0" }
+    $headSha256 = Get-Sha256Text -Value ("commit`0$headCommit`0" + $headManifest)
+    $indexSha256 = Get-Sha256Text -Value $indexManifest
+    $trackedWorktreeSha256 = Get-Sha256Text -Value $trackedManifest
+    $untrackedSha256 = Get-Sha256Text -Value $untrackedManifest
+    $overallText = "schema=1`0head`0$headSha256`0index`0$indexSha256`0tracked`0$trackedWorktreeSha256`0untracked`0$untrackedSha256`0"
+
+    return [pscustomobject]@{
+        Sha256 = Get-Sha256Text -Value $overallText
+        HeadCommit = $headCommit
+        HeadSha256 = $headSha256
+        HeadEntryCount = $headEntries.Count
+        IndexSha256 = $indexSha256
+        IndexEntryCount = $indexEntries.Count
+        TrackedWorktreeSha256 = $trackedWorktreeSha256
+        TrackedPathCount = $trackedPaths.Count
+        MissingTrackedPathCount = $missingTrackedPathCount
+        UntrackedSha256 = $untrackedSha256
+        UntrackedPathCount = $untrackedPaths.Count
     }
 }
 
@@ -138,11 +251,27 @@ function Write-AvailableProcessOutput {
     }
 }
 
+function Add-AvailableProcessError {
+    param(
+        [IO.StreamReader]$Reader,
+        [Collections.Generic.List[string]]$Buffer
+    )
+    foreach ($line in @(Write-AvailableProcessOutput -Reader $Reader)) {
+        $Buffer.Add($line)
+    }
+}
+
+function Write-BufferedProcessError {
+    param([Collections.Generic.List[string]]$Buffer)
+    foreach ($line in $Buffer) { Write-Host $line }
+}
+
 function Invoke-External {
     param(
         [string]$FilePath,
         [string[]]$Arguments = @(),
-        [string]$WorkingDirectory = $root
+        [string]$WorkingDirectory = $root,
+        [switch]$StandardOutputOnly
     )
 
     $activeDeadlineUtc = Get-ActiveProcessDeadlineUtc
@@ -194,6 +323,7 @@ exit `$childExitCode
     $process = $null
     $stdoutReader = $null
     $stderrReader = $null
+    $stderrBuffer = New-Object Collections.Generic.List[string]
     try {
         $process = Start-Process -FilePath (Get-Command powershell.exe -ErrorAction Stop).Source `
             -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedWrapper) `
@@ -204,7 +334,8 @@ exit `$childExitCode
 
         while ($true) {
             Write-AvailableProcessOutput -Reader $stdoutReader
-            Write-AvailableProcessOutput -Reader $stderrReader
+            if ($StandardOutputOnly) { Add-AvailableProcessError -Reader $stderrReader -Buffer $stderrBuffer }
+            else { Write-AvailableProcessOutput -Reader $stderrReader }
             if ($process.WaitForExit(100)) { break }
             $activeDeadlineUtc = Get-ActiveProcessDeadlineUtc
             $remainingMilliseconds = [long]($activeDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
@@ -213,24 +344,32 @@ exit `$childExitCode
                 "TIMEOUT check=$($script:CurrentCheckName) scope=$($timeout.Scope) timeoutSeconds=$($timeout.Seconds) ownedRootPid=$($process.Id)"
                 Stop-OwnedProcessTree -Process $process
                 Write-AvailableProcessOutput -Reader $stdoutReader
-                Write-AvailableProcessOutput -Reader $stderrReader
+                if ($StandardOutputOnly) {
+                    Add-AvailableProcessError -Reader $stderrReader -Buffer $stderrBuffer
+                    Write-BufferedProcessError -Buffer $stderrBuffer
+                }
+                else { Write-AvailableProcessOutput -Reader $stderrReader }
                 throw "Verification $($timeout.Scope) timeout after $($timeout.Seconds)s while running $FilePath in '$($script:CurrentCheckName)'."
             }
         }
         $process.WaitForExit()
         Write-AvailableProcessOutput -Reader $stdoutReader
-        Write-AvailableProcessOutput -Reader $stderrReader
+        if ($StandardOutputOnly) { Add-AvailableProcessError -Reader $stderrReader -Buffer $stderrBuffer }
+        else { Write-AvailableProcessOutput -Reader $stderrReader }
         if (-not (Test-Path -LiteralPath $exitCodePath -PathType Leaf)) {
+            if ($StandardOutputOnly) { Write-BufferedProcessError -Buffer $stderrBuffer }
             $script:CurrentCheckExitCode = 1
             throw "$FilePath did not publish child exit-code evidence."
         }
         $exitCodeText = [IO.File]::ReadAllText($exitCodePath).Trim()
         $exitCode = 0
         if (-not [int]::TryParse($exitCodeText, [ref]$exitCode)) {
+            if ($StandardOutputOnly) { Write-BufferedProcessError -Buffer $stderrBuffer }
             $script:CurrentCheckExitCode = 1
             throw "$FilePath published invalid child exit-code evidence: $exitCodeText"
         }
         if ($exitCode -ne 0) {
+            if ($StandardOutputOnly) { Write-BufferedProcessError -Buffer $stderrBuffer }
             $script:CurrentCheckExitCode = $exitCode
             throw "$FilePath exited with code $exitCode."
         }
@@ -394,6 +533,28 @@ function Assert-NoResidualEtwSession {
     'No FrameScopeNativePresentMon_* ETW session remains.'
 }
 
+function Get-FirstNonZeroExitCode {
+    param(
+        [int]$MonitorExit,
+        [int]$ReportExit
+    )
+    if ($MonitorExit -ne 0) { return $MonitorExit }
+    if ($ReportExit -ne 0) { return $ReportExit }
+    return 0
+}
+
+function Assert-SimulationChildExitCodes {
+    param(
+        [int]$MonitorExit,
+        [int]$ReportExit
+    )
+    $firstNonZeroExitCode = Get-FirstNonZeroExitCode -MonitorExit $MonitorExit -ReportExit $ReportExit
+    if ($firstNonZeroExitCode -ne 0) {
+        $script:CurrentCheckExitCode = $firstNonZeroExitCode
+        throw "PUBG simulator monitor/report exit code was nonzero: monitor=$MonitorExit report=$ReportExit"
+    }
+}
+
 Write-Utf8NoBom -Path $summaryLog -Value ("FrameScope full verification`r`nrepoRoot=$root`r`nrequestedOriginalWorkspace=$OriginalWorkspace`r`nstartedAt=$($startedAt.ToString('o'))`r`ncheckTimeoutSeconds=$CheckTimeoutSeconds`r`nwholeRunTimeoutSeconds=$WholeRunTimeoutSeconds`r`n")
 
 $script:CurrentCheckName = 'initialization'
@@ -402,13 +563,13 @@ try {
     if ([string]::Equals($root, $originalRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'OriginalWorkspace must be separate from the remediation worktree.'
     }
-    $originalBefore = Get-GitStatusSnapshot -Workspace $originalRoot
+    $originalBefore = Get-GitWorkspaceFingerprint -Workspace $originalRoot
     $branch = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'branch', '--show-current')) -join "`n").Trim()
     $commit = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'rev-parse', 'HEAD')) -join "`n").Trim()
     $nodeExe = Resolve-NodeExe
     $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
     $dotnetExe = (Get-Command dotnet.exe -ErrorAction Stop).Source
-    Add-Content -LiteralPath $summaryLog -Encoding UTF8 -Value ("branch=$branch`r`ncommit=$commit`r`noriginalStatusSha256=$($originalBefore.Sha256)")
+    Add-Content -LiteralPath $summaryLog -Encoding UTF8 -Value ("branch=$branch`r`ncommit=$commit`r`noriginalWorkspaceSha256=$($originalBefore.Sha256)")
 
     Invoke-Check -Name 'documentation' -Action {
         Invoke-External -FilePath $powershellExe -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'tools\Test-CurrentDocumentation.ps1'))
@@ -463,9 +624,9 @@ try {
             '-OwnershipPath', $script:SimulationOwnershipPath
         )
         $script:SimulationResult = ($simulationOutput | Out-String | ConvertFrom-Json)
-        if ([int]$script:SimulationResult.monitorExit -ne 0 -or [int]$script:SimulationResult.reportExit -ne 0) {
-            throw 'PUBG simulator monitor/report exit code was nonzero.'
-        }
+        Assert-SimulationChildExitCodes `
+            -MonitorExit ([int]$script:SimulationResult.monitorExit) `
+            -ReportExit ([int]$script:SimulationResult.reportExit)
         if (-not [bool]$script:SimulationResult.hasFrameData -or [string]$script:SimulationResult.reportKind -ne 'full') {
             throw 'PUBG simulator did not produce a full frame-data report.'
         }
@@ -526,11 +687,11 @@ foreach ($guard in @(
                 if ($null -eq $originalRoot -or $null -eq $originalBefore) {
                     throw 'Original workspace baseline was not initialized.'
                 }
-                $script:OriginalAfter = Get-GitStatusSnapshot -Workspace $originalRoot
-                if ($originalBefore.Text -cne $script:OriginalAfter.Text) {
+                $script:OriginalAfter = Get-GitWorkspaceFingerprint -Workspace $originalRoot
+                if ($originalBefore.Sha256 -cne $script:OriginalAfter.Sha256) {
                     throw "Original workspace changed: before=$($originalBefore.Sha256) after=$($script:OriginalAfter.Sha256)"
                 }
-                "Original workspace unchanged: SHA256=$($script:OriginalAfter.Sha256) lines=$($script:OriginalAfter.LineCount)"
+                "Original workspace unchanged: SHA256=$($script:OriginalAfter.Sha256) tracked=$($script:OriginalAfter.TrackedPathCount) untracked=$($script:OriginalAfter.UntrackedPathCount)"
             } }
     )) {
     try {
@@ -547,8 +708,9 @@ $originalSummary = [ordered]@{
     path = if ($null -ne $originalRoot) { $originalRoot } else { $OriginalWorkspace }
     beforeSha256 = if ($null -ne $originalBefore) { $originalBefore.Sha256 } else { $null }
     afterSha256 = if ($null -ne $originalAfter) { $originalAfter.Sha256 } else { $null }
-    lineCount = if ($null -ne $originalAfter) { $originalAfter.LineCount } elseif ($null -ne $originalBefore) { $originalBefore.LineCount } else { $null }
-    unchanged = ($null -ne $originalBefore -and $null -ne $originalAfter -and $originalBefore.Text -ceq $originalAfter.Text)
+    before = if ($null -ne $originalBefore) { ConvertTo-GitWorkspaceFingerprintSummary -Snapshot $originalBefore } else { $null }
+    after = if ($null -ne $originalAfter) { ConvertTo-GitWorkspaceFingerprintSummary -Snapshot $originalAfter } else { $null }
+    unchanged = ($null -ne $originalBefore -and $null -ne $originalAfter -and $originalBefore.Sha256 -ceq $originalAfter.Sha256)
 }
 $result = [ordered]@{
     schemaVersion = 1
