@@ -1,20 +1,33 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Web.Script.Serialization;
 
 public static class FrameScopeDiagnosticsTests
 {
+    private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+
     public static int Main()
     {
-        ConfigNormalizesDiagnosticSettings();
-        RedactsUserAndSecrets();
-        GeneratesDiagnosticReportWithRequiredSections();
-        GeneratesDiagnosticReportWithPresentMonEtwAccessDeniedFields();
-        LatestRunDiscoverySkipsNoisyDataRootDirectories();
-        CleanupDeletesOldArtifactsAndEnforcesSizeLimit();
-        Console.WriteLine("FrameScopeDiagnosticsTests: PASS");
-        return 0;
+        try
+        {
+            ConfigNormalizesDiagnosticSettings();
+            RedactsUserAndSecrets();
+            GeneratesDiagnosticReportWithRequiredSections();
+            LegacyRunSchemaRemainsReadable();
+            GeneratesDiagnosticReportWithPresentMonEtwAccessDeniedFields();
+            LatestRunDiscoverySkipsNoisyDataRootDirectories();
+            CleanupDeletesOldArtifactsAndEnforcesSizeLimit();
+            Console.WriteLine("FrameScopeDiagnosticsTests: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
+            return 1;
+        }
     }
 
     private static void ConfigNormalizesDiagnosticSettings()
@@ -62,16 +75,39 @@ public static class FrameScopeDiagnosticsTests
             File.WriteAllText(Path.Combine(appRoot, "framescope-watcher.log"),
                 "2026-05-10T01:02:03Z report-generate-failed path=" + Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + Environment.NewLine,
                 Encoding.UTF8);
-            File.WriteAllText(Path.Combine(runDir, "status.json"),
-                "{\"Phase\":\"done\",\"FrameCaptureStatus\":\"captured\",\"PresentMonCsvRows\":240,\"ReportProgressPercent\":100}",
-                Encoding.UTF8);
+            string charts = Path.Combine(runDir, "charts");
+            string reportHtml = Path.Combine(charts, "framescope-interactive-report.html");
+            File.WriteAllText(Path.Combine(runDir, "status.json"), Json.Serialize(new Dictionary<string, object>
+            {
+                { "Phase", "done" },
+                { "TargetProcess", "TslGame.exe" },
+                { "FrameCaptureStatus", "captured" },
+                { "PresentMonCsvRows", 240 },
+                { "ReportHtml", reportHtml },
+                { "ReportFrameCount", 240 },
+                { "ReportHasFrameData", true },
+                { "ReportKind", "partial" },
+                { "ProcessSamplerStatus", "healthy" },
+                { "ProcessSamplerValidRows", 10 },
+                { "SystemSamplerStatus", "failed" },
+                { "SystemSamplerValidRows", 0 },
+                { "ReportGenerationStartedAt", "2026-07-11T01:02:03.0000000Z" },
+                { "ReportGenerationEndedAt", "2026-07-11T01:02:05.0000000Z" },
+                { "ReportGenerationTimedOut", true },
+                { "ReportGenerationExitCode", -1 },
+                { "ReportCanRetry", true }
+            }), Encoding.UTF8);
             File.WriteAllText(Path.Combine(runDir, "summary.json"),
-                "{\"TargetProcess\":\"TslGame.exe\",\"FrameCaptureStatus\":\"captured\",\"ReportHtml\":\"C:\\\\Users\\\\misakamiro\\\\report.html\"}",
+                "{\"TargetProcess\":\"legacy-wrong.exe\",\"FrameCaptureStatus\":\"captured\",\"ReportHtml\":\"legacy-wrong.html\"}",
                 Encoding.UTF8);
-            Directory.CreateDirectory(Path.Combine(runDir, "charts"));
-            File.WriteAllText(Path.Combine(runDir, "charts", "framescope-interactive-manifest.json"),
-                "{\"hasFrameData\":true,\"frames\":240,\"reportKind\":\"full\",\"frameCaptureStatus\":\"captured\",\"frameStats\":{\"average\":144.4,\"low1\":92.1,\"low01\":51.0}}",
+            Directory.CreateDirectory(charts);
+            File.WriteAllText(Path.Combine(charts, "framescope-interactive-manifest.json"),
+                "{\"hasFrameData\":false,\"frames\":1,\"reportKind\":\"full\",\"frameCaptureStatus\":\"captured\"}",
                 Encoding.UTF8);
+            File.WriteAllText(Path.Combine(charts, "framescope-interactive-data.js"),
+                "window.FRAMESCOPE_DATA = {\"frameStats\":{\"average\":144.5,\"low1\":90.0,\"low01\":61.0,\"minInstant\":42.0}};",
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(runDir, "monitor-error.txt"), "current monitor failed", Encoding.UTF8);
 
             FrameScopeConfig config = new FrameScopeConfig
             {
@@ -86,6 +122,10 @@ public static class FrameScopeDiagnosticsTests
             FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, "unit-test", runDir);
             string markdown = File.ReadAllText(result.MarkdownPath, Encoding.UTF8);
             string json = File.ReadAllText(result.JsonPath, Encoding.UTF8);
+            Dictionary<string, object> report = Json.Deserialize<Dictionary<string, object>>(json);
+            Dictionary<string, object> recent = GetMap(report, "recentSession");
+            Dictionary<string, object> fps = GetMap(report, "fpsSummary");
+            Dictionary<string, object> generation = GetMap(report, "reportGeneration");
 
             AssertTrue(File.Exists(result.MarkdownPath), "markdown report exists");
             AssertTrue(File.Exists(result.JsonPath), "json report exists");
@@ -94,6 +134,15 @@ public static class FrameScopeDiagnosticsTests
             AssertTrue(markdown.Contains("Target Detection"), "target detection section");
             AssertTrue(markdown.Contains("Capture Chain"), "capture chain section");
             AssertTrue(json.Contains("\"fpsSummary\""), "json fps summary");
+            AssertEqual("TslGame.exe", Convert.ToString(recent["targetProcess"]), "current target process");
+            AssertEqual(240, Convert.ToInt32(recent["frames"]), "current frame count");
+            AssertEqual("partial", Convert.ToString(recent["reportKind"]), "current report kind");
+            AssertEqual(144.5, Convert.ToDouble(fps["averageFps"]), "data.js average FPS");
+            AssertEqual(42.0, Convert.ToDouble(fps["minInstant"]), "data.js min FPS");
+            AssertEqual(true, Convert.ToBoolean(generation["reportGenerationTimedOut"]), "report timeout diagnostics");
+            AssertEqual("healthy", Convert.ToString(generation["processSamplerStatus"]), "process sampler diagnostics");
+            AssertEqual("failed", Convert.ToString(generation["systemSamplerStatus"]), "system sampler diagnostics");
+            AssertTrue(json.Contains("current monitor failed"), "current monitor error file");
             AssertTrue(!markdown.Contains(Environment.UserName), "markdown redacts username");
         }
         finally
@@ -101,6 +150,34 @@ public static class FrameScopeDiagnosticsTests
             try { Directory.Delete(dir, true); }
             catch { }
         }
+    }
+
+    private static void LegacyRunSchemaRemainsReadable()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-diagnostics-legacy-tests-" + Guid.NewGuid().ToString("N"));
+        string appRoot = Path.Combine(dir, "app");
+        string dataRoot = Path.Combine(dir, "data");
+        string runDir = Path.Combine(dataRoot, "Legacy", "Legacy-20250101-010203");
+        Directory.CreateDirectory(appRoot);
+        Directory.CreateDirectory(Path.Combine(runDir, "charts"));
+        try
+        {
+            File.WriteAllText(Path.Combine(runDir, "status.json"),
+                "{\"Phase\":\"done\",\"TargetProcess\":\"Legacy.exe\",\"LastReport\":\"legacy-report.html\",\"FrameCount\":12,\"ReportKind\":\"diagnostic\"}", Encoding.UTF8);
+            File.WriteAllText(Path.Combine(runDir, "error.txt"), "legacy report failed", Encoding.UTF8);
+            File.WriteAllText(Path.Combine(runDir, "charts", "framescope-interactive-manifest.json"),
+                "{\"hasFrameData\":false,\"frames\":12,\"reportKind\":\"diagnostic\"}", Encoding.UTF8);
+            FrameScopeConfig config = FrameScopeConfigStore.CreateDefaultConfig();
+            config.DataRoot = dataRoot;
+
+            Dictionary<string, object> report = FrameScopeDiagnostics.BuildReport(config, appRoot, dataRoot, "legacy-test", runDir);
+            Dictionary<string, object> recent = GetMap(report, "recentSession");
+            AssertEqual(12, Convert.ToInt32(recent["frames"]), "legacy frame count");
+            AssertEqual("diagnostic", Convert.ToString(recent["reportKind"]), "legacy report kind");
+            AssertTrue(Convert.ToString(recent["reportHtml"]).Contains("legacy-report.html"), "legacy report path");
+            AssertTrue(Json.Serialize(report).Contains("legacy report failed"), "legacy error fallback");
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
     private static void GeneratesDiagnosticReportWithPresentMonEtwAccessDeniedFields()
@@ -242,6 +319,11 @@ public static class FrameScopeDiagnosticsTests
             total += new FileInfo(file).Length;
         }
         return total;
+    }
+
+    private static Dictionary<string, object> GetMap(Dictionary<string, object> map, string key)
+    {
+        return (Dictionary<string, object>)map[key];
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)

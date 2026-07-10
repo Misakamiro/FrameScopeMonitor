@@ -46,6 +46,21 @@ public static partial class FrameScopeDiagnostics
         catch { return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase); }
     }
 
+    private static Dictionary<string, object> LoadReportDataMap(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            string text = File.ReadAllText(path, Encoding.UTF8);
+            int start = text.IndexOf('{');
+            int end = text.LastIndexOf('}');
+            if (start < 0 || end < start) return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, object> map = Json.Deserialize<Dictionary<string, object>>(text.Substring(start, end - start + 1));
+            return map ?? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        }
+        catch { return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase); }
+    }
+
     private static Dictionary<string, object> GetMap(Dictionary<string, object> map, string key)
     {
         if (map == null || !map.ContainsKey(key) || map[key] == null) return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);

@@ -107,6 +107,7 @@ public static partial class FrameScopeDiagnostics
         Dictionary<string, object> summary = LoadJsonMap(Path.Combine(runDir ?? "", "summary.json"));
         Dictionary<string, object> progress = LoadJsonMap(Path.Combine(runDir ?? "", "report-progress.json"));
         Dictionary<string, object> manifest = LoadJsonMap(Path.Combine(runDir ?? "", "charts", "framescope-interactive-manifest.json"));
+        Dictionary<string, object> reportData = LoadReportDataMap(Path.Combine(runDir ?? "", "charts", "framescope-interactive-data.js"));
 
         Dictionary<string, object> report = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         report["diagnosticReport"] = new Dictionary<string, object>
@@ -122,7 +123,7 @@ public static partial class FrameScopeDiagnostics
         report["settings"] = BuildSettingsSection(config);
         report["targetDetection"] = BuildTargetDetectionSection(config);
         report["recentSession"] = BuildRecentSessionSection(runDir, status, summary, manifest);
-        report["fpsSummary"] = BuildFpsSummary(status, manifest);
+        report["fpsSummary"] = BuildFpsSummary(status, manifest, reportData);
         report["reportGeneration"] = BuildReportGenerationSection(status, progress);
         report["performance"] = BuildPerformanceSection(runDir);
         report["errors"] = BuildErrorsSection(appRoot, runDir);

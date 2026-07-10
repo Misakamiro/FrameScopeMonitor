@@ -134,21 +134,21 @@ public static partial class FrameScopeDiagnostics
         {
             { "runDir", RedactForPrivacy(runDir ?? "") },
             { "statusPhase", GetString(status, "Phase") },
-            { "targetProcess", FirstNonEmpty(GetString(summary, "TargetProcess"), GetString(status, "TargetProcess")) },
-            { "reportHtml", RedactForPrivacy(FirstNonEmpty(GetString(summary, "ReportHtml"), GetString(status, "LastReport"))) },
-            { "hasFrameData", GetObject(manifest, "hasFrameData") },
-            { "reportKind", FirstNonEmpty(GetString(manifest, "reportKind"), GetString(status, "ReportKind")) },
-            { "frames", FirstNonNull(GetObject(manifest, "frames"), GetObject(status, "FrameCount")) }
+            { "targetProcess", FirstNonEmpty(GetString(status, "TargetProcess"), GetString(summary, "TargetProcess")) },
+            { "reportHtml", RedactForPrivacy(FirstNonEmpty(GetString(status, "ReportHtml"), GetString(summary, "ReportHtml"), GetString(status, "LastReport"))) },
+            { "hasFrameData", FirstNonNull(GetObject(status, "ReportHasFrameData"), GetObject(manifest, "hasFrameData")) },
+            { "reportKind", FirstNonEmpty(GetString(status, "ReportKind"), GetString(manifest, "reportKind")) },
+            { "frames", FirstNonNull(GetObject(status, "ReportFrameCount"), GetObject(manifest, "frames"), GetObject(status, "FrameCount")) }
         };
     }
 
-    private static Dictionary<string, object> BuildFpsSummary(Dictionary<string, object> status, Dictionary<string, object> manifest)
+    private static Dictionary<string, object> BuildFpsSummary(Dictionary<string, object> status, Dictionary<string, object> manifest, Dictionary<string, object> reportData)
     {
-        Dictionary<string, object> frameStats = GetMap(manifest, "frameStats");
+        Dictionary<string, object> frameStats = GetMap(reportData, "frameStats");
         return new Dictionary<string, object>
         {
-            { "hasFrameData", GetObject(manifest, "hasFrameData") },
-            { "frames", FirstNonNull(GetObject(manifest, "frames"), GetObject(status, "FrameCount")) },
+            { "hasFrameData", FirstNonNull(GetObject(status, "ReportHasFrameData"), GetObject(manifest, "hasFrameData")) },
+            { "frames", FirstNonNull(GetObject(status, "ReportFrameCount"), GetObject(manifest, "frames"), GetObject(status, "FrameCount")) },
             { "presentMonCsvRows", GetObject(status, "PresentMonCsvRows") },
             { "averageFps", GetObject(frameStats, "average") },
             { "low1", GetObject(frameStats, "low1") },
@@ -165,7 +165,17 @@ public static partial class FrameScopeDiagnostics
             { "reportProgressPercent", FirstNonNull(GetObject(status, "ReportProgressPercent"), GetObject(progress, "ReportProgressPercent")) },
             { "reportProgressError", FirstNonEmpty(GetString(status, "ReportProgressError"), GetString(progress, "ReportProgressError")) },
             { "reportCanRetry", FirstNonNull(GetObject(status, "ReportCanRetry"), GetObject(progress, "ReportCanRetry")) },
-            { "reportError", GetString(status, "ReportError") }
+            { "reportError", GetString(status, "ReportError") },
+            { "reportGenerationStartedAt", GetString(status, "ReportGenerationStartedAt") },
+            { "reportGenerationEndedAt", GetString(status, "ReportGenerationEndedAt") },
+            { "reportGenerationTimedOut", GetObject(status, "ReportGenerationTimedOut") },
+            { "reportGenerationExitCode", GetObject(status, "ReportGenerationExitCode") },
+            { "processSamplerStatus", GetString(status, "ProcessSamplerStatus") },
+            { "processSamplerValidRows", GetObject(status, "ProcessSamplerValidRows") },
+            { "processSamplerErrorTail", GetString(status, "ProcessSamplerErrorTail") },
+            { "systemSamplerStatus", GetString(status, "SystemSamplerStatus") },
+            { "systemSamplerValidRows", GetObject(status, "SystemSamplerValidRows") },
+            { "systemSamplerErrorTail", GetString(status, "SystemSamplerErrorTail") }
         };
     }
 
@@ -191,7 +201,9 @@ public static partial class FrameScopeDiagnostics
         List<string> errors = new List<string>();
         AddFilteredTail(errors, Path.Combine(appRoot ?? "", "framescope-watcher.log"));
         AddFilteredTail(errors, Path.Combine(runDir ?? "", "report-generation.log"));
-        AddFilteredTail(errors, Path.Combine(runDir ?? "", "error.txt"));
+        string currentMonitorError = Path.Combine(runDir ?? "", "monitor-error.txt");
+        if (File.Exists(currentMonitorError)) AddFilteredTail(errors, currentMonitorError);
+        else AddFilteredTail(errors, Path.Combine(runDir ?? "", "error.txt"));
         return new Dictionary<string, object>
         {
             { "recentErrors", errors.Take(80).ToList() }
