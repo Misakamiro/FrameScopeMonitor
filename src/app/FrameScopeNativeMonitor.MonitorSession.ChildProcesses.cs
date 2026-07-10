@@ -14,6 +14,26 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 using System.Runtime.InteropServices;
 
+internal sealed class NativeMonitorSamplerState
+{
+    public bool Required;
+    public string ExecutablePath = "";
+    public string CsvPath = "";
+    public string StdoutPath = "";
+    public string StderrPath = "";
+    public string StartError = "";
+    public Process Process;
+    public bool Started;
+    public int? Pid;
+    public DateTime? StartedAt;
+    public DateTime? ExitedAt;
+    public int? ExitCode;
+    public bool ExitedEarly;
+    public bool StopRequested;
+    public DateTime? StopRequestedAt = null;
+    public bool ForcedStop;
+}
+
 internal static partial class FrameScopeNativeMonitor
 {
     private static readonly object NativeMonitorPipeLock = new object();
@@ -157,5 +177,169 @@ internal static partial class FrameScopeNativeMonitor
         if (process == null) return true;
         try { return process.HasExited; }
         catch { return true; }
+    }
+
+    private static NativeMonitorSamplerState CreateNativeMonitorSamplerState(bool required, string executablePath, string csvPath, string stdoutPath, string stderrPath)
+    {
+        return new NativeMonitorSamplerState
+        {
+            Required = required,
+            ExecutablePath = executablePath ?? "",
+            CsvPath = csvPath ?? "",
+            StdoutPath = stdoutPath ?? "",
+            StderrPath = stderrPath ?? ""
+        };
+    }
+
+    private static Process StartNativeMonitorSampler(NativeMonitorSamplerState state, string arguments, string workingDirectory)
+    {
+        if (state == null) return null;
+        if (string.IsNullOrWhiteSpace(state.ExecutablePath) || !File.Exists(state.ExecutablePath))
+        {
+            state.StartError = "Sampler executable was not found: " + (state.ExecutablePath ?? "");
+            return null;
+        }
+        try
+        {
+            state.Process = StartNativeMonitorChild(
+                state.ExecutablePath,
+                arguments,
+                workingDirectory,
+                state.StdoutPath,
+                state.StderrPath,
+                ProcessPriorityClass.Idle);
+            if (state.Process != null)
+            {
+                state.Started = true;
+                state.Pid = state.Process.Id;
+                state.StartedAt = DateTime.Now;
+            }
+            else
+            {
+                state.StartError = "Process.Start returned null.";
+            }
+        }
+        catch (Exception ex)
+        {
+            state.StartError = ex.ToString();
+        }
+        return state.Process;
+    }
+
+    private static void RecordNativeMonitorSamplerExit(NativeMonitorSamplerState state, bool beforeOwnerStopRequest)
+    {
+        if (state == null || state.Process == null || state.ExitedAt.HasValue) return;
+        bool exited;
+        try { exited = state.Process.HasExited; }
+        catch { exited = true; }
+        if (!exited) return;
+
+        try { state.ExitCode = state.Process.ExitCode; }
+        catch { }
+        try { state.ExitedAt = state.Process.ExitTime; }
+        catch { state.ExitedAt = DateTime.Now; }
+        if (beforeOwnerStopRequest || IsNativeMonitorSamplerEarlyExit(state.ExitedAt.Value, state.StopRequestedAt, state.StopRequested)) state.ExitedEarly = true;
+        WaitForNativeMonitorChildOutput(state.Process, 5000);
+    }
+
+    private static bool IsNativeMonitorSamplerEarlyExit(DateTime exitedAt, DateTime? stopRequestedAt, bool stopRequested)
+    {
+        if (!stopRequested || !stopRequestedAt.HasValue) return true;
+        return exitedAt < stopRequestedAt.Value;
+    }
+
+    private static void StopNativeMonitorSampler(NativeMonitorSamplerState state, int waitMs)
+    {
+        if (state == null || state.Process == null) return;
+        RecordNativeMonitorSamplerExit(state, !state.StopRequested);
+        if (state.ExitedAt.HasValue) return;
+
+        bool exited = WaitForNativeMonitorChildExit(state.Process, waitMs, 5000);
+        if (!exited)
+        {
+            try
+            {
+                if (!state.Process.HasExited)
+                {
+                    state.ForcedStop = true;
+                    state.Process.Kill();
+                }
+            }
+            catch { }
+            WaitForNativeMonitorChildExit(state.Process, 3000, 5000);
+        }
+        RecordNativeMonitorSamplerExit(state, false);
+    }
+
+    private static FrameScopeSamplerEvidence BuildNativeMonitorSamplerEvidence(NativeMonitorSamplerState state, string[] requiredCsvColumns)
+    {
+        state = state ?? new NativeMonitorSamplerState { Required = true };
+        bool csvExists = false;
+        long csvBytes = 0;
+        try
+        {
+            csvExists = !string.IsNullOrWhiteSpace(state.CsvPath) && File.Exists(state.CsvPath);
+            if (csvExists) csvBytes = new FileInfo(state.CsvPath).Length;
+        }
+        catch { }
+
+        string errorTail = ReadNativeMonitorSamplerTail(state.StderrPath, 4096);
+        if (!string.IsNullOrWhiteSpace(state.StartError))
+        {
+            errorTail = string.IsNullOrWhiteSpace(errorTail)
+                ? state.StartError.Trim()
+                : state.StartError.Trim() + Environment.NewLine + errorTail;
+            if (errorTail.Length > 4096) errorTail = errorTail.Substring(errorTail.Length - 4096);
+        }
+
+        FrameScopeSamplerEvidence evidence = new FrameScopeSamplerEvidence
+        {
+            Required = state.Required,
+            ExecutablePath = state.ExecutablePath ?? "",
+            ExecutableAvailable = !string.IsNullOrWhiteSpace(state.ExecutablePath) && File.Exists(state.ExecutablePath),
+            Started = state.Started,
+            Pid = state.Pid,
+            StartedAt = state.StartedAt,
+            ExitedAt = state.ExitedAt,
+            ExitCode = state.ExitCode,
+            ExitedEarly = state.ExitedEarly,
+            StopRequested = state.StopRequested,
+            ForcedStop = state.ForcedStop,
+            CsvPath = state.CsvPath ?? "",
+            CsvExists = csvExists,
+            CsvBytes = csvBytes,
+            ValidRows = FrameScopeRunContract.CountValidCsvRows(state.CsvPath, requiredCsvColumns),
+            ErrorTail = errorTail
+        };
+        evidence.Status = FrameScopeRunContract.NormalizeSamplerStatus(evidence);
+        return evidence;
+    }
+
+    private static Dictionary<string, object> BuildNativeMonitorSamplerDiagnostics(NativeMonitorSamplerState processSampler, NativeMonitorSamplerState systemSampler)
+    {
+        Dictionary<string, object> diagnostics = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        AddNativeMonitorSamplerFields(diagnostics, "ProcessSampler", BuildNativeMonitorSamplerEvidence(processSampler, new[] { "Time", "ProcessName" }));
+        AddNativeMonitorSamplerFields(diagnostics, "SystemSampler", BuildNativeMonitorSamplerEvidence(systemSampler, new[] { "Time" }));
+        return diagnostics;
+    }
+
+    private static void AddNativeMonitorSamplerFields(Dictionary<string, object> target, string prefix, FrameScopeSamplerEvidence evidence)
+    {
+        FrameScopeRunContract.AddStatusFields(target, prefix, evidence);
+    }
+
+    private static string ReadNativeMonitorSamplerTail(string path, int maxChars)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+            string text = File.ReadAllText(path, Encoding.UTF8).Trim();
+            int limit = Math.Max(1, maxChars);
+            return text.Length <= limit ? text : text.Substring(text.Length - limit);
+        }
+        catch
+        {
+            return "";
+        }
     }
 }

@@ -22,6 +22,12 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         {
             return RunTargetHelper(helperReady, FrameScopePubgSimulationCommon.GetArgValue(args, "--helper-stop", ""));
         }
+        if (FrameScopePubgSimulationCommon.HasFlag(args, "--system-csv") &&
+            string.Equals(Environment.GetEnvironmentVariable("FRAMESCOPE_INTEGRATION_FAIL_SYSTEM_SAMPLER"), "1", StringComparison.Ordinal))
+        {
+            Console.Error.WriteLine("synthetic system sampler exited before owner stop");
+            return 7;
+        }
 
         bool createdNew;
         using (var mutex = new Mutex(true, "Local\\FrameScopeTargetLifecycleIntegrationTests", out createdNew))
@@ -35,6 +41,7 @@ public static class FrameScopeTargetLifecycleIntegrationTests
             try
             {
                 RunAliasHandoffScenario();
+                RunFailedSystemSamplerWatcherScenario();
                 RunOverlappingWatcherClaimScenario();
                 Console.WriteLine("FrameScopeTargetLifecycleIntegrationTests: PASS");
                 return 0;
@@ -201,21 +208,39 @@ public static class FrameScopeTargetLifecycleIntegrationTests
             AssertTrue(primaryExitedAt < replacementExitedAt, "replacement alias outlives primary alias");
 
             Dictionary<string, object> status = ReadJson(Path.Combine(runDir, "status.json"));
+            Dictionary<string, object> summary = ReadJson(Path.Combine(runDir, "summary.json"));
             AssertEqual("done", Convert.ToString(status["Phase"], CultureInfo.InvariantCulture), "final monitor phase");
             AssertEqual(true, Convert.ToBoolean(status["ReportGeneratedByWatcher"], CultureInfo.InvariantCulture), "watcher generated report");
             AssertEqual(0, Convert.ToInt32(status["ReportGenerationExitCode"], CultureInfo.InvariantCulture), "report generator exit code");
             AssertEqual(100, Convert.ToInt32(status["ReportProgressPercent"], CultureInfo.InvariantCulture), "report progress percent");
+            AssertEqual("full", Convert.ToString(status["ReportKind"], CultureInfo.InvariantCulture), "final status report kind");
+            AssertEqual("full", Convert.ToString(summary["ReportKind"], CultureInfo.InvariantCulture), "final summary report kind");
+            AssertEqual("healthy", Convert.ToString(status["ProcessSamplerStatus"], CultureInfo.InvariantCulture), "status process sampler health");
+            AssertEqual("healthy", Convert.ToString(status["SystemSamplerStatus"], CultureInfo.InvariantCulture), "status system sampler health");
+            AssertEqual("healthy", Convert.ToString(summary["ProcessSamplerStatus"], CultureInfo.InvariantCulture), "summary process sampler health");
+            AssertEqual("healthy", Convert.ToString(summary["SystemSamplerStatus"], CultureInfo.InvariantCulture), "summary system sampler health");
+            AssertTrue(Convert.ToInt32(status["ProcessSamplerValidRows"], CultureInfo.InvariantCulture) > 0, "status process sampler valid rows");
+            AssertTrue(Convert.ToInt32(status["SystemSamplerValidRows"], CultureInfo.InvariantCulture) > 0, "status system sampler valid rows");
 
             AssertNonEmpty(Path.Combine(runDir, "charts", "framescope-interactive-report.html"));
             AssertNonEmpty(Path.Combine(runDir, "charts", "framescope-interactive-data.js"));
             string manifestPath = Path.Combine(runDir, "charts", "framescope-interactive-manifest.json");
             AssertNonEmpty(manifestPath);
             string manifest = File.ReadAllText(manifestPath, Encoding.UTF8);
+            Dictionary<string, object> manifestMap = ReadJson(manifestPath);
             AssertTrue(Regex.IsMatch(manifest, "\\\"hasFrameData\\\"\\s*:\\s*true", RegexOptions.IgnoreCase), "report manifest has frame data");
             AssertTrue(Regex.IsMatch(manifest, "\\\"processSamples\\\"\\s*:\\s*[1-9][0-9]*", RegexOptions.IgnoreCase), "report manifest has process samples");
             AssertTrue(Regex.IsMatch(manifest, "\\\"systemSamples\\\"\\s*:\\s*[1-9][0-9]*", RegexOptions.IgnoreCase), "report manifest has system samples");
+            AssertEqual("full", Convert.ToString(manifestMap["reportKind"], CultureInfo.InvariantCulture), "manifest report kind");
+            AssertEqual("healthy", Convert.ToString(manifestMap["processSamplerStatus"], CultureInfo.InvariantCulture), "manifest process sampler health");
+            AssertEqual("healthy", Convert.ToString(manifestMap["systemSamplerStatus"], CultureInfo.InvariantCulture), "manifest system sampler health");
             string historyPath = Path.Combine(fixture, "framescope-history.jsonl");
             AssertEqual(1, File.ReadAllLines(historyPath).Count(line => !string.IsNullOrWhiteSpace(line)), "one watcher history entry");
+            Dictionary<string, object> history = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                .Deserialize<Dictionary<string, object>>(File.ReadAllLines(historyPath).Single(line => !string.IsNullOrWhiteSpace(line)));
+            AssertEqual("full", Convert.ToString(history["ReportKind"], CultureInfo.InvariantCulture), "history report kind");
+            AssertEqual("healthy", Convert.ToString(history["ProcessSamplerStatus"], CultureInfo.InvariantCulture), "history process sampler health");
+            AssertEqual("healthy", Convert.ToString(history["SystemSamplerStatus"], CultureInfo.InvariantCulture), "history system sampler health");
 
             passed = true;
             retainedFixture = "";
@@ -372,6 +397,119 @@ public static class FrameScopeTargetLifecycleIntegrationTests
             TryStop(watcher);
             foreach (int monitorPid in monitorPids) TryStop(monitorPid);
             foreach (string runDir in FindRunDirectories(dataRoot)) TryStopPresentMon(runDir);
+            if (passed) TryDeleteDirectory(fixture);
+        }
+    }
+
+    private static void RunFailedSystemSamplerWatcherScenario()
+    {
+        const string targetBaseName = "FrameScopePartialTarget";
+        AssertNoExistingProcess(targetBaseName);
+
+        string testRoot = AppDomain.CurrentDomain.BaseDirectory;
+        string root = Path.GetFullPath(Path.Combine(testRoot, ".."));
+        string fixture = Path.Combine(Path.GetTempPath(), "framescope-partial-watcher-" + Guid.NewGuid().ToString("N"));
+        retainedFixture = fixture;
+        string dataRoot = Path.Combine(fixture, "runs");
+        string toolsDir = Path.Combine(fixture, "tools");
+        Directory.CreateDirectory(dataRoot);
+        Directory.CreateDirectory(toolsDir);
+
+        CopyRuntime(root, fixture);
+        string testExe = Path.Combine(testRoot, "FrameScopeTargetLifecycleIntegrationTests.exe");
+        string targetExe = Path.Combine(fixture, targetBaseName + ".exe");
+        File.Copy(testExe, targetExe, true);
+        File.Copy(testExe, Path.Combine(fixture, "FrameScopeSystemSampler.exe"), true);
+        File.Copy(Path.Combine(testRoot, "FrameScopePubgFakePresentMon.exe"), Path.Combine(toolsDir, "PresentMon-2.4.1-x64.exe"), true);
+
+        string configPath = Path.Combine(fixture, "framescope-partial-config.json");
+        FrameScopeConfigStore.Save(configPath, new FrameScopeConfig
+        {
+            PollIntervalMs = FrameScopeConfigStore.InternalPollIntervalMs,
+            TelemetrySampleIntervalMs = 500,
+            DataRoot = dataRoot,
+            OpenReportOnComplete = false,
+            AutoGenerateDiagnosticReport = false,
+            MonitorScript = FrameScopeConfigStore.NativeMonitorMode,
+            CpuTelemetry = new FrameScopeCpuTelemetryConfig
+            {
+                CollectPerCoreFrequency = false,
+                CollectCpuVoltage = false,
+                VoltageProvider = "disabled"
+            },
+            Targets = new List<FrameScopeTarget>
+            {
+                new FrameScopeTarget
+                {
+                    Enabled = true,
+                    Name = "Partial Watcher Integration",
+                    ProcessName = targetBaseName + ".exe",
+                    OpenReportOnComplete = false
+                }
+            }
+        });
+
+        string ready = Path.Combine(fixture, "target.ready");
+        string stop = Path.Combine(fixture, "target.stop");
+        string watcherState = Path.Combine(fixture, "framescope-watcher-state.json");
+        Process target = null;
+        Process watcher = null;
+        int monitorPid = 0;
+        string runDir = "";
+        bool passed = false;
+        try
+        {
+            target = StartHidden(targetExe, JoinArguments("--helper-ready", ready, "--helper-stop", stop), fixture);
+            WaitUntil(delegate { return File.Exists(ready); }, 5000, "partial target ready");
+            Environment.SetEnvironmentVariable("FRAMESCOPE_INTEGRATION_FAIL_SYSTEM_SAMPLER", "1");
+            watcher = StartHidden(
+                Path.Combine(fixture, "FrameScopeMonitor.exe"),
+                JoinArguments("--watcher", "--config", configPath, "--exit-after-first-run"),
+                fixture);
+
+            WaitUntil(delegate
+            {
+                monitorPid = TryReadMonitorPid(watcherState);
+                return monitorPid > 0;
+            }, 15000, "partial watcher active monitor PID");
+            WaitUntil(delegate
+            {
+                runDir = FindRunDirectory(dataRoot);
+                return !string.IsNullOrWhiteSpace(runDir) && CountValidCsvRows(Path.Combine(runDir, "process-samples.csv"), 11) > 0;
+            }, 15000, "partial watcher process samples");
+
+            TrySignal(stop);
+            AssertTrue(target.WaitForExit(5000), "partial target exits");
+            AssertTrue(watcher.WaitForExit(30000), "partial watcher exits after report completion");
+            AssertEqual(0, watcher.ExitCode, "partial watcher exit code");
+
+            Dictionary<string, object> status = ReadJson(Path.Combine(runDir, "status.json"));
+            Dictionary<string, object> summary = ReadJson(Path.Combine(runDir, "summary.json"));
+            Dictionary<string, object> manifest = ReadJson(Path.Combine(runDir, "charts", "framescope-interactive-manifest.json"));
+            Dictionary<string, object> history = Json.Deserialize<Dictionary<string, object>>(
+                File.ReadAllLines(Path.Combine(fixture, "framescope-history.jsonl")).Single(line => !string.IsNullOrWhiteSpace(line)));
+
+            AssertEqual(true, Convert.ToBoolean(status["ReportHasFrameData"], CultureInfo.InvariantCulture), "partial watcher has frame data");
+            AssertEqual("partial", Convert.ToString(status["ReportKind"], CultureInfo.InvariantCulture), "partial watcher final status kind");
+            AssertEqual("partial", Convert.ToString(summary["ReportKind"], CultureInfo.InvariantCulture), "partial watcher final summary kind");
+            AssertEqual("partial", Convert.ToString(manifest["reportKind"], CultureInfo.InvariantCulture), "partial watcher manifest kind");
+            AssertEqual("partial", Convert.ToString(history["ReportKind"], CultureInfo.InvariantCulture), "partial watcher history kind");
+            AssertEqual("exited-early", Convert.ToString(status["SystemSamplerStatus"], CultureInfo.InvariantCulture), "partial watcher system sampler status");
+            AssertEqual(7, Convert.ToInt32(status["SystemSamplerExitCode"], CultureInfo.InvariantCulture), "partial watcher system sampler exit code");
+            AssertEqual(0, Convert.ToInt32(status["SystemSamplerValidRows"], CultureInfo.InvariantCulture), "partial watcher system sampler rows");
+            AssertEqual("exited-early", Convert.ToString(history["SystemSamplerStatus"], CultureInfo.InvariantCulture), "partial history system sampler status");
+
+            passed = true;
+            retainedFixture = "";
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("FRAMESCOPE_INTEGRATION_FAIL_SYSTEM_SAMPLER", null);
+            TrySignal(stop);
+            TryStop(target);
+            TryStop(watcher);
+            if (monitorPid > 0) TryStop(monitorPid);
+            TryStopPresentMon(runDir);
             if (passed) TryDeleteDirectory(fixture);
         }
     }

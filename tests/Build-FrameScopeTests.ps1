@@ -41,6 +41,10 @@ Invoke-TestBuild `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'src\core\FrameScopeLoggingPolicy.cs', 'tests\FrameScopeLoggingPolicyTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeRunContractTests.exe' `
+    -Sources @('src\core\FrameScopeRunContract.cs', 'tests\FrameScopeRunContractTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeNativeWatcherPolicyTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeNativeWatcherPolicyTests.cs')
@@ -94,6 +98,7 @@ Invoke-TestBuild `
     -OutputName 'FrameScopeNativeMonitorChildProcessTests.exe' `
     -References @('System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Management.dll', 'System.Web.Extensions.dll') `
     -Sources @(
+        'src\core\FrameScopeRunContract.cs',
         'src\core\FrameScopePresentMonDiagnostics.cs',
         'src\app\FrameScopeNativeMonitor.MonitorSession.ChildProcesses.cs',
         'tests\FrameScopeNativeMonitorChildProcessTests.cs'
@@ -115,6 +120,7 @@ Invoke-TestBuild `
     -Sources @(
         'src\core\FrameScopeReportProgress.cs',
         'src\core\FrameScopePresentMonDiagnostics.cs',
+        'src\core\FrameScopeRunContract.cs',
         'src\reporting\FrameScopeReportGenerator.cs',
         'src\reporting\FrameScopeReportGenerator.Models.cs',
         'src\reporting\FrameScopeReportGenerator.Cli.cs',

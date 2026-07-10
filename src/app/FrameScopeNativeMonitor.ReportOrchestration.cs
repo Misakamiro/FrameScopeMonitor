@@ -75,7 +75,8 @@ internal static partial class FrameScopeNativeMonitor
                 ReportHtml = reportHtml,
                 LogPath = Path.Combine(runDir, "report-generation.log"),
                 ProgressPath = Path.Combine(runDir, "report-progress.json"),
-                Error = "No monitor CSV data was found."
+                Error = "No monitor CSV data was found.",
+                ReportKind = "error"
             }, monitorExitCode);
         }
 
@@ -121,7 +122,7 @@ internal static partial class FrameScopeNativeMonitor
             Error = null,
             FrameCount = 0,
             HasFrameData = false,
-            ReportKind = "unknown"
+            ReportKind = "error"
         };
 
         if (!File.Exists(ReportGeneratorExe))
@@ -205,18 +206,29 @@ internal static partial class FrameScopeNativeMonitor
                 else
                 {
                     ReadReportManifest(runDir, result);
-                    if (!result.HasFrameData)
+                    if (string.Equals(result.ReportKind, "diagnostic", StringComparison.OrdinalIgnoreCase))
                     {
-                        result.ReportKind = "diagnostic";
                         result.Error = "No frame data was captured by PresentMon; generated diagnostic report from process/system data.";
                         FrameScopeReportProgress.Write(result.ProgressPath, "完成", 100, result.Error, progressStartedAt, null, false);
                         WriteFrameScopeLog("report-generate-diagnostic run=" + runDir + " report=" + result.ReportHtml);
                     }
-                    else
+                    else if (string.Equals(result.ReportKind, "partial", StringComparison.OrdinalIgnoreCase))
                     {
-                        result.ReportKind = "full";
+                        result.Error = "Frame data was captured, but one or more required auxiliary samplers were unhealthy.";
+                        FrameScopeReportProgress.Write(result.ProgressPath, "Completed", 100, result.Error, progressStartedAt, null, false);
+                        WriteFrameScopeLog("report-generate-partial run=" + runDir + " report=" + result.ReportHtml + " frames=" + result.FrameCount);
+                    }
+                    else if (string.Equals(result.ReportKind, "full", StringComparison.OrdinalIgnoreCase))
+                    {
                         FrameScopeReportProgress.Write(result.ProgressPath, "完成", 100, "报告生成完成", progressStartedAt, null, false);
                         WriteFrameScopeLog("report-generate-complete run=" + runDir + " report=" + result.ReportHtml + " frames=" + result.FrameCount);
+                    }
+                    else
+                    {
+                        result.ReportKind = "error";
+                        result.Error = "No valid frame, process, or system rows were available for this report.";
+                        FrameScopeReportProgress.Write(result.ProgressPath, "Completed", 100, result.Error, progressStartedAt, null, false);
+                        WriteFrameScopeLog("report-generate-error-kind run=" + runDir + " report=" + result.ReportHtml);
                     }
                 }
                 UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath);
@@ -282,10 +294,26 @@ internal static partial class FrameScopeNativeMonitor
             {
                 result.ReportKind = Convert.ToString(kindValue);
             }
+            CopyManifestSamplerEvidence(manifest, result.SamplerEvidenceFields, "processSampler", "ProcessSampler");
+            CopyManifestSamplerEvidence(manifest, result.SamplerEvidenceFields, "systemSampler", "SystemSampler");
         }
         catch (Exception ex)
         {
             WriteFrameScopeLog("report-manifest-read-failed run=" + runDir + " error=" + ex.Message);
+        }
+    }
+
+    private static void CopyManifestSamplerEvidence(Dictionary<string, object> manifest, Dictionary<string, object> target, string manifestPrefix, string statusPrefix)
+    {
+        if (manifest == null || target == null) return;
+        foreach (string suffix in new[]
+        {
+            "Required", "Exe", "ExecutableAvailable", "Started", "Pid", "StartedAt", "ExitedAt", "ExitCode",
+            "ExitedEarly", "StopRequested", "ForcedStop", "CsvPath", "CsvExists", "CsvBytes", "ValidRows", "Status", "ErrorTail"
+        })
+        {
+            object value;
+            if (manifest.TryGetValue(manifestPrefix + suffix, out value)) target[statusPrefix + suffix] = value;
         }
     }
 

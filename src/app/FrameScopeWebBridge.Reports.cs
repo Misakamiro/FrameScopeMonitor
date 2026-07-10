@@ -273,6 +273,10 @@ internal sealed partial class FrameScopeWebBridge
                 ReportKind = ReadString(status, "ReportKind"),
                 FrameCount = ReadInt(status, "ReportFrameCount", 0),
                 HasFrameData = ReadBool(status, "ReportHasFrameData", false),
+                ProcessSamplerStatus = ReadString(status, "ProcessSamplerStatus"),
+                ProcessSamplerValidRows = ReadInt(status, "ProcessSamplerValidRows", 0),
+                SystemSamplerStatus = ReadString(status, "SystemSamplerStatus"),
+                SystemSamplerValidRows = ReadInt(status, "SystemSamplerValidRows", 0),
                 SortTimeUtc = sortTime
             };
         }
@@ -417,6 +421,10 @@ internal sealed partial class FrameScopeWebBridge
         public string ReportKind = "";
         public int FrameCount;
         public bool HasFrameData;
+        public string ProcessSamplerStatus = "";
+        public int ProcessSamplerValidRows;
+        public string SystemSamplerStatus = "";
+        public int SystemSamplerValidRows;
         public DateTime SortTimeUtc;
 
         public Dictionary<string, object> ToPayload()
@@ -439,7 +447,11 @@ internal sealed partial class FrameScopeWebBridge
                 { "lastWriteTime", LastWriteTime },
                 { "reportKind", ReportKind },
                 { "frameCount", FrameCount },
-                { "hasFrameData", HasFrameData }
+                { "hasFrameData", HasFrameData },
+                { "processSamplerStatus", ProcessSamplerStatus },
+                { "processSamplerValidRows", ProcessSamplerValidRows },
+                { "systemSamplerStatus", SystemSamplerStatus },
+                { "systemSamplerValidRows", SystemSamplerValidRows }
             };
         }
     }

@@ -104,6 +104,7 @@ try {
         .\src\core\FrameScopeCapturePlanner.cs `
         .\src\core\FrameScopePresentMonDiagnostics.cs `
         .\src\core\FrameScopePresentMonSessionPolicy.cs `
+        .\src\core\FrameScopeRunContract.cs `
         .\src\core\FrameScopeTargetLifecycle.cs `
         .\src\core\FrameScopeProcessPicker.cs `
         .\src\core\FrameScopeTargetEditRules.cs `
@@ -178,6 +179,7 @@ try {
         /reference:Microsoft.VisualBasic.dll `
         .\src\core\FrameScopeReportProgress.cs `
         .\src\core\FrameScopePresentMonDiagnostics.cs `
+        .\src\core\FrameScopeRunContract.cs `
         .\src\reporting\FrameScopeReportGenerator.cs `
         .\src\reporting\FrameScopeReportGenerator.Models.cs `
         .\src\reporting\FrameScopeReportGenerator.Cli.cs `

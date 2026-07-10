@@ -27,6 +27,19 @@ public sealed class FrameScopeHistoryEntry
         ProcessCsv = "";
         SystemCsv = "";
         SummaryPath = "";
+        ReportKind = "";
+        ProcessSamplerExe = "";
+        ProcessSamplerStartedAt = "";
+        ProcessSamplerExitedAt = "";
+        ProcessSamplerCsvPath = "";
+        ProcessSamplerStatus = "";
+        ProcessSamplerErrorTail = "";
+        SystemSamplerExe = "";
+        SystemSamplerStartedAt = "";
+        SystemSamplerExitedAt = "";
+        SystemSamplerCsvPath = "";
+        SystemSamplerStatus = "";
+        SystemSamplerErrorTail = "";
         MonitorExitCode = 0;
     }
 
@@ -39,11 +52,55 @@ public sealed class FrameScopeHistoryEntry
     public string ProcessCsv { get; set; }
     public string SystemCsv { get; set; }
     public string SummaryPath { get; set; }
+    public string ReportKind { get; set; }
+    public bool ReportHasFrameData { get; set; }
+    public int ReportFrameCount { get; set; }
+    public int ReportProcessSampleCount { get; set; }
+    public int ReportSystemSampleCount { get; set; }
+    public bool ProcessSamplerRequired { get; set; }
+    public string ProcessSamplerExe { get; set; }
+    public bool ProcessSamplerExecutableAvailable { get; set; }
+    public bool ProcessSamplerStarted { get; set; }
+    public int? ProcessSamplerPid { get; set; }
+    public string ProcessSamplerStartedAt { get; set; }
+    public string ProcessSamplerExitedAt { get; set; }
+    public int? ProcessSamplerExitCode { get; set; }
+    public bool ProcessSamplerExitedEarly { get; set; }
+    public bool ProcessSamplerStopRequested { get; set; }
+    public bool ProcessSamplerForcedStop { get; set; }
+    public string ProcessSamplerCsvPath { get; set; }
+    public bool ProcessSamplerCsvExists { get; set; }
+    public long ProcessSamplerCsvBytes { get; set; }
+    public int ProcessSamplerValidRows { get; set; }
+    public string ProcessSamplerStatus { get; set; }
+    public string ProcessSamplerErrorTail { get; set; }
+    public bool SystemSamplerRequired { get; set; }
+    public string SystemSamplerExe { get; set; }
+    public bool SystemSamplerExecutableAvailable { get; set; }
+    public bool SystemSamplerStarted { get; set; }
+    public int? SystemSamplerPid { get; set; }
+    public string SystemSamplerStartedAt { get; set; }
+    public string SystemSamplerExitedAt { get; set; }
+    public int? SystemSamplerExitCode { get; set; }
+    public bool SystemSamplerExitedEarly { get; set; }
+    public bool SystemSamplerStopRequested { get; set; }
+    public bool SystemSamplerForcedStop { get; set; }
+    public string SystemSamplerCsvPath { get; set; }
+    public bool SystemSamplerCsvExists { get; set; }
+    public long SystemSamplerCsvBytes { get; set; }
+    public int SystemSamplerValidRows { get; set; }
+    public string SystemSamplerStatus { get; set; }
+    public string SystemSamplerErrorTail { get; set; }
     public int MonitorExitCode { get; set; }
 }
 
 internal sealed class ReportGenerationResult
 {
+    public ReportGenerationResult()
+    {
+        SamplerEvidenceFields = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+    }
+
     public bool Attempted;
     public int ExitCode;
     public string ReportHtml;
@@ -55,4 +112,5 @@ internal sealed class ReportGenerationResult
     public int SystemSampleCount;
     public bool HasFrameData;
     public string ReportKind;
+    public Dictionary<string, object> SamplerEvidenceFields;
 }

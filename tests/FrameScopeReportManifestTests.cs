@@ -12,6 +12,9 @@ public static class FrameScopeReportManifestTests
         ManifestJsonSurvivesPowerShellDefaultRead();
         AccessDeniedCaptureDiagnosticsFlowIntoManifestAndReportData();
         SilentNoCsvDiagnosticsStayTargetNeutralAndDiagnostic();
+        FramesWithFailedSystemSamplerArePartial();
+        FramesWithHealthySamplersAreFull();
+        NoUsableRowsAreError();
         ReportTargetDisplayNamePrefersConfiguredNameAndKeepsProcessName();
         ReportChartDataUsesBucketedFpsDisplayAndRawFrameStats();
         PresentMonPrimaryHardwareTrackSelectionKeepsRawDiagnostics();
@@ -217,6 +220,132 @@ public static class FrameScopeReportManifestTests
             try { Directory.Delete(dir, true); }
             catch { }
         }
+    }
+
+    private static void FramesWithFailedSystemSamplerArePartial()
+    {
+        string dir = CreateSamplerClassificationFixture(true, false);
+        try
+        {
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+
+            AssertEqual(true, Convert.ToBoolean(manifest["hasFrameData"]), "partial fixture has frame data");
+            AssertTrue(Convert.ToInt32(manifest["frames"]) > 0, "partial fixture valid frames");
+            AssertEqual(1, Convert.ToInt32(manifest["processSamples"]), "partial fixture actual process rows");
+            AssertEqual(0, Convert.ToInt32(manifest["systemSamples"]), "partial fixture actual system rows override optimistic status");
+            AssertEqual("partial", Convert.ToString(manifest["reportKind"]), "failed system sampler report kind");
+            AssertEqual("healthy", Convert.ToString(manifest["processSamplerStatus"]), "partial fixture process sampler status");
+            AssertEqual("failed", Convert.ToString(manifest["systemSamplerStatus"]), "partial fixture system sampler status");
+            AssertEqual(0, Convert.ToInt32(manifest["systemSamplerValidRows"]), "manifest system rows come from actual CSV");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void FramesWithHealthySamplersAreFull()
+    {
+        string dir = CreateSamplerClassificationFixture(true, true);
+        try
+        {
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+
+            AssertEqual("full", Convert.ToString(manifest["reportKind"]), "healthy sampler report kind");
+            AssertEqual("healthy", Convert.ToString(manifest["processSamplerStatus"]), "healthy process sampler status");
+            AssertEqual("healthy", Convert.ToString(manifest["systemSamplerStatus"]), "healthy system sampler status");
+            AssertEqual(1, Convert.ToInt32(manifest["processSamplerValidRows"]), "healthy process sampler valid rows");
+            AssertEqual(1, Convert.ToInt32(manifest["systemSamplerValidRows"]), "healthy system sampler valid rows");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void NoUsableRowsAreError()
+    {
+        string dir = CreateSamplerClassificationFixture(false, false);
+        try
+        {
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+
+            AssertEqual(false, Convert.ToBoolean(manifest["hasFrameData"]), "error fixture has no frame data");
+            AssertEqual(0, Convert.ToInt32(manifest["processSamples"]), "error fixture process rows");
+            AssertEqual(0, Convert.ToInt32(manifest["systemSamples"]), "error fixture system rows");
+            AssertEqual("error", Convert.ToString(manifest["reportKind"]), "no evidence report kind");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static string CreateSamplerClassificationFixture(bool withFrames, bool healthySystem)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-sampler-classification-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        DateTime started = new DateTime(2026, 7, 11, 10, 0, 0, DateTimeKind.Utc);
+        if (withFrames)
+        {
+            File.WriteAllText(Path.Combine(dir, "presentmon.csv"),
+                "TimeInDateTime,MsBetweenPresents,Application,ProcessID,SwapChainAddress,PresentMode,AllowsTearing\r\n"
+                + started.ToString("o") + ",16.667,game.exe,4242,0x1,Hardware Composed: Independent Flip,true\r\n"
+                + started.AddMilliseconds(17).ToString("o") + ",16.667,game.exe,4242,0x1,Hardware Composed: Independent Flip,true\r\n",
+                Encoding.UTF8);
+        }
+        File.WriteAllText(Path.Combine(dir, "process-samples.csv"),
+            "Time,SampleIndex,ElapsedMs,ProcessName,InstanceCount,CpuPct,WorkingSetMB,ReadMBps,WriteMBps,WindowTitle,Pid\r\n"
+            + (withFrames ? started.ToString("o") + ",0,0,helper,1,1.0,128,0,0,,77\r\n" : ""),
+            Encoding.UTF8);
+        File.WriteAllText(Path.Combine(dir, "system-samples.csv"),
+            "Time,SampleIndex,TargetRunning,TotalCpuPct,AvailableMB\r\n"
+            + (healthySystem ? started.ToString("o") + ",0,True,10,16000\r\n" : ""),
+            Encoding.UTF8);
+
+        Dictionary<string, object> status = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "Phase", "done" },
+            { "TargetProcess", "game.exe" }
+        };
+        AddSamplerFixtureEvidence(status, "ProcessSampler", Path.Combine(dir, "process-samples.csv"), withFrames, 0, false, withFrames ? 1 : 0);
+        AddSamplerFixtureEvidence(status, "SystemSampler", Path.Combine(dir, "system-samples.csv"), true, healthySystem ? 0 : 7, false, healthySystem ? 1 : 99);
+        File.WriteAllText(Path.Combine(dir, "status.json"), new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(status), Encoding.UTF8);
+        return dir;
+    }
+
+    private static void AddSamplerFixtureEvidence(Dictionary<string, object> status, string prefix, string csvPath, bool started, int exitCode, bool exitedEarly, int optimisticRows)
+    {
+        DateTime startedAt = new DateTime(2026, 7, 11, 10, 0, 0, DateTimeKind.Utc);
+        status[prefix + "Required"] = true;
+        status[prefix + "Exe"] = @"C:\FrameScope\" + prefix + ".exe";
+        status[prefix + "ExecutableAvailable"] = true;
+        status[prefix + "Started"] = started;
+        status[prefix + "Pid"] = started ? (object)4242 : null;
+        status[prefix + "StartedAt"] = started ? startedAt.ToString("o") : "";
+        status[prefix + "ExitedAt"] = started ? startedAt.AddSeconds(2).ToString("o") : "";
+        status[prefix + "ExitCode"] = started ? (object)exitCode : null;
+        status[prefix + "ExitedEarly"] = exitedEarly;
+        status[prefix + "StopRequested"] = true;
+        status[prefix + "ForcedStop"] = false;
+        status[prefix + "CsvPath"] = csvPath;
+        status[prefix + "CsvExists"] = true;
+        status[prefix + "CsvBytes"] = 9999;
+        status[prefix + "ValidRows"] = optimisticRows;
+        status[prefix + "Status"] = "healthy";
+        status[prefix + "ErrorTail"] = exitedEarly ? "synthetic sampler failure" : "";
+    }
+
+    private static Dictionary<string, object> ReadManifest(string dir)
+    {
+        return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<Dictionary<string, object>>(
+            File.ReadAllText(Path.Combine(dir, "charts", "framescope-interactive-manifest.json"), Encoding.UTF8));
     }
 
     private static void ReportTargetDisplayNamePrefersConfiguredNameAndKeepsProcessName()

@@ -24,6 +24,8 @@ internal static partial class FrameScopeNativeMonitor
         Process presentMon = null;
         Process processSampler = null;
         Process systemSampler = null;
+        NativeMonitorSamplerState processSamplerState = null;
+        NativeMonitorSamplerState systemSamplerState = null;
         MonitorSessionPaths paths = null;
         Dictionary<string, object> presentMonPreflight = null;
         bool verboseLogs = false;
@@ -94,6 +96,8 @@ internal static partial class FrameScopeNativeMonitor
             var presentMonPath = ResolvePresentMonPath(requestedPresentMon);
             var processSamplerPath = ResolveProcessSamplerPath(requestedProcessSampler);
             var systemSamplerPath = ResolveSystemSamplerPath(requestedSystemSampler);
+            processSamplerState = CreateNativeMonitorSamplerState(true, processSamplerPath, paths.ProcessCsv, paths.ProcessSamplerStdout, paths.ProcessSamplerStderr);
+            systemSamplerState = CreateNativeMonitorSamplerState(true, systemSamplerPath, paths.SamplesCsv, paths.SystemSamplerStdout, paths.SystemSamplerStderr);
             presentMonPreflight = FrameScopePresentMonDiagnostics.BuildPreflightDiagnostics(presentMonPath);
             var nvidiaSmiPath = ResolveNvidiaSmiPath();
             var captureUntilTargetExit = captureSeconds <= 0;
@@ -133,11 +137,6 @@ internal static partial class FrameScopeNativeMonitor
             {
                 throw new InvalidOperationException("PresentMon not found. Expected portable copy under tools\\PresentMon-2.4.1-x64.exe or NVIDIA FrameView SDK PresentMon.");
             }
-            if (string.IsNullOrWhiteSpace(processSamplerPath) || !File.Exists(processSamplerPath))
-                {
-                    throw new InvalidOperationException("FrameScopeProcessSampler.exe not found beside FrameScopeMonitor.exe.");
-                }
-
             CleanupStaleOwnedPresentMonSessions(presentMonPath);
             WritePresentMonInfo(paths.PresentMonInfoPath, presentMonPath);
 
@@ -253,8 +252,8 @@ internal static partial class FrameScopeNativeMonitor
                     presentMonRuntimeStopwatch = Stopwatch.StartNew();
                 }
 
-                processSampler = StartNativeMonitorChild(
-                    processSamplerPath,
+                processSampler = StartNativeMonitorSampler(
+                    processSamplerState,
                     JoinArguments(new[]
                     {
                         "--target", targetBaseName,
@@ -295,7 +294,7 @@ internal static partial class FrameScopeNativeMonitor
                         "--cpu-vid-provider", cpuVidProvider
                     };
                     if (!string.IsNullOrWhiteSpace(nvidiaSmiPath)) systemArgs.AddRange(new[] { "--nvidia-smi", nvidiaSmiPath });
-                    systemSampler = StartNativeMonitorChild(systemSamplerPath, JoinArguments(systemArgs.ToArray()), Root);
+                    systemSampler = StartNativeMonitorSampler(systemSamplerState, JoinArguments(systemArgs.ToArray()), Root);
                 }
                 else
                 {
@@ -330,6 +329,8 @@ internal static partial class FrameScopeNativeMonitor
 
                 while (true)
                 {
+                    RecordNativeMonitorSamplerExit(processSamplerState, true);
+                    RecordNativeMonitorSamplerExit(systemSamplerState, true);
                     var selectedPidExitedAtIterationStart = selectedPidExited;
                     var deadlineReached = DateTime.Now >= captureDeadline;
                     if (captureUntilTargetExit && selectedPidExited)
@@ -383,6 +384,7 @@ internal static partial class FrameScopeNativeMonitor
                             { "PresentMonSessionName", presentMonSessionName },
                             { "PresentMonArgs", presentMonArguments }
                         };
+                        AddDictionary(capturingStatus, BuildNativeMonitorSamplerDiagnostics(processSamplerState, systemSamplerState));
                         AddDictionary(capturingStatus, presentMonPreflight);
                         WriteNativeMonitorStatus(paths, "capturing", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, capturingStatus);
                         lastStatusWrite = now;
@@ -444,10 +446,23 @@ internal static partial class FrameScopeNativeMonitor
                         " timed=" + (!captureUntilTargetExit);
                 });
 
-                try { File.WriteAllText(paths.SamplerStopPath, DateTime.Now.ToString("o", CultureInfo.InvariantCulture), Encoding.UTF8); }
-                catch { }
-                StopMonitorChild(processSampler, 5000, true);
-                StopMonitorChild(systemSampler, 5000, true);
+                RecordNativeMonitorSamplerExit(processSamplerState, true);
+                RecordNativeMonitorSamplerExit(systemSamplerState, true);
+                bool samplerStopRequested = false;
+                DateTime? samplerStopRequestedAt = null;
+                try
+                {
+                    samplerStopRequestedAt = DateTime.Now;
+                    File.WriteAllText(paths.SamplerStopPath, samplerStopRequestedAt.Value.ToString("o", CultureInfo.InvariantCulture), Encoding.UTF8);
+                    samplerStopRequested = true;
+                }
+                catch { samplerStopRequestedAt = null; }
+                processSamplerState.StopRequested = samplerStopRequested;
+                processSamplerState.StopRequestedAt = samplerStopRequestedAt;
+                systemSamplerState.StopRequested = samplerStopRequested;
+                systemSamplerState.StopRequestedAt = samplerStopRequestedAt;
+                StopNativeMonitorSampler(processSamplerState, 5000);
+                StopNativeMonitorSampler(systemSamplerState, 5000);
                 try { if (File.Exists(paths.SamplerStopPath)) File.Delete(paths.SamplerStopPath); }
                 catch { }
 
@@ -505,6 +520,7 @@ internal static partial class FrameScopeNativeMonitor
                 };
                 var captureDiagnostics = BuildPresentMonCaptureDiagnostics(paths, presentMonExitCode, presentMonExitedEarly, presentMonForcedStop, presentMonDiagnosticContext);
                 captureDiagnostics["TargetDisplayName"] = targetDisplayLabel;
+                AddDictionary(captureDiagnostics, BuildNativeMonitorSamplerDiagnostics(processSamplerState, systemSamplerState));
                 AddDictionary(captureDiagnostics, BuildCpuCoreTelemetryDiagnostics(paths, enableCpuCoreTelemetry, enableCpuVoltageTelemetry, enableCpuVidTelemetry));
                 var finalizing = new Dictionary<string, object>
                 {
@@ -591,8 +607,10 @@ internal static partial class FrameScopeNativeMonitor
         }
         catch (Exception ex)
         {
-            StopMonitorChild(processSampler, 0, true);
-            StopMonitorChild(systemSampler, 0, true);
+            RecordNativeMonitorSamplerExit(processSamplerState, true);
+            RecordNativeMonitorSamplerExit(systemSamplerState, true);
+            StopNativeMonitorSampler(processSamplerState, 0);
+            StopNativeMonitorSampler(systemSamplerState, 0);
             StopMonitorChild(presentMon, 0, true);
 
             if (paths != null)
@@ -607,6 +625,7 @@ internal static partial class FrameScopeNativeMonitor
                         { "ErrorPath", paths.ErrorPath },
                         { "MonitorMode", "native-csharp" }
                     };
+                    AddDictionary(errorStatus, BuildNativeMonitorSamplerDiagnostics(processSamplerState, systemSamplerState));
                     AddDictionary(errorStatus, presentMonPreflight);
                     WriteNativeMonitorStatus(paths, "error", "", "unknown", 100, 100, 1000, 3000, "", "", "", errorStatus);
                 }

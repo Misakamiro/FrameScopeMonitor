@@ -71,6 +71,10 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, object> hardware = LoadHardware();
         Dictionary<string, string> metadata = LoadRunMetadata(runDir);
         Dictionary<string, object> captureDiagnostics = LoadCaptureDiagnostics(runDir);
+        FrameScopeSamplerEvidence processSampler = LoadSamplerEvidence(runDir, "ProcessSampler", "process-samples.csv", new[] { "Time", "ProcessName" });
+        FrameScopeSamplerEvidence systemSampler = LoadSamplerEvidence(runDir, "SystemSampler", "system-samples.csv", new[] { "Time" });
+        FrameScopeRunContract.AddStatusFields(captureDiagnostics, "ProcessSampler", processSampler);
+        FrameScopeRunContract.AddStatusFields(captureDiagnostics, "SystemSampler", systemSampler);
         Dictionary<string, object> cpuCoreTelemetry = LoadCpuCoreTelemetryMetadataStrict(runDir, captureDiagnostics);
         string targetProcess = metadata.ContainsKey("targetProcess") ? metadata["targetProcess"] : "cs2.exe";
         string targetDisplayName = metadata.ContainsKey("targetDisplayName") ? metadata["targetDisplayName"] : targetProcess;
@@ -83,6 +87,9 @@ internal static partial class FrameScopeReportGenerator
 
         WriteProgress(progressPath, "处理进程", 35, "读取后台进程 CPU、内存和峰值", progressStart, null, false);
         ProcessMatrixResult process = ReadProcessMatrix(Path.Combine(runDir, "process-samples.csv"), start, targetProcess);
+        int processSampleRows = processSampler.ValidRows;
+        int systemSampleRows = systemSampler.ValidRows;
+        string reportKind = FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);
         Dictionary<string, object> systemSeries = SeriesFromSystem(systemRows, start, totalMemoryMb);
         Dictionary<string, object> cpuCoreCharts = ReadCpuCoreCharts(runDir, start, cpuCoreTelemetry);
 
@@ -155,7 +162,7 @@ internal static partial class FrameScopeReportGenerator
             { "target", new Dictionary<string, object> { { "processName", targetProcess }, { "displayName", targetDisplayName } } },
             { "hardware", hardware },
             { "hardwareDerived", new Dictionary<string, object> { { "totalMemoryGb", Round(totalMemoryGb, 2) }, { "vramTotalGb", Round(vramTotalGb, 2) } } },
-            { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "processSamples", process.Times.Count }, { "processes", process.Names.Count }, { "systemSamples", systemRows.Count } } },
+            { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "processSamples", processSampleRows }, { "processes", process.Names.Count }, { "systemSamples", systemSampleRows } } },
             { "presentMon", present.Diagnostics },
             { "frameStats", frameStats },
             { "systemStats", systemStats },
@@ -192,10 +199,10 @@ internal static partial class FrameScopeReportGenerator
             { "presentMonSelectionMode", GetDiagnostic(present.Diagnostics, "selectionMode") },
             { "presentMonSelectedTrack", GetDiagnostic(present.Diagnostics, "selectedTrack") },
             { "hasFrameData", frames.Count > 0 },
-            { "reportKind", frames.Count > 0 ? "full" : "diagnostic" },
+            { "reportKind", reportKind },
             { "processes", process.Names.Count },
-            { "processSamples", process.Times.Count },
-            { "systemSamples", systemRows.Count },
+            { "processSamples", processSampleRows },
+            { "systemSamples", systemSampleRows },
             { "cpuFrequencyCaptured", notes["cpuFrequencyCaptured"] },
             { "frameCaptureStatus", notes["frameCaptureStatus"] },
             { "frameCaptureMessage", notes["frameCaptureMessage"] },
@@ -252,6 +259,8 @@ internal static partial class FrameScopeReportGenerator
             { "cpuVidSamplesCsv", cpuCoreTelemetry["cpuVidSamplesCsv"] },
             { "generator", "native-csharp" }
         };
+        AddSamplerManifestFields(manifest, "processSampler", processSampler);
+        AddSamplerManifestFields(manifest, "systemSampler", systemSampler);
         string manifestJson = SerializeArtifactJson(manifest);
         File.WriteAllText(manifestPath, manifestJson, new UTF8Encoding(false));
         WriteProgress(progressPath, "完成", 100, "报告生成完成", progressStart, null, false);
@@ -262,6 +271,27 @@ internal static partial class FrameScopeReportGenerator
     internal static void GenerateForTests(string runDir)
     {
         Generate(runDir, "");
+    }
+
+    private static void AddSamplerManifestFields(Dictionary<string, object> manifest, string prefix, FrameScopeSamplerEvidence evidence)
+    {
+        manifest[prefix + "Required"] = evidence.Required;
+        manifest[prefix + "Exe"] = evidence.ExecutablePath ?? "";
+        manifest[prefix + "ExecutableAvailable"] = evidence.ExecutableAvailable;
+        manifest[prefix + "Started"] = evidence.Started;
+        manifest[prefix + "Pid"] = evidence.Pid;
+        manifest[prefix + "StartedAt"] = evidence.StartedAt.HasValue ? evidence.StartedAt.Value.ToString("o", CultureInfo.InvariantCulture) : "";
+        manifest[prefix + "ExitedAt"] = evidence.ExitedAt.HasValue ? evidence.ExitedAt.Value.ToString("o", CultureInfo.InvariantCulture) : "";
+        manifest[prefix + "ExitCode"] = evidence.ExitCode;
+        manifest[prefix + "ExitedEarly"] = evidence.ExitedEarly;
+        manifest[prefix + "StopRequested"] = evidence.StopRequested;
+        manifest[prefix + "ForcedStop"] = evidence.ForcedStop;
+        manifest[prefix + "CsvPath"] = evidence.CsvPath ?? "";
+        manifest[prefix + "CsvExists"] = evidence.CsvExists;
+        manifest[prefix + "CsvBytes"] = evidence.CsvBytes;
+        manifest[prefix + "ValidRows"] = evidence.ValidRows;
+        manifest[prefix + "Status"] = evidence.Status ?? "";
+        manifest[prefix + "ErrorTail"] = evidence.ErrorTail ?? "";
     }
 
     internal static string SerializeArtifactJson(object value)

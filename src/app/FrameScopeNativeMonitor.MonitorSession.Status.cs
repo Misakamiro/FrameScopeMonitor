@@ -59,6 +59,10 @@ internal static partial class FrameScopeNativeMonitor
             { "CpuVidTelemetryStatusPath", paths.CpuVidTelemetryStatusPath }
         };
 
+        AddDictionary(status, BuildNativeMonitorSamplerDiagnostics(
+            CreateNativeMonitorSamplerState(true, processSamplerPath, paths.ProcessCsv, paths.ProcessSamplerStdout, paths.ProcessSamplerStderr),
+            CreateNativeMonitorSamplerState(true, systemSamplerPath, paths.SamplesCsv, paths.SystemSamplerStdout, paths.SystemSamplerStderr)));
+
         if (extra != null)
         {
             foreach (var pair in extra) status[pair.Key] = pair.Value;

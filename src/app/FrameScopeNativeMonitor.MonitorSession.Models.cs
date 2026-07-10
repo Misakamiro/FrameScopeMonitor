@@ -30,6 +30,10 @@ internal sealed class MonitorSessionPaths
     public string CpuVidSamplesCsv;
     public string CpuVidTelemetryStatusPath;
     public string ProcessCsv;
+    public string ProcessSamplerStdout;
+    public string ProcessSamplerStderr;
+    public string SystemSamplerStdout;
+    public string SystemSamplerStderr;
     public string TopCpuCsv;
     public string TopIoCsv;
     public string AlertsCsv;

@@ -28,7 +28,9 @@ public static class FrameScopeLoggingPolicy
         if (!string.IsNullOrWhiteSpace(ReadString(status, "ReportError"))) return true;
 
         string reportKind = ReadString(status, "ReportKind");
-        if (reportKind.Equals("diagnostic", StringComparison.OrdinalIgnoreCase)) return true;
+        if (reportKind.Equals("diagnostic", StringComparison.OrdinalIgnoreCase) ||
+            reportKind.Equals("partial", StringComparison.OrdinalIgnoreCase) ||
+            reportKind.Equals("error", StringComparison.OrdinalIgnoreCase)) return true;
 
         string frameCaptureStatus = ReadString(status, "FrameCaptureStatus");
         if (!string.IsNullOrWhiteSpace(frameCaptureStatus) &&

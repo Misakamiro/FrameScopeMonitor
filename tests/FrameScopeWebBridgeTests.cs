@@ -278,6 +278,17 @@ public static class FrameScopeWebBridgeTests
     {
         string root = CreateTempRoot("reports-list");
         string runDir = CreateReportRun(root, "Bridge Game", true);
+        File.WriteAllText(Path.Combine(runDir, "status.json"), Json.Serialize(new Dictionary<string, object>
+        {
+            { "Phase", "done" },
+            { "ReportKind", "partial" },
+            { "ReportFrameCount", 120 },
+            { "ReportHasFrameData", true },
+            { "ProcessSamplerStatus", "healthy" },
+            { "ProcessSamplerValidRows", 10 },
+            { "SystemSamplerStatus", "failed" },
+            { "SystemSamplerValidRows", 0 }
+        }));
         string unsafeRun = Path.Combine(Path.GetTempPath(), "FrameScopeWebBridgeTests-outside-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(unsafeRun);
         File.AppendAllText(Path.Combine(root, "framescope-history.jsonl"), HistoryJson("Bridge Game", "BridgeGame.exe", runDir, Path.Combine(runDir, "charts", "framescope-interactive-report.html")) + Environment.NewLine);
@@ -293,6 +304,11 @@ public static class FrameScopeWebBridgeTests
         var report = (Dictionary<string, object>)reports[0];
         AssertEqual("Bridge Game", AsString(report, "game"), "report game");
         AssertEqual(true, AsBool(report, "canOpenReport"), "report can open");
+        AssertEqual("partial", AsString(report, "reportKind"), "report source status preserves partial");
+        AssertEqual("healthy", AsString(report, "processSamplerStatus"), "report process sampler status");
+        AssertEqual("failed", AsString(report, "systemSamplerStatus"), "report system sampler status");
+        AssertEqual(10, Convert.ToInt32(report["processSamplerValidRows"]), "report process sampler rows");
+        AssertEqual(0, Convert.ToInt32(report["systemSamplerValidRows"]), "report system sampler rows");
     }
 
     private static void ReportsListSkipsNoisyFallbackButKeepsHistoryAndExpectedReports()

@@ -167,6 +167,75 @@ internal static partial class FrameScopeReportGenerator
         return result;
     }
 
+    private static FrameScopeSamplerEvidence LoadSamplerEvidence(string runDir, string prefix, string csvName, string[] requiredCsvColumns)
+    {
+        Dictionary<string, object> status = LoadRunStatusMap(runDir);
+        string actualCsvPath = Path.Combine(runDir, csvName);
+        FrameScopeSamplerEvidence evidence = new FrameScopeSamplerEvidence
+        {
+            Required = GetBoolDiagnostic(status, prefix + "Required", true),
+            ExecutablePath = GetStringDiagnostic(status, prefix + "Exe", GetStringDiagnostic(status, prefix + "ExecutablePath", "")),
+            ExecutableAvailable = GetBoolDiagnostic(status, prefix + "ExecutableAvailable", false),
+            Started = GetBoolDiagnostic(status, prefix + "Started", false),
+            Pid = GetNullableIntDiagnostic(status, prefix + "Pid"),
+            StartedAt = GetNullableDateDiagnostic(status, prefix + "StartedAt"),
+            ExitedAt = GetNullableDateDiagnostic(status, prefix + "ExitedAt"),
+            ExitCode = GetNullableIntDiagnostic(status, prefix + "ExitCode"),
+            ExitedEarly = GetBoolDiagnostic(status, prefix + "ExitedEarly", false),
+            StopRequested = GetBoolDiagnostic(status, prefix + "StopRequested", false),
+            ForcedStop = GetBoolDiagnostic(status, prefix + "ForcedStop", false),
+            CsvPath = actualCsvPath,
+            CsvExists = File.Exists(actualCsvPath),
+            CsvBytes = SafeFileLength(actualCsvPath),
+            ValidRows = FrameScopeRunContract.CountValidCsvRows(actualCsvPath, requiredCsvColumns),
+            ErrorTail = GetStringDiagnostic(status, prefix + "ErrorTail", "")
+        };
+        evidence.Status = FrameScopeRunContract.NormalizeSamplerStatus(evidence);
+        return evidence;
+    }
+
+    private static Dictionary<string, object> LoadRunStatusMap(string runDir)
+    {
+        Dictionary<string, object> result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        foreach (string path in new[] { Path.Combine(runDir, "summary.json"), Path.Combine(runDir, "status.json") })
+        {
+            if (!File.Exists(path)) continue;
+            try
+            {
+                Dictionary<string, object> map = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
+                    .Deserialize<Dictionary<string, object>>(File.ReadAllText(path, Encoding.UTF8));
+                if (map == null) continue;
+                foreach (KeyValuePair<string, object> pair in map) result[pair.Key] = pair.Value;
+            }
+            catch { }
+        }
+        return result;
+    }
+
+    private static int? GetNullableIntDiagnostic(Dictionary<string, object> map, string key)
+    {
+        object value;
+        if (map == null || !map.TryGetValue(key, out value) || value == null) return null;
+        try { return Convert.ToInt32(value, CultureInfo.InvariantCulture); }
+        catch { return null; }
+    }
+
+    private static DateTime? GetNullableDateDiagnostic(Dictionary<string, object> map, string key)
+    {
+        object value;
+        if (map == null || !map.TryGetValue(key, out value) || value == null) return null;
+        DateTime parsed;
+        return DateTime.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out parsed)
+            ? (DateTime?)parsed
+            : null;
+    }
+
+    private static long SafeFileLength(string path)
+    {
+        try { return File.Exists(path) ? new FileInfo(path).Length : 0; }
+        catch { return 0; }
+    }
+
     private static FrameScopePresentMonCaptureDiagnosticContext BuildPresentMonContextFromDiagnostics(Dictionary<string, object> diagnostics)
     {
         return new FrameScopePresentMonCaptureDiagnosticContext

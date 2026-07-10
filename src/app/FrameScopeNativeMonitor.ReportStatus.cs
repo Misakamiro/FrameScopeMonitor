@@ -38,11 +38,49 @@ internal static partial class FrameScopeNativeMonitor
         map["ReportProcessSampleCount"] = result.ProcessSampleCount;
         map["ReportSystemSampleCount"] = result.SystemSampleCount;
         map["ReportKind"] = result.ReportKind;
+        ApplyReportSamplerEvidence(map, result);
         FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));
 
         try { File.WriteAllText(statusPath, Json.Serialize(map), Encoding.UTF8); }
         catch (Exception ex) { WriteFrameScopeLog("status-update-failed run=" + runDir + " error=" + ex.Message); }
+        UpdateSummaryAfterReportGeneration(runDir, result);
         return map;
+    }
+
+    private static void UpdateSummaryAfterReportGeneration(string runDir, ReportGenerationResult result)
+    {
+        try
+        {
+            string path = Path.Combine(runDir, "summary.json");
+            Dictionary<string, object> map = File.Exists(path)
+                ? Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(path, Encoding.UTF8))
+                : new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            if (map == null) map = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            map["ReportHtml"] = result.ReportHtml;
+            map["ReportLog"] = result.LogPath;
+            map["ReportProgressPath"] = result.ProgressPath;
+            map["ReportError"] = result.Error;
+            map["ReportGenerationAttempted"] = result.Attempted;
+            map["ReportGenerationExitCode"] = result.ExitCode;
+            map["ReportFrameCount"] = result.FrameCount;
+            map["ReportHasFrameData"] = result.HasFrameData;
+            map["ReportProcessSampleCount"] = result.ProcessSampleCount;
+            map["ReportSystemSampleCount"] = result.SystemSampleCount;
+            map["ReportKind"] = result.ReportKind;
+            ApplyReportSamplerEvidence(map, result);
+            FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));
+            File.WriteAllText(path, Json.Serialize(map), Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("summary-update-failed run=" + runDir + " error=" + ex.Message);
+        }
+    }
+
+    private static void ApplyReportSamplerEvidence(Dictionary<string, object> target, ReportGenerationResult result)
+    {
+        if (target == null || result == null || result.SamplerEvidenceFields == null) return;
+        foreach (KeyValuePair<string, object> pair in result.SamplerEvidenceFields) target[pair.Key] = pair.Value;
     }
 
     private static void UpdateStatusFromReportProgress(string runDir, string progressPath, string reportHtml, string logPath)
@@ -129,6 +167,28 @@ internal static partial class FrameScopeNativeMonitor
         return fallback;
     }
 
+    private static int? StatusNullableInt(Dictionary<string, object> status, string key)
+    {
+        object value;
+        if (status != null && status.TryGetValue(key, out value) && value != null)
+        {
+            try { return Convert.ToInt32(value); }
+            catch { }
+        }
+        return null;
+    }
+
+    private static long StatusLong(Dictionary<string, object> status, string key, long fallback)
+    {
+        object value;
+        if (status != null && status.TryGetValue(key, out value) && value != null)
+        {
+            try { return Convert.ToInt64(value); }
+            catch { }
+        }
+        return fallback;
+    }
+
     private static FrameScopeHistoryEntry AddHistoryEntry(FrameScopeTarget target, string runDir, Dictionary<string, object> status, int monitorExitCode)
     {
         var entry = new FrameScopeHistoryEntry
@@ -142,6 +202,45 @@ internal static partial class FrameScopeNativeMonitor
             ProcessCsv = StatusString(status, "ProcessCsv", Path.Combine(runDir, "process-samples.csv")),
             SystemCsv = StatusString(status, "SamplesCsv", Path.Combine(runDir, "system-samples.csv")),
             SummaryPath = StatusString(status, "SummaryPath", Path.Combine(runDir, "summary.json")),
+            ReportKind = StatusString(status, "ReportKind", "error"),
+            ReportHasFrameData = StatusBool(status, "ReportHasFrameData", false),
+            ReportFrameCount = StatusInt(status, "ReportFrameCount", 0),
+            ReportProcessSampleCount = StatusInt(status, "ReportProcessSampleCount", 0),
+            ReportSystemSampleCount = StatusInt(status, "ReportSystemSampleCount", 0),
+            ProcessSamplerRequired = StatusBool(status, "ProcessSamplerRequired", true),
+            ProcessSamplerExe = StatusString(status, "ProcessSamplerExe", ""),
+            ProcessSamplerExecutableAvailable = StatusBool(status, "ProcessSamplerExecutableAvailable", false),
+            ProcessSamplerStarted = StatusBool(status, "ProcessSamplerStarted", false),
+            ProcessSamplerPid = StatusNullableInt(status, "ProcessSamplerPid"),
+            ProcessSamplerStartedAt = StatusString(status, "ProcessSamplerStartedAt", ""),
+            ProcessSamplerExitedAt = StatusString(status, "ProcessSamplerExitedAt", ""),
+            ProcessSamplerExitCode = StatusNullableInt(status, "ProcessSamplerExitCode"),
+            ProcessSamplerExitedEarly = StatusBool(status, "ProcessSamplerExitedEarly", false),
+            ProcessSamplerStopRequested = StatusBool(status, "ProcessSamplerStopRequested", false),
+            ProcessSamplerForcedStop = StatusBool(status, "ProcessSamplerForcedStop", false),
+            ProcessSamplerCsvPath = StatusString(status, "ProcessSamplerCsvPath", Path.Combine(runDir, "process-samples.csv")),
+            ProcessSamplerCsvExists = StatusBool(status, "ProcessSamplerCsvExists", false),
+            ProcessSamplerCsvBytes = StatusLong(status, "ProcessSamplerCsvBytes", 0),
+            ProcessSamplerValidRows = StatusInt(status, "ProcessSamplerValidRows", 0),
+            ProcessSamplerStatus = StatusString(status, "ProcessSamplerStatus", "missing"),
+            ProcessSamplerErrorTail = StatusString(status, "ProcessSamplerErrorTail", ""),
+            SystemSamplerRequired = StatusBool(status, "SystemSamplerRequired", true),
+            SystemSamplerExe = StatusString(status, "SystemSamplerExe", ""),
+            SystemSamplerExecutableAvailable = StatusBool(status, "SystemSamplerExecutableAvailable", false),
+            SystemSamplerStarted = StatusBool(status, "SystemSamplerStarted", false),
+            SystemSamplerPid = StatusNullableInt(status, "SystemSamplerPid"),
+            SystemSamplerStartedAt = StatusString(status, "SystemSamplerStartedAt", ""),
+            SystemSamplerExitedAt = StatusString(status, "SystemSamplerExitedAt", ""),
+            SystemSamplerExitCode = StatusNullableInt(status, "SystemSamplerExitCode"),
+            SystemSamplerExitedEarly = StatusBool(status, "SystemSamplerExitedEarly", false),
+            SystemSamplerStopRequested = StatusBool(status, "SystemSamplerStopRequested", false),
+            SystemSamplerForcedStop = StatusBool(status, "SystemSamplerForcedStop", false),
+            SystemSamplerCsvPath = StatusString(status, "SystemSamplerCsvPath", Path.Combine(runDir, "system-samples.csv")),
+            SystemSamplerCsvExists = StatusBool(status, "SystemSamplerCsvExists", false),
+            SystemSamplerCsvBytes = StatusLong(status, "SystemSamplerCsvBytes", 0),
+            SystemSamplerValidRows = StatusInt(status, "SystemSamplerValidRows", 0),
+            SystemSamplerStatus = StatusString(status, "SystemSamplerStatus", "missing"),
+            SystemSamplerErrorTail = StatusString(status, "SystemSamplerErrorTail", ""),
             MonitorExitCode = monitorExitCode
         };
 

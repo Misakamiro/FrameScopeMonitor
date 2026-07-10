@@ -31,6 +31,15 @@ internal static partial class FrameScopeNativeMonitor
             Thread.Sleep(seconds * 1000);
             return 0;
         }
+        if (HasTestArg(args, "--terminate_existing_session") && IsSamplerFailurePresentMonInvocation(args))
+        {
+            File.WriteAllText(SamplerFailurePresentMonStopPath(args), DateTime.Now.ToString("o"), Encoding.UTF8);
+            return 0;
+        }
+        if (LooksLikePresentMonInvocation(args) && IsSamplerFailurePresentMonInvocation(args))
+        {
+            return RunSamplerFailureFakePresentMon(args);
+        }
         if (LooksLikePresentMonInvocation(args) && IsSilentNoCsvPresentMonInvocation(args))
         {
             Console.Out.WriteLine("Started recording.");
@@ -52,8 +61,11 @@ internal static partial class FrameScopeNativeMonitor
         {
         ShortLivedChildStderrIsAvailableAfterExit();
         ShortLivedChildStderrWorksAtWindowsPathLimit();
+        SamplerEvidenceBuilderUsesStartExitStopAndFileEvidence();
+        SamplerExitTimeDeterminesWhetherExitWasEarly();
         MonitorSessionClassifiesShortLivedPresentMonStderr();
         MonitorSessionClassifiesSilentNoCsvPresentMonExitZero();
+        MonitorSessionClassifiesEarlySystemSamplerAsPartial();
         MonitorSessionCanWriteCpuCoreTelemetryArtifact();
         MonitorSessionWritesCpuVidTelemetryWithoutCpuVoltageArtifacts();
         MonitorSessionKeepsSuccessWhenCpuCoreCounterUnavailable();
@@ -111,6 +123,69 @@ internal static partial class FrameScopeNativeMonitor
             try { Directory.Delete(dir, true); }
             catch { }
         }
+    }
+
+    private static void SamplerEvidenceBuilderUsesStartExitStopAndFileEvidence()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-sampler-evidence-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string csv = Path.Combine(dir, "process-samples.csv");
+            string stderr = Path.Combine(dir, "process-sampler.stderr.log");
+            File.WriteAllText(csv,
+                "Time,SampleIndex,ProcessName,CpuPct\r\n"
+                + "2026-07-11T10:00:00Z,0,game,12.5\r\n",
+                Encoding.UTF8);
+            File.WriteAllText(stderr, new string('x', 5000) + " sampler-tail", Encoding.UTF8);
+            DateTime started = new DateTime(2026, 7, 11, 10, 0, 0, DateTimeKind.Utc);
+            NativeMonitorSamplerState state = new NativeMonitorSamplerState
+            {
+                Required = true,
+                ExecutablePath = Assembly.GetExecutingAssembly().Location,
+                CsvPath = csv,
+                StderrPath = stderr,
+                Started = true,
+                Pid = 4242,
+                StartedAt = started,
+                ExitedAt = started.AddSeconds(2),
+                ExitCode = 0,
+                ExitedEarly = false,
+                StopRequested = true,
+                ForcedStop = false
+            };
+
+            FrameScopeSamplerEvidence evidence = BuildNativeMonitorSamplerEvidence(state, new[] { "Time", "ProcessName" });
+
+            AssertEqual(true, evidence.ExecutableAvailable, "sampler executable evidence");
+            AssertEqual(true, evidence.Started, "sampler started evidence");
+            AssertEqual(4242, evidence.Pid.Value, "sampler pid evidence");
+            AssertEqual(started, evidence.StartedAt.Value, "sampler start timestamp evidence");
+            AssertEqual(started.AddSeconds(2), evidence.ExitedAt.Value, "sampler exit timestamp evidence");
+            AssertEqual(0, evidence.ExitCode.Value, "sampler exit code evidence");
+            AssertEqual(true, evidence.StopRequested, "sampler owner stop evidence");
+            AssertEqual(true, evidence.CsvExists, "sampler CSV existence evidence");
+            AssertTrue(evidence.CsvBytes > 0, "sampler CSV byte evidence");
+            AssertEqual(1, evidence.ValidRows, "sampler valid row evidence");
+            AssertTrue(evidence.ErrorTail.EndsWith("sampler-tail", StringComparison.Ordinal), "sampler bounded error tail content");
+            AssertTrue(evidence.ErrorTail.Length <= 4096, "sampler error tail is bounded");
+            AssertEqual("healthy", evidence.Status, "sampler normalized status");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void SamplerExitTimeDeterminesWhetherExitWasEarly()
+    {
+        DateTime stopRequestedAt = new DateTime(2026, 7, 11, 10, 0, 5, DateTimeKind.Utc);
+
+        AssertEqual(true, IsNativeMonitorSamplerEarlyExit(stopRequestedAt.AddMilliseconds(-1), stopRequestedAt, true), "exit immediately before owner stop");
+        AssertEqual(false, IsNativeMonitorSamplerEarlyExit(stopRequestedAt, stopRequestedAt, true), "exit at owner stop boundary");
+        AssertEqual(false, IsNativeMonitorSamplerEarlyExit(stopRequestedAt.AddMilliseconds(1), stopRequestedAt, true), "exit after owner stop");
+        AssertEqual(true, IsNativeMonitorSamplerEarlyExit(stopRequestedAt.AddMilliseconds(1), null, false), "exit without owner stop request");
     }
 
     private static void MonitorSessionClassifiesShortLivedPresentMonStderr()
@@ -302,6 +377,53 @@ internal static partial class FrameScopeNativeMonitor
             catch { }
             try { Directory.Delete(dir, true); }
             catch { }
+        }
+    }
+
+    private static void MonitorSessionClassifiesEarlySystemSamplerAsPartial()
+    {
+        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string currentExe = Assembly.GetExecutingAssembly().Location;
+        string reportGeneratorExe = Path.Combine(root, "FrameScopeReportGenerator.exe");
+        AssertTrue(File.Exists(reportGeneratorExe), "FrameScopeReportGenerator.exe exists");
+        string runDir = RunSyntheticMonitorSession("SamplerEarlyFailure", false, currentExe);
+        try
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            Dictionary<string, object> status = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(runDir, "status.json"), Encoding.UTF8));
+            Dictionary<string, object> summary = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(runDir, "summary.json"), Encoding.UTF8));
+
+            AssertEqual("healthy", Convert.ToString(status["ProcessSamplerStatus"]), "process sampler final health");
+            AssertEqual("exited-early", Convert.ToString(status["SystemSamplerStatus"]), "system sampler final health");
+            AssertEqual("exited-early", Convert.ToString(summary["SystemSamplerStatus"]), "summary system sampler final health");
+            AssertEqual(true, Convert.ToBoolean(status["SystemSamplerStarted"]), "failed system sampler started");
+            AssertEqual(7, Convert.ToInt32(status["SystemSamplerExitCode"]), "failed system sampler exit code");
+            AssertEqual(true, Convert.ToBoolean(status["SystemSamplerExitedEarly"]), "failed system sampler early exit");
+            AssertEqual(0, Convert.ToInt32(status["SystemSamplerValidRows"]), "failed system sampler valid rows");
+
+            using (Process report = Process.Start(new ProcessStartInfo
+            {
+                FileName = reportGeneratorExe,
+                Arguments = QuoteTestArgument(runDir),
+                WorkingDirectory = root,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            }))
+            {
+                AssertTrue(report != null, "report generator started");
+                AssertTrue(report.WaitForExit(30000), "report generator exited");
+                AssertEqual(0, report.ExitCode, "report generator exit code");
+            }
+
+            Dictionary<string, object> manifest = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(
+                Path.Combine(runDir, "charts", "framescope-interactive-manifest.json"), Encoding.UTF8));
+            AssertTrue(Convert.ToInt32(manifest["frames"]) > 0, "integration fixture has valid frames");
+            AssertEqual("partial", Convert.ToString(manifest["reportKind"]), "failed auxiliary sampler report kind");
+            AssertEqual("exited-early", Convert.ToString(manifest["systemSamplerStatus"]), "manifest system sampler status");
+        }
+        finally
+        {
+            TryDeleteTopTempRun(runDir);
         }
     }
 
@@ -595,6 +717,42 @@ internal static partial class FrameScopeNativeMonitor
         return false;
     }
 
+    private static bool IsSamplerFailurePresentMonInvocation(string[] args)
+    {
+        return GetTestArg(args, "--session_name", "").IndexOf("SamplerEarlyFailure", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string SamplerFailurePresentMonStopPath(string[] args)
+    {
+        string session = GetTestArg(args, "--session_name", "SamplerEarlyFailure");
+        foreach (char invalid in Path.GetInvalidFileNameChars()) session = session.Replace(invalid, '_');
+        return Path.Combine(Path.GetTempPath(), session + ".fake-presentmon-stop");
+    }
+
+    private static int RunSamplerFailureFakePresentMon(string[] args)
+    {
+        string output = GetTestArg(args, "--output_file", "");
+        if (string.IsNullOrWhiteSpace(output)) return 8;
+        string stopPath = SamplerFailurePresentMonStopPath(args);
+        try { if (File.Exists(stopPath)) File.Delete(stopPath); }
+        catch { }
+        StringBuilder csv = new StringBuilder();
+        csv.AppendLine("TimeInDateTime,MsBetweenPresents,Application,ProcessID,SwapChainAddress,PresentMode,AllowsTearing");
+        DateTime start = DateTime.Now;
+        for (int i = 0; i < 120; i++)
+        {
+            csv.Append(start.AddMilliseconds(i * 16.667).ToString("o"));
+            csv.Append(",16.667,FrameScopeFakeTarget.exe,4242,0x1,Hardware Composed: Independent Flip,true\r\n");
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output)));
+        File.WriteAllText(output, csv.ToString(), Encoding.UTF8);
+        DateTime deadline = DateTime.Now.AddSeconds(15);
+        while (DateTime.Now < deadline && !File.Exists(stopPath)) Thread.Sleep(50);
+        try { if (File.Exists(stopPath)) File.Delete(stopPath); }
+        catch { }
+        return 0;
+    }
+
     private static bool HasTestArg(string[] args, string name)
     {
         if (args == null) return false;
@@ -623,6 +781,11 @@ internal static partial class FrameScopeNativeMonitor
         string cpuVidCsv = GetTestArg(args, "--cpu-vid-csv", Path.Combine(Path.GetDirectoryName(Path.GetFullPath(systemCsv)) ?? "", "cpu-vid-samples.csv"));
         string cpuVidStatus = GetTestArg(args, "--cpu-vid-status", Path.Combine(Path.GetDirectoryName(Path.GetFullPath(systemCsv)) ?? "", "cpu-vid-telemetry-status.json"));
         bool enableCpuVid = string.Equals(GetTestArg(args, "--enable-cpu-vid-telemetry", "false"), "true", StringComparison.OrdinalIgnoreCase);
+        if (systemCsv.IndexOf("SamplerEarlyFailure", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            Console.Error.WriteLine("synthetic system sampler early failure");
+            return 7;
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(systemCsv)));
         File.WriteAllText(systemCsv,
             "Time,SampleIndex,Cs2Running,TargetRunning,TotalCpuPct,CpuFrequencyMHz,CpuPerformancePct,AvailableMB,DiskAvgSecPerTransfer,DiskBytesPerSec,NetBytesPerSec,GpuUtilPct,GpuMemUtilPct,GpuTempC,GpuPState,GpuClockMHz,MemClockMHz,PowerW,VramUsedMiB,VramTotalMiB,ProcessCount\r\n"
