@@ -40,7 +40,7 @@ public static class FrameScopeReportProgress
         string dir = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);
         Dictionary<string, object> fields = CreateFields(phase, percent, message, startedAt, error, canRetry);
-        File.WriteAllText(path, Json.Serialize(fields), Encoding.UTF8);
+        FrameScopeJsonFile.Write(path, Json.Serialize(fields));
     }
 
     public static Dictionary<string, object> Read(string path)

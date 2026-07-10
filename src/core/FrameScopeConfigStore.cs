@@ -92,7 +92,7 @@ public static class FrameScopeConfigStore
         Normalize(config);
         string dir = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, Json.Serialize(config));
+        FrameScopeJsonFile.Write(path, Json.Serialize(config));
     }
 
     public static void Normalize(FrameScopeConfig config)

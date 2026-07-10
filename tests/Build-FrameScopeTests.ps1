@@ -22,6 +22,7 @@ function Invoke-TestBuild {
     foreach ($reference in $References) {
         $args += ('/reference:' + $reference)
     }
+    $args += (Join-Path $root 'src\core\FrameScopeJsonFile.cs')
     foreach ($source in $Sources) {
         $args += (Join-Path $root $source)
     }
@@ -29,6 +30,10 @@ function Invoke-TestBuild {
     & $csc @args
     if ($LASTEXITCODE -ne 0) { throw "csc failed: $OutputName" }
 }
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeJsonFileTests.exe' `
+    -Sources @('tests\FrameScopeJsonFileTests.cs')
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeConfigStoreTests.exe' `

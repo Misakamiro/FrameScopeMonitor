@@ -217,7 +217,7 @@ internal static partial class FrameScopeSystemSampler
                     { "CpuVoltageNonPerCoreSampleCount", 0 },
                     { "CpuVoltageRejectedSampleCount", 0 }
                 };
-                File.WriteAllText(options.StatusPath, SerializeSimpleJson(map), new UTF8Encoding(false));
+                FrameScopeJsonFile.Write(options.StatusPath, SerializeSimpleJson(map));
                 statusWritten = true;
             }
             catch
@@ -394,7 +394,7 @@ internal static partial class FrameScopeSystemSampler
                     { "CpuVoltageRejectedSampleCount", rejectedVoltageRowCount },
                     { "CpuVoltageLogicalProcessorCount", 0 }
                 };
-                File.WriteAllText(options.StatusPath, SerializeSimpleJson(map), new UTF8Encoding(false));
+                FrameScopeJsonFile.Write(options.StatusPath, SerializeSimpleJson(map));
                 statusWritten = true;
             }
             catch
@@ -571,7 +571,7 @@ internal static partial class FrameScopeSystemSampler
                     { "CpuVidCoreCount", coreCount },
                     { "CpuVidRejectedSampleCount", rejectedVidRowCount }
                 };
-                File.WriteAllText(options.StatusPath, SerializeSimpleJson(map), new UTF8Encoding(false));
+                FrameScopeJsonFile.Write(options.StatusPath, SerializeSimpleJson(map));
                 statusWritten = true;
             }
             catch

@@ -88,7 +88,7 @@ public static partial class FrameScopeDiagnostics
         Dictionary<string, object> report = BuildReport(config, appRoot, dataRoot, reason, recentRun);
         string jsonPath = Path.Combine(outputDir, "framescope-diagnostic-report.json");
         string markdownPath = Path.Combine(outputDir, "framescope-diagnostic-report.md");
-        File.WriteAllText(jsonPath, Json.Serialize(report), Encoding.UTF8);
+        FrameScopeJsonFile.Write(jsonPath, Json.Serialize(report));
         File.WriteAllText(markdownPath, BuildMarkdown(report), Encoding.UTF8);
 
         FrameScopeDiagnosticCleanupResult cleanup = CleanupDiagnosticReports(diagnosticsRoot, config.LogRetentionDays, config.MaxLogDiskMb);

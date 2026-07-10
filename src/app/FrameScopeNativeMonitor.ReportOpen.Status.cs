@@ -16,7 +16,7 @@ internal static partial class FrameScopeNativeMonitor
             if (map == null) map = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             map["ReportOpened"] = true;
             map["ReportOpenedAt"] = DateTime.Now.ToString("o");
-            File.WriteAllText(statusPath, Json.Serialize(map), Encoding.UTF8);
+            FrameScopeJsonFile.Write(statusPath, Json.Serialize(map));
         }
         catch (Exception ex)
         {

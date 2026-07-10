@@ -352,7 +352,7 @@ internal static partial class FrameScopeNativeMonitor
             LogPath = Path.Combine(Root, "framescope-watcher.log"),
             ActiveMonitors = active
         };
-        File.WriteAllText(StatePath, Json.Serialize(state));
+        FrameScopeJsonFile.Write(StatePath, Json.Serialize(state));
     }
 
     private static void WriteFrameScopeLog(string message)

@@ -68,7 +68,7 @@ internal static partial class FrameScopeNativeMonitor
             foreach (var pair in extra) status[pair.Key] = pair.Value;
         }
 
-        File.WriteAllText(paths.StatusPath, Json.Serialize(status), Encoding.UTF8);
+        FrameScopeJsonFile.Write(paths.StatusPath, Json.Serialize(status));
     }
 
     private static void WriteNativeMonitorSummary(MonitorSessionPaths paths, string targetProcess, string captureMode, int sampleIntervalMs, int processSampleIntervalMs, int slowSampleIntervalMs, int controlPollIntervalMs, string presentMonPath, int? presentMonExitCode, bool presentMonExitedEarly, bool presentMonForcedStop, string reportHtml, string presentMonCaptureMode, string presentMonCaptureTarget, string presentMonArguments, Dictionary<string, object> captureDiagnostics)
@@ -120,6 +120,6 @@ internal static partial class FrameScopeNativeMonitor
             { "Notes", new[] { "Monitor session was captured by FrameScopeMonitor.exe native C# mode. Report generation is handled by the native watcher after capture." } }
         };
         AddDictionary(summary, captureDiagnostics);
-        File.WriteAllText(paths.SummaryPath, Json.Serialize(summary), Encoding.UTF8);
+        FrameScopeJsonFile.Write(paths.SummaryPath, Json.Serialize(summary));
     }
 }

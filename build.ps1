@@ -99,6 +99,7 @@ try {
         /reference:System.Web.Extensions.dll `
         /reference:$webView2Core `
         /reference:$webView2WinForms `
+        .\src\core\FrameScopeJsonFile.cs `
         .\src\core\FrameScopeConfigStore.cs `
         .\src\core\FrameScopeLoggingPolicy.cs `
         .\src\core\FrameScopeCapturePlanner.cs `
@@ -162,6 +163,7 @@ try {
         /out:FrameScopeSystemSampler.exe `
         /reference:System.Core.dll `
         /reference:System.Management.dll `
+        .\src\core\FrameScopeJsonFile.cs `
         .\src\core\FrameScopeTargetLifecycle.cs `
         .\src\monitoring\FrameScopeSystemSampler.cs `
         .\src\monitoring\FrameScopeSystemSampler.Models.cs `
@@ -177,6 +179,7 @@ try {
         /reference:System.Web.Extensions.dll `
         /reference:System.Management.dll `
         /reference:Microsoft.VisualBasic.dll `
+        .\src\core\FrameScopeJsonFile.cs `
         .\src\core\FrameScopeReportProgress.cs `
         .\src\core\FrameScopePresentMonDiagnostics.cs `
         .\src\core\FrameScopeRunContract.cs `

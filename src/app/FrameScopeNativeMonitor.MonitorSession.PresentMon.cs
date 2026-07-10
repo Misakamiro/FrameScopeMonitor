@@ -216,7 +216,7 @@ internal static partial class FrameScopeNativeMonitor
                 { "SHA256", null },
                 { "HashSkipped", true }
             };
-            File.WriteAllText(path, Json.Serialize(info), Encoding.UTF8);
+            FrameScopeJsonFile.Write(path, Json.Serialize(info));
         }
         catch { }
     }

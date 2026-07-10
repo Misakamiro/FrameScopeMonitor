@@ -270,7 +270,7 @@ internal static partial class FrameScopeReportGenerator
         AddSamplerManifestFields(manifest, "processSampler", processSampler);
         AddSamplerManifestFields(manifest, "systemSampler", systemSampler);
         string manifestJson = SerializeArtifactJson(manifest);
-        File.WriteAllText(manifestPath, manifestJson, new UTF8Encoding(false));
+        FrameScopeJsonFile.Write(manifestPath, manifestJson);
         WriteProgress(progressPath, "完成", 100, "报告生成完成", progressStart, null, false);
         try { Console.OutputEncoding = Encoding.UTF8; } catch { }
         Console.WriteLine(manifestJson);
