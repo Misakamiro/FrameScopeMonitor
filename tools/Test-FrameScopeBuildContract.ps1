@@ -29,6 +29,50 @@ function Normalize-SourcePath {
     return (($Path -replace '^[.][\\/]+', '') -replace '/', '\').ToLowerInvariant()
 }
 
+function Get-SourceArrayNamesFromBuildCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Management.Automation.Language.CommandAst]$Command
+    )
+
+    $sourceArrayNames = @{}
+    $elements = $Command.CommandElements
+    for ($index = 1; $index -lt $elements.Count; $index++) {
+        $parameter = $elements[$index]
+        if ($parameter -isnot [System.Management.Automation.Language.CommandParameterAst] -or
+            $parameter.ParameterName -ine 'Sources') {
+            continue
+        }
+
+        $sourceArguments = @()
+        if ($null -ne $parameter.Argument) {
+            $sourceArguments += $parameter.Argument
+        }
+        for ($argumentIndex = $index + 1; $argumentIndex -lt $elements.Count; $argumentIndex++) {
+            $argument = $elements[$argumentIndex]
+            if ($argument -is [System.Management.Automation.Language.CommandParameterAst]) {
+                break
+            }
+            $sourceArguments += $argument
+        }
+
+        foreach ($sourceArgument in $sourceArguments) {
+            $variables = @($sourceArgument.FindAll({
+                        param($node)
+                        return $node -is [System.Management.Automation.Language.VariableExpressionAst]
+                    }, $true))
+            foreach ($variable in $variables) {
+                $variableName = $variable.VariablePath.UserPath
+                if ($variableName -match '(?i)Sources$') {
+                    $sourceArrayNames[$variableName] = $true
+                }
+            }
+        }
+    }
+
+    return @($sourceArrayNames.Keys | Sort-Object)
+}
+
 function Test-LockedFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -118,17 +162,28 @@ $buildCommands = @($buildAst.FindAll({
         }, $true))
 $usedSourceArrays = @{}
 foreach ($command in $buildCommands) {
-    $variables = @($command.FindAll({
-                param($node)
-                return $node -is [System.Management.Automation.Language.VariableExpressionAst]
-            }, $true))
-    foreach ($variable in $variables) {
-        $variableName = $variable.VariablePath.UserPath
-        if ($variableName -match '(?i)Sources$') {
-            $usedSourceArrays[$variableName] = $true
-        }
+    foreach ($variableName in @(Get-SourceArrayNamesFromBuildCommand -Command $command)) {
+        $usedSourceArrays[$variableName] = $true
     }
 }
+
+$fixtureTokens = $null
+$fixtureParseErrors = $null
+$fixtureAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    'Invoke-CSharpBuild -References $monitorSources -Sources $commonCoreSources',
+    [ref]$fixtureTokens,
+    [ref]$fixtureParseErrors
+)
+$fixtureCommand = $fixtureAst.Find({
+        param($node)
+        return $node -is [System.Management.Automation.Language.CommandAst]
+    }, $true)
+$fixtureSourceArrays = @(Get-SourceArrayNamesFromBuildCommand -Command $fixtureCommand)
+Assert-Contract (
+    $fixtureParseErrors.Count -eq 0 -and
+    $fixtureSourceArrays.Count -eq 1 -and
+    $fixtureSourceArrays[0] -ceq 'commonCoreSources'
+) "Build-contract self-test must bind source coverage only to -Sources arguments (found: $($fixtureSourceArrays -join ', '))."
 
 foreach ($requiredArray in @('commonCoreSources', 'monitorSources', 'reportSources', 'samplerSources')) {
     Assert-Contract ($assignedSourceArrays.ContainsKey($requiredArray)) "build.ps1 must define `$$requiredArray."
