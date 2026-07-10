@@ -4,6 +4,7 @@ import { GlassCard } from "../components/GlassCard";
 import { InlineStatus } from "../components/InlineStatus";
 import { StatusPill } from "../components/StatusPill";
 import type { FrameScopeBridgeViewState } from "../state/useFrameScopeBridgeState";
+import { productVersion } from "../productVersion";
 import "./pages.css";
 
 interface AboutPageProps {
@@ -34,7 +35,7 @@ export function AboutPage({ bridgeState }: AboutPageProps) {
             </div>
           </div>
           <div className="about-facts">
-            <span>版本：1.1.3</span>
+            <span>版本：{productVersion}</span>
             <span>监控数据保存在本机，不会自动上传。</span>
             <span title={dataRoot}>数据位置：{formatPathTail(dataRoot)}</span>
           </div>

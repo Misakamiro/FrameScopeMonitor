@@ -6,6 +6,7 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
 }
+$buildMetadata = & (Join-Path $root 'tools\Write-FrameScopeBuildMetadata.ps1') -RepoRoot $root
 
 function Invoke-TestBuild {
     param(
@@ -23,6 +24,7 @@ function Invoke-TestBuild {
         $args += ('/reference:' + $reference)
     }
     $args += (Join-Path $root 'src\core\FrameScopeJsonFile.cs')
+    $args += $buildMetadata
     foreach ($source in $Sources) {
         $args += (Join-Path $root $source)
     }
@@ -34,6 +36,11 @@ function Invoke-TestBuild {
 Invoke-TestBuild `
     -OutputName 'FrameScopeJsonFileTests.exe' `
     -Sources @('tests\FrameScopeJsonFileTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeVersionTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('tests\FrameScopeVersionTests.cs')
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeReportRecoveryTests.exe' `
@@ -72,6 +79,7 @@ Invoke-TestBuild `
     -References @('System.Web.Extensions.dll') `
     -MainType 'FrameScopeNativeMonitor' `
     -Sources @(
+        'src\core\FrameScopeHistoryFile.cs',
         'src\core\FrameScopeConfigStore.cs',
         'src\core\FrameScopeReportProgress.cs',
         'src\app\FrameScopeNativeMonitor.ReportOrchestration.Models.cs',

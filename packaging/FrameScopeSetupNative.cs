@@ -14,7 +14,7 @@ internal static class FrameScopeSetupNative
 {
     private const string ResourceName = "FrameScopePayload";
     private const string WebView2RuntimeInstallerResourceName = "FrameScopeWebView2RuntimeInstaller";
-    private const string AppVersion = "1.1.3";
+    private const string AppVersion = FrameScopeProductInfo.Version;
     private const string Publisher = "Misakamiro";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\FrameScopeMonitor";
     private static InstallerForm form;

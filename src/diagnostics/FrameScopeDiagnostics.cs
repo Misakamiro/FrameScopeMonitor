@@ -13,7 +13,7 @@ using System.Web.Script.Serialization;
 
 public static partial class FrameScopeDiagnostics
 {
-    private const string ProductVersion = "1.1.3";
+    private const string ProductVersion = FrameScopeProductInfo.Version;
     private const int AppendLogTrimCheckInterval = 64;
     private const int AppendLogLongRunGuardMaxMegabytes = 16;
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };

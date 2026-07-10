@@ -5,6 +5,7 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
 }
+$buildMetadata = & (Join-Path $root 'tools\Write-FrameScopeBuildMetadata.ps1') -RepoRoot $root
 
 $webView2PackageRoot = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2'
 $webView2Package = Get-ChildItem -LiteralPath $webView2PackageRoot -Directory -ErrorAction SilentlyContinue |
@@ -99,6 +100,7 @@ try {
         /reference:System.Web.Extensions.dll `
         /reference:$webView2Core `
         /reference:$webView2WinForms `
+        $buildMetadata `
         .\src\core\FrameScopeJsonFile.cs `
         .\src\core\FrameScopeBoundedProcessRunner.cs `
         .\src\core\FrameScopeHistoryFile.cs `
@@ -159,6 +161,7 @@ try {
 
     & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 `
         /out:FrameScopeProcessSampler.exe `
+        $buildMetadata `
         .\src\core\FrameScopeTargetLifecycle.cs `
         .\src\monitoring\FrameScopeProcessSampler.cs `
         .\src\monitoring\FrameScopeProcessSampler.Models.cs `
@@ -170,6 +173,7 @@ try {
         /out:FrameScopeSystemSampler.exe `
         /reference:System.Core.dll `
         /reference:System.Management.dll `
+        $buildMetadata `
         .\src\core\FrameScopeJsonFile.cs `
         .\src\core\FrameScopeTargetLifecycle.cs `
         .\src\monitoring\FrameScopeSystemSampler.cs `
@@ -186,6 +190,7 @@ try {
         /reference:System.Web.Extensions.dll `
         /reference:System.Management.dll `
         /reference:Microsoft.VisualBasic.dll `
+        $buildMetadata `
         .\src\core\FrameScopeJsonFile.cs `
         .\src\core\FrameScopeReportProgress.cs `
         .\src\core\FrameScopePresentMonDiagnostics.cs `
@@ -215,6 +220,7 @@ try {
         /out:FrameScopeUninstaller.exe `
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
+        $buildMetadata `
         .\packaging\FrameScopeUninstaller.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeUninstaller.exe" }
 
@@ -224,6 +230,7 @@ try {
         /reference:System.Windows.Forms.dll `
         /reference:System.Drawing.dll `
         /reference:System.Management.dll `
+        $buildMetadata `
         .\packaging\FrameScopeLegacyCleanup.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeLegacyCleanup.exe" }
 
@@ -284,6 +291,7 @@ try {
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
         /resource:$payloadZip,FrameScopePayload `
+        $buildMetadata `
         .\src\app\FrameScopeWebView2Runtime.cs `
         .\packaging\FrameScopeSetupNative.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeMonitor-Setup.exe" }
@@ -310,6 +318,7 @@ try {
         /reference:System.IO.Compression.FileSystem.dll `
         /resource:$payloadZip,FrameScopePayload `
         /resource:$webView2StandaloneInstaller,FrameScopeWebView2RuntimeInstaller `
+        $buildMetadata `
         .\src\app\FrameScopeWebView2Runtime.cs `
         .\packaging\FrameScopeSetupNative.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeMonitor-Full-Setup.exe" }

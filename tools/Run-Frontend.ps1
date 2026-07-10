@@ -18,6 +18,10 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $frontendRoot = Join-Path $repoRoot 'src\frontend'
 $npmBootstrapRoot = Join-Path $repoRoot 'tools\.cache\frontend-npm'
+$env:VITE_FRAMESCOPE_VERSION = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'VERSION')).Trim()
+if ($env:VITE_FRAMESCOPE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Invalid VERSION: $($env:VITE_FRAMESCOPE_VERSION)"
+}
 
 function Test-NodeCandidate {
     param([string]$Candidate)
