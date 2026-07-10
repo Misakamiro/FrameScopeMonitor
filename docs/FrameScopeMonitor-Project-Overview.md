@@ -1,135 +1,84 @@
 # FrameScope Monitor 项目总览
 
-## 项目是什么
+## 产品目标
 
-FrameScope Monitor 是面向 Windows 游戏卡顿排查的本地性能监测工具。它不是普通硬件监控面板，而是记录一次游戏会话的完整诊断时间线：帧时间、FPS、后台进程、CPU/GPU/内存/磁盘/网络、日志和报告生成状态。目标是帮助定位掉帧、卡顿、后台进程干扰、启动器占用、反作弊相关干扰和报告生成失败。
+FrameScope Monitor 记录一次游戏会话中的帧表现、后台进程与系统资源变化，并把可视化报告和原始证据保存在本机。它的重点是帮助用户定位时间相关的性能问题，而不是只显示当前硬件数值。
 
-当前主实现是原生 C#：
+## 端到端数据流
 
-- 主程序和 GUI：`FrameScopeMonitor.exe`
-- 帧时间采集：PresentMon
-- 后台进程采样：`FrameScopeProcessSampler.exe`
-- 系统资源采样：`FrameScopeSystemSampler.exe`
-- HTML 报告生成：`FrameScopeReportGenerator.exe`
+1. `src/frontend/src/App.tsx` 组合 React 页面。
+2. `src/frontend/src/bridge/webviewBridge.ts` 发送带 requestId 的消息并订阅 host event。
+3. `src/app/FrameScopeNativeMonitor.WebHost.cs` 在 WebView2 中加载前端。
+4. `src/app/FrameScopeWebBridge.cs` 验证请求并调用 host adapter。
+5. `src/app/FrameScopeNativeMonitor.Watcher.cs` 扫描配置中的目标进程。
+6. 每个 active target 启动一个由 `src/app/FrameScopeNativeMonitor.MonitorSession.cs` 编排的 worker。
+7. worker 启动 PresentMon、`src/monitoring/FrameScopeProcessSampler.cs` 与 `src/monitoring/FrameScopeSystemSampler.cs` 对应的可执行程序。
+8. worker 写入 status、summary 和原始 CSV；watcher 在目标结束后接管报告生成与恢复。
+9. `src/core/FrameScopeBoundedProcessRunner.cs` 以总截止时间运行 ReportGenerator，同时 drain stdout/stderr，并在超时后终止进程树。
+10. `src/reporting/FrameScopeReportGenerator.cs` 生成 staging artifacts；`src/core/FrameScopeReportPublisher.cs` 校验后事务发布。
 
-## 主要功能
+## 目录职责
 
-- 管理监控目标：启用/停用目标、添加进程、刷新系统进程、编辑游戏名、进程名、采样间隔和自动打开报告配置。
-- 自动监听游戏：启动监听后按配置扫描目标进程，发现目标游戏后自动启动一次监测会话。
-- 采集帧时间：通过 PresentMon 写出 `presentmon.csv`，用于平均 FPS、1% Low、0.1% Low、最低瞬时 FPS 和帧时间曲线分析。
-- 采集后台进程：按目标采样间隔记录全进程 CPU、内存和 IO，用于定位后台干扰。
-- 采集系统资源：记录 CPU/GPU/内存/磁盘/网络/GPU 频率/显存/功耗等系统指标。
-- 生成报告：游戏退出后生成交互式 HTML 报告，并可按配置自动打开。
-- 实时监控：进入实时监控页后刷新最近 FPS、帧时间、CPU/GPU、当前进程和日志；离开页面停止 UI 刷新，不影响后台采集。
-- 诊断和日志：支持诊断报告、报告生成进度、日志清理、隐私脱敏和状态汇总。
+- `src/frontend/`：React + Vite 前端、组件、页面、主题和 bridge client。
+- `src/app/`：WebView2 host、bridge server、watcher、monitor-session worker、报告编排。
+- `src/core/`：配置、run contract、报告完整性、原子文件、进程运行器和 retention 策略。
+- `src/monitoring/`：ProcessSampler 与 SystemSampler。
+- `src/reporting/`：报告读取、分析、序列化与 HTML 模板。
+- `src/diagnostics/`：隐私脱敏的诊断 JSON/Markdown。
+- `tests/`：C#、PowerShell 和 JavaScript 回归测试。
+- `tools/`：前端构建、probe、evidence smoke 和文档门禁。
+- `packaging/`：安装、卸载与 payload 说明。
 
-## 支持的游戏监测能力
+## 进程模型
 
-默认配置覆盖常见游戏或软件目标，例如 CS2、Delta Force、Valorant、Cyberpunk 2077、Battlefield、Hogwarts Legacy、OPUS Prism Peak、PUBG 等。用户也可以手动添加其他进程名。
+普通 UI 启动受单实例锁保护。watcher、monitor-session worker 与诊断入口不受普通 UI 锁阻止。
 
-PUBG 相关逻辑在捕获规划模块中保留专门处理：
+watcher 可以同时管理多个目标，但每个 active target 使用独立 worker。这里的“独立”描述 worker 生命周期，不表示拥有独立采样间隔：所有目标共享持久化的 `TelemetrySampleIntervalMs`。
 
-- `TslGame.exe`
-- `TslGame-Win64-Shipping.exe`
-- PresentMon 使用进程名别名捕获，避免锁死到短生命周期 pid。
+monitor-session worker 负责解析目标别名与 PID、启动三个采集进程、收集退出证据、原子更新 status/summary，并确保会话进程得到清理。
 
-## UI 功能
+## 配置模型
 
-UI 使用 WinForms 实现，已经整理为独立 UI 模块目录：
+`src/core/FrameScopeConfigStore.cs` 是配置规范化入口。
 
-- `src\ui\FrameScopeUiComponents.cs`：卡片、按钮、表格、图表容器、侧边栏、主题视觉组件。
-- `src\ui\FrameScopeUiState.cs`：实时监控刷新状态和目标编辑规则。
-- `src\ui\FrameScopeLiveData.cs`：实时监控页读取最近 run 数据。
-- `src\ui\FrameScopeReportPage.cs`：报告页列表和报告操作。
-- `src\app\FrameScopeNativeMonitor.cs`：主窗口、页面组合、按钮事件和应用编排。
+- `PollIntervalMs`：watcher 扫描间隔。
+- `TelemetrySampleIntervalMs`：全局持久遥测间隔，范围 500–5000 ms。
+- `DataRoot`：run 根目录。
+- `OpenReportOnComplete`：全局自动打开开关。
+- Targets：启用状态、显示名、进程名和目标级自动打开开关。
 
-后续只改视觉主题、卡片、按钮、表格、侧边栏时，优先看 `docs\modules\software-ui.md`。
+旧 target interval 字段继续反序列化，避免破坏旧配置；Normalize 会把它们写回全局采样值。
 
-## 实时监控功能
+## run 数据
 
-实时监控页遵循明确生命周期：
+一次 run 的核心文件：
 
-1. 软件启动后不启动图表刷新。
-2. 用户进入实时监控页后启动 UI 刷新定时器。
-3. 目标进程只从已启用配置目标查找。
-4. 找到目标时，UI 每 1 秒刷新显示层，采样器仍按原配置采样。
-5. 找不到目标或目标退出时清空图表、当前 FPS、当前进程和旧状态。
-6. 离开实时监控页后停止 UI 刷新定时器，避免重复定时器和内存泄漏。
+- `status.json`
+- `summary.json`
+- `presentmon.csv`
+- `process-samples.csv`
+- `system-samples.csv`
+- `report-progress.json`
+- `report-generation.log`
+- `charts/framescope-interactive-data.js`
+- `charts/framescope-interactive-report.html`
+- `charts/framescope-interactive-manifest.json`
 
-维护实时监控交互时，优先看 `docs\modules\ui-interactions.md` 和 `src\ui\FrameScopeUiState.cs`。
+报告完整性由 `src/core/FrameScopeReportArtifacts.cs` 判断。manifest 中的 report/data 必须指向同一 run 的最终 canonical 路径。
 
-## 报告和日志功能
+## report kind
 
-报告生成分成三层：
+`src/core/FrameScopeRunContract.cs` 提供统一分类：
 
-- 监测会话写出 `presentmon.csv`、`process-samples.csv`、`system-samples.csv`、`summary.json`、`status.json`。
-- `FrameScopeReportGenerator.exe` 读取 run 目录并生成 `charts\framescope-interactive-report.html`、`framescope-interactive-data.js`、`framescope-interactive-manifest.json`。
-- UI 和 watcher 读取报告状态、报告进度和历史记录。
+| kind | 含义 |
+| --- | --- |
+| full | 有有效帧数据，两个必需辅助采样器健康 |
+| partial | 有有效帧数据，但至少一个辅助采样器不健康 |
+| diagnostic | 无有效帧数据，但进程或系统数据可用 |
+| error | 没有足够的帧、进程或系统数据 |
 
-报告必须保留完整诊断数据。性能优化只能优化渲染、抽样、缓存和 hover 行为，不允许删除原始数据来换速度。
+分类描述当前 run 的证据质量，不应被 UI、bridge 或 diagnostics 各自重新解释。
 
-## 模块结构
+## 文档生命周期
 
-- `src\app\`：应用入口、主窗口、页面组合、监听器和监测会话编排。
-- `src\ui\`：UI 视觉、页面 UI、实时监控 UI 状态和报告页。
-- `src\core\`：配置、捕获规划、报告进度等共享核心逻辑。
-- `src\monitoring\`：后台进程采样器和系统采样器。
-- `src\diagnostics\`：诊断报告、日志、清理、隐私脱敏。
-- `src\reporting\`：HTML 报告生成器。
-- `..\gamelite-auto-lightweight\`：独立的 GameLite 自动轻量化项目，不参与 FrameScope 主构建或监测链路。
-- `packaging\`：安装器、卸载器、旧版清理工具。
-- `tools\`：PresentMon、PUBG 模拟器、渲染探针。
-- `tests\`：回归测试和测试重编译脚本。
-
-## 后续修改入口
-
-- 修改视觉主题、按钮、卡片、表格、侧边栏：看 `docs\modules\software-ui.md`。
-- 修改页面切换、按钮事件、设置保存、表格编辑、实时页进入/离开：看 `docs\modules\ui-interactions.md`。
-- 修改进程识别、采样、PresentMon、报告生成、日志诊断：看 `docs\modules\backend-monitoring.md`。
-- 修改自动轻量化脚本：看 `docs\modules\lightweight-script.md`。
-
-## 自动轻量化脚本
-
-自动轻量化脚本已从主程序源码中提取到同级独立项目：
-
-```text
-..\gamelite-auto-lightweight
-```
-
-根目录仍保留同名 `.ps1` wrapper 和 `.cmd` 启动器，用于兼容旧快捷方式、旧 WMI 触发器和用户手动运行习惯。核心逻辑只维护 `..\gamelite-auto-lightweight\*.ps1`。这些 wrapper 是兼容桥，不是 FrameScope C# 主程序、build 或测试依赖。
-
-常用入口：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Check-GameLiteAutoTrigger.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-GameLiteAutoTrigger.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Remove-GameLiteAutoTrigger.ps1
-```
-
-安装和移除 WMI 触发器需要管理员权限；检查脚本通常可以非管理员运行，但 WMI 读取权限可能影响输出。新安装会安装 GameLite 游戏启动触发器、游戏退出触发器和 SGuard late-start 触发器。SGuard 默认压制，`-AllowSGuardThrottle` 只作为兼容参数保留；需要关闭时使用 `-DisableSGuardThrottle`。旧 WMI consumer 如果仍存在，应通过 Check 输出识别并在用户明确授权后用 Remove/Install 迁移。
-
-## 构建和验证
-
-主构建：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
-```
-
-测试重编译：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Build-FrameScopeTests.ps1
-```
-
-常规测试：
-
-```powershell
-.\tests\FrameScopeConfigStoreTests.exe
-.\tests\FrameScopeCapturePlannerTests.exe
-.\tests\FrameScopeReportProgressTests.exe
-.\tests\FrameScopeDiagnosticsTests.exe
-.\tests\FrameScopePubgSimulatorTests.exe
-.\tests\FrameScopeUiStateTests.exe
-node .\tests\chart-sampling-tests.js
-```
+根 README、AGENTS、本文与 `docs/modules/` 是当前指导。`docs/implementation-reports/` 和 `docs/test-reports/` 是历史快照；保留其中的旧文件名与当时结论，避免破坏证据链。

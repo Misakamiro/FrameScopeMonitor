@@ -1,23 +1,17 @@
 FrameScope Monitor 安装说明
 
-本版本默认启动 WebView2 React 新界面。旧 WinForms 主界面已经从主程序构建中移除。
+FrameScope Monitor 使用 React + Vite 前端，并由 C# WebView2 host 加载。
+系统需要 Microsoft Edge WebView2 Runtime。
 
-安装后直接运行：
+安装包：
 
-  FrameScopeMonitor.exe
-
-安装包选择：
   FrameScopeMonitor-Setup.exe
-    推荐普通用户下载。适合大多数已经带有 Microsoft Edge WebView2 Runtime 的系统。
+    标准安装包，适用于已安装 WebView2 Runtime 的系统。
 
   FrameScopeMonitor-Full-Setup.exe
-    完整安装包，内置 Microsoft Edge WebView2 Runtime 安装器。
-    适合打开失败、提示缺少 WebView2 Runtime、离线环境或精简系统。
-    安装器会先检测 WebView2 Runtime；已存在时不会重复安装，缺失时会静默安装 Runtime 后继续安装 FrameScope Monitor。
+    包含 WebView2 Runtime 安装器；缺少 Runtime 或离线环境时使用。
 
-如果启动时提示系统缺少 Microsoft Edge WebView2 Runtime，请安装完整安装包，或前往 Microsoft 官网安装 WebView2 Runtime。
-
-主要文件：
+主要 payload：
 
   FrameScopeMonitor.exe
   FrameScopeProcessSampler.exe
@@ -41,13 +35,27 @@ FrameScope Monitor 安装说明
 基本流程：
 
 1. 启动 FrameScope Monitor。
-2. 在“监控目标”页确认或保存需要监测的进程目标。
-3. 点击启动监控。
-4. 进入游戏场景。
-5. 停止监控或退出游戏后等待报告生成。
-6. 在“报告”页打开 HTML 报告、报告目录或重新生成报告。
+2. 在 Targets 页面确认目标进程。
+3. 启动监控并进入游戏场景。
+4. 游戏退出或停止监控后等待报告生成。
+5. 在 Reports 页面查看报告、打开目录或重试生成。
+
+报告说明：
+
+  full        有帧数据，进程与系统采样器健康。
+  partial     有帧数据，但至少一个辅助采样器不健康。
+  diagnostic  无帧数据，但进程或系统数据可用于诊断。
+  error       没有足够的帧、进程或系统数据。
+
+完整报告必须同时包含 data.js、HTML 与 manifest。不要把仅有 HTML 的目录当作可打开报告。
 
 卸载：
 
   运行 Uninstall-FrameScopeMonitor.cmd 或 FrameScopeUninstaller.exe。
-  卸载 FrameScope Monitor 不会删除系统里的 Microsoft Edge WebView2 Runtime。
+  卸载 FrameScope Monitor 不会删除系统中的 WebView2 Runtime。
+  是否删除历史 run 数据由卸载流程单独询问。
+
+GameLite 边界：
+
+  GameLite 是独立项目。普通 FrameScope build 和安装器不会安装、修改或运行
+  GameLite 脚本，也不会创建或删除 GameLite WMI 触发器。
