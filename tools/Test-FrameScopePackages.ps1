@@ -99,13 +99,17 @@ function Expand-ZipSafe {
         $seenEntries = @{}
         foreach ($entry in $archive.Entries) {
             $entryPath = $entry.FullName.Replace('\', '/')
-            if ($seenEntries.ContainsKey($entryPath)) { throw "Duplicate ZIP entry: $entryPath" }
-            $seenEntries[$entryPath] = $true
+            if ($entryPath.StartsWith('/', [StringComparison]::Ordinal) -or $entryPath -match '(^|/)\.{1,2}(/|$)') {
+                throw "Unsafe ZIP entry path: $entryPath"
+            }
             $relative = $entry.FullName.Replace('/', '\')
             $target = [IO.Path]::GetFullPath((Join-Path $Destination $relative))
             if (-not $target.StartsWith($destinationRoot, [StringComparison]::OrdinalIgnoreCase)) {
                 throw "Unsafe ZIP entry: $($entry.FullName)"
             }
+            $normalizedTarget = $target.Substring($destinationRoot.Length).Replace('\', '/')
+            if ($seenEntries.ContainsKey($normalizedTarget)) { throw "Duplicate ZIP target: $entryPath" }
+            $seenEntries[$normalizedTarget] = $true
             if ([string]::IsNullOrEmpty($entry.Name)) {
                 New-Item -ItemType Directory -Path $target -Force | Out-Null
                 continue
