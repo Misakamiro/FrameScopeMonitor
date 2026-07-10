@@ -29,8 +29,8 @@ internal static partial class FrameScopeNativeMonitor
                     .OrderByDescending(d => d.LastWriteTimeUtc)
                     .Take(3)
                     .Where(run =>
-                        !File.Exists(Path.Combine(run.FullName, "charts", "framescope-interactive-report.html")) &&
-                        HasAnyMonitorCsv(run.FullName) &&
+                        !FrameScopeReportArtifacts.Inspect(run.FullName).IsComplete &&
+                        FrameScopeReportArtifacts.HasUsableMonitorData(run.FullName) &&
                         DateTime.Now - LatestMonitorCsvWriteTime(run.FullName) > TimeSpan.FromMinutes(2)));
             }
 
@@ -38,10 +38,12 @@ internal static partial class FrameScopeNativeMonitor
             {
                 var status = ReadStatusDictionary(run.FullName);
                 var phase = StatusString(status, "Phase", "");
-                if (phase.Equals("capturing", StringComparison.OrdinalIgnoreCase) ||
-                    phase.Equals("finalizing", StringComparison.OrdinalIgnoreCase) ||
-                    phase.Equals("error", StringComparison.OrdinalIgnoreCase) ||
-                    string.IsNullOrWhiteSpace(phase))
+                FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(run.FullName);
+                if (FrameScopeReportRecoveryPolicy.ShouldRecover(
+                    phase,
+                    FrameScopeReportArtifacts.HasUsableMonitorData(run.FullName),
+                    artifacts.IsComplete,
+                    false))
                 {
                     WriteFrameScopeLog("recover-stale-report run=" + run.FullName + " phase=" + phase);
                     EnsureReportForCompletedRun(run.FullName, status, StatusInt(status, "ExitCode", -1), config);
@@ -56,16 +58,16 @@ internal static partial class FrameScopeNativeMonitor
 
     private static Dictionary<string, object> EnsureReportForCompletedRun(string runDir, Dictionary<string, object> status, int monitorExitCode, FrameScopeConfig config)
     {
-        var reportHtml = Path.Combine(runDir, "charts", "framescope-interactive-report.html");
-        if (File.Exists(reportHtml))
+        FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(runDir);
+        var reportHtml = artifacts.HtmlPath;
+        if (artifacts.IsComplete)
         {
             return status;
         }
 
         var presentMonCsv = Path.Combine(runDir, "presentmon.csv");
-        if (!File.Exists(presentMonCsv) &&
-            !File.Exists(Path.Combine(runDir, "process-samples.csv")) &&
-            !File.Exists(Path.Combine(runDir, "system-samples.csv")))
+        bool hasUsableMonitorData = FrameScopeReportArtifacts.HasUsableMonitorData(runDir);
+        if (!hasUsableMonitorData)
         {
             WriteFrameScopeLog("report-generate-skip missing-monitor-data run=" + runDir);
             return UpdateStatusAfterReportGeneration(runDir, status, new ReportGenerationResult
@@ -80,6 +82,13 @@ internal static partial class FrameScopeNativeMonitor
             }, monitorExitCode);
         }
 
+        string phase = StatusString(status, "Phase", "");
+        if (!FrameScopeReportRecoveryPolicy.ShouldRecover(phase, true, false, false))
+        {
+            WriteFrameScopeLog("report-generate-skip phase=" + phase + " run=" + runDir);
+            return status;
+        }
+
         if (!File.Exists(presentMonCsv))
         {
             WriteFrameScopeLog("report-generate-partial missing-presentmon run=" + runDir);
@@ -91,9 +100,7 @@ internal static partial class FrameScopeNativeMonitor
 
     private static bool HasAnyMonitorCsv(string runDir)
     {
-        return File.Exists(Path.Combine(runDir, "presentmon.csv")) ||
-               File.Exists(Path.Combine(runDir, "process-samples.csv")) ||
-               File.Exists(Path.Combine(runDir, "system-samples.csv"));
+        return FrameScopeReportArtifacts.HasUsableMonitorData(runDir);
     }
 
     private static DateTime LatestMonitorCsvWriteTime(string runDir)

@@ -26,6 +26,7 @@ public static class FrameScopeWebBridgeTests
             ReportsListSkipsNoisyFallbackButKeepsHistoryAndExpectedReports();
             ReportOpenRejectsFrontendPathPayload();
             ReportOpenUsesValidatedReportId();
+            HtmlOnlyReportCannotOpen();
             ReportOpenDirectoryUsesValidatedReportId();
             LogsOpenDirectoryRejectsFrontendPathPayload();
             LogsOpenDirectoryUsesHostResolvedLogDirectory();
@@ -375,6 +376,21 @@ public static class FrameScopeWebBridgeTests
         AssertEqual(true, adapter.LastReportPath.EndsWith("framescope-interactive-report.html", StringComparison.OrdinalIgnoreCase), "opened report path");
     }
 
+    private static void HtmlOnlyReportCannotOpen()
+    {
+        string root = CreateTempRoot("report-open-html-only");
+        string runDir = CreateReportRun(root, "Bridge Game", true);
+        File.Delete(Path.Combine(runDir, "charts", "framescope-interactive-data.js"));
+        File.Delete(Path.Combine(runDir, "charts", "framescope-interactive-manifest.json"));
+        string reportId = FirstReportId(root);
+        var adapter = new RecordingHostAdapter();
+        var bridge = CreateBridge(root, null, adapter);
+
+        var response = Decode(bridge.HandleJsonMessage(Request("report-open-html-only-1", "reports.open", "{\"reportId\":\"" + Escape(reportId) + "\"}")));
+        AssertEqual(false, AsBool(response, "ok"), "HTML-only report open rejected");
+        AssertEqual(0, adapter.OpenReportCount, "HTML-only report never reaches host adapter");
+    }
+
     private static void ReportOpenDirectoryUsesValidatedReportId()
     {
         string root = CreateTempRoot("report-open-dir");
@@ -565,10 +581,23 @@ public static class FrameScopeWebBridgeTests
         string runDir = Path.Combine(config.DataRoot, game, game + "-20260521-120000");
         string charts = Path.Combine(runDir, "charts");
         Directory.CreateDirectory(charts);
-        File.WriteAllText(Path.Combine(runDir, "presentmon.csv"), "Application,MsBetweenPresents" + Environment.NewLine);
+        File.WriteAllText(Path.Combine(runDir, "presentmon.csv"),
+            "Application,MsBetweenPresents" + Environment.NewLine +
+            game.Replace(" ", "") + ".exe,6.9" + Environment.NewLine);
         File.WriteAllText(Path.Combine(runDir, "status.json"), "{\"Phase\":\"done\",\"ReportKind\":\"full\",\"ReportFrameCount\":1}");
-        File.WriteAllText(Path.Combine(charts, "framescope-interactive-report.html"), "<html><body>report</body></html>");
-        File.WriteAllText(Path.Combine(charts, "framescope-interactive-manifest.json"), "{\"frames\":1,\"processSamples\":0,\"systemSamples\":0,\"reportKind\":\"full\"}");
+        string report = Path.Combine(charts, "framescope-interactive-report.html");
+        string data = Path.Combine(charts, "framescope-interactive-data.js");
+        File.WriteAllText(report, "<html><body>report</body></html>");
+        File.WriteAllText(data, "window.__FRAMESCOPE_REPORT__ = {};");
+        File.WriteAllText(Path.Combine(charts, "framescope-interactive-manifest.json"), Json.Serialize(new Dictionary<string, object>
+        {
+            { "report", report },
+            { "data", data },
+            { "frames", 1 },
+            { "processSamples", 0 },
+            { "systemSamples", 0 },
+            { "reportKind", "full" }
+        }));
         if (appendHistory)
         {
             File.AppendAllText(Path.Combine(root, "framescope-history.jsonl"), HistoryJson(game, game.Replace(" ", "") + ".exe", runDir, Path.Combine(charts, "framescope-interactive-report.html")) + Environment.NewLine);

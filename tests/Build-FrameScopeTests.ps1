@@ -36,6 +36,15 @@ Invoke-TestBuild `
     -Sources @('tests\FrameScopeJsonFileTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeReportRecoveryTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @(
+        'src\core\FrameScopeReportArtifacts.cs',
+        'src\core\FrameScopeReportRecoveryPolicy.cs',
+        'tests\FrameScopeReportRecoveryTests.cs'
+    )
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeConfigStoreTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigStoreTests.cs')
@@ -209,6 +218,7 @@ Invoke-TestBuild `
     -OutputName 'FrameScopeWebBridgeTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @(
+        'src\core\FrameScopeReportArtifacts.cs',
         'src\core\FrameScopeConfigStore.cs',
         'src\core\FrameScopeReportProgress.cs',
         'src\core\FrameScopeProcessPicker.cs',

@@ -100,6 +100,8 @@ try {
         /reference:$webView2Core `
         /reference:$webView2WinForms `
         .\src\core\FrameScopeJsonFile.cs `
+        .\src\core\FrameScopeReportArtifacts.cs `
+        .\src\core\FrameScopeReportRecoveryPolicy.cs `
         .\src\core\FrameScopeConfigStore.cs `
         .\src\core\FrameScopeLoggingPolicy.cs `
         .\src\core\FrameScopeCapturePlanner.cs `

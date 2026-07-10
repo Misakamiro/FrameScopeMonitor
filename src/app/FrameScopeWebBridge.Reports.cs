@@ -248,6 +248,9 @@ internal sealed partial class FrameScopeWebBridge
             if (!Path.GetExtension(fullReportHtml).Equals(".html", StringComparison.OrdinalIgnoreCase)) return null;
             if (!Directory.Exists(fullRunDir)) return null;
 
+            FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(fullRunDir);
+            if (!string.Equals(fullReportHtml, artifacts.HtmlPath, StringComparison.OrdinalIgnoreCase)) return null;
+
             Dictionary<string, object> status = ReadCachedStatus(fullRunDir, statusCache);
             DateTime sortTime = Directory.GetLastWriteTimeUtc(fullRunDir);
             DateTime parsed;
@@ -266,7 +269,7 @@ internal sealed partial class FrameScopeWebBridge
                 RunDir = fullRunDir,
                 ReportHtml = fullReportHtml,
                 MonitorExitCode = monitorExitCode,
-                ReportExists = reportInfo != null,
+                ReportExists = artifacts.IsComplete,
                 RunDirExists = true,
                 ReportSizeBytes = reportInfo == null ? 0 : reportInfo.Length,
                 LastWriteTime = reportInfo == null ? Directory.GetLastWriteTime(fullRunDir).ToString("O", CultureInfo.InvariantCulture) : reportInfo.LastWriteTime.ToString("O", CultureInfo.InvariantCulture),
@@ -365,10 +368,7 @@ internal sealed partial class FrameScopeWebBridge
 
     private static bool HasMonitorCsv(string runDir)
     {
-        return !string.IsNullOrWhiteSpace(runDir) &&
-            (File.Exists(Path.Combine(runDir, "presentmon.csv")) ||
-             File.Exists(Path.Combine(runDir, "process-samples.csv")) ||
-             File.Exists(Path.Combine(runDir, "system-samples.csv")));
+        return FrameScopeReportArtifacts.HasUsableMonitorData(runDir);
     }
 
     private static string GuessRunDirFromReportHtml(string reportHtml)
