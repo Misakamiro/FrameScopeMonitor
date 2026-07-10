@@ -15,10 +15,17 @@ $documents = @(
 $staleRules = @(
     @{ Name = 'deleted src/ui production tree'; Pattern = '(?i)(?:^|[^A-Za-z0-9_])src[\\/]ui(?:[\\/]|\b)' },
     @{ Name = 'removed DataGridView UI guidance'; Pattern = '(?i)\bDataGridView\b' },
-    @{ Name = 'old WinForms page/control guidance'; Pattern = '(?i)\bWinForms\b[^\r\n]*(?:\u9875\u9762|\u63a7\u4ef6|\u4e8b\u4ef6\u7ed1\u5b9a|page layout|control binding)' },
+    @{ Name = 'old WinForms production UI guidance'; Pattern = '(?i)(?:\u65e7|legacy)?\s*\bWinForms\b[^\r\n]{0,120}(?:\u4e3b\u754c\u9762|\u751f\u4ea7\s*UI|\u9875\u9762|\u63a7\u4ef6|\u4e8b\u4ef6\u7ed1\u5b9a|page layout|control binding)' },
     @{ Name = 'mojibake or replacement text'; Pattern = '(?:\uFFFD|\u00C2|\u00C3|\u00E2\u20AC|\u00F0\u0178)' },
-    @{ Name = 'independent per-target sampling guidance'; Pattern = '(?i)(?:\u6bcf\u4e2a\u76ee\u6807|\u6309\u76ee\u6807|per[- ]target)[^\r\n]{0,100}(?:SampleIntervalMs|ProcessSampleIntervalMs|SlowSampleIntervalMs|\u91c7\u6837\u95f4\u9694)[^\r\n]{0,100}(?:\u72ec\u7acb|\u5355\u72ec|independent|configur)' },
-    @{ Name = 'independent per-target sampling guidance'; Pattern = '(?i)(?:SampleIntervalMs|ProcessSampleIntervalMs|SlowSampleIntervalMs|\u91c7\u6837\u95f4\u9694)[^\r\n]{0,100}(?:\u6bcf\u4e2a\u76ee\u6807|\u6309\u76ee\u6807|per[- ]target)[^\r\n]{0,100}(?:\u72ec\u7acb|\u5355\u72ec|independent|configur)' }
+    @{ Name = 'independent per-target sampling guidance'; Pattern = '(?im)^(?=[^\r\n]*(?:\u6bcf(?:\u4e2a|\u4e00(?:\u4e2a)?)\u76ee\u6807|\u6309\u76ee\u6807|per[- ]target))(?=[^\r\n]*(?:\u72ec\u7acb|\u5355\u72ec|independent))(?=[^\r\n]*(?:SampleIntervalMs|ProcessSampleIntervalMs|SlowSampleIntervalMs|\u91c7\u6837(?:\u7387|\u95f4\u9694)|sampling\s+(?:rate|interval)))[^\r\n]*$' }
+)
+
+$forbiddenPatternSelfTests = @(
+    [regex]::Unescape('\u65e7 WinForms \u4e3b\u754c\u9762\u4ecd\u7528\u4e8e\u751f\u4ea7 UI'),
+    [regex]::Unescape('\u6bcf\u4e2a\u76ee\u6807\u53ef\u72ec\u7acb\u914d\u7f6e\u91c7\u6837\u7387'),
+    [regex]::Unescape('\u6bcf\u4e00\u76ee\u6807\u5747\u53ef\u5355\u72ec\u8bbe\u7f6e\u91c7\u6837\u95f4\u9694'),
+    [regex]::Unescape('\u91c7\u6837\u95f4\u9694\u53ef\u4ee5\u6309\u76ee\u6807\u5355\u72ec\u8bbe\u7f6e'),
+    'Per-target sampling rate can be configured independently.'
 )
 
 $generatedPrefixes = @(
@@ -54,6 +61,19 @@ function Normalize-DocumentedRepoPath {
 
 $failures = New-Object System.Collections.Generic.List[string]
 $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+
+foreach ($selfTestCase in $forbiddenPatternSelfTests) {
+    $caught = $false
+    foreach ($rule in $staleRules) {
+        if ([regex]::IsMatch($selfTestCase, $rule.Pattern)) {
+            $caught = $true
+            break
+        }
+    }
+    if (-not $caught) {
+        $failures.Add("forbidden-pattern self-test was not caught: '$selfTestCase'")
+    }
+}
 
 foreach ($relativeDocument in $documents) {
     $documentPath = Join-Path $root $relativeDocument
