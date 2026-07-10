@@ -13,6 +13,10 @@ $lock = Get-Content -Raw -LiteralPath (Join-Path $root 'dependencies.lock.json')
 $webView2Version = [string]$lock.microsoftWebView2
 $libreHardwareMonitorVersion = [string]$lock.libreHardwareMonitorLib
 $nugetCache = Join-Path $root 'tools\.cache\nuget'
+$version = (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Invalid VERSION: $version"
+}
 
 function Assert-LockedFileHash {
     param(
@@ -422,8 +426,41 @@ try {
     Copy-Item -LiteralPath $appIcon -Destination $payloadIconDir -Force
     Copy-Item -LiteralPath $appIconPng -Destination $payloadIconDir -Force
 
+    $buildId = [guid]::NewGuid().ToString('N')
+    $payloadRootUri = [Uri]([IO.Path]::GetFullPath($payloadRoot).TrimEnd('\') + '\')
+    $payloadEntries = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File | ForEach-Object {
+            $fileUri = [Uri]([IO.Path]::GetFullPath($_.FullName))
+            $relative = [Uri]::UnescapeDataString($payloadRootUri.MakeRelativeUri($fileUri).ToString()).Replace('\', '/')
+            [ordered]@{
+                path = $relative
+                length = $_.Length
+                sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+            }
+        } | Sort-Object path)
+    $payloadManifest = [ordered]@{
+        product = 'FrameScope Monitor'
+        version = $version
+        buildId = $buildId
+        dependencies = $lock
+        files = $payloadEntries
+    }
+    $payloadManifestPath = Join-Path $payloadRoot 'FrameScopeBuildManifest.json'
+    $payloadManifestTemp = $payloadManifestPath + '.tmp.' + [guid]::NewGuid().ToString('N')
+    $utf8NoBom = New-Object Text.UTF8Encoding($false)
+    try {
+        [IO.File]::WriteAllText($payloadManifestTemp, (($payloadManifest | ConvertTo-Json -Depth 20) + [Environment]::NewLine), $utf8NoBom)
+        Move-Item -LiteralPath $payloadManifestTemp -Destination $payloadManifestPath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $payloadManifestTemp) {
+            Remove-Item -LiteralPath $payloadManifestTemp -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     $payloadZip = Join-Path $sourceRoot 'payload.zip'
     Compress-Archive -Path (Join-Path $payloadRoot '*') -DestinationPath $payloadZip -Force
+    $payloadZipSha256 = (Get-FileHash -LiteralPath $payloadZip -Algorithm SHA256).Hash.ToUpperInvariant()
+    Write-Host "Payload provenance: version=$version buildId=$buildId SHA256=$payloadZipSha256 files=$($payloadEntries.Count)"
 
     $setupExe = Join-Path $dist 'FrameScopeMonitor-Setup.exe'
     Invoke-CSharpBuild -OutputPath $setupExe -Target 'winexe' `

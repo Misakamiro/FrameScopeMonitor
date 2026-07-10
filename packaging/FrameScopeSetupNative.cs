@@ -5,8 +5,11 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -18,6 +21,21 @@ internal static class FrameScopeSetupNative
     private const string Publisher = "Misakamiro";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\FrameScopeMonitor";
     private static InstallerForm form;
+
+    private sealed class PayloadBuildManifest
+    {
+        public string product { get; set; }
+        public string version { get; set; }
+        public string buildId { get; set; }
+        public PayloadBuildFile[] files { get; set; }
+    }
+
+    private sealed class PayloadBuildFile
+    {
+        public string path { get; set; }
+        public long length { get; set; }
+        public string sha256 { get; set; }
+    }
 
     [STAThread]
     private static void Main(string[] args)
@@ -111,6 +129,7 @@ internal static class FrameScopeSetupNative
 
                 using (var archive = new ZipArchive(payload, ZipArchiveMode.Read))
                 {
+                    ValidatePayloadArchive(archive);
                     int total = Math.Max(1, archive.Entries.Count);
                     int done = 0;
                     foreach (var entry in archive.Entries)
@@ -170,6 +189,86 @@ internal static class FrameScopeSetupNative
         {
             try { Log(logPath, "install-failed " + ex); } catch { }
             form.Finish(false, ex.Message);
+        }
+    }
+
+    private static void ValidatePayloadArchive(ZipArchive archive)
+    {
+        if (archive == null) throw new ArgumentNullException("archive");
+        const string manifestName = "FrameScopeBuildManifest.json";
+        var entries = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
+        ZipArchiveEntry manifestEntry = null;
+        foreach (ZipArchiveEntry entry in archive.Entries)
+        {
+            if (string.IsNullOrEmpty(entry.Name)) continue;
+            string path = entry.FullName.Replace('\\', '/');
+            if (entries.ContainsKey(path)) throw new InvalidOperationException("安装包损坏：payload 包含重复路径：" + path);
+            entries[path] = entry;
+            if (string.Equals(path, manifestName, StringComparison.Ordinal)) manifestEntry = entry;
+        }
+        if (manifestEntry == null) throw new InvalidOperationException("安装包损坏：找不到 payload 构建清单。");
+
+        PayloadBuildManifest manifest;
+        using (Stream stream = manifestEntry.Open())
+        using (var reader = new StreamReader(stream, Encoding.UTF8, true))
+        {
+            manifest = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<PayloadBuildManifest>(reader.ReadToEnd());
+        }
+        if (manifest == null || !string.Equals(manifest.product, "FrameScope Monitor", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("安装包损坏：payload 构建清单产品标识无效。");
+        }
+        if (!string.Equals(manifest.version, AppVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("安装包损坏：payload 版本与安装器不一致。");
+        }
+        if (string.IsNullOrWhiteSpace(manifest.buildId) || !Regex.IsMatch(manifest.buildId, "^[0-9a-fA-F]{32}$"))
+        {
+            throw new InvalidOperationException("安装包损坏：payload buildId 无效。");
+        }
+        if (manifest.files == null) throw new InvalidOperationException("安装包损坏：payload 文件清单缺失。");
+
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        foreach (PayloadBuildFile file in manifest.files)
+        {
+            string path = file == null ? "" : (file.path ?? "").Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(path) || path.StartsWith("/", StringComparison.Ordinal) || path.Contains("../"))
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
+            }
+            if (!declared.Add(path)) throw new InvalidOperationException("安装包损坏：payload 文件清单包含重复路径：" + path);
+
+            ZipArchiveEntry entry;
+            if (!entries.TryGetValue(path, out entry) || string.Equals(path, manifestName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件缺失：" + path);
+            }
+            if (entry.Length != file.length)
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件长度不匹配：" + path);
+            }
+            string actualHash;
+            using (Stream stream = entry.Open())
+            using (SHA256 sha = SHA256.Create())
+            {
+                actualHash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+            }
+            if (!string.Equals(actualHash, file.sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件校验失败：" + path);
+            }
+        }
+
+        if (declared.Count != entries.Count - 1)
+        {
+            throw new InvalidOperationException("安装包损坏：payload 包含未登记文件。");
+        }
+        foreach (string path in entries.Keys)
+        {
+            if (!string.Equals(path, manifestName, StringComparison.Ordinal) && !declared.Contains(path))
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件未登记：" + path);
+            }
         }
     }
 
