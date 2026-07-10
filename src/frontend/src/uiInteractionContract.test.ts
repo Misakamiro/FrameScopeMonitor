@@ -8,6 +8,15 @@ import bridgeStateSource from "./state/useFrameScopeBridgeState.ts?raw";
 import bridgeContractSource from "./bridge/contract.ts?raw";
 import mockPreviewSource from "./data/mockPreview.ts?raw";
 
+const reportStatusToneSource = reportsPageSource.slice(
+  reportsPageSource.indexOf("function reportStatusTone"),
+  reportsPageSource.indexOf("function reportStatusLabel"),
+);
+const reportStatusLabelSource = reportsPageSource.slice(
+  reportsPageSource.indexOf("function reportStatusLabel"),
+  reportsPageSource.indexOf("function reportOperationLabel"),
+);
+
 describe("FrameScope UI interaction contract", () => {
   it("keeps WebView2 smoke state probes stable without visible English controls", () => {
     expect(targetsPageSource).toContain("Process refresh completed");
@@ -117,5 +126,38 @@ describe("FrameScope UI interaction contract", () => {
     expect(reportsPageSource).toContain("data-smoke-action={`open-report-${smokeIndex}`}");
     expect(reportsPageSource).toContain("data-smoke-action={`open-directory-${smokeIndex}`}");
     expect(reportsPageSource).toContain("data-smoke-action={`regenerate-report-${smokeIndex}`}");
+  });
+
+  it("shows canonical full reports with frame data as complete success", () => {
+    expect(reportStatusToneSource).toContain('case "full":');
+    expect(reportStatusToneSource).toContain('return report.hasFrameData ? "success" : "warning";');
+    expect(reportStatusLabelSource).toContain('case "full":');
+    expect(reportStatusLabelSource).toContain('return report.hasFrameData ? "完整" : "可查看";');
+  });
+
+  it("shows canonical partial reports as warning partial data", () => {
+    expect(reportStatusToneSource).toMatch(/case "partial":\s*return "warning";/);
+    expect(reportStatusLabelSource).toMatch(/case "partial":\s*return "部分数据";/);
+  });
+
+  it("shows canonical diagnostic reports as warning diagnostic data", () => {
+    expect(reportStatusToneSource).toMatch(/case "diagnostic":\s*return "warning";/);
+    expect(reportStatusLabelSource).toMatch(/case "diagnostic":\s*return "诊断数据";/);
+  });
+
+  it("shows canonical error reports as failed danger", () => {
+    expect(reportStatusToneSource).toMatch(/case "error":\s*return "danger";/);
+    expect(reportStatusLabelSource).toMatch(/case "error":\s*return "失败";/);
+  });
+
+  it("retains pending and legacy unknown report fallbacks", () => {
+    expect(reportStatusToneSource).toMatch(/case "pending":\s*return "warning";/);
+    expect(reportStatusLabelSource).toMatch(/case "pending":\s*return "生成中";/);
+    expect(reportStatusToneSource).toContain("if (!report.reportExists) return \"warning\";");
+    expect(reportStatusToneSource).toContain("if (report.canOpenReport && report.hasFrameData) return \"success\";");
+    expect(reportStatusToneSource).toContain("if (report.monitorExitCode !== 0) return \"danger\";");
+    expect(reportStatusLabelSource).toContain("if (!report.reportExists) return \"缺失\";");
+    expect(reportStatusLabelSource).toContain("if (report.canOpenReport && report.hasFrameData) return \"完整\";");
+    expect(reportStatusLabelSource).toContain("if (report.monitorExitCode !== 0) return \"失败\";");
   });
 });

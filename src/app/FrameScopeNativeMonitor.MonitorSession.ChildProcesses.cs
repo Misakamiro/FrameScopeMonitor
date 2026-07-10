@@ -36,8 +36,64 @@ internal sealed class NativeMonitorSamplerState
 
 internal static partial class FrameScopeNativeMonitor
 {
+    // Keep enough diagnostics for failure classification without allowing a noisy child to grow memory or disk without bound.
+    private const int NativeMonitorChildLogMaxBytes = 1024 * 1024;
+    private const int NativeMonitorPipeReadBufferChars = 4096;
     private static readonly object NativeMonitorPipeLock = new object();
     private static readonly Dictionary<int, List<Thread>> NativeMonitorPipeThreads = new Dictionary<int, List<Thread>>();
+
+    private sealed class NativeMonitorRollingTextBuffer
+    {
+        private readonly char[] buffer;
+        private int start;
+        private int count;
+
+        internal NativeMonitorRollingTextBuffer(int capacity)
+        {
+            buffer = new char[Math.Max(1, capacity)];
+        }
+
+        internal void Append(char[] source, int offset, int length)
+        {
+            if (source == null || length <= 0) return;
+            if (length >= buffer.Length)
+            {
+                Array.Copy(source, offset + length - buffer.Length, buffer, 0, buffer.Length);
+                start = 0;
+                count = buffer.Length;
+                return;
+            }
+
+            int overflow = Math.Max(0, count + length - buffer.Length);
+            if (overflow > 0)
+            {
+                start = (start + overflow) % buffer.Length;
+                count -= overflow;
+            }
+
+            int writeAt = (start + count) % buffer.Length;
+            int firstLength = Math.Min(length, buffer.Length - writeAt);
+            Array.Copy(source, offset, buffer, writeAt, firstLength);
+            if (firstLength < length)
+            {
+                Array.Copy(source, offset + firstLength, buffer, 0, length - firstLength);
+            }
+            count += length;
+        }
+
+        internal string GetText()
+        {
+            if (count == 0) return "";
+            char[] result = new char[count];
+            int firstLength = Math.Min(count, buffer.Length - start);
+            Array.Copy(buffer, start, result, 0, firstLength);
+            if (firstLength < count)
+            {
+                Array.Copy(buffer, 0, result, firstLength, count - firstLength);
+            }
+            return new string(result);
+        }
+    }
 
     private static Process StartNativeMonitorChild(string fileName, string arguments, string workingDirectory, string stdoutPath = null, string stderrPath = null)
     {
@@ -75,16 +131,36 @@ internal static partial class FrameScopeNativeMonitor
         if (reader == null || string.IsNullOrWhiteSpace(path)) return null;
         var thread = new Thread(() =>
         {
+            var rolling = new NativeMonitorRollingTextBuffer(NativeMonitorChildLogMaxBytes);
             try
             {
-                var text = reader.ReadToEnd();
-                FrameScopePresentMonDiagnostics.WriteAllText(path, text ?? "", Encoding.UTF8);
+                char[] readBuffer = new char[NativeMonitorPipeReadBufferChars];
+                int read;
+                while ((read = reader.Read(readBuffer, 0, readBuffer.Length)) > 0)
+                {
+                    rolling.Append(readBuffer, 0, read);
+                }
             }
+            catch { }
+            try { WriteBoundedNativeMonitorChildLog(path, rolling.GetText(), NativeMonitorChildLogMaxBytes); }
             catch { }
         });
         thread.IsBackground = true;
         thread.Start();
         return thread;
+    }
+
+    private static void WriteBoundedNativeMonitorChildLog(string path, string text, int maxBytes)
+    {
+        int byteLimit = Math.Max(1, maxBytes);
+        int preambleBytes = Encoding.UTF8.GetPreamble().Length;
+        int payloadLimit = Math.Max(0, byteLimit - preambleBytes);
+        var payloadEncoding = new UTF8Encoding(false);
+        byte[] payload = payloadEncoding.GetBytes(text ?? "");
+        int offset = Math.Max(0, payload.Length - payloadLimit);
+        while (offset < payload.Length && (payload[offset] & 0xC0) == 0x80) offset++;
+        string boundedText = payloadEncoding.GetString(payload, offset, payload.Length - offset);
+        FrameScopePresentMonDiagnostics.WriteAllText(path, boundedText, Encoding.UTF8);
     }
 
     private static void RegisterNativeMonitorPipeThreads(Process process, List<Thread> pipeThreads)
@@ -332,14 +408,36 @@ internal static partial class FrameScopeNativeMonitor
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
-            string text = File.ReadAllText(path, Encoding.UTF8).Trim();
+            if (string.IsNullOrWhiteSpace(path) || !FrameScopePresentMonDiagnostics.FileExists(path)) return "";
             int limit = Math.Max(1, maxChars);
-            return text.Length <= limit ? text : text.Substring(text.Length - limit);
+            string streamPath = ToNativeMonitorStreamPath(path);
+            using (FileStream stream = new FileStream(streamPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                long readBytes = Math.Min(stream.Length, ((long)limit * 4L) + 4L);
+                if (readBytes < stream.Length) stream.Seek(-readBytes, SeekOrigin.End);
+                using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
+                {
+                    var text = new StringBuilder();
+                    char[] buffer = new char[Math.Min(4096, limit)];
+                    int read;
+                    while ((read = reader.Read(buffer, 0, buffer.Length)) > 0) text.Append(buffer, 0, read);
+                    string tail = text.ToString().Trim();
+                    return tail.Length <= limit ? tail : tail.Substring(tail.Length - limit);
+                }
+            }
         }
         catch
         {
             return "";
         }
+    }
+
+    private static string ToNativeMonitorStreamPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || Path.DirectorySeparatorChar != '\\' || path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+        string fullPath = Path.GetFullPath(path);
+        if (fullPath.Length < 248) return path;
+        if (fullPath.StartsWith(@"\\", StringComparison.Ordinal)) return @"\\?\UNC\" + fullPath.Substring(2);
+        return @"\\?\" + fullPath;
     }
 }

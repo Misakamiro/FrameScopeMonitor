@@ -45,6 +45,18 @@ Invoke-TestBuild `
     -Sources @('src\core\FrameScopeRunContract.cs', 'tests\FrameScopeRunContractTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeReportStatusTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -MainType 'FrameScopeNativeMonitor' `
+    -Sources @(
+        'src\core\FrameScopeConfigStore.cs',
+        'src\core\FrameScopeReportProgress.cs',
+        'src\app\FrameScopeNativeMonitor.ReportOrchestration.Models.cs',
+        'src\app\FrameScopeNativeMonitor.ReportStatus.cs',
+        'tests\FrameScopeReportStatusTests.cs'
+    )
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeNativeWatcherPolicyTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeNativeWatcherPolicyTests.cs')

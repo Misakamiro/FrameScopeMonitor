@@ -531,18 +531,43 @@ function loadStatusLabel(status: AsyncStatus) {
 }
 
 function reportStatusTone(report: ReportListItem) {
-  if (!report.reportExists) return "warning";
-  if (report.canOpenReport && report.hasFrameData) return "success";
-  if (report.monitorExitCode !== 0) return "danger";
-  return "warning";
+  switch (report.reportKind) {
+    case "full":
+      return report.hasFrameData ? "success" : "warning";
+    case "partial":
+      return "warning";
+    case "diagnostic":
+      return "warning";
+    case "error":
+      return "danger";
+    case "pending":
+      return "warning";
+    default:
+      if (!report.reportExists) return "warning";
+      if (report.canOpenReport && report.hasFrameData) return "success";
+      if (report.monitorExitCode !== 0) return "danger";
+      return "warning";
+  }
 }
 
 function reportStatusLabel(report: ReportListItem) {
-  if (!report.reportExists) return "缺失";
-  if (report.canOpenReport && report.hasFrameData) return "完整";
-  if (report.reportKind === "pending") return "生成中";
-  if (report.monitorExitCode !== 0) return "失败";
-  return "可查看";
+  switch (report.reportKind) {
+    case "full":
+      return report.hasFrameData ? "完整" : "可查看";
+    case "partial":
+      return "部分数据";
+    case "diagnostic":
+      return "诊断数据";
+    case "error":
+      return "失败";
+    case "pending":
+      return "生成中";
+    default:
+      if (!report.reportExists) return "缺失";
+      if (report.canOpenReport && report.hasFrameData) return "完整";
+      if (report.monitorExitCode !== 0) return "失败";
+      return "可查看";
+  }
 }
 
 function reportOperationLabel(kind: ReportOperationKind) {

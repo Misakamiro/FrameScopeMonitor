@@ -124,6 +124,7 @@ internal static partial class FrameScopeReportGenerator
     private sealed class ProcessMatrixResult
     {
         public string Codec = "";
+        public int SamplingInstantCount;
         public List<double> Times = new List<double>();
         public List<string> Names = new List<string>();
         public List<string> Cpu = new List<string>();

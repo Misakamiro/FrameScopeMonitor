@@ -14,6 +14,9 @@ public static class FrameScopeReportManifestTests
         SilentNoCsvDiagnosticsStayTargetNeutralAndDiagnostic();
         FramesWithFailedSystemSamplerArePartial();
         FramesWithHealthySamplersAreFull();
+        TargetOnlyProcessRowCountsSamplingInstant();
+        RowsSharingSampleIndexCountOneSamplingInstant();
+        LegacyMissingOrEmptySampleIndexUsesTimeInstants();
         NoUsableRowsAreError();
         ReportTargetDisplayNamePrefersConfiguredNameAndKeepsProcessName();
         ReportChartDataUsesBucketedFpsDisplayAndRawFrameStats();
@@ -259,6 +262,96 @@ public static class FrameScopeReportManifestTests
             AssertEqual("healthy", Convert.ToString(manifest["systemSamplerStatus"]), "healthy system sampler status");
             AssertEqual(1, Convert.ToInt32(manifest["processSamplerValidRows"]), "healthy process sampler valid rows");
             AssertEqual(1, Convert.ToInt32(manifest["systemSamplerValidRows"]), "healthy system sampler valid rows");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void TargetOnlyProcessRowCountsSamplingInstant()
+    {
+        string dir = CreateSamplerClassificationFixture(true, true);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "process-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,ProcessName,InstanceCount,CpuPct,WorkingSetMB,ReadMBps,WriteMBps,WindowTitle,Pid\r\n"
+                + "2026-07-11T10:00:00.0000000Z,7,0,game,1,3.0,256,0,0,,4242\r\n",
+                Encoding.UTF8);
+
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+            Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            Dictionary<string, object> counts = GetMap(data, "counts");
+
+            AssertEqual(1, Convert.ToInt32(manifest["processSamples"]), "target-only row counts as a sampling instant in manifest");
+            AssertEqual(1, Convert.ToInt32(counts["processSamples"]), "target-only row counts as a sampling instant in data");
+            AssertEqual(1, Convert.ToInt32(manifest["processSamplerValidRows"]), "target-only row remains one physical sampler row");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void RowsSharingSampleIndexCountOneSamplingInstant()
+    {
+        string dir = CreateSamplerClassificationFixture(true, true);
+        try
+        {
+            File.AppendAllText(Path.Combine(dir, "process-samples.csv"),
+                "2026-07-11T10:00:00.0000000Z,0,0,second-helper,1,2.0,64,0,0,,88\r\n",
+                Encoding.UTF8);
+
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+
+            AssertEqual(1, Convert.ToInt32(manifest["processSamples"]), "shared SampleIndex remains one sampling instant");
+            AssertEqual(2, Convert.ToInt32(manifest["processSamplerValidRows"]), "sampler valid rows retain physical process groups");
+            Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            AssertEqual(1, Convert.ToInt32(GetMap(data, "counts")["processSamples"]), "shared SampleIndex remains one sampling instant in data");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
+    }
+
+    private static void LegacyMissingOrEmptySampleIndexUsesTimeInstants()
+    {
+        AssertLegacyProcessSampleTimeFallback(false);
+        AssertLegacyProcessSampleTimeFallback(true);
+    }
+
+    private static void AssertLegacyProcessSampleTimeFallback(bool includeSampleIndex)
+    {
+        string dir = CreateSamplerClassificationFixture(true, true);
+        try
+        {
+            string header = includeSampleIndex
+                ? "Time,SampleIndex,ProcessName,CpuPct,WorkingSetMB\r\n"
+                : "Time,ProcessName,CpuPct,WorkingSetMB\r\n";
+            string emptyIndex = includeSampleIndex ? "," : "";
+            File.WriteAllText(Path.Combine(dir, "process-samples.csv"),
+                header
+                + "2026-07-11T10:00:00.0000000Z," + emptyIndex + "helper-one,1.0,128\r\n"
+                + "2026-07-11T10:00:00.0000000Z," + emptyIndex + "helper-two,2.0,192\r\n"
+                + "2026-07-11T10:00:01.0000000Z," + emptyIndex + "helper-one,3.0,128\r\n",
+                Encoding.UTF8);
+
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+            Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            Dictionary<string, object> process = GetMap(data, "process");
+            string format = includeSampleIndex ? "empty SampleIndex" : "missing SampleIndex";
+
+            AssertEqual(2, Convert.ToInt32(manifest["processSamples"]), format + " falls back to two distinct Time instants");
+            AssertEqual(2, Convert.ToInt32(GetMap(data, "counts")["processSamples"]), format + " data falls back to Time instants");
+            AssertEqual(2, GetObjectList(process, "t").Count, format + " process timeline preserves both Time instants");
+            AssertEqual(3, Convert.ToInt32(manifest["processSamplerValidRows"]), format + " retains three physical sampler rows");
         }
         finally
         {

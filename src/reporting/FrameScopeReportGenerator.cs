@@ -87,8 +87,8 @@ internal static partial class FrameScopeReportGenerator
 
         WriteProgress(progressPath, "处理进程", 35, "读取后台进程 CPU、内存和峰值", progressStart, null, false);
         ProcessMatrixResult process = ReadProcessMatrix(Path.Combine(runDir, "process-samples.csv"), start, targetProcess);
-        int processSampleRows = processSampler.ValidRows;
-        int systemSampleRows = systemSampler.ValidRows;
+        int processSampleCount = process.SamplingInstantCount;
+        int systemSampleCount = systemRows.Count;
         string reportKind = FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);
         Dictionary<string, object> systemSeries = SeriesFromSystem(systemRows, start, totalMemoryMb);
         Dictionary<string, object> cpuCoreCharts = ReadCpuCoreCharts(runDir, start, cpuCoreTelemetry);
@@ -162,7 +162,7 @@ internal static partial class FrameScopeReportGenerator
             { "target", new Dictionary<string, object> { { "processName", targetProcess }, { "displayName", targetDisplayName } } },
             { "hardware", hardware },
             { "hardwareDerived", new Dictionary<string, object> { { "totalMemoryGb", Round(totalMemoryGb, 2) }, { "vramTotalGb", Round(vramTotalGb, 2) } } },
-            { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "processSamples", processSampleRows }, { "processes", process.Names.Count }, { "systemSamples", systemSampleRows } } },
+            { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "processSamples", processSampleCount }, { "processes", process.Names.Count }, { "systemSamples", systemSampleCount } } },
             { "presentMon", present.Diagnostics },
             { "frameStats", frameStats },
             { "systemStats", systemStats },
@@ -201,8 +201,8 @@ internal static partial class FrameScopeReportGenerator
             { "hasFrameData", frames.Count > 0 },
             { "reportKind", reportKind },
             { "processes", process.Names.Count },
-            { "processSamples", processSampleRows },
-            { "systemSamples", systemSampleRows },
+            { "processSamples", processSampleCount },
+            { "systemSamples", systemSampleCount },
             { "cpuFrequencyCaptured", notes["cpuFrequencyCaptured"] },
             { "frameCaptureStatus", notes["frameCaptureStatus"] },
             { "frameCaptureMessage", notes["frameCaptureMessage"] },

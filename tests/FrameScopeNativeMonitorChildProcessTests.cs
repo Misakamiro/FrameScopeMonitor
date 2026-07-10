@@ -9,8 +9,26 @@ using System.Web.Script.Serialization;
 
 internal static partial class FrameScopeNativeMonitor
 {
+    // Contract: each redirected child-process log is capped at 1 MiB on disk.
+    private const int ExpectedNativeMonitorChildLogMaxBytes = 1024 * 1024;
+    private const string BoundedStdoutFinalMarker = "FRAMESCOPE_STDOUT_FINAL_MARKER";
+    private const string BoundedStderrFinalMarker = "FRAMESCOPE_STDERR_FINAL_MARKER";
+
     public static int Main(string[] args)
     {
+        if (args != null && args.Length > 0 && string.Equals(args[0], "--bounded-pipe-child", StringComparison.OrdinalIgnoreCase))
+        {
+            string stdoutLine = "stdout payload " + new string('o', 4096);
+            string stderrLine = "stderr payload " + new string('e', 4096);
+            for (int i = 0; i < 600; i++)
+            {
+                Console.Out.WriteLine(stdoutLine);
+                Console.Error.WriteLine(stderrLine);
+            }
+            Console.Out.WriteLine(BoundedStdoutFinalMarker);
+            Console.Error.WriteLine(BoundedStderrFinalMarker);
+            return 17;
+        }
         if (args != null && args.Length > 0 && string.Equals(args[0], "--short-lived-stderr-child", StringComparison.OrdinalIgnoreCase))
         {
             Console.Error.WriteLine("error: failed to start trace session: access denied.");
@@ -59,6 +77,7 @@ internal static partial class FrameScopeNativeMonitor
 
         try
         {
+        ChildPipeLogsAreBoundedAndKeepFinalOutput();
         ShortLivedChildStderrIsAvailableAfterExit();
         ShortLivedChildStderrWorksAtWindowsPathLimit();
         SamplerEvidenceBuilderUsesStartExitStopAndFileEvidence();
@@ -78,6 +97,58 @@ internal static partial class FrameScopeNativeMonitor
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             Console.Error.WriteLine(ex.StackTrace ?? "");
             return 1;
+        }
+    }
+
+    private static void ChildPipeLogsAreBoundedAndKeepFinalOutput()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-bounded-child-pipe-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string stdout = Path.Combine(dir, "child.stdout.log");
+            string stderr = Path.Combine(dir, "child.stderr.log");
+            string currentExe = Assembly.GetExecutingAssembly().Location;
+
+            Process child = StartNativeMonitorChild(
+                currentExe,
+                "--bounded-pipe-child",
+                dir,
+                stdout,
+                stderr,
+                ProcessPriorityClass.Normal);
+
+            AssertTrue(child != null, "bounded-output child process started");
+            AssertTrue(WaitForNativeMonitorChildExit(child, 30000, 30000), "bounded-output child drains stdout and stderr without blocking");
+            AssertEqual(17, child.ExitCode, "bounded-output child exit code");
+
+            AssertTrue(File.Exists(stdout), "bounded stdout log exists");
+            AssertTrue(File.Exists(stderr), "bounded stderr log exists");
+            long stdoutBytes = new FileInfo(stdout).Length;
+            long stderrBytes = new FileInfo(stderr).Length;
+            AssertTrue(stdoutBytes <= ExpectedNativeMonitorChildLogMaxBytes, "stdout log stays within the documented 1 MiB cap; actual bytes: " + stdoutBytes);
+            AssertTrue(stderrBytes <= ExpectedNativeMonitorChildLogMaxBytes, "stderr log stays within the documented 1 MiB cap; actual bytes: " + stderrBytes);
+
+            string stdoutText = File.ReadAllText(stdout, Encoding.UTF8);
+            string stderrText = File.ReadAllText(stderr, Encoding.UTF8);
+            AssertTrue(stdoutText.Contains(BoundedStdoutFinalMarker), "bounded stdout retains the final marker");
+            AssertTrue(stderrText.Contains(BoundedStderrFinalMarker), "bounded stderr retains the final marker");
+
+            FrameScopeSamplerEvidence evidence = BuildNativeMonitorSamplerEvidence(
+                new NativeMonitorSamplerState
+                {
+                    Required = true,
+                    ExecutablePath = currentExe,
+                    StderrPath = stderr
+                },
+                new string[0]);
+            AssertTrue(evidence.ErrorTail.Length <= 4096, "sampler ErrorTail stays within 4096 characters");
+            AssertTrue(evidence.ErrorTail.EndsWith(BoundedStderrFinalMarker, StringComparison.Ordinal), "sampler ErrorTail retains the final stderr marker");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
         }
     }
 

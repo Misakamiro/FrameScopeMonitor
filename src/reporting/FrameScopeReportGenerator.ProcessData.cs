@@ -16,6 +16,7 @@ internal static partial class FrameScopeReportGenerator
 
         string targetBase = Path.GetFileNameWithoutExtension(targetProcess ?? "").ToLowerInvariant();
         Dictionary<string, int> sampleMap = new Dictionary<string, int>();
+        HashSet<string> samplingInstants = new HashSet<string>(StringComparer.Ordinal);
         Dictionary<string, ProcessStat> stats = new Dictionary<string, ProcessStat>(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, ProcessRleSeriesBuilder> cpuBuilders = new Dictionary<string, ProcessRleSeriesBuilder>(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, ProcessRleSeriesBuilder> memBuilders = new Dictionary<string, ProcessRleSeriesBuilder>(StringComparer.OrdinalIgnoreCase);
@@ -36,13 +37,18 @@ internal static partial class FrameScopeReportGenerator
             {
                 string name = row[0].Trim();
                 if (string.IsNullOrEmpty(name)) continue;
-                if (!string.IsNullOrEmpty(targetBase) && name.Equals(targetBase, StringComparison.OrdinalIgnoreCase)) continue;
                 DateTime t;
                 if (!TryParseDate(row[1], out t)) continue;
                 string sampleIndex = row[2];
-                if (!sampleMap.ContainsKey(sampleIndex))
+                string normalizedSampleIndex = sampleIndex.Trim();
+                string samplingInstantKey = !string.IsNullOrEmpty(normalizedSampleIndex)
+                    ? "index:" + normalizedSampleIndex
+                    : "time:" + t.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);
+                samplingInstants.Add(samplingInstantKey);
+                if (!string.IsNullOrEmpty(targetBase) && name.Equals(targetBase, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!sampleMap.ContainsKey(samplingInstantKey))
                 {
-                    sampleMap[sampleIndex] = result.Times.Count;
+                    sampleMap[samplingInstantKey] = result.Times.Count;
                     result.Times.Add(RoundDouble((t - start).TotalSeconds, 3));
                 }
                 double? cpu = ParseNullableDouble(row[3]);
@@ -63,12 +69,13 @@ internal static partial class FrameScopeReportGenerator
                     stat.CpuSamples++;
                 }
                 if (mem.HasValue) stat.MaxMem = Math.Max(stat.MaxMem, mem.Value);
-                int position = sampleMap[sampleIndex];
+                int position = sampleMap[samplingInstantKey];
                 cpuBuilders[name].AppendAt(position, cpu, 2);
                 memBuilders[name].AppendAt(position, mem, 1);
             }
         }
 
+        result.SamplingInstantCount = samplingInstants.Count;
         List<ProcessStat> ordered = stats.Values.OrderByDescending(s => s.MaxCpu).ThenByDescending(s => s.MaxMem).ThenByDescending(s => s.Samples).ToList();
         result.Codec = "rle-v1";
         result.Names = ordered.Select(s => s.Name).ToList();

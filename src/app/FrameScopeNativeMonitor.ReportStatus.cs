@@ -68,6 +68,23 @@ internal static partial class FrameScopeNativeMonitor
             map["ReportSystemSampleCount"] = result.SystemSampleCount;
             map["ReportKind"] = result.ReportKind;
             ApplyReportSamplerEvidence(map, result);
+            object reportsValue;
+            Dictionary<string, object> reports = map.TryGetValue("Reports", out reportsValue)
+                ? reportsValue as Dictionary<string, object>
+                : null;
+            if (reports == null) reports = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            reports["Attempted"] = result.Attempted;
+            reports["ExitCode"] = result.ExitCode;
+            reports["ReportHtml"] = result.ReportHtml;
+            reports["LogPath"] = result.LogPath;
+            reports["Error"] = result.Error;
+            reports["ReportKind"] = result.ReportKind;
+            reports["HasFrameData"] = result.HasFrameData;
+            reports["FrameCount"] = result.FrameCount;
+            reports["ProcessSampleCount"] = result.ProcessSampleCount;
+            reports["SystemSampleCount"] = result.SystemSampleCount;
+            ApplyReportSamplerEvidence(reports, result);
+            map["Reports"] = reports;
             FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));
             File.WriteAllText(path, Json.Serialize(map), Encoding.UTF8);
         }
