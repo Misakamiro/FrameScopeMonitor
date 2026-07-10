@@ -1,7 +1,14 @@
+param(
+    [string]$StandaloneProjectRoot = $env:FRAMESCOPE_GAMELITE_ROOT
+)
+
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$newProjectRoot = Join-Path (Split-Path -Parent $root) 'gamelite-auto-lightweight'
+if ([string]::IsNullOrWhiteSpace($StandaloneProjectRoot)) {
+    $StandaloneProjectRoot = Join-Path (Split-Path -Parent $root) 'gamelite-auto-lightweight'
+}
+$newProjectRoot = [IO.Path]::GetFullPath($StandaloneProjectRoot)
 $scriptNames = @(
     'Install-GameLiteAutoTrigger.ps1',
     'Check-GameLiteAutoTrigger.ps1',
