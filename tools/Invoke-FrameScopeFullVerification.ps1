@@ -11,10 +11,13 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = Split-Path -Parent $PSScriptRoot
 }
 $root = (Resolve-Path -LiteralPath $RepoRoot).Path
-$originalRoot = (Resolve-Path -LiteralPath $OriginalWorkspace).Path
-if ([string]::Equals($root, $originalRoot, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'OriginalWorkspace must be separate from the remediation worktree.'
-}
+$originalRoot = $null
+$originalBefore = $null
+$branch = ''
+$commit = ''
+$nodeExe = ''
+$powershellExe = ''
+$dotnetExe = ''
 
 $verificationRoot = Join-Path $root ('artifacts\verification\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 $checksRoot = Join-Path $verificationRoot 'checks'
@@ -27,6 +30,8 @@ $startedAt = [DateTime]::UtcNow
 $failure = $null
 $script:SimulationResult = $null
 $script:NativeTestCount = 0
+$script:OriginalAfter = $null
+$script:CurrentCheckExitCode = 0
 
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Value)
@@ -50,7 +55,10 @@ function Get-GitStatusSnapshot {
     Push-Location $Workspace
     try {
         $lines = @(& git status --porcelain=v1 --untracked-files=all)
-        if ($LASTEXITCODE -ne 0) { throw "git status failed in $Workspace" }
+        if ($LASTEXITCODE -ne 0) {
+            $script:CurrentCheckExitCode = $LASTEXITCODE
+            throw "git status failed in $Workspace"
+        }
     }
     finally {
         Pop-Location
@@ -74,6 +82,7 @@ function Invoke-External {
         & $FilePath @Arguments
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
+            $script:CurrentCheckExitCode = $exitCode
             throw "$FilePath exited with code $exitCode."
         }
     }
@@ -92,6 +101,7 @@ function Invoke-Check {
     $logPath = Join-Path $checksRoot ($safeName + '.log')
     $checkStarted = [DateTime]::UtcNow
     $timer = [Diagnostics.Stopwatch]::StartNew()
+    $script:CurrentCheckExitCode = 0
     try {
         & $Action *>&1 | Out-File -LiteralPath $logPath -Encoding UTF8
         $timer.Stop()
@@ -117,7 +127,7 @@ function Invoke-Check {
                 startedAt = $checkStarted.ToString('o')
                 endedAt = $checkEnded.ToString('o')
                 durationMs = $timer.ElapsedMilliseconds
-                exitCode = 1
+                exitCode = if ($script:CurrentCheckExitCode -ne 0) { $script:CurrentCheckExitCode } else { 1 }
                 result = 'failed'
                 error = $_.Exception.Message
                 log = Get-RelativeArtifactPath -Path $logPath
@@ -167,24 +177,32 @@ function Assert-NoResidualProcesses {
 function Assert-NoResidualEtwSession {
     $output = & logman.exe query -ets 2>&1
     $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) { throw "logman query -ets failed with code $exitCode" }
+    if ($exitCode -ne 0) {
+        $script:CurrentCheckExitCode = $exitCode
+        throw "logman query -ets failed with code $exitCode"
+    }
     $matches = @($output | Where-Object { [string]$_ -match '^\s*FrameScopeNativePresentMon_' })
     if ($matches.Count -gt 0) { throw ('Residual ETW sessions: ' + ($matches -join ', ')) }
     'No FrameScopeNativePresentMon_* ETW session remains.'
 }
 
-$originalBefore = Get-GitStatusSnapshot -Workspace $originalRoot
-$branch = (& git -C $root branch --show-current | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Unable to read remediation branch.' }
-$commit = (& git -C $root rev-parse HEAD | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Unable to read remediation commit.' }
-$nodeExe = Resolve-NodeExe
-$powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
-$dotnetExe = (Get-Command dotnet.exe -ErrorAction Stop).Source
-
-Write-Utf8NoBom -Path $summaryLog -Value ("FrameScope full verification`r`nbranch=$branch`r`ncommit=$commit`r`nstartedAt=$($startedAt.ToString('o'))`r`n")
+Write-Utf8NoBom -Path $summaryLog -Value ("FrameScope full verification`r`nrepoRoot=$root`r`nrequestedOriginalWorkspace=$OriginalWorkspace`r`nstartedAt=$($startedAt.ToString('o'))`r`n")
 
 try {
+    $originalRoot = (Resolve-Path -LiteralPath $OriginalWorkspace).Path
+    if ([string]::Equals($root, $originalRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'OriginalWorkspace must be separate from the remediation worktree.'
+    }
+    $originalBefore = Get-GitStatusSnapshot -Workspace $originalRoot
+    $branch = (& git -C $root branch --show-current | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to read remediation branch.' }
+    $commit = (& git -C $root rev-parse HEAD | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to read remediation commit.' }
+    $nodeExe = Resolve-NodeExe
+    $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+    $dotnetExe = (Get-Command dotnet.exe -ErrorAction Stop).Source
+    Add-Content -LiteralPath $summaryLog -Encoding UTF8 -Value ("branch=$branch`r`ncommit=$commit`r`noriginalStatusSha256=$($originalBefore.Sha256)")
+
     Invoke-Check -Name 'documentation' -Action {
         Invoke-External -FilePath $powershellExe -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root 'tools\Test-CurrentDocumentation.ps1'))
     }
@@ -211,7 +229,10 @@ try {
             $path = Join-Path (Join-Path $root 'tests') $name
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Native test executable missing: $name" }
             & $path
-            if ($LASTEXITCODE -ne 0) { throw "$name failed with code $LASTEXITCODE" }
+            if ($LASTEXITCODE -ne 0) {
+                $script:CurrentCheckExitCode = $LASTEXITCODE
+                throw "$name failed with code $LASTEXITCODE"
+            }
         }
         $script:NativeTestCount = $names.Count
         "Native test executables passed: $($names.Count)"
@@ -232,7 +253,10 @@ try {
     }
     Invoke-Check -Name 'pubg-fake-presentmon-simulator' -Action {
         $simulationOutput = & $powershellExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tools\FrameScopePubgSimulator\Run-PubgSimulation.ps1') -Scenario stable -DurationSeconds 4
-        if ($LASTEXITCODE -ne 0) { throw "PUBG simulator failed with code $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) {
+            $script:CurrentCheckExitCode = $LASTEXITCODE
+            throw "PUBG simulator failed with code $LASTEXITCODE"
+        }
         $script:SimulationResult = ($simulationOutput | Out-String | ConvertFrom-Json)
         if ([int]$script:SimulationResult.monitorExit -ne 0 -or [int]$script:SimulationResult.reportExit -ne 0) {
             throw 'PUBG simulator monitor/report exit code was nonzero.'
@@ -284,6 +308,9 @@ foreach ($guard in @(
         @{ Name = 'residual-processes'; Action = { Assert-NoResidualProcesses } },
         @{ Name = 'residual-etw-sessions'; Action = { Assert-NoResidualEtwSession } },
         @{ Name = 'original-workspace-integrity'; Action = {
+                if ($null -eq $originalRoot -or $null -eq $originalBefore) {
+                    throw 'Original workspace baseline was not initialized.'
+                }
                 $script:OriginalAfter = Get-GitStatusSnapshot -Workspace $originalRoot
                 if ($originalBefore.Text -cne $script:OriginalAfter.Text) {
                     throw "Original workspace changed: before=$($originalBefore.Sha256) after=$($script:OriginalAfter.Sha256)"
@@ -300,7 +327,14 @@ foreach ($guard in @(
 }
 
 $endedAt = [DateTime]::UtcNow
-$originalAfter = if ($null -ne $script:OriginalAfter) { $script:OriginalAfter } else { Get-GitStatusSnapshot -Workspace $originalRoot }
+$originalAfter = $script:OriginalAfter
+$originalSummary = [ordered]@{
+    path = if ($null -ne $originalRoot) { $originalRoot } else { $OriginalWorkspace }
+    beforeSha256 = if ($null -ne $originalBefore) { $originalBefore.Sha256 } else { $null }
+    afterSha256 = if ($null -ne $originalAfter) { $originalAfter.Sha256 } else { $null }
+    lineCount = if ($null -ne $originalAfter) { $originalAfter.LineCount } elseif ($null -ne $originalBefore) { $originalBefore.LineCount } else { $null }
+    unchanged = ($null -ne $originalBefore -and $null -ne $originalAfter -and $originalBefore.Text -ceq $originalAfter.Text)
+}
 $result = [ordered]@{
     schemaVersion = 1
     result = if ($null -eq $failure) { 'passed' } else { 'failed' }
@@ -312,13 +346,8 @@ $result = [ordered]@{
     commit = $commit
     node = $nodeExe
     nativeTestExecutables = $script:NativeTestCount
-    originalWorkspace = [ordered]@{
-        path = $originalRoot
-        beforeSha256 = $originalBefore.Sha256
-        afterSha256 = $originalAfter.Sha256
-        lineCount = $originalAfter.LineCount
-        unchanged = $originalBefore.Text -ceq $originalAfter.Text
-    }
+    error = if ($null -ne $failure) { $failure.Exception.Message } else { $null }
+    originalWorkspace = $originalSummary
     simulation = $script:SimulationResult
     checks = @($results)
 }
