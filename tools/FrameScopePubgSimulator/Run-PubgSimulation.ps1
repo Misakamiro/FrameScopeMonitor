@@ -6,7 +6,8 @@ param(
     [switch]$NoInitialPid,
     [ValidateRange(1, 3600)]
     [int]$MonitorTimeoutSeconds = 120,
-    [string]$OwnershipPath = ''
+    [string]$OwnershipPath = '',
+    [switch]$CompileOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -102,6 +103,7 @@ $common = Join-Path $toolRoot 'FrameScopePubgSimulationCommon.cs'
     /reference:System.Windows.Forms.dll `
     /reference:System.Drawing.dll `
     /out:$gameExe `
+    (Join-Path $root 'src\core\FrameScopeJsonFile.cs') `
     (Join-Path $root 'src\core\FrameScopeConfigStore.cs') `
     $common `
     (Join-Path $toolRoot 'PubgGameSimulator.cs')
@@ -109,10 +111,19 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to build TslGame simulator. csc exit=$L
 
 & $csc /nologo /target:exe /platform:x64 /optimize+ /codepage:65001 `
     /out:$fakePresentMonExe `
+    (Join-Path $root 'src\core\FrameScopeJsonFile.cs') `
     (Join-Path $root 'src\core\FrameScopeConfigStore.cs') `
     $common `
     (Join-Path $toolRoot 'FakePresentMon.cs')
 if ($LASTEXITCODE -ne 0) { throw "Failed to build FakePresentMon simulator. csc exit=$LASTEXITCODE" }
+
+if ($CompileOnly) {
+    [ordered]@{
+        gameExecutable = $gameExe
+        fakePresentMonExecutable = $fakePresentMonExe
+    } | ConvertTo-Json
+    return
+}
 
 $runRoot = Join-Path $OutputRoot 'runs'
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null

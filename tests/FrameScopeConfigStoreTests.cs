@@ -53,6 +53,8 @@ public static class FrameScopeConfigStoreTests
         string source = File.ReadAllText(Path.Combine(Root, "packaging", "FrameScopeSetupNative.cs"));
         AssertTrue(!source.Contains("CreateDefaultConfigJson"), "installer must use FrameScopeConfigStore");
         AssertTrue(!source.Contains("HogwartsLegacy.exe\""), "installer must not duplicate target rows");
+        AssertTrue(!source.Contains("GetDefaultDataRoot("), "installer must not duplicate the runtime default data root");
+        AssertTrue(source.Contains("FrameScopeConfigStore.DefaultDataRoot"), "installer must use the runtime default data root source");
     }
 
     private static void CreateDefaultConfigUsesNativeModeAndSeparateDataRoot()

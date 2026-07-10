@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('all', 'timeout', 'owned-cleanup', 'whole-run-finalization', 'workspace-fingerprint', 'simulation-exit-code')]
+    [ValidateSet('all', 'timeout', 'owned-cleanup', 'whole-run-finalization', 'workspace-fingerprint', 'simulation-exit-code', 'simulator-compile')]
     [string]$TestName = 'all'
 )
 
@@ -406,12 +406,24 @@ function Test-SimulationExitCode {
     Assert-True ($simulatorChecks[0].Extent.Text -match 'Assert-SimulationChildExitCodes') 'PUBG simulator check does not apply the real child exit-code assertion.'
 }
 
+function Test-SimulatorCompileDependencies {
+    $outputRoot = Join-Path $tempRoot 'simulator-compile'
+    $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $simulatorPath `
+            -CompileOnly -OutputRoot $outputRoot 2>&1)
+    $exitCode = $LASTEXITCODE
+    Assert-Equal 0 $exitCode ('simulator compile-only exit code; output=' + (($output | Out-String).Trim()))
+    foreach ($name in @('TslGame.exe', 'FakePresentMon.exe')) {
+        Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $outputRoot 'bin') $name) -PathType Leaf) "simulator compile-only output missing: $name"
+    }
+}
+
 $tests = [ordered]@{
     timeout = ${function:Test-PerCheckTimeout}
     'owned-cleanup' = ${function:Test-OwnedSimulatorCleanup}
     'whole-run-finalization' = ${function:Test-WholeRunFinalization}
     'workspace-fingerprint' = ${function:Test-WorkspaceFingerprint}
     'simulation-exit-code' = ${function:Test-SimulationExitCode}
+    'simulator-compile' = ${function:Test-SimulatorCompileDependencies}
 }
 $failures = New-Object Collections.Generic.List[string]
 try {

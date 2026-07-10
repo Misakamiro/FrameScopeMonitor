@@ -215,7 +215,8 @@ internal static class FrameScopeSetupNative
         foreach (ZipArchiveEntry entry in archive.Entries)
         {
             string path = NormalizePayloadArchivePath(entry.FullName);
-            if (!archiveTargets.Add(path)) throw new InvalidOperationException("安装包损坏：payload 包含重复目标路径：" + path);
+            string canonicalTarget = GetCanonicalPayloadTargetPath(path);
+            if (!archiveTargets.Add(canonicalTarget)) throw new InvalidOperationException("安装包损坏：payload 包含重复目标路径：" + path);
             if (string.IsNullOrEmpty(entry.Name)) continue;
             entries[path] = entry;
             if (string.Equals(path, manifestName, StringComparison.OrdinalIgnoreCase)) manifestEntry = entry;
@@ -304,10 +305,35 @@ internal static class FrameScopeSetupNative
             {
                 throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
             }
+            if (!string.Equals(segment, segment.TrimEnd(' ', '.'), StringComparison.Ordinal) ||
+                segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                IsReservedWindowsPathSegment(segment))
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
+            }
             segments.Add(segment);
         }
         if (segments.Count == 0) throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
         return string.Join("/", segments.ToArray());
+    }
+
+    private static bool IsReservedWindowsPathSegment(string segment)
+    {
+        string deviceName = segment ?? "";
+        int extensionIndex = deviceName.IndexOf('.');
+        if (extensionIndex >= 0) deviceName = deviceName.Substring(0, extensionIndex);
+        deviceName = deviceName.TrimEnd(' ', '.');
+        return Regex.IsMatch(
+            deviceName,
+            "^(CON|PRN|AUX|NUL|CLOCK\\$|CONIN\\$|CONOUT\\$|COM[1-9\u00B9\u00B2\u00B3]|LPT[1-9\u00B9\u00B2\u00B3])$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static string GetCanonicalPayloadTargetPath(string value)
+    {
+        string normalized = NormalizePayloadArchivePath(value);
+        string validationRoot = Path.Combine(Path.GetTempPath(), "FrameScopePayloadValidationRoot");
+        return SafeCombine(validationRoot, normalized.Replace('/', Path.DirectorySeparatorChar));
     }
 
     private static string SafeCombine(string root, string relative)
@@ -413,14 +439,6 @@ internal static class FrameScopeSetupNative
         }
     }
 
-    private static string GetDefaultDataRoot()
-    {
-        return Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "FrameScopeMonitorData",
-            "framescope-runs");
-    }
-
     internal static string GetExistingOrDefaultDataRoot()
     {
         string configPath = Path.Combine(
@@ -428,12 +446,12 @@ internal static class FrameScopeSetupNative
             "FrameScopeMonitor",
             "framescope-config.json");
         string configured = ReadConfigDataRoot(configPath);
-        return NormalizeDataRoot(string.IsNullOrWhiteSpace(configured) ? GetDefaultDataRoot() : configured);
+        return NormalizeDataRoot(string.IsNullOrWhiteSpace(configured) ? FrameScopeConfigStore.DefaultDataRoot : configured);
     }
 
     private static string NormalizeDataRoot(string path)
     {
-        if (string.IsNullOrWhiteSpace(path)) path = GetDefaultDataRoot();
+        if (string.IsNullOrWhiteSpace(path)) path = FrameScopeConfigStore.DefaultDataRoot;
         path = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"'));
         return Path.GetFullPath(path);
     }

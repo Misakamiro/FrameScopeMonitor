@@ -29,6 +29,68 @@ function Normalize-SourcePath {
     return (($Path -replace '^[.][\\/]+', '') -replace '/', '\').ToLowerInvariant()
 }
 
+function Get-ProductionCSharpSources {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RepositoryRoot
+    )
+
+    $repositoryPath = [IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\')
+    $sources = New-Object Collections.Generic.List[string]
+    foreach ($productionRootName in @('src', 'packaging')) {
+        $productionRoot = Join-Path $repositoryPath $productionRootName
+        if (-not (Test-Path -LiteralPath $productionRoot -PathType Container)) { continue }
+        foreach ($file in Get-ChildItem -LiteralPath $productionRoot -Recurse -File -Filter '*.cs') {
+            $sources.Add((Normalize-SourcePath $file.FullName.Substring($repositoryPath.Length + 1)))
+        }
+    }
+    return @($sources | Sort-Object -Unique)
+}
+
+function Get-UncoveredProductionCSharpSources {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$ProductionSources,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$CoveredSources,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$PackagingOnlySources
+    )
+
+    return @($ProductionSources | Where-Object {
+            -not $CoveredSources.ContainsKey($_) -and -not $PackagingOnlySources.ContainsKey($_)
+        } | Sort-Object -Unique)
+}
+
+function Assert-ProductionSourceCoverageSelfTest {
+    $fixtureRoot = Join-Path $env:TEMP ('framescope-source-coverage-' + [guid]::NewGuid().ToString('N'))
+    try {
+        foreach ($directory in @('src', 'packaging', 'tests')) {
+            New-Item -ItemType Directory -Path (Join-Path $fixtureRoot $directory) -Force | Out-Null
+        }
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot 'src\covered.cs'), 'internal sealed class Covered { }')
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot 'packaging\missed.cs'), 'internal sealed class Missed { }')
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot 'tests\ignored.cs'), 'internal sealed class Ignored { }')
+
+        $production = @(Get-ProductionCSharpSources -RepositoryRoot $fixtureRoot)
+        $covered = @{ (Normalize-SourcePath 'src\covered.cs') = $true }
+        $uncovered = @(Get-UncoveredProductionCSharpSources `
+                -ProductionSources $production `
+                -CoveredSources $covered `
+                -PackagingOnlySources @{})
+        Assert-Contract ($production.Count -eq 2) "Build-contract self-test must enumerate src and packaging production sources only (found: $($production -join ', '))."
+        Assert-Contract (
+            $uncovered.Count -eq 1 -and
+            $uncovered[0] -ceq (Normalize-SourcePath 'packaging\missed.cs')
+        ) "Build-contract self-test must reject a packaging source omitted from compiler inputs (found: $($uncovered -join ', '))."
+    }
+    finally {
+        Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-SourceArrayNamesFromBuildCommand {
     param(
         [Parameter(Mandatory = $true)]
@@ -79,12 +141,30 @@ function Test-StaticSourceArrayDefinition {
     if ($Assignments.Count -ne 1) { return $false }
     $assignment = $Assignments[0]
     if ($assignment.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
-    $dynamicNodes = @($assignment.Right.FindAll({
-                param($node)
-                return $node -is [System.Management.Automation.Language.VariableExpressionAst] -or
-                    $node -is [System.Management.Automation.Language.CommandAst]
-            }, $true))
-    return $dynamicNodes.Count -eq 0
+    if ($assignment.Right -isnot [System.Management.Automation.Language.CommandExpressionAst] -or
+        $assignment.Right.Expression -isnot [System.Management.Automation.Language.ArrayExpressionAst]) {
+        return $false
+    }
+
+    $allowedNodeTypes = @(
+        [System.Management.Automation.Language.CommandExpressionAst],
+        [System.Management.Automation.Language.ArrayExpressionAst],
+        [System.Management.Automation.Language.StatementBlockAst],
+        [System.Management.Automation.Language.PipelineAst],
+        [System.Management.Automation.Language.ArrayLiteralAst],
+        [System.Management.Automation.Language.StringConstantExpressionAst]
+    )
+    foreach ($node in @($assignment.Right.FindAll({ param($candidate) return $true }, $true))) {
+        $allowed = $false
+        foreach ($allowedType in $allowedNodeTypes) {
+            if ($allowedType.IsInstanceOfType($node)) {
+                $allowed = $true
+                break
+            }
+        }
+        if (-not $allowed) { return $false }
+    }
+    return $true
 }
 
 function Get-RestoreNativeRuntimeVerificationCallCount {
@@ -191,6 +271,8 @@ Assert-Contract ($buildText.Contains('$lock.webView2StandaloneInstaller')) 'buil
 Assert-Contract ($buildText.Contains('Resolved NuGet dependency')) 'build.ps1 must print resolved NuGet package versions.'
 Assert-Contract ($buildText.Contains('Verified pinned file')) 'build.ps1 must print verified pinned-file hashes.'
 
+Assert-ProductionSourceCoverageSelfTest
+
 $tokens = $null
 $parseErrors = $null
 $buildAst = [System.Management.Automation.Language.Parser]::ParseFile($buildPath, [ref]$tokens, [ref]$parseErrors)
@@ -294,7 +376,34 @@ Assert-Contract (
     -not (Test-StaticSourceArrayDefinition -Assignments $mutationAssignments)
 ) 'Build-contract self-test must reject overwritten or incrementally mutated source arrays.'
 
-foreach ($requiredArray in @('commonCoreSources', 'monitorSources', 'reportSources', 'samplerSources')) {
+$indexedArrayTokens = $null
+$indexedArrayErrors = $null
+$indexedArrayAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    "`$fixtureSources = @('src\a.cs', 'src\b.cs')[0]",
+    [ref]$indexedArrayTokens,
+    [ref]$indexedArrayErrors
+)
+$indexedArrayAssignments = @($indexedArrayAst.FindAll({
+            param($node)
+            return $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                $node.Left.VariablePath.UserPath -eq 'fixtureSources'
+        }, $true))
+Assert-Contract (
+    $indexedArrayErrors.Count -eq 0 -and
+    -not (Test-StaticSourceArrayDefinition -Assignments $indexedArrayAssignments)
+) 'Build-contract self-test must reject indexed or otherwise computed source arrays.'
+
+foreach ($requiredArray in @(
+        'commonCoreSources',
+        'monitorSources',
+        'reportSources',
+        'samplerSources',
+        'systemSamplerSources',
+        'setupSources',
+        'uninstallerSources',
+        'legacyCleanupSources'
+    )) {
     Assert-Contract ($validSourceAssignments.ContainsKey($requiredArray)) "build.ps1 must define `$$requiredArray as one static array."
     Assert-Contract ($usedSourceArrays.ContainsKey($requiredArray)) "build.ps1 must pass `$$requiredArray to Invoke-CSharpBuild."
 }
@@ -307,7 +416,7 @@ $packagingOnlySources = @{}
 $sourceStrings = @($buildAst.FindAll({
             param($node)
             return $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
-                $node.Value -match '^(?:[.][\\/])?src[\\/].+[.]cs$'
+                $node.Value -match '^(?:[.][\\/])?(?:src|packaging)[\\/].+[.]cs$'
         }, $true))
 foreach ($sourceString in $sourceStrings) {
     $parent = $sourceString.Parent
@@ -331,12 +440,11 @@ foreach ($sourceString in $sourceStrings) {
     }
 }
 
-$productionSources = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Recurse -File -Filter '*.cs' |
-    ForEach-Object { Normalize-SourcePath $_.FullName.Substring($root.Length + 1) } |
-    Sort-Object -Unique)
-$uncoveredSources = @($productionSources | Where-Object {
-        -not $coveredSources.ContainsKey($_) -and -not $packagingOnlySources.ContainsKey($_)
-    })
+$productionSources = @(Get-ProductionCSharpSources -RepositoryRoot $root)
+$uncoveredSources = @(Get-UncoveredProductionCSharpSources `
+        -ProductionSources $productionSources `
+        -CoveredSources $coveredSources `
+        -PackagingOnlySources $packagingOnlySources)
 Assert-Contract ($uncoveredSources.Count -eq 0) "Production C# sources are not covered by a compiled target or packagingOnlySources: $($uncoveredSources -join ', ')."
 
 if ($script:failures.Count -gt 0) {
