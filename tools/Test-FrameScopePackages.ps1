@@ -96,7 +96,11 @@ function Expand-ZipSafe {
     $destinationRoot = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
     $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
     try {
+        $seenEntries = @{}
         foreach ($entry in $archive.Entries) {
+            $entryPath = $entry.FullName.Replace('\', '/')
+            if ($seenEntries.ContainsKey($entryPath)) { throw "Duplicate ZIP entry: $entryPath" }
+            $seenEntries[$entryPath] = $true
             $relative = $entry.FullName.Replace('/', '\')
             $target = [IO.Path]::GetFullPath((Join-Path $Destination $relative))
             if (-not $target.StartsWith($destinationRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -177,10 +181,9 @@ function Assert-Manifest {
     }
 
     $locked = Get-Content -Raw -LiteralPath (Join-Path $root 'dependencies.lock.json') | ConvertFrom-Json
-    Assert-Equal ([string]$locked.microsoftWebView2) ([string]$manifest.dependencies.microsoftWebView2) 'manifest WebView2 version'
-    Assert-Equal ([string]$locked.libreHardwareMonitorLib) ([string]$manifest.dependencies.libreHardwareMonitorLib) 'manifest LibreHardwareMonitor version'
-    Assert-Equal ([string]$locked.presentMon.sha256).ToUpperInvariant() ([string]$manifest.dependencies.presentMon.sha256).ToUpperInvariant() 'manifest PresentMon hash'
-    Assert-Equal ([string]$locked.webView2StandaloneInstaller.sha256).ToUpperInvariant() ([string]$manifest.dependencies.webView2StandaloneInstaller.sha256).ToUpperInvariant() 'manifest WebView2 installer hash'
+    $lockedJson = $locked | ConvertTo-Json -Depth 20 -Compress
+    $manifestDependenciesJson = $manifest.dependencies | ConvertTo-Json -Depth 20 -Compress
+    Assert-Equal $lockedJson $manifestDependenciesJson 'manifest dependency lock'
 
     $declared = @{}
     foreach ($entry in @($manifest.files)) {
@@ -231,9 +234,12 @@ try {
 
     $releaseRoot = Join-Path $temp 'release-zip'
     Expand-ZipSafe -ZipPath (Join-Path $dist 'FrameScopeMonitor-Installer.zip') -Destination $releaseRoot
-    $releaseFiles = @(Get-ChildItem -LiteralPath $releaseRoot -File)
+    $releaseFiles = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -File)
     Assert-Equal 4 $releaseFiles.Count 'release ZIP file count'
-    foreach ($name in @('FrameScopeMonitor-Setup.exe', 'FrameScopeMonitor-Full-Setup.exe', 'FrameScopeMonitor-LegacyCleanup.exe', 'README-FrameScopeMonitor.txt')) {
+    $requiredReleaseNames = @('FrameScopeMonitor-Setup.exe', 'FrameScopeMonitor-Full-Setup.exe', 'FrameScopeMonitor-LegacyCleanup.exe', 'README-FrameScopeMonitor.txt')
+    $actualReleaseNames = @($releaseFiles | ForEach-Object { Get-RelativePath -BasePath $releaseRoot -Path $_.FullName } | Sort-Object)
+    Assert-Equal (($requiredReleaseNames | Sort-Object) -join '|') ($actualReleaseNames -join '|') 'release ZIP file set'
+    foreach ($name in $requiredReleaseNames) {
         $zipped = Join-Path $releaseRoot $name
         $sibling = Join-Path $dist $name
         if (-not (Test-Path -LiteralPath $zipped -PathType Leaf)) { throw "Release ZIP missing: $name" }
