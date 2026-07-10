@@ -30,19 +30,27 @@ $rootRepoPathAllowlist = @(
     'Invoke-GameLiteSGuardThrottle.ps1',
     'Install-GameLiteAutoTrigger.cmd',
     'Check-GameLiteAutoTrigger.cmd',
-    'Remove-GameLiteAutoTrigger.cmd'
+    'Remove-GameLiteAutoTrigger.cmd',
+    'Uninstall-FrameScopeMonitor.cmd'
 )
 
+$repoPathMappings = @{
+    'Uninstall-FrameScopeMonitor.cmd' = 'packaging/Uninstall-FrameScopeMonitor.cmd'
+}
+
 $staleRules = @(
-    @{ Name = 'deleted src/ui production tree'; Pattern = '(?i)(?:^|[^A-Za-z0-9_])src[\\/]ui(?:[\\/]|\b)' },
-    @{ Name = 'removed DataGridView UI guidance'; Pattern = '(?i)\bDataGridView\b' },
-    @{ Name = 'old WinForms production UI guidance'; Pattern = '(?im)^(?![^\r\n]*(?:\u5df2\u7ecf?\u79fb\u9664|\u4e0d\u518d|removed|no\s+longer))(?=[^\r\n]*\bWinForms\b)(?=[^\r\n]*(?:\u4e3b\u754c\u9762|\u751f\u4ea7\s*UI|production\s*UI|\u9875\u9762|\u63a7\u4ef6|\u4e8b\u4ef6\u7ed1\u5b9a|page layout|control binding))(?=[^\r\n]*(?:\u4ecd|\u7ee7\u7eed|\u7528\u4e8e|\u7528\u4f5c|\u4f5c\u4e3a|remain|still|used\s+for|\bis\b))[^\r\n]*$' },
+    @{ Name = 'deleted src/ui production tree'; Pattern = '(?im)^(?![^\r\n]*(?:\u5df2(?:\u7ecf)?(?:\u79fb\u9664|\u5220\u9664)|\u4e0d\u518d|\u4e0d\u8981\u6062\u590d|\u5386\u53f2|removed|deleted|no\s+longer|historical))(?=[^\r\n]*(?:^|[^A-Za-z0-9_])src[\\/]ui(?:[\\/]|\b))[^\r\n]*$' },
+    @{ Name = 'removed DataGridView UI guidance'; Pattern = '(?im)^(?![^\r\n]*(?:\u5df2(?:\u7ecf)?(?:\u79fb\u9664|\u5220\u9664)|\u4e0d\u518d|\u4e0d\u8981\u6062\u590d|\u5386\u53f2|removed|deleted|no\s+longer|historical))(?=[^\r\n]*DataGridView)[^\r\n]*$' },
+    @{ Name = 'old WinForms production UI guidance'; Pattern = '(?im)^(?![^\r\n]*(?:\u5df2(?:\u7ecf)?(?:\u79fb\u9664|\u5220\u9664)|\u4e0d\u518d|\u4e0d\u8981\u6062\u590d|\u5386\u53f2|removed|deleted|no\s+longer|historical))(?=[^\r\n]*WinForms)(?=[^\r\n]*(?:\u4e3b\u754c\u9762|\u751f\u4ea7\s*UI|production\s*UI|\u9875\u9762|\u63a7\u4ef6|\u4e8b\u4ef6\u7ed1\u5b9a|page layout|control binding))(?=[^\r\n]*(?:\u4ecd|\u7ee7\u7eed|\u7528\u4e8e|\u7528\u4f5c|\u4f5c\u4e3a|remain|still|used\s+for|\bis\b))[^\r\n]*$' },
     @{ Name = 'mojibake or replacement text'; Pattern = '(?:\uFFFD|\u00C2|\u00C3|\u00E2\u20AC|\u00F0\u0178)' },
     @{ Name = 'independent per-target sampling guidance'; Pattern = '(?im)^(?![^\r\n]*(?:\u4e0d(?:\u80fd|\u53ef|\u5141\u8bb8|\u652f\u6301|\u518d)|\u4e0d\u662f|\u4ec5[^\r\n]{0,20}\u517c\u5bb9|\u7edf\u4e00|\u5f52\u4e00\u5316|cannot|can\s+not|\bnot\b|no\s+longer|compatib|normaliz))(?=[^\r\n]*(?:\u6bcf(?:\u4e2a|\u4e00(?:\u4e2a)?)\u76ee\u6807|\u6309\u76ee\u6807|\u5404(?:\u4e2a)?\u76ee\u6807|per[- ]target))(?=[^\r\n]*(?:\u72ec\u7acb|\u5355\u72ec|\u5206\u522b|independent|separate))(?=[^\r\n]*(?:SampleIntervalMs|ProcessSampleIntervalMs|SlowSampleIntervalMs|\u91c7\u6837(?:\u7387|\u95f4\u9694)|sampling\s+(?:rate|interval)))(?=[^\r\n]*(?:\u53ef|\u53ef\u4ee5|\u5141\u8bb8|\u652f\u6301|\u914d\u7f6e|\u8bbe\u7f6e|\bcan\b|\bmay\b|configur|\bset\b))[^\r\n]*$' }
 )
 
 $staleMustMatchSelfTests = @(
     [regex]::Unescape('\u65e7 WinForms \u4e3b\u754c\u9762\u4ecd\u7528\u4e8e\u751f\u4ea7 UI'),
+    [regex]::Unescape('\u5f53\u524d\u751f\u4ea7\u754c\u9762\u7ee7\u7eed\u4f7f\u7528 src/ui/FrameScopeUiState.cs'),
+    [regex]::Unescape('Targets \u9875\u9762\u7ee7\u7eed\u4f7f\u7528 DataGridView'),
+    [regex]::Unescape('\u65e7WinForms\u4e3b\u754c\u9762\u4ecd\u7528\u4e8e\u751f\u4ea7UI'),
     [regex]::Unescape('\u6bcf\u4e2a\u76ee\u6807\u53ef\u72ec\u7acb\u914d\u7f6e\u91c7\u6837\u7387'),
     [regex]::Unescape('\u5404\u76ee\u6807\u53ef\u5206\u522b\u8bbe\u7f6e\u91c7\u6837\u7387'),
     [regex]::Unescape('\u6bcf\u4e00\u76ee\u6807\u5747\u53ef\u5355\u72ec\u8bbe\u7f6e\u91c7\u6837\u95f4\u9694'),
@@ -52,6 +60,9 @@ $staleMustMatchSelfTests = @(
 
 $staleMustNotMatchSelfTests = @(
     [regex]::Unescape('\u65e7 WinForms \u4e3b\u754c\u9762\u5df2\u79fb\u9664'),
+    [regex]::Unescape('src/ui \u5df2\u5220\u9664\uff0c\u4e0d\u8981\u6062\u590d'),
+    [regex]::Unescape('DataGridView \u662f\u5386\u53f2\u5b9e\u73b0\uff0c\u5df2\u79fb\u9664'),
+    [regex]::Unescape('\u65e7WinForms\u4e3b\u754c\u9762\u5df2\u79fb\u9664'),
     [regex]::Unescape('\u6bcf\u4e2a\u76ee\u6807\u4e0d\u80fd\u72ec\u7acb\u914d\u7f6e\u91c7\u6837\u95f4\u9694'),
     'Legacy per-target sampling intervals are not independently configurable.',
     'Microsoft.Web.WebView2.WinForms.dll is a host dependency.'
@@ -63,7 +74,8 @@ $pathExtractionSelfTests = @(
     @{ Line = 'Run ./tests/lightweight-separation-tests.ps1 -StandaloneProjectRoot C:\external'; Expected = @('tests/lightweight-separation-tests.ps1') },
     @{ Line = 'Build with build.ps1 and compare VERSION plus dependencies.lock.json.'; Expected = @('build.ps1', 'VERSION', 'dependencies.lock.json') },
     @{ Line = 'Template: framescope-config.example.json.'; Expected = @('framescope-config.example.json') },
-    @{ Line = 'Use --output artifacts/report.json and -StandaloneProjectRoot C:\external.'; Expected = @() }
+    @{ Line = 'Use --output artifacts/report.json and -StandaloneProjectRoot C:\external.'; Expected = @() },
+    @{ Line = 'Run Uninstall-FrameScopeMonitor.cmd to uninstall.'; Expected = @('Uninstall-FrameScopeMonitor.cmd') }
 )
 
 $generatedPrefixes = @(
@@ -184,9 +196,13 @@ foreach ($relativeDocument in $documents) {
                 continue
             }
 
-            $nativePath = $repoPath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+            $resolvedRepoPath = $repoPath
+            if ($repoPathMappings.ContainsKey($repoPath)) {
+                $resolvedRepoPath = $repoPathMappings[$repoPath]
+            }
+            $nativePath = $resolvedRepoPath.Replace('/', [IO.Path]::DirectorySeparatorChar)
             $candidatePath = Join-Path $root $nativePath
-            if ($repoPath.IndexOfAny([char[]]'*?[') -ge 0) {
+            if ($resolvedRepoPath.IndexOfAny([char[]]'*?[') -ge 0) {
                 $matches = @(Get-ChildItem -Path $candidatePath -Force -ErrorAction SilentlyContinue)
                 if ($matches.Count -eq 0) {
                     $failures.Add("$relativeDocument`:$($lineIndex + 1): wildcard repository path has no matches '$repoPath'")
