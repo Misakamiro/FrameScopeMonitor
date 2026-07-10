@@ -60,7 +60,7 @@ Invoke-TestBuild `
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeMonitoringReliabilityTests.exe' `
-    -Sources @('src\core\FrameScopePresentMonSessionPolicy.cs', 'tests\FrameScopeMonitoringReliabilityTests.cs')
+    -Sources @('src\core\FrameScopePresentMonSessionPolicy.cs', 'src\core\FrameScopeTargetLifecycle.cs', 'tests\FrameScopeMonitoringReliabilityTests.cs')
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeSystemSamplerCpuCoreTests.exe' `

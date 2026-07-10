@@ -118,7 +118,8 @@ internal static partial class FrameScopeNativeMonitor
                 var processBases = BuildTargetProcessBaseNames(target.ProcessName, target.Name);
                 if (processBases.Count == 0) continue;
                 var processBase = processBases[0];
-                var key = processBase.ToLowerInvariant();
+                var key = FrameScopeTargetLifecycle.CanonicalTargetKey(processBases);
+                if (string.IsNullOrWhiteSpace(key)) continue;
                 if (activeMonitors.ContainsKey(key)) continue;
                 var detected = FindBestTargetProcess(processBases, 0);
                 var detectedText = detected == null ? "none" : detected.BaseName + ":" + detected.ProcessId.ToString(CultureInfo.InvariantCulture);
@@ -319,16 +320,16 @@ internal static partial class FrameScopeNativeMonitor
 
     private static void WriteNativeWatcherState(string configPath, string phase, Dictionary<string, ActiveMonitor> activeMonitors, int completedRuns, string lastReport)
     {
-        var active = activeMonitors.Values.Select(item => new
+        var active = activeMonitors.Select(entry => new
         {
-            Key = GetTargetBaseName(item.Target.ProcessName).ToLowerInvariant(),
-            Game = item.Target.Name,
-            ProcessName = item.Target.ProcessName,
+            Key = entry.Key,
+            Game = entry.Value.Target.Name,
+            ProcessName = entry.Value.Target.ProcessName,
             WorkerRole = "monitor-session-worker",
             WorkerProcessName = "FrameScopeMonitor.exe",
             WorkerExplanation = "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。",
-            MonitorPid = MonitorHasExited(item) ? (int?)null : item.MonitorPid,
-            RunRoot = item.RunRoot
+            MonitorPid = MonitorHasExited(entry.Value) ? (int?)null : entry.Value.MonitorPid,
+            RunRoot = entry.Value.RunRoot
         }).ToArray();
 
         var state = new

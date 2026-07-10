@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 public static class FrameScopeMonitoringReliabilityTests
 {
@@ -7,15 +8,30 @@ public static class FrameScopeMonitoringReliabilityTests
 
     public static int Main()
     {
-        SessionNamesEncodeOwnerAndNonce();
-        SessionNamesSanitizeAndBoundLabels();
-        OwnerPidParsingAcceptsOnlyOwnedFormat();
-        StaleSelectionStopsOnlyProvenDeadOwners();
-        StartupStopTargetsOnlyStaleOwnedSessions();
-        OwnedShutdownTargetsOnlyTheExplicitSession();
-        FailedOwnedShutdownReportsFailure();
-        Console.WriteLine("FrameScopeMonitoringReliabilityTests: PASS");
-        return 0;
+        try
+        {
+            SessionNamesEncodeOwnerAndNonce();
+            SessionNamesSanitizeAndBoundLabels();
+            OwnerPidParsingAcceptsOnlyOwnedFormat();
+            StaleSelectionStopsOnlyProvenDeadOwners();
+            StartupStopTargetsOnlyStaleOwnedSessions();
+            OwnedShutdownTargetsOnlyTheExplicitSession();
+            FailedOwnedShutdownReportsFailure();
+            UntilTargetExitRequiresAllAliasesToExit();
+            TimedCaptureStopsOnlyAtDeadline();
+            CanonicalTargetKeyNormalizesAliasSets();
+            CanonicalTargetKeyDistinguishesAliasSets();
+            CanonicalTargetKeyHandlesEmptyInput();
+            WatcherUsesCanonicalAliasIdentity();
+            CaptureLoopUsesFullAliasLifetimePolicy();
+            Console.WriteLine("FrameScopeMonitoringReliabilityTests: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
+            return 1;
+        }
     }
 
     private static void SessionNamesEncodeOwnerAndNonce()
@@ -196,6 +212,87 @@ public static class FrameScopeMonitoringReliabilityTests
         AssertTrue(result.FallbackAttempted, "failed shutdown fallback attempted");
         AssertFalse(result.FallbackSucceeded, "failed shutdown fallback result");
         AssertFalse(result.Succeeded, "failed shutdown combined result");
+    }
+
+    private static void UntilTargetExitRequiresAllAliasesToExit()
+    {
+        AssertFalse(FrameScopeTargetLifecycle.ShouldStopCapture(true, true, true, false), "replacement alias alive");
+        AssertTrue(FrameScopeTargetLifecycle.ShouldStopCapture(true, true, false, false), "all aliases gone");
+        AssertFalse(FrameScopeTargetLifecycle.ShouldStopCapture(true, false, false, false), "selected pid still alive");
+    }
+
+    private static void TimedCaptureStopsOnlyAtDeadline()
+    {
+        AssertTrue(FrameScopeTargetLifecycle.ShouldStopCapture(false, true, true, true), "timed deadline");
+        AssertFalse(FrameScopeTargetLifecycle.ShouldStopCapture(false, true, false, false), "timed capture before deadline");
+    }
+
+    private static void CanonicalTargetKeyNormalizesAliasSets()
+    {
+        string configured = FrameScopeTargetLifecycle.CanonicalTargetKey(new[] { " TslGame.exe ", "TslGame_BE", "tslgame" });
+        string reordered = FrameScopeTargetLifecycle.CanonicalTargetKey(new[] { "tslgame_be.exe", "tslgame.exe" });
+
+        AssertEqual("tslgame;tslgame_be", configured, "canonical key normalization");
+        AssertEqual(configured, reordered, "alias order, casing, whitespace, suffix, and duplicates must not affect identity");
+    }
+
+    private static void CanonicalTargetKeyDistinguishesAliasSets()
+    {
+        string first = FrameScopeTargetLifecycle.CanonicalTargetKey(new[] { "TslGame", "TslGame_BE" });
+        string second = FrameScopeTargetLifecycle.CanonicalTargetKey(new[] { "TslGame", "TslGame-Win64-Shipping" });
+
+        AssertNotEqual(first, second, "different normalized alias sets must differ");
+    }
+
+    private static void CanonicalTargetKeyHandlesEmptyInput()
+    {
+        AssertEqual("", FrameScopeTargetLifecycle.CanonicalTargetKey(null), "null aliases");
+        AssertEqual("", FrameScopeTargetLifecycle.CanonicalTargetKey(new string[] { null, "", "   ", ".exe" }), "empty normalized aliases");
+    }
+
+    private static void WatcherUsesCanonicalAliasIdentity()
+    {
+        string source = ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
+
+        AssertContains(source, "var key = FrameScopeTargetLifecycle.CanonicalTargetKey(processBases);", "watcher active-monitor key");
+        AssertContains(source, "var active = activeMonitors.Select(entry => new", "watcher state must preserve dictionary identity");
+        AssertContains(source, "Key = entry.Key", "watcher state canonical key");
+        AssertDoesNotContain(source, "var key = processBase.ToLowerInvariant();", "watcher must not use the first alias as identity");
+        AssertDoesNotContain(source, "Key = GetTargetBaseName(item.Target.ProcessName).ToLowerInvariant()", "watcher state must not reconstruct identity from one process name");
+    }
+
+    private static void CaptureLoopUsesFullAliasLifetimePolicy()
+    {
+        string source = ReadSource("src", "app", "FrameScopeNativeMonitor.MonitorSession.cs");
+
+        AssertContains(source, "FrameScopeTargetLifecycle.ShouldStopCapture(", "capture loop lifecycle policy");
+        AssertContains(source, "selectedPidExited", "capture loop selected PID state");
+        AssertContains(source, "anyAliasRunning = IsAnyTargetProcessRunning(targetProcessBases)", "capture loop alias liveness query");
+        AssertDoesNotContain(source, "if (targetProc.WaitForExit(remainingMs)) break;", "selected PID exit must not stop capture directly");
+    }
+
+    private static string ReadSource(params string[] parts)
+    {
+        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string path = Path.Combine(root, Path.Combine(parts));
+        if (!File.Exists(path)) throw new Exception("Source not found: " + path);
+        return File.ReadAllText(path);
+    }
+
+    private static void AssertContains(string text, string expected, string label)
+    {
+        if (text == null || text.IndexOf(expected, StringComparison.Ordinal) < 0)
+        {
+            throw new Exception(label + ": missing <" + expected + ">");
+        }
+    }
+
+    private static void AssertDoesNotContain(string text, string unexpected, string label)
+    {
+        if (text != null && text.IndexOf(unexpected, StringComparison.Ordinal) >= 0)
+        {
+            throw new Exception(label + ": unexpected <" + unexpected + ">");
+        }
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)

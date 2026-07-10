@@ -320,9 +320,19 @@ internal static partial class FrameScopeNativeMonitor
                 var presentMonForcedStop = false;
                 var presentMonStopRequested = false;
                 var captureLoopStopwatch = Stopwatch.StartNew();
+                var selectedPidExited = false;
+                var anyAliasRunning = true;
 
-                while (DateTime.Now < captureDeadline)
+                while (true)
                 {
+                    var selectedPidExitedAtIterationStart = selectedPidExited;
+                    var deadlineReached = DateTime.Now >= captureDeadline;
+                    if (selectedPidExited)
+                    {
+                        anyAliasRunning = IsAnyTargetProcessRunning(targetProcessBases);
+                    }
+                    if (FrameScopeTargetLifecycle.ShouldStopCapture(captureUntilTargetExit, selectedPidExited, anyAliasRunning, deadlineReached)) break;
+
                     if (presentMon != null)
                     {
                         try
@@ -371,14 +381,34 @@ internal static partial class FrameScopeNativeMonitor
                         remainingMs = Math.Max(1, Math.Min(controlPollIntervalMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
                     }
 
-                    try
+                    if (!selectedPidExited)
                     {
-                        if (targetProc.WaitForExit(remainingMs)) break;
+                        try
+                        {
+                            selectedPidExited = targetProc.WaitForExit(remainingMs);
+                        }
+                        catch
+                        {
+                            selectedPidExited = ProcessExited(targetProc);
+                            if (!selectedPidExited) Thread.Sleep(remainingMs);
+                        }
                     }
-                    catch
+
+                    deadlineReached = DateTime.Now >= captureDeadline;
+                    if (selectedPidExited && !selectedPidExitedAtIterationStart)
                     {
-                        if (!IsAnyTargetProcessRunning(targetProcessBases)) break;
-                        Thread.Sleep(remainingMs);
+                        anyAliasRunning = IsAnyTargetProcessRunning(targetProcessBases);
+                    }
+                    if (FrameScopeTargetLifecycle.ShouldStopCapture(captureUntilTargetExit, selectedPidExited, anyAliasRunning, deadlineReached)) break;
+
+                    if (selectedPidExited)
+                    {
+                        var aliasWaitMs = remainingMs;
+                        if (!captureUntilTargetExit)
+                        {
+                            aliasWaitMs = Math.Max(1, Math.Min(controlPollIntervalMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
+                        }
+                        Thread.Sleep(aliasWaitMs);
                     }
                 }
                 captureLoopStopwatch.Stop();
