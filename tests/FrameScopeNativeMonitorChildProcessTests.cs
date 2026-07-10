@@ -82,6 +82,7 @@ internal static partial class FrameScopeNativeMonitor
         {
             TimedOutPipeThreadRemainsRegisteredUntilDrainCompletes();
             NativeMonitorChildDisposeDrainsOutputFirst();
+            TimedOutDisposeEventuallyCleansPipeRegistration();
             Console.WriteLine("FrameScopeNativeMonitorChildProcessTests pipe join: PASS");
             return 0;
         }
@@ -93,6 +94,7 @@ internal static partial class FrameScopeNativeMonitor
         }
         TimedOutPipeThreadRemainsRegisteredUntilDrainCompletes();
         NativeMonitorChildDisposeDrainsOutputFirst();
+        TimedOutDisposeEventuallyCleansPipeRegistration();
         ChildPipeLogsAreBoundedAndKeepFinalOutput();
         ShortLivedChildStderrIsAvailableAfterExit();
         ShortLivedChildStderrWorksAtWindowsPathLimit();
@@ -113,6 +115,75 @@ internal static partial class FrameScopeNativeMonitor
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             Console.Error.WriteLine(ex.StackTrace ?? "");
             return 1;
+        }
+    }
+
+    private static void TimedOutDisposeEventuallyCleansPipeRegistration()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-child-dispose-timeout-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string stderr = Path.Combine(dir, "sampler.stderr.log");
+        const string finalMarker = "PIPE_DISPOSE_TIMEOUT_FINAL_MARKER";
+        Process process = Process.GetCurrentProcess();
+        int processId = process.Id;
+        using (var started = new ManualResetEvent(false))
+        using (var release = new ManualResetEvent(false))
+        {
+            Thread outputThread = new Thread(() =>
+            {
+                started.Set();
+                if (!release.WaitOne(5000)) return;
+                FrameScopePresentMonDiagnostics.WriteAllText(stderr, finalMarker, Encoding.UTF8);
+            });
+            outputThread.IsBackground = true;
+            outputThread.Start();
+
+            try
+            {
+                AssertTrue(started.WaitOne(2000), "timed-out dispose output thread started");
+                RegisterNativeMonitorPipeThreads(process, new List<Thread> { outputThread });
+
+                Stopwatch disposeWait = Stopwatch.StartNew();
+                DisposeNativeMonitorChild(process, 25);
+                process = null;
+                disposeWait.Stop();
+
+                AssertTrue(disposeWait.ElapsedMilliseconds < 1000, "timed-out child dispose stays bounded");
+                lock (NativeMonitorPipeLock)
+                {
+                    AssertTrue(NativeMonitorPipeThreads.ContainsKey(processId), "timed-out child dispose keeps the active registration");
+                }
+
+                release.Set();
+                AssertTrue(outputThread.Join(2000), "released timed-out dispose reader exits");
+
+                Stopwatch cleanupWait = Stopwatch.StartNew();
+                bool removed = false;
+                while (cleanupWait.ElapsedMilliseconds < 2000)
+                {
+                    lock (NativeMonitorPipeLock)
+                    {
+                        removed = !NativeMonitorPipeThreads.ContainsKey(processId);
+                    }
+                    if (removed) break;
+                    Thread.Sleep(10);
+                }
+
+                AssertTrue(removed, "completed reader is automatically removed after timed-out dispose");
+                AssertTrue(!outputThread.IsAlive, "timed-out dispose leaves no permanent reader thread");
+                AssertEqual(finalMarker, ReadNativeMonitorSamplerTail(stderr, 4096), "timed-out dispose persists final log tail");
+            }
+            finally
+            {
+                release.Set();
+                outputThread.Join(2000);
+                lock (NativeMonitorPipeLock)
+                {
+                    NativeMonitorPipeThreads.Remove(processId);
+                }
+                if (process != null) process.Dispose();
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            }
         }
     }
 

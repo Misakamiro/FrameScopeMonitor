@@ -248,6 +248,11 @@ internal static partial class FrameScopeNativeMonitor
         }
         if (!completed) return;
 
+        RemoveNativeMonitorPipeRegistration(processId, pipeThreads);
+    }
+
+    private static void RemoveNativeMonitorPipeRegistration(int processId, List<Thread> pipeThreads)
+    {
         lock (NativeMonitorPipeLock)
         {
             List<Thread> registeredThreads;
@@ -259,10 +264,44 @@ internal static partial class FrameScopeNativeMonitor
         }
     }
 
+    private static void BeginFinalNativeMonitorPipeCleanup(int processId, List<Thread> pipeThreads)
+    {
+        if (processId <= 0 || pipeThreads == null || pipeThreads.Count == 0) return;
+        var cleanupThread = new Thread(() =>
+        {
+            foreach (var pipeThread in pipeThreads)
+            {
+                if (pipeThread == null) continue;
+                try { pipeThread.Join(); }
+                catch { return; }
+            }
+            RemoveNativeMonitorPipeRegistration(processId, pipeThreads);
+        });
+        cleanupThread.IsBackground = true;
+        cleanupThread.Start();
+    }
+
     private static void DisposeNativeMonitorChild(Process process)
     {
+        DisposeNativeMonitorChild(process, 5000);
+    }
+
+    private static void DisposeNativeMonitorChild(Process process, int outputWaitMs)
+    {
         if (process == null) return;
-        WaitForNativeMonitorChildOutput(process, 5000);
+        int processId = 0;
+        try { processId = process.Id; }
+        catch { }
+        WaitForNativeMonitorChildOutput(process, outputWaitMs);
+        List<Thread> remainingPipeThreads = null;
+        if (processId > 0)
+        {
+            lock (NativeMonitorPipeLock)
+            {
+                NativeMonitorPipeThreads.TryGetValue(processId, out remainingPipeThreads);
+            }
+        }
+        if (remainingPipeThreads != null) BeginFinalNativeMonitorPipeCleanup(processId, remainingPipeThreads);
         try { process.Dispose(); }
         catch { }
     }
