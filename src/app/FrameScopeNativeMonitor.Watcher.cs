@@ -54,15 +54,23 @@ internal static partial class FrameScopeNativeMonitor
             var config = LoadConfigFromPath(configPath);
             var dataRoot = ResolveDataRoot(config.DataRoot);
             Directory.CreateDirectory(dataRoot);
-            if ((DateTime.Now - lastRetentionCleanup).TotalHours >= 6)
-            {
-                ThreadPool.QueueUserWorkItem(delegate { try { FrameScopeDiagnostics.ApplyRetentionPolicy(Root, config); } catch { } });
-                lastRetentionCleanup = DateTime.Now;
-            }
             if (!recoveredStaleRuns)
             {
                 RecoverStaleMissingReports(dataRoot, config);
                 recoveredStaleRuns = true;
+            }
+            if ((DateTime.Now - lastRetentionCleanup).TotalHours >= 6)
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        FrameScopeDiagnostics.ApplyRetentionPolicy(Root, config);
+                        ApplyRunAndHistoryRetention(dataRoot, config);
+                    }
+                    catch { }
+                });
+                lastRetentionCleanup = DateTime.Now;
             }
 
             foreach (var key in activeMonitors.Keys.ToArray())

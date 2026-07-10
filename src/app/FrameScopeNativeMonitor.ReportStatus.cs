@@ -283,7 +283,7 @@ internal static partial class FrameScopeNativeMonitor
             MonitorExitCode = monitorExitCode
         };
 
-        File.AppendAllText(HistoryPath, Json.Serialize(entry) + Environment.NewLine);
+        FrameScopeHistoryFile.Append(HistoryPath, Json.Serialize(entry));
         return entry;
     }
 

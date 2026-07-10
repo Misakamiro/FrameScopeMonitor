@@ -49,6 +49,11 @@ Invoke-TestBuild `
     -Sources @('src\core\FrameScopeBoundedProcessRunner.cs', 'tests\FrameScopeReportProcessTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeRunRetentionTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeRunRetention.cs', 'src\core\FrameScopeHistoryFile.cs', 'tests\FrameScopeRunRetentionTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeConfigStoreTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigStoreTests.cs')
