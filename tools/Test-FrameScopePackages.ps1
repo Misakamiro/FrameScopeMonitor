@@ -62,6 +62,16 @@ function Assert-InstallerPathGuards {
     if (-not $escaped) { throw 'Installer SafeCombine accepted a prefix-sibling escape.' }
 }
 
+function Assert-InstallerValidatesBeforeMutation {
+    $source = Get-Content -Raw -LiteralPath (Join-Path $root 'packaging\FrameScopeSetupNative.cs')
+    $validation = $source.IndexOf('ValidatePayloadResource(assembly);', [StringComparison]::Ordinal)
+    $firstMutation = $source.IndexOf('Directory.CreateDirectory(appDir);', [StringComparison]::Ordinal)
+    $runtimeInstall = $source.IndexOf('InstallBundledWebView2Runtime(assembly, logPath);', [StringComparison]::Ordinal)
+    if ($validation -lt 0 -or $firstMutation -lt 0 -or $runtimeInstall -lt 0 -or $validation -gt $firstMutation -or $validation -gt $runtimeInstall) {
+        throw 'Installer must validate the embedded payload before filesystem, runtime, process, or migration mutations.'
+    }
+}
+
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -261,6 +271,7 @@ try {
     $setupInfo = Expand-PayloadResource -AssemblyPath $setupPath -Destination $setupPayload
     $fullInfo = Expand-PayloadResource -AssemblyPath $fullSetupPath -Destination $fullPayload
     Assert-InstallerPathGuards -AssemblyPath $setupPath
+    Assert-InstallerValidatesBeforeMutation
 
     $payloadManifest = Assert-Manifest -Directory $payloadRoot
     $setupManifest = Assert-Manifest -Directory $setupPayload

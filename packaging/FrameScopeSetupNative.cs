@@ -92,9 +92,10 @@ internal static class FrameScopeSetupNative
                 throw new InvalidOperationException("数据和报告目录不能放在程序安装目录内。请改选其他目录，例如 %LOCALAPPDATA%\\FrameScopeMonitorData\\framescope-runs。");
             }
 
+            var assembly = Assembly.GetExecutingAssembly();
+            ValidatePayloadResource(assembly);
             Directory.CreateDirectory(appDir);
             Log(logPath, "install-start dataRoot=" + dataRoot);
-            var assembly = Assembly.GetExecutingAssembly();
             bool hasBundledRuntimeInstaller = HasManifestResource(assembly, WebView2RuntimeInstallerResourceName);
             FrameScopeWebView2RuntimeStatus runtimeStatus = FrameScopeWebView2Runtime.GetRuntimeStatus();
             Log(logPath, "webview2-runtime available=" + runtimeStatus.IsAvailable + " version=" + runtimeStatus.Version + " source=" + runtimeStatus.Source + " fullPackage=" + hasBundledRuntimeInstaller);
@@ -129,7 +130,6 @@ internal static class FrameScopeSetupNative
 
                 using (var archive = new ZipArchive(payload, ZipArchiveMode.Read))
                 {
-                    ValidatePayloadArchive(archive);
                     int total = Math.Max(1, archive.Entries.Count);
                     int done = 0;
                     foreach (var entry in archive.Entries)
@@ -189,6 +189,19 @@ internal static class FrameScopeSetupNative
         {
             try { Log(logPath, "install-failed " + ex); } catch { }
             form.Finish(false, ex.Message);
+        }
+    }
+
+    private static void ValidatePayloadResource(Assembly assembly)
+    {
+        if (assembly == null) throw new ArgumentNullException("assembly");
+        using (Stream payload = assembly.GetManifestResourceStream(ResourceName))
+        {
+            if (payload == null) throw new InvalidOperationException("Embedded payload is missing.");
+            using (var archive = new ZipArchive(payload, ZipArchiveMode.Read))
+            {
+                ValidatePayloadArchive(archive);
+            }
         }
     }
 
