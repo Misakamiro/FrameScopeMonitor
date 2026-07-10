@@ -378,27 +378,12 @@ internal static class FrameScopeSetupNative
             }
             else
             {
-                File.WriteAllText(configPath, CreateDefaultConfigJson(normalized));
+                FrameScopeConfig config = FrameScopeConfigStore.CreateDefaultConfig();
+                config.DataRoot = normalized;
+                FrameScopeConfigStore.Save(configPath, config);
             }
         }
         catch { }
-    }
-
-    private static string CreateDefaultConfigJson(string dataRoot)
-    {
-        string escaped = JsonEscape(dataRoot);
-        return
-            "{\"PollIntervalMs\":1000,\"TelemetrySampleIntervalMs\":1000,\"DataRoot\":\"" + escaped + "\",\"OpenReportOnComplete\":true,\"MonitorScript\":\"native-csharp\",\"Targets\":[" +
-            "{\"Enabled\":true,\"Name\":\"Counter-Strike 2\",\"ProcessName\":\"cs2.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"PUBG: BATTLEGROUNDS\",\"ProcessName\":\"TslGame.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Delta Force\",\"ProcessName\":\"DeltaForceClient-Win64-Shipping.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Neverness To Everness\",\"ProcessName\":\"HTGame.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Valorant\",\"ProcessName\":\"VALORANT-Win64-Shipping.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":false,\"Name\":\"Cyberpunk 2077\",\"ProcessName\":\"Cyberpunk2077.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":true,\"Name\":\"Battlefield 6\",\"ProcessName\":\"bf6.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":false,\"Name\":\"Hogwarts Legacy\",\"ProcessName\":\"HogwartsLegacy.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}," +
-            "{\"Enabled\":false,\"Name\":\"OPUS Prism Peak\",\"ProcessName\":\"OPUS_ Prism Peak.exe\",\"SampleIntervalMs\":1000,\"ProcessSampleIntervalMs\":1000,\"SlowSampleIntervalMs\":1000,\"OpenReportOnComplete\":true}" +
-            "]}";
     }
 
     private static void MoveDirectoryContents(string source, string destination)

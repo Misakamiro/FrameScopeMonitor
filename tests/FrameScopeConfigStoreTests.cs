@@ -1,9 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Web.Script.Serialization;
 
 public static class FrameScopeConfigStoreTests
 {
+    private static readonly string Root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+    private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+
     public static int Main()
     {
         try
@@ -24,6 +28,8 @@ public static class FrameScopeConfigStoreTests
             SaveAndLoadRoundTripsNormalizedConfig();
             LoadLegacyConfigWithPollInterval();
             LoadLegacyPerTargetSamplingDoesNotPolluteGlobalInterval();
+            ExampleMatchesRuntimeDefault();
+            InstallerHasNoHandwrittenTargetJson();
             Console.WriteLine("FrameScopeConfigStoreTests: PASS");
             return 0;
         }
@@ -32,6 +38,21 @@ public static class FrameScopeConfigStoreTests
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             return 1;
         }
+    }
+
+    private static void ExampleMatchesRuntimeDefault()
+    {
+        FrameScopeConfig expected = FrameScopeConfigStore.CreateDefaultConfig();
+        expected.DataRoot = "framescope-runs";
+        FrameScopeConfig actual = Json.Deserialize<FrameScopeConfig>(File.ReadAllText(Path.Combine(Root, "framescope-config.example.json")));
+        AssertEqual(Json.Serialize(expected), Json.Serialize(actual), "example matches runtime defaults");
+    }
+
+    private static void InstallerHasNoHandwrittenTargetJson()
+    {
+        string source = File.ReadAllText(Path.Combine(Root, "packaging", "FrameScopeSetupNative.cs"));
+        AssertTrue(!source.Contains("CreateDefaultConfigJson"), "installer must use FrameScopeConfigStore");
+        AssertTrue(!source.Contains("HogwartsLegacy.exe\""), "installer must not duplicate target rows");
     }
 
     private static void CreateDefaultConfigUsesNativeModeAndSeparateDataRoot()

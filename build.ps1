@@ -6,6 +6,7 @@ if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
 }
 $buildMetadata = & (Join-Path $root 'tools\Write-FrameScopeBuildMetadata.ps1') -RepoRoot $root
+& (Join-Path $root 'tools\Export-FrameScopeDefaultConfig.ps1') -RepoRoot $root | Out-Host
 
 $webView2PackageRoot = Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2'
 $webView2Package = Get-ChildItem -LiteralPath $webView2PackageRoot -Directory -ErrorAction SilentlyContinue |
@@ -266,6 +267,8 @@ try {
     foreach ($file in $payloadFiles) {
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $payloadRoot -Force
     }
+    Copy-Item -LiteralPath (Join-Path $root 'framescope-config.example.json') `
+        -Destination (Join-Path $payloadRoot 'framescope-default-config.json') -Force
 
     $payloadTools = Join-Path $payloadRoot 'tools'
     New-Item -ItemType Directory -Path $payloadTools -Force | Out-Null
@@ -290,8 +293,11 @@ try {
         /reference:System.Drawing.dll `
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
+        /reference:System.Web.Extensions.dll `
         /resource:$payloadZip,FrameScopePayload `
         $buildMetadata `
+        .\src\core\FrameScopeJsonFile.cs `
+        .\src\core\FrameScopeConfigStore.cs `
         .\src\app\FrameScopeWebView2Runtime.cs `
         .\packaging\FrameScopeSetupNative.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeMonitor-Setup.exe" }
@@ -316,9 +322,12 @@ try {
         /reference:System.Drawing.dll `
         /reference:System.IO.Compression.dll `
         /reference:System.IO.Compression.FileSystem.dll `
+        /reference:System.Web.Extensions.dll `
         /resource:$payloadZip,FrameScopePayload `
         /resource:$webView2StandaloneInstaller,FrameScopeWebView2RuntimeInstaller `
         $buildMetadata `
+        .\src\core\FrameScopeJsonFile.cs `
+        .\src\core\FrameScopeConfigStore.cs `
         .\src\app\FrameScopeWebView2Runtime.cs `
         .\packaging\FrameScopeSetupNative.cs
     if ($LASTEXITCODE -ne 0) { throw "csc failed: FrameScopeMonitor-Full-Setup.exe" }
