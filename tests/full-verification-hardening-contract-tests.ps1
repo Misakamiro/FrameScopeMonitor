@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('all', 'timeout', 'owned-cleanup')]
+    [ValidateSet('all', 'timeout', 'owned-cleanup', 'whole-run-finalization')]
     [string]$TestName = 'all'
 )
 
@@ -212,9 +212,85 @@ function Test-OwnedSimulatorCleanup {
     }
 }
 
+function Test-WholeRunFinalization {
+    $runnerAst = Get-ScriptAst -Path $runnerPath
+    $wholeRunParameter = @($runnerAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'WholeRunTimeoutSeconds' })
+    Assert-Equal 1 $wholeRunParameter.Count 'full verifier exposes one configurable WholeRunTimeoutSeconds parameter'
+
+    $unboundedExternalCalls = @($runnerAst.FindAll({
+                param($node)
+                if ($node -isnot [Management.Automation.Language.CommandAst] -or
+                    $node.InvocationOperator -ne [Management.Automation.Language.TokenKind]::Ampersand) {
+                    return $false
+                }
+                return $node.CommandElements[0].Extent.Text -ne '$Action'
+            }, $true))
+    Assert-Equal 0 $unboundedExternalCalls.Count ('full verifier still has direct external calls: ' + (($unboundedExternalCalls | ForEach-Object { $_.Extent.Text }) -join '; '))
+
+    $fixtureRoot = Join-Path $tempRoot 'whole-run-fixture-root'
+    $originalRoot = Join-Path $tempRoot 'whole-run-original-root'
+    New-Item -ItemType Directory -Path $fixtureRoot, $originalRoot -Force | Out-Null
+    & git.exe -C $fixtureRoot init --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize whole-run fixture root.' }
+    & git.exe -C $originalRoot init --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to initialize whole-run original root.' }
+
+    $runnerSource = Get-Content -Raw -LiteralPath $runnerPath
+    $mainPattern = '(?s)try \{\r?\n    \$originalRoot =.*?\r?\n\}\r?\ncatch \{\r?\n    \$failure = \$_\r?\n\}'
+    $fixtureMain = @'
+try {
+    $originalRoot = (Resolve-Path -LiteralPath $OriginalWorkspace).Path
+    $originalBefore = Get-GitStatusSnapshot -Workspace $originalRoot
+    $branch = 'contract'
+    $commit = 'contract'
+    $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
+    Invoke-Check -Name 'whole-run-timeout-fixture' -TimeoutSeconds 10 -Action {
+        Invoke-External -FilePath $powershellExe -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 5')
+    }
+}
+catch {
+    $failure = $_
+}
+'@
+    $fixtureSource = [regex]::Replace($runnerSource, $mainPattern, $fixtureMain.Replace('$', '$$'), 1)
+    Assert-True ($fixtureSource -cne $runnerSource) 'Unable to replace full verifier main checks for the whole-run fixture.'
+    $fixtureRunnerPath = Join-Path $tempRoot 'Invoke-FrameScopeWholeRunFixture.ps1'
+    [IO.File]::WriteAllText($fixtureRunnerPath, $fixtureSource)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $fixtureRunnerPath `
+                -OriginalWorkspace $originalRoot -RepoRoot $fixtureRoot `
+                -CheckTimeoutSeconds 10 -WholeRunTimeoutSeconds 1 2>&1)
+        $runnerExit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    Assert-True ($runnerExit -ne 0) 'whole-run timeout fixture unexpectedly succeeded.'
+    $resultLine = @($output | Where-Object { [string]$_ -match '^Result JSON:\s*(.+)$' } | Select-Object -Last 1)
+    Assert-Equal 1 $resultLine.Count ('whole-run timeout result path output count; runner output=' + (($output | Out-String).Trim()))
+    $resultPath = [regex]::Match([string]$resultLine[0], '^Result JSON:\s*(.+)$').Groups[1].Value.Trim()
+    Assert-True (Test-Path -LiteralPath $resultPath -PathType Leaf) 'whole-run timeout did not write result.json.'
+    $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
+    Assert-Equal 'failed' ([string]$result.result) 'whole-run timeout aggregate result'
+    Assert-True ([bool]$result.wholeRunTimedOut) 'result.json did not preserve whole-run timeout evidence.'
+
+    $checks = @($result.checks)
+    $fixtureCheck = @($checks | Where-Object { $_.name -eq 'whole-run-timeout-fixture' })
+    Assert-Equal 1 $fixtureCheck.Count 'whole-run timeout fixture check count'
+    Assert-Equal 124 ([int]$fixtureCheck[0].exitCode) 'whole-run timeout fixture exit code'
+    foreach ($guardName in @('residual-processes', 'residual-etw-sessions', 'original-workspace-integrity')) {
+        Assert-Equal 1 @($checks | Where-Object { $_.name -eq $guardName }).Count "guard result count: $guardName"
+    }
+    Assert-Equal 0 @(Get-ChildItem -LiteralPath (Split-Path -Parent $resultPath) -Filter 'result.json.tmp.*' -File -ErrorAction SilentlyContinue).Count 'atomic result temp files remaining'
+}
+
 $tests = [ordered]@{
     timeout = ${function:Test-PerCheckTimeout}
     'owned-cleanup' = ${function:Test-OwnedSimulatorCleanup}
+    'whole-run-finalization' = ${function:Test-WholeRunFinalization}
 }
 $failures = New-Object Collections.Generic.List[string]
 try {

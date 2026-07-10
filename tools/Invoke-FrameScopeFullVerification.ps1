@@ -5,7 +5,10 @@ param(
     [string]$RepoRoot = '',
 
     [ValidateRange(1, 86400)]
-    [int]$CheckTimeoutSeconds = 1800
+    [int]$CheckTimeoutSeconds = 1800,
+
+    [ValidateRange(1, 86400)]
+    [int]$WholeRunTimeoutSeconds = 14400
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,8 +41,11 @@ $script:OriginalAfter = $null
 $script:CurrentCheckExitCode = 0
 $script:CurrentCheckName = ''
 $script:CurrentCheckTimeoutSeconds = $CheckTimeoutSeconds
-$script:CurrentCheckDeadlineUtc = [DateTime]::MaxValue
+$script:CurrentCheckDeadlineUtc = $startedAt.AddSeconds($CheckTimeoutSeconds)
 $script:CurrentCheckTimedOut = $false
+$script:WholeRunDeadlineUtc = $startedAt.AddSeconds($WholeRunTimeoutSeconds)
+$script:WholeRunTimedOut = $false
+$script:IsFinalizing = $false
 
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Value)
@@ -60,17 +66,7 @@ function Get-Sha256Text {
 
 function Get-GitStatusSnapshot {
     param([string]$Workspace)
-    Push-Location $Workspace
-    try {
-        $lines = @(& git status --porcelain=v1 --untracked-files=all)
-        if ($LASTEXITCODE -ne 0) {
-            $script:CurrentCheckExitCode = $LASTEXITCODE
-            throw "git status failed in $Workspace"
-        }
-    }
-    finally {
-        Pop-Location
-    }
+    $lines = @(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $Workspace, 'status', '--porcelain=v1', '--untracked-files=all'))
     $text = if ($lines.Count -eq 0) { '' } else { ($lines -join "`n") + "`n" }
     return [pscustomobject]@{
         Text = $text
@@ -90,7 +86,19 @@ function Stop-OwnedProcessTree {
     catch { return }
     if ($Process.HasExited) { return }
 
-    & taskkill.exe /PID $Process.Id /T /F *> $null
+    $killer = $null
+    try {
+        $killer = Start-Process -FilePath 'taskkill.exe' -ArgumentList @('/PID', $Process.Id.ToString(), '/T', '/F') -WindowStyle Hidden -PassThru
+        if (-not $killer.WaitForExit([Math]::Min($WaitMilliseconds, 5000))) {
+            try { $killer.Kill() }
+            catch { }
+            [void]$killer.WaitForExit(1000)
+        }
+    }
+    catch { }
+    finally {
+        if ($null -ne $killer) { $killer.Dispose() }
+    }
     try { $Process.Refresh() }
     catch { return }
     if (-not $Process.HasExited) {
@@ -100,6 +108,27 @@ function Stop-OwnedProcessTree {
     if (-not $Process.WaitForExit($WaitMilliseconds)) {
         throw "Timed out waiting for owned process tree PID $($Process.Id) to exit."
     }
+}
+
+function Get-ActiveProcessDeadlineUtc {
+    if (-not $script:IsFinalizing -and $null -ne $script:WholeRunDeadlineUtc -and
+        $script:WholeRunDeadlineUtc -lt $script:CurrentCheckDeadlineUtc) {
+        return $script:WholeRunDeadlineUtc
+    }
+    return $script:CurrentCheckDeadlineUtc
+}
+
+function Set-ProcessTimeoutEvidence {
+    $wholeRunExpired = (-not $script:IsFinalizing -and $null -ne $script:WholeRunDeadlineUtc -and
+        [DateTime]::UtcNow -ge $script:WholeRunDeadlineUtc -and
+        $script:WholeRunDeadlineUtc -le $script:CurrentCheckDeadlineUtc)
+    $script:CurrentCheckTimedOut = $true
+    $script:CurrentCheckExitCode = 124
+    if ($wholeRunExpired) {
+        $script:WholeRunTimedOut = $true
+        return [pscustomobject]@{ Scope = 'whole-run'; Seconds = $WholeRunTimeoutSeconds }
+    }
+    return [pscustomobject]@{ Scope = 'check'; Seconds = $script:CurrentCheckTimeoutSeconds }
 }
 
 function Write-AvailableProcessOutput {
@@ -116,11 +145,11 @@ function Invoke-External {
         [string]$WorkingDirectory = $root
     )
 
-    $remainingMilliseconds = [long]($script:CurrentCheckDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+    $activeDeadlineUtc = Get-ActiveProcessDeadlineUtc
+    $remainingMilliseconds = [long]($activeDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
     if ($remainingMilliseconds -le 0) {
-        $script:CurrentCheckTimedOut = $true
-        $script:CurrentCheckExitCode = 124
-        throw "Check '$($script:CurrentCheckName)' timed out after $($script:CurrentCheckTimeoutSeconds)s before starting $FilePath."
+        $timeout = Set-ProcessTimeoutEvidence
+        throw "Verification $($timeout.Scope) timeout after $($timeout.Seconds)s before starting $FilePath in '$($script:CurrentCheckName)'."
     }
 
     $exitCodePath = Join-Path $checksRoot ('process-' + [guid]::NewGuid().ToString('N') + '.exitcode')
@@ -177,15 +206,15 @@ exit `$childExitCode
             Write-AvailableProcessOutput -Reader $stdoutReader
             Write-AvailableProcessOutput -Reader $stderrReader
             if ($process.WaitForExit(100)) { break }
-            $remainingMilliseconds = [long]($script:CurrentCheckDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
+            $activeDeadlineUtc = Get-ActiveProcessDeadlineUtc
+            $remainingMilliseconds = [long]($activeDeadlineUtc - [DateTime]::UtcNow).TotalMilliseconds
             if ($remainingMilliseconds -le 0) {
-                $script:CurrentCheckTimedOut = $true
-                $script:CurrentCheckExitCode = 124
-                "TIMEOUT check=$($script:CurrentCheckName) timeoutSeconds=$($script:CurrentCheckTimeoutSeconds) ownedRootPid=$($process.Id)"
+                $timeout = Set-ProcessTimeoutEvidence
+                "TIMEOUT check=$($script:CurrentCheckName) scope=$($timeout.Scope) timeoutSeconds=$($timeout.Seconds) ownedRootPid=$($process.Id)"
                 Stop-OwnedProcessTree -Process $process
                 Write-AvailableProcessOutput -Reader $stdoutReader
                 Write-AvailableProcessOutput -Reader $stderrReader
-                throw "Check '$($script:CurrentCheckName)' timed out after $($script:CurrentCheckTimeoutSeconds)s while running $FilePath."
+                throw "Verification $($timeout.Scope) timeout after $($timeout.Seconds)s while running $FilePath in '$($script:CurrentCheckName)'."
             }
         }
         $process.WaitForExit()
@@ -291,10 +320,12 @@ function Resolve-NodeExe {
     foreach ($candidate in $candidates) {
         if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
         try {
-            & $candidate --version *> $null
-            if ($LASTEXITCODE -eq 0) { return (Resolve-Path -LiteralPath $candidate).Path }
+            Invoke-External -FilePath $candidate -Arguments @('--version') | Out-Null
+            return (Resolve-Path -LiteralPath $candidate).Path
         }
-        catch { }
+        catch {
+            if ($script:CurrentCheckExitCode -eq 124) { throw }
+        }
     }
     throw 'No usable node.exe was found.'
 }
@@ -363,18 +394,17 @@ function Assert-NoResidualEtwSession {
     'No FrameScopeNativePresentMon_* ETW session remains.'
 }
 
-Write-Utf8NoBom -Path $summaryLog -Value ("FrameScope full verification`r`nrepoRoot=$root`r`nrequestedOriginalWorkspace=$OriginalWorkspace`r`nstartedAt=$($startedAt.ToString('o'))`r`n")
+Write-Utf8NoBom -Path $summaryLog -Value ("FrameScope full verification`r`nrepoRoot=$root`r`nrequestedOriginalWorkspace=$OriginalWorkspace`r`nstartedAt=$($startedAt.ToString('o'))`r`ncheckTimeoutSeconds=$CheckTimeoutSeconds`r`nwholeRunTimeoutSeconds=$WholeRunTimeoutSeconds`r`n")
 
+$script:CurrentCheckName = 'initialization'
 try {
     $originalRoot = (Resolve-Path -LiteralPath $OriginalWorkspace).Path
     if ([string]::Equals($root, $originalRoot, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'OriginalWorkspace must be separate from the remediation worktree.'
     }
     $originalBefore = Get-GitStatusSnapshot -Workspace $originalRoot
-    $branch = (& git -C $root branch --show-current | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to read remediation branch.' }
-    $commit = (& git -C $root rev-parse HEAD | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0) { throw 'Unable to read remediation commit.' }
+    $branch = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'branch', '--show-current')) -join "`n").Trim()
+    $commit = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'rev-parse', 'HEAD')) -join "`n").Trim()
     $nodeExe = Resolve-NodeExe
     $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
     $dotnetExe = (Get-Command dotnet.exe -ErrorAction Stop).Source
@@ -479,6 +509,13 @@ catch {
     $failure = $_
 }
 
+if ($null -eq $failure -and [DateTime]::UtcNow -ge $script:WholeRunDeadlineUtc) {
+    $script:WholeRunTimedOut = $true
+    $script:CurrentCheckExitCode = 124
+    try { throw "Verification whole-run timeout after $WholeRunTimeoutSeconds seconds." }
+    catch { $failure = $_ }
+}
+$script:IsFinalizing = $true
 foreach ($guard in @(
         @{ Name = 'residual-processes'; Action = {
                 Assert-NoResidualProcesses
@@ -524,6 +561,8 @@ $result = [ordered]@{
     commit = $commit
     node = $nodeExe
     nativeTestExecutables = $script:NativeTestCount
+    wholeRunTimeoutSeconds = $WholeRunTimeoutSeconds
+    wholeRunTimedOut = $script:WholeRunTimedOut
     error = if ($null -ne $failure) { $failure.Exception.Message } else { $null }
     originalWorkspace = $originalSummary
     simulation = $script:SimulationResult
