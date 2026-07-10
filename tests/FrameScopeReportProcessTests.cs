@@ -11,6 +11,7 @@ internal static class FrameScopeReportProcessTests
         if (args != null && args.Length > 0) return RunFixture(args);
         try
         {
+            LegacyUnboundedReportRunnerIsAbsent();
             LargeOutputIsBoundedAndKeepsTail();
             HangingChildHonorsTotalTimeout();
             TimeoutKillsDescendantProcess();
@@ -22,6 +23,13 @@ internal static class FrameScopeReportProcessTests
             Console.Error.WriteLine(ex);
             return 1;
         }
+    }
+
+    private static void LegacyUnboundedReportRunnerIsAbsent()
+    {
+        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string source = File.ReadAllText(Path.Combine(root, "src", "app", "FrameScopeNativeMonitor.ReportOrchestration.cs"));
+        AssertFalse(source.Contains("RunReportGenerationLegacy"), "legacy unbounded report runner must stay removed");
     }
 
     private static int RunFixture(string[] args)
