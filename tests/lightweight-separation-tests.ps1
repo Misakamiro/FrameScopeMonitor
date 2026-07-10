@@ -76,6 +76,17 @@ Assert-GameLiteBridgeTest ($buildText -notmatch '(?i)GameLite|lightweight|AutoTr
 $testBuildText = Get-Content -Raw -LiteralPath (Join-Path $root 'tests\Build-FrameScopeTests.ps1')
 Assert-GameLiteBridgeTest ($testBuildText -notmatch '(?i)GameLite|lightweight|AutoTrigger|SGuard|WMI') 'tests\Build-FrameScopeTests.ps1 references GameLite automation.'
 
+$forbiddenProductionAutomation = '(?i)GameLite|AutoTrigger|SGuard|Win32_Process(?:Start|Stop)Trace|__EventFilter|CommandLineEventConsumer'
+$productionSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Recurse -File -Filter '*.cs')
+$packagingSourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $root 'packaging') -Recurse -File | Where-Object {
+    $_.Extension -in @('.cs', '.ps1', '.cmd')
+})
+
+foreach ($file in @($productionSourceFiles + $packagingSourceFiles)) {
+    $text = Get-Content -Raw -LiteralPath $file.FullName
+    Assert-GameLiteBridgeTest ($text -notmatch $forbiddenProductionAutomation) "FrameScope production file references GameLite automation or a process-trigger WMI primitive: $($file.FullName)"
+}
+
 [pscustomobject]@{
     Status = 'PASS'
     CompatibilityWrappers = $scriptNames.Count
@@ -84,4 +95,6 @@ Assert-GameLiteBridgeTest ($testBuildText -notmatch '(?i)GameLite|lightweight|Au
     OldCoreScriptsRemaining = $oldCoreScripts.Count
     BuildIndependent = $true
     TestBuildIndependent = $true
+    ProductionSourceFilesScanned = $productionSourceFiles.Count
+    PackagingSourceFilesScanned = $packagingSourceFiles.Count
 } | ConvertTo-Json -Depth 3

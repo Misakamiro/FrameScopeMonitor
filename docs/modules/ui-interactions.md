@@ -52,7 +52,7 @@ state snapshot 汇总 watcher、配置、报告进度和 host window state。mon
 
 Reports 页面可以列出历史 run，即使某个 run 的报告不完整；但 canOpenReport 只能来自 `src/core/FrameScopeReportArtifacts.cs` 的完整性结果。
 
-完整报告需要 data.js、HTML、manifest 和正确 canonical paths。reportId 只标识经过 DataRoot 边界验证的 run。目录打开与重新生成仍要由 host adapter 重新验证路径和 raw CSV。
+完整报告需要 data.js、HTML、manifest 和正确 canonical paths。reportId 解析、DataRoot 边界和 canonical run/report path 校验主要由 bridge 的 reports resolver 完成；host adapter 不重复 DataRoot 边界判断，只复核本次操作所需的局部前置条件，例如目录/CSV 是否存在，以及打开报告时 artifact set 是否完整。
 
 ## 设置与目标
 

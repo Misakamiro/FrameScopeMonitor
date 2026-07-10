@@ -12,7 +12,21 @@ GameLite 自动轻量化与 FrameScope Monitor 是两个独立产品。FrameScop
 - FrameScope 的 DataRoot 不保存 GameLite snapshot、日志或 WMI 状态。
 - 普通 FrameScope 构建和测试不创建、更新或删除 GameLite WMI filter/consumer。
 
-本仓库的边界门禁是 `tests/lightweight-separation-tests.ps1`。它验证生产源码、构建和 packaging 没有重新引入 GameLite 依赖。
+## 兼容桥
+
+GameLite 核心实现位于独立项目。本仓库保留 7 个只负责定位独立项目并转发参数的 wrappers：
+
+- `Install-GameLiteAutoTrigger.ps1`
+- `Check-GameLiteAutoTrigger.ps1`
+- `Remove-GameLiteAutoTrigger.ps1`
+- `GameLiteSession.ps1`
+- `Enter-GameLite.ps1`
+- `Exit-GameLite.ps1`
+- `Invoke-GameLiteSGuardThrottle.ps1`
+
+同时保留 3 个继续转发 `%*` 的 launchers：`Install-GameLiteAutoTrigger.cmd`、`Check-GameLiteAutoTrigger.cmd`、`Remove-GameLiteAutoTrigger.cmd`。这些文件用于旧快捷方式兼容，不会被普通 FrameScope build 或安装器部署，也不把 GameLite 核心实现带回 FrameScope。
+
+本仓库的边界门禁是 `tests/lightweight-separation-tests.ps1`。它验证上述兼容桥、独立项目对应脚本，以及 FrameScope 的 build、测试编译、生产 C# 和 packaging 没有重新引入 GameLite/AutoTrigger/SGuard/WMI trigger 实现。门禁只静态读取或解析文件，不执行 wrapper、独立脚本或 trigger。
 
 ## 安全规则
 
@@ -24,7 +38,7 @@ GameLite 自动轻量化与 FrameScope Monitor 是两个独立产品。FrameScop
 - 不结束用户的 GameLite/游戏进程；
 - 不把 FrameScope build 成功解释为 GameLite 已部署。
 
-如果任务明确属于独立 GameLite 项目，应切换到该项目自己的仓库、文档和测试，不在 FrameScope tree 内实现兼容脚本。
+如果任务明确属于独立 GameLite 核心实现，应切换到该项目自己的仓库、文档和测试；FrameScope tree 只维护现有参数转发兼容桥，不承载核心逻辑。
 
 ## 历史说明
 
