@@ -46,12 +46,15 @@ internal static partial class FrameScopeReportGenerator
 
         PresentReadResult present = ReadPresentMon(Path.Combine(runDir, "presentmon.csv"));
         List<SystemRow> systemRows = ReadSystem(Path.Combine(runDir, "system-samples.csv"));
+        string processPath = Path.Combine(runDir, "process-samples.csv");
         int timeShiftHours;
         List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(present.Frames, systemRows, out timeShiftHours);
         WriteProgress(progressPath, "处理数据", 20, "对齐帧时间和系统采样时间线", progressStart, null, false);
 
         DateTime start;
         DateTime end;
+        DateTime processStart;
+        DateTime processEnd;
         if (frames.Count > 0)
         {
             start = frames[0].Key;
@@ -61,6 +64,11 @@ internal static partial class FrameScopeReportGenerator
         {
             start = systemRows[0].Time;
             end = systemRows[systemRows.Count - 1].Time;
+        }
+        else if (TryReadProcessTimeRange(processPath, out processStart, out processEnd))
+        {
+            start = processStart;
+            end = processEnd;
         }
         else
         {
@@ -86,7 +94,7 @@ internal static partial class FrameScopeReportGenerator
         double? totalMemoryGb = totalMemoryMb.HasValue ? totalMemoryMb.Value / 1024.0 : (double?)null;
 
         WriteProgress(progressPath, "处理进程", 35, "读取后台进程 CPU、内存和峰值", progressStart, null, false);
-        ProcessMatrixResult process = ReadProcessMatrix(Path.Combine(runDir, "process-samples.csv"), start, targetProcess);
+        ProcessMatrixResult process = ReadProcessMatrix(processPath, start, targetProcess);
         int processSampleCount = process.SamplingInstantCount;
         int systemSampleCount = systemRows.Count;
         string reportKind = FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);

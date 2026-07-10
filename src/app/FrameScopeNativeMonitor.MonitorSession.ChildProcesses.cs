@@ -200,12 +200,13 @@ internal static partial class FrameScopeNativeMonitor
     {
         if (process == null) return;
         List<Thread> pipeThreads = null;
+        int processId;
         try
         {
+            processId = process.Id;
             lock (NativeMonitorPipeLock)
             {
-                if (!NativeMonitorPipeThreads.TryGetValue(process.Id, out pipeThreads)) return;
-                NativeMonitorPipeThreads.Remove(process.Id);
+                if (!NativeMonitorPipeThreads.TryGetValue(processId, out pipeThreads)) return;
             }
         }
         catch
@@ -226,6 +227,44 @@ internal static partial class FrameScopeNativeMonitor
             }
             catch { }
         }
+
+        bool completed = true;
+        foreach (var thread in pipeThreads)
+        {
+            if (thread == null) continue;
+            try
+            {
+                if (thread.IsAlive)
+                {
+                    completed = false;
+                    break;
+                }
+            }
+            catch
+            {
+                completed = false;
+                break;
+            }
+        }
+        if (!completed) return;
+
+        lock (NativeMonitorPipeLock)
+        {
+            List<Thread> registeredThreads;
+            if (NativeMonitorPipeThreads.TryGetValue(processId, out registeredThreads)
+                && object.ReferenceEquals(registeredThreads, pipeThreads))
+            {
+                NativeMonitorPipeThreads.Remove(processId);
+            }
+        }
+    }
+
+    private static void DisposeNativeMonitorChild(Process process)
+    {
+        if (process == null) return;
+        WaitForNativeMonitorChildOutput(process, 5000);
+        try { process.Dispose(); }
+        catch { }
     }
 
     private static void StopMonitorChild(Process process, int waitMs, bool force)

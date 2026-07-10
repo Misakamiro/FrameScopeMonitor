@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -77,6 +78,21 @@ internal static partial class FrameScopeNativeMonitor
 
         try
         {
+        if (HasTestArg(args, "--pipe-join-regression-only"))
+        {
+            TimedOutPipeThreadRemainsRegisteredUntilDrainCompletes();
+            NativeMonitorChildDisposeDrainsOutputFirst();
+            Console.WriteLine("FrameScopeNativeMonitorChildProcessTests pipe join: PASS");
+            return 0;
+        }
+        if (HasTestArg(args, "--long-path-regression-only"))
+        {
+            ShortLivedChildStderrWorksAtWindowsPathLimit();
+            Console.WriteLine("FrameScopeNativeMonitorChildProcessTests long path: PASS");
+            return 0;
+        }
+        TimedOutPipeThreadRemainsRegisteredUntilDrainCompletes();
+        NativeMonitorChildDisposeDrainsOutputFirst();
         ChildPipeLogsAreBoundedAndKeepFinalOutput();
         ShortLivedChildStderrIsAvailableAfterExit();
         ShortLivedChildStderrWorksAtWindowsPathLimit();
@@ -97,6 +113,114 @@ internal static partial class FrameScopeNativeMonitor
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             Console.Error.WriteLine(ex.StackTrace ?? "");
             return 1;
+        }
+    }
+
+    private static void NativeMonitorChildDisposeDrainsOutputFirst()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-child-dispose-drain-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string stderr = Path.Combine(dir, "sampler.stderr.log");
+        const string finalMarker = "PIPE_DISPOSE_FINAL_MARKER";
+        Process process = Process.GetCurrentProcess();
+        int processId = process.Id;
+        using (var started = new ManualResetEvent(false))
+        using (var release = new ManualResetEvent(false))
+        {
+            Thread outputThread = new Thread(() =>
+            {
+                started.Set();
+                if (!release.WaitOne(5000)) return;
+                FrameScopePresentMonDiagnostics.WriteAllText(stderr, finalMarker, Encoding.UTF8);
+            });
+            outputThread.IsBackground = true;
+            outputThread.Start();
+
+            try
+            {
+                AssertTrue(started.WaitOne(2000), "dispose output thread started");
+                RegisterNativeMonitorPipeThreads(process, new List<Thread> { outputThread });
+                release.Set();
+
+                DisposeNativeMonitorChild(process);
+                process = null;
+
+                AssertTrue(!outputThread.IsAlive, "child dispose drains output thread first");
+                lock (NativeMonitorPipeLock)
+                {
+                    AssertTrue(!NativeMonitorPipeThreads.ContainsKey(processId), "child dispose leaves no pipe registration");
+                }
+                AssertEqual(finalMarker, ReadNativeMonitorSamplerTail(stderr, 4096), "child dispose persists final log tail");
+            }
+            finally
+            {
+                release.Set();
+                outputThread.Join(2000);
+                lock (NativeMonitorPipeLock)
+                {
+                    NativeMonitorPipeThreads.Remove(processId);
+                }
+                if (process != null) process.Dispose();
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            }
+        }
+    }
+
+    private static void TimedOutPipeThreadRemainsRegisteredUntilDrainCompletes()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-child-pipe-join-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string stderr = Path.Combine(dir, "sampler.stderr.log");
+        const string finalMarker = "PIPE_JOIN_FINAL_MARKER";
+        Process process = Process.GetCurrentProcess();
+        int processId = process.Id;
+        using (var started = new ManualResetEvent(false))
+        using (var release = new ManualResetEvent(false))
+        {
+            Thread outputThread = new Thread(() =>
+            {
+                started.Set();
+                if (!release.WaitOne(5000)) return;
+                FrameScopePresentMonDiagnostics.WriteAllText(stderr, finalMarker, Encoding.UTF8);
+            });
+            outputThread.IsBackground = true;
+            outputThread.Start();
+
+            try
+            {
+                AssertTrue(started.WaitOne(2000), "blocking output thread started");
+                RegisterNativeMonitorPipeThreads(process, new List<Thread> { outputThread });
+
+                Stopwatch wait = Stopwatch.StartNew();
+                WaitForNativeMonitorChildOutput(process, 25);
+                wait.Stop();
+                AssertTrue(wait.ElapsedMilliseconds < 1000, "short pipe join timeout stays bounded");
+                lock (NativeMonitorPipeLock)
+                {
+                    AssertTrue(NativeMonitorPipeThreads.ContainsKey(processId), "timed-out output thread remains registered");
+                }
+
+                release.Set();
+                WaitForNativeMonitorChildOutput(process, 2000);
+
+                AssertTrue(!outputThread.IsAlive, "released output thread is drained by the second wait");
+                lock (NativeMonitorPipeLock)
+                {
+                    AssertTrue(!NativeMonitorPipeThreads.ContainsKey(processId), "completed output thread registration is removed");
+                }
+                AssertEqual(finalMarker, ReadNativeMonitorSamplerTail(stderr, 4096), "drained output log tail");
+            }
+            finally
+            {
+                release.Set();
+                outputThread.Join(2000);
+                lock (NativeMonitorPipeLock)
+                {
+                    NativeMonitorPipeThreads.Remove(processId);
+                }
+                process.Dispose();
+                if (Directory.Exists(dir)) Directory.Delete(dir, true);
+            }
         }
     }
 
@@ -718,18 +842,19 @@ internal static partial class FrameScopeNativeMonitor
         }
 
         Directory.CreateDirectory(runDir);
+        string stdout = Path.Combine(runDir, "presentmon.stdout.log");
+        string stderr = Path.Combine(runDir, "presentmon.stderr.log");
+        Process child = null;
         try
         {
-            string stdout = Path.Combine(runDir, "presentmon.stdout.log");
-            string stderr = Path.Combine(runDir, "presentmon.stderr.log");
             AssertTrue(stderr.Length >= 260, "stderr path length reaches Windows legacy limit");
             FrameScopePresentMonDiagnostics.WriteAllText(stderr, "direct long path access denied", Encoding.UTF8);
             AssertTrue(FrameScopePresentMonDiagnostics.FileExists(stderr), "direct long-path write exists");
             AssertTrue(FrameScopePresentMonDiagnostics.ReadAllText(stderr, Encoding.UTF8).Contains("access denied"), "direct long-path read");
-            try { File.Delete(@"\\?\" + stderr); } catch { }
+            DeleteLongPathTestFile(stderr);
             string currentExe = Assembly.GetExecutingAssembly().Location;
 
-            Process child = StartNativeMonitorChild(
+            child = StartNativeMonitorChild(
                 currentExe,
                 "--short-lived-stderr-child",
                 runDir,
@@ -757,10 +882,76 @@ internal static partial class FrameScopeNativeMonitor
         }
         finally
         {
-            try { Directory.Delete(baseDir, true); }
-            catch { }
+            try
+            {
+                if (child != null)
+                {
+                    WaitForNativeMonitorChildOutput(child, 5000);
+                    child.Dispose();
+                }
+            }
+            finally
+            {
+                DeleteLongPathTestDirectory(baseDir, runDir, stdout, stderr);
+            }
         }
     }
+
+    private static void DeleteLongPathTestFile(string path)
+    {
+        if (FrameScopePresentMonDiagnostics.FileExists(path)
+            && !DeleteFileW(ToLongPathTestPath(path)))
+        {
+            throw new IOException("Unable to delete long-path test file: " + path + " (Win32 " + Marshal.GetLastWin32Error() + ")");
+        }
+        AssertTrue(!FrameScopePresentMonDiagnostics.FileExists(path), "long-path test file was deleted");
+    }
+
+    private static void DeleteLongPathTestDirectory(string rootPath, string leafPath, params string[] filePaths)
+    {
+        foreach (string filePath in filePaths) DeleteLongPathTestFile(filePath);
+
+        string root = GetFullPathTestPath(rootPath).TrimEnd(Path.DirectorySeparatorChar);
+        string current = GetFullPathTestPath(leafPath).TrimEnd(Path.DirectorySeparatorChar);
+        while (true)
+        {
+            bool isRoot = string.Equals(current, root, StringComparison.OrdinalIgnoreCase);
+            if (!isRoot && !current.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("Refusing to delete a directory outside the long-path test fixture: " + current);
+            }
+            if (!RemoveDirectoryW(ToLongPathTestPath(current)))
+            {
+                throw new IOException("Unable to delete long-path test directory: " + current + " (Win32 " + Marshal.GetLastWin32Error() + ")");
+            }
+            if (isRoot) break;
+            current = Path.GetDirectoryName(current);
+            if (string.IsNullOrWhiteSpace(current)) throw new IOException("Long-path test fixture root was not reached.");
+        }
+
+        AssertTrue(!Directory.Exists(root), "long-path test fixture was deleted");
+    }
+
+    private static string ToLongPathTestPath(string path)
+    {
+        string fullPath = GetFullPathTestPath(path);
+        if (Path.DirectorySeparatorChar != '\\' || fullPath.StartsWith(@"\\?\", StringComparison.Ordinal)) return fullPath;
+        if (fullPath.StartsWith(@"\\", StringComparison.Ordinal)) return @"\\?\UNC\" + fullPath.Substring(2);
+        return @"\\?\" + fullPath;
+    }
+
+    private static string GetFullPathTestPath(string path)
+    {
+        return Path.IsPathRooted(path) ? path : Path.GetFullPath(path);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteFileW(string fileName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RemoveDirectoryW(string pathName);
 
     private static bool LooksLikePresentMonInvocation(string[] args)
     {

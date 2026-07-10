@@ -199,6 +199,10 @@ export interface ReportListItem {
   reportKind: string;
   frameCount: number;
   hasFrameData: boolean;
+  processSamplerStatus?: string;
+  processSamplerValidRows?: number;
+  systemSamplerStatus?: string;
+  systemSamplerValidRows?: number;
 }
 
 export interface ReportActionRequestPayload {

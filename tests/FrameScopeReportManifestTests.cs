@@ -14,6 +14,7 @@ public static class FrameScopeReportManifestTests
         SilentNoCsvDiagnosticsStayTargetNeutralAndDiagnostic();
         FramesWithFailedSystemSamplerArePartial();
         FramesWithHealthySamplersAreFull();
+        ProcessOnlyReportUsesValidProcessTimeRange();
         TargetOnlyProcessRowCountsSamplingInstant();
         RowsSharingSampleIndexCountOneSamplingInstant();
         LegacyMissingOrEmptySampleIndexUsesTimeInstants();
@@ -35,6 +36,51 @@ public static class FrameScopeReportManifestTests
         NoCpuVidSensorUsesChineseReasonAndNoFakeData();
         Console.WriteLine("FrameScopeReportManifestTests: PASS");
         return 0;
+    }
+
+    private static void ProcessOnlyReportUsesValidProcessTimeRange()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-process-only-timeline-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            DateTime start = new DateTime(2026, 7, 11, 10, 0, 0, DateTimeKind.Local);
+            File.WriteAllText(Path.Combine(dir, "status.json"),
+                new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(new Dictionary<string, object>
+                {
+                    { "Phase", "done" },
+                    { "TargetProcess", "game.exe" },
+                    { "ProcessSamplerStatus", "healthy" }
+                }),
+                Encoding.UTF8);
+            File.WriteAllText(Path.Combine(dir, "process-samples.csv"),
+                "Time,SampleIndex,ElapsedMs,ProcessName,InstanceCount,CpuPct,WorkingSetMB,ReadMBps,WriteMBps,WindowTitle,Pid\r\n"
+                + "not-a-time,bad,0,ignored-helper,1,99,999,0,0,,1\r\n"
+                + start.ToString("o", CultureInfo.InvariantCulture) + ",0,0,game,1,3.0,256,0,0,,42\r\n"
+                + start.AddMilliseconds(200).ToString("o", CultureInfo.InvariantCulture) + ",1,200,helper,1,1.0,128,0,0,,7\r\n"
+                + start.AddSeconds(2).ToString("o", CultureInfo.InvariantCulture) + ",2,2000,helper,1,2.0,130,0,0,,7\r\n"
+                + start.AddSeconds(5).ToString("o", CultureInfo.InvariantCulture) + ",3,5000,game,1,4.0,260,0,0,,42\r\n",
+                Encoding.UTF8);
+
+            FrameScopeReportGenerator.GenerateForTests(dir);
+
+            Dictionary<string, object> data = LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js"));
+            Dictionary<string, object> run = GetMap(data, "run");
+            System.Collections.ArrayList times = GetObjectList(GetMap(data, "process"), "t");
+
+            AssertEqual(start.ToString("yyyy-MM-dd HH:mm:ss"), Convert.ToString(run["startLabel"]), "process-only report start");
+            AssertEqual(start.AddSeconds(5).ToString("yyyy-MM-dd HH:mm:ss"), Convert.ToString(run["endLabel"]), "process-only report end");
+            AssertEqual("0\u52065\u79d2", Convert.ToString(run["durationLabel"]), "process-only report duration");
+            AssertEqual(2, times.Count, "process-only display timeline point count");
+            AssertEqual(0.2, Convert.ToDouble(times[0], CultureInfo.InvariantCulture), "process-only timeline starts near zero");
+            AssertEqual(2.0, Convert.ToDouble(times[1], CultureInfo.InvariantCulture), "process-only timeline preserves later point");
+            AssertTrue(Convert.ToDouble(times[0], CultureInfo.InvariantCulture) <= Convert.ToDouble(times[1], CultureInfo.InvariantCulture), "process-only timeline is monotonic");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); }
+            catch { }
+        }
     }
 
     private static void ManifestJsonSurvivesPowerShellDefaultRead()

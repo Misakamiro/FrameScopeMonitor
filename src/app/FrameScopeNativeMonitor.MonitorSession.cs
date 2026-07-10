@@ -639,9 +639,9 @@ internal static partial class FrameScopeNativeMonitor
         }
         finally
         {
-            DisposeProcess(processSampler);
-            DisposeProcess(systemSampler);
-            DisposeProcess(presentMon);
+            DisposeNativeMonitorChild(processSampler);
+            DisposeNativeMonitorChild(systemSampler);
+            DisposeNativeMonitorChild(presentMon);
         }
     }
 }

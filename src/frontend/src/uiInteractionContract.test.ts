@@ -160,4 +160,16 @@ describe("FrameScope UI interaction contract", () => {
     expect(reportStatusLabelSource).toContain("if (report.canOpenReport && report.hasFrameData) return \"完整\";");
     expect(reportStatusLabelSource).toContain("if (report.monitorExitCode !== 0) return \"失败\";");
   });
+
+  it("declares sampler health fields on report list items", () => {
+    const reportListItemSource = bridgeContractSource.slice(
+      bridgeContractSource.indexOf("export interface ReportListItem"),
+      bridgeContractSource.indexOf("export interface ReportActionRequestPayload"),
+    );
+
+    expect(reportListItemSource).toContain("processSamplerStatus?: string;");
+    expect(reportListItemSource).toContain("processSamplerValidRows?: number;");
+    expect(reportListItemSource).toContain("systemSamplerStatus?: string;");
+    expect(reportListItemSource).toContain("systemSamplerValidRows?: number;");
+  });
 });

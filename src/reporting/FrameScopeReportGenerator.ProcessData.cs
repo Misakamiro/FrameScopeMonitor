@@ -9,6 +9,28 @@ using System.Web.Script.Serialization;
 
 internal static partial class FrameScopeReportGenerator
 {
+    private static bool TryReadProcessTimeRange(string path, out DateTime start, out DateTime end)
+    {
+        start = DateTime.MaxValue;
+        end = DateTime.MinValue;
+        if (!File.Exists(path)) return false;
+
+        using (CsvTable table = CsvTable.Open(path))
+        {
+            int timeColumn = HeaderIndex(table.Headers, "Time");
+            string[] row;
+            while ((row = table.ReadFields(new[] { timeColumn })) != null)
+            {
+                DateTime time;
+                if (!TryParseDate(row[0], out time)) continue;
+                if (time < start) start = time;
+                if (time > end) end = time;
+            }
+        }
+
+        return start != DateTime.MaxValue;
+    }
+
     private static ProcessMatrixResult ReadProcessMatrix(string path, DateTime start, string targetProcess)
     {
         ProcessMatrixResult result = new ProcessMatrixResult();
