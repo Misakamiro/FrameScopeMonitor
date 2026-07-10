@@ -103,6 +103,7 @@ try {
         .\src\core\FrameScopeLoggingPolicy.cs `
         .\src\core\FrameScopeCapturePlanner.cs `
         .\src\core\FrameScopePresentMonDiagnostics.cs `
+        .\src\core\FrameScopePresentMonSessionPolicy.cs `
         .\src\core\FrameScopeProcessPicker.cs `
         .\src\core\FrameScopeTargetEditRules.cs `
         .\src\diagnostics\FrameScopeDiagnostics.cs `

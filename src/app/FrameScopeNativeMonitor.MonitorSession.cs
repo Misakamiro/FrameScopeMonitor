@@ -86,7 +86,10 @@ internal static partial class FrameScopeNativeMonitor
             var prefix = SafeName(runNamePrefix, targetBaseName);
             paths = CreateMonitorSessionPaths(Path.Combine(runRoot, prefix + "-" + stamp));
             Directory.CreateDirectory(paths.RunDir);
-            var presentMonSessionName = PresentMonSessionPrefix + SafeName(prefix, targetBaseName);
+            var presentMonSessionName = FrameScopePresentMonSessionPolicy.CreateSessionName(
+                prefix,
+                Process.GetCurrentProcess().Id,
+                Guid.NewGuid().ToString("N"));
 
             var presentMonPath = ResolvePresentMonPath(requestedPresentMon);
             var processSamplerPath = ResolveProcessSamplerPath(requestedProcessSampler);
@@ -135,7 +138,7 @@ internal static partial class FrameScopeNativeMonitor
                     throw new InvalidOperationException("FrameScopeProcessSampler.exe not found beside FrameScopeMonitor.exe.");
                 }
 
-            CleanupFrameScopePresentMonSessions(presentMonPath);
+            CleanupStaleOwnedPresentMonSessions(presentMonPath);
             WritePresentMonInfo(paths.PresentMonInfoPath, presentMonPath);
 
             var waitingStatus = new Dictionary<string, object>
@@ -393,7 +396,7 @@ internal static partial class FrameScopeNativeMonitor
                 {
                     targetRunningAtPresentMonExitCheck = IsAnyTargetProcessRunning(targetProcessBases);
                     targetPidRunningAtPresentMonExitCheck = IsTargetPidRunning(targetProc.Id, targetProcessBases);
-                    presentMonStopRequested = RequestPresentMonStop(presentMonPath, presentMonSessionName);
+                    presentMonStopRequested = RequestPresentMonStopWithTargetedFallback(presentMonPath, presentMonSessionName);
                     if (!WaitForNativeMonitorChildExit(presentMon, 15000, 15000))
                     {
                         presentMonForcedStop = true;
@@ -423,7 +426,7 @@ internal static partial class FrameScopeNativeMonitor
                     presentMonRuntimeMs = presentMonRuntimeStopwatch.ElapsedMilliseconds;
                 }
                 if (!presentMonExitCode.HasValue && File.Exists(paths.PresentMonCsv)) presentMonExitCode = 0;
-                CleanupFrameScopePresentMonSessions(presentMonPath);
+                CleanupOwnedPresentMonSessionIfPresent(presentMonPath, presentMonSessionName);
                 long presentMonCsvPostExitWaitMs = WaitForPresentMonCsvFlush(paths.PresentMonCsv, 2000);
 
                 var endTime = DateTime.Now;
