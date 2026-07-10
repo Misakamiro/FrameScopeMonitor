@@ -12,6 +12,8 @@ if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
 $lock = Get-Content -Raw -LiteralPath (Join-Path $root 'dependencies.lock.json') | ConvertFrom-Json
 $webView2Version = [string]$lock.microsoftWebView2
 $libreHardwareMonitorVersion = [string]$lock.libreHardwareMonitorLib
+$nugetSource = [string]$lock.nuget.source
+$nativePackagesLockPath = Join-Path $root ([string]$lock.nuget.lockFile -replace '/', '\')
 $nugetCache = Join-Path $root 'tools\.cache\nuget'
 $version = (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') {
@@ -50,6 +52,34 @@ function Assert-LockedFileHash {
 $presentMon = Assert-LockedFileHash -Name 'PresentMon' -Entry $lock.presentMon
 $webView2StandaloneInstaller = Assert-LockedFileHash -Name 'WebView2 standalone installer' -Entry $lock.webView2StandaloneInstaller
 
+function Assert-LockedRuntimeFiles {
+    param(
+        [hashtable]$Files,
+        [object]$RuntimeLock
+    )
+
+    $expected = @($RuntimeLock.PSObject.Properties)
+    if ($expected.Count -ne $Files.Count) {
+        throw "Locked runtime file set mismatch: expected $($expected.Count), resolved $($Files.Count)."
+    }
+    foreach ($property in $expected) {
+        $name = $property.Name
+        if (-not $Files.ContainsKey($name)) { throw "Locked runtime file was not resolved: $name" }
+        $path = [string]$Files[$name]
+        $entry = $property.Value
+        $info = Get-Item -LiteralPath $path -ErrorAction Stop
+        if ($info.Length -ne [long]$entry.length) {
+            throw "Locked runtime file length mismatch for ${name}: expected $($entry.length), found $($info.Length)."
+        }
+        $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToUpperInvariant()
+        $expectedHash = ([string]$entry.sha256).ToUpperInvariant()
+        if ($actualHash -cne $expectedHash) {
+            throw "Locked runtime file hash mismatch for ${name}: expected $expectedHash, found $actualHash."
+        }
+        Write-Host "Verified NuGet runtime file ${name}: length=$($info.Length) SHA256=$actualHash"
+    }
+}
+
 function Restore-NativeDependencies {
     param(
         [Parameter(Mandatory = $true)]
@@ -59,7 +89,16 @@ function Restore-NativeDependencies {
         [string]$WebView2Version,
 
         [Parameter(Mandatory = $true)]
-        [string]$LibreHardwareMonitorVersion
+        [string]$LibreHardwareMonitorVersion,
+
+        [Parameter(Mandatory = $true)]
+        [string]$NugetSource,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PackagesLockPath,
+
+        [Parameter(Mandatory = $true)]
+        [object]$RuntimeFilesLock
     )
 
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -73,6 +112,7 @@ function Restore-NativeDependencies {
     try {
         $project = Join-Path $temp 'FrameScopeNativeDependencies.csproj'
         $escapedNugetCache = [Security.SecurityElement]::Escape($NugetCache)
+        $escapedNugetSource = [Security.SecurityElement]::Escape($NugetSource)
         @"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -80,6 +120,9 @@ function Restore-NativeDependencies {
     <OutputType>Exe</OutputType>
     <PlatformTarget>x64</PlatformTarget>
     <RestorePackagesPath>$escapedNugetCache</RestorePackagesPath>
+    <RestoreSources>$escapedNugetSource</RestoreSources>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="[$webView2Version]" ExcludeAssets="all" />
@@ -88,10 +131,11 @@ function Restore-NativeDependencies {
 </Project>
 "@ | Set-Content -LiteralPath $project -Encoding UTF8
         'internal static class Program { private static void Main() { } }' | Set-Content -LiteralPath (Join-Path $temp 'Program.cs') -Encoding UTF8
+        Copy-Item -LiteralPath $PackagesLockPath -Destination (Join-Path $temp 'packages.lock.json') -Force
 
         Push-Location $temp
         try {
-            & $dotnet.Source restore $project --packages $NugetCache --force-evaluate | Out-Host
+            & $dotnet.Source restore $project --packages $NugetCache --source $NugetSource --locked-mode | Out-Host
             if ($LASTEXITCODE -ne 0) {
                 throw "dotnet restore failed for locked native dependencies."
             }
@@ -133,6 +177,15 @@ function Restore-NativeDependencies {
             throw "LibreHardwareMonitorLib.dll was not produced by dependency restore."
         }
 
+        $resolvedRuntimeFiles = @{}
+        foreach ($dll in $dlls) {
+            $resolvedRuntimeFiles[$dll.Name] = $dll.FullName
+        }
+        $resolvedRuntimeFiles['Microsoft.Web.WebView2.Core.dll'] = $webView2Core
+        $resolvedRuntimeFiles['Microsoft.Web.WebView2.WinForms.dll'] = $webView2WinForms
+        $resolvedRuntimeFiles['WebView2Loader.dll'] = $webView2Loader
+        Assert-LockedRuntimeFiles -Files $resolvedRuntimeFiles -RuntimeLock $RuntimeFilesLock
+
         foreach ($dll in $dlls) {
             Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $root $dll.Name) -Force
         }
@@ -153,7 +206,10 @@ function Restore-NativeDependencies {
 $nativeDependencies = Restore-NativeDependencies `
     -NugetCache $nugetCache `
     -WebView2Version $webView2Version `
-    -LibreHardwareMonitorVersion $libreHardwareMonitorVersion
+    -LibreHardwareMonitorVersion $libreHardwareMonitorVersion `
+    -NugetSource $nugetSource `
+    -PackagesLockPath $nativePackagesLockPath `
+    -RuntimeFilesLock $lock.runtimeFiles
 $hardwareTelemetryDependencyNames = @($nativeDependencies.HardwareTelemetryDependencyNames)
 $webView2Core = $nativeDependencies.WebView2Core
 $webView2WinForms = $nativeDependencies.WebView2WinForms

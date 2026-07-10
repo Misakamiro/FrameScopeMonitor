@@ -73,6 +73,20 @@ function Get-SourceArrayNamesFromBuildCommand {
     return @($sourceArrayNames.Keys | Sort-Object)
 }
 
+function Test-StaticSourceArrayDefinition {
+    param([object[]]$Assignments)
+
+    if ($Assignments.Count -ne 1) { return $false }
+    $assignment = $Assignments[0]
+    if ($assignment.Operator -ne [System.Management.Automation.Language.TokenKind]::Equals) { return $false }
+    $dynamicNodes = @($assignment.Right.FindAll({
+                param($node)
+                return $node -is [System.Management.Automation.Language.VariableExpressionAst] -or
+                    $node -is [System.Management.Automation.Language.CommandAst]
+            }, $true))
+    return $dynamicNodes.Count -eq 0
+}
+
 function Test-LockedFile {
     param(
         [Parameter(Mandatory = $true)]
@@ -108,9 +122,25 @@ Assert-Contract (Test-Path -LiteralPath $buildPath -PathType Leaf) 'build.ps1 is
 
 $lock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json
 $buildText = Get-Content -Raw -LiteralPath $buildPath
+$nativePackagesLockPath = Join-Path $root ([string]$lock.nuget.lockFile -replace '/', '\')
 
 Assert-Contract ([string]$lock.microsoftWebView2 -ceq '1.0.3967.48') "Microsoft.Web.WebView2 must remain locked to 1.0.3967.48 (found: $($lock.microsoftWebView2))."
 Assert-Contract ([string]$lock.libreHardwareMonitorLib -ceq '0.9.6') "LibreHardwareMonitorLib must remain locked to 0.9.6 (found: $($lock.libreHardwareMonitorLib))."
+Assert-Contract ([string]$lock.nuget.source -ceq 'https://api.nuget.org/v3/index.json') "NuGet source must remain pinned to nuget.org (found: $($lock.nuget.source))."
+Assert-Contract ([string]$lock.nuget.lockFile -ceq 'native-packages.lock.json') "Native packages lock path must remain native-packages.lock.json (found: $($lock.nuget.lockFile))."
+Assert-Contract (Test-Path -LiteralPath $nativePackagesLockPath -PathType Leaf) 'native-packages.lock.json is required.'
+$nativePackagesLock = Get-Content -Raw -LiteralPath $nativePackagesLockPath | ConvertFrom-Json
+$nativeFrameworkLock = $nativePackagesLock.dependencies.'.NETFramework,Version=v4.7.2'
+$nativeRidLock = $nativePackagesLock.dependencies.'.NETFramework,Version=v4.7.2/win-x64'
+Assert-Contract ([string]$nativeFrameworkLock.'Microsoft.Web.WebView2'.resolved -ceq '1.0.3967.48') 'native-packages.lock.json must lock Microsoft.Web.WebView2 1.0.3967.48.'
+Assert-Contract ([string]$nativeFrameworkLock.LibreHardwareMonitorLib.resolved -ceq '0.9.6') 'native-packages.lock.json must lock LibreHardwareMonitorLib 0.9.6.'
+Assert-Contract ([string]$nativeRidLock.'Microsoft.Web.WebView2'.resolved -ceq '1.0.3967.48') 'native-packages.lock.json must lock the win-x64 WebView2 graph.'
+Assert-Contract ([string]$nativeRidLock.LibreHardwareMonitorLib.resolved -ceq '0.9.6') 'native-packages.lock.json must lock the win-x64 LibreHardwareMonitor graph.'
+Assert-Contract (@($lock.runtimeFiles.PSObject.Properties).Count -eq 16) 'dependencies.lock.json must lock all 16 shipped NuGet runtime files.'
+foreach ($runtimeProperty in @($lock.runtimeFiles.PSObject.Properties)) {
+    Assert-Contract ([long]$runtimeProperty.Value.length -gt 0) "Runtime file length must be positive: $($runtimeProperty.Name)."
+    Assert-Contract ([string]$runtimeProperty.Value.sha256 -match '^[0-9A-F]{64}$') "Runtime file SHA256 is invalid: $($runtimeProperty.Name)."
+}
 Test-LockedFile -Name 'PresentMon' -Entry $lock.presentMon `
     -ExpectedFile 'tools/PresentMon-2.4.1-x64.exe' `
     -ExpectedSha256 'D74183E7AE630F72CD3690BE0373ECBFDC6CBB86578148AAB8FA2A7166068F34'
@@ -129,6 +159,11 @@ Assert-Contract ($buildText.Contains('<PackageReference Include="LibreHardwareMo
 Assert-Contract ($buildText.Contains("Join-Path (Join-Path `$nugetCache 'microsoft.web.webview2') `$webView2Version")) 'build.ps1 must locate only the exact locked WebView2 package directory.'
 Assert-Contract ($buildText.Contains("Join-Path (Join-Path `$nugetCache 'librehardwaremonitorlib') `$libreHardwareMonitorVersion")) 'build.ps1 must locate only the exact locked LibreHardwareMonitor package directory.'
 Assert-Contract ($buildText.Contains('Assert-LockedFileHash')) 'build.ps1 must verify pinned file hashes before compiling.'
+Assert-Contract ($buildText.Contains('Assert-LockedRuntimeFiles')) 'build.ps1 must verify every shipped NuGet runtime file before compiling.'
+Assert-Contract ($buildText.Contains('<RestoreLockedMode>true</RestoreLockedMode>')) 'build.ps1 must enable NuGet locked restore mode.'
+Assert-Contract ($buildText.Contains('--locked-mode')) 'build.ps1 must invoke dotnet restore in locked mode.'
+Assert-Contract ($buildText.Contains('--source $NugetSource')) 'build.ps1 must pass the pinned NuGet source explicitly.'
+Assert-Contract ($buildText.Contains("Copy-Item -LiteralPath `$PackagesLockPath -Destination (Join-Path `$temp 'packages.lock.json')")) 'build.ps1 must copy the committed native packages lock beside the restore project.'
 Assert-Contract ($buildText.Contains('$lock.presentMon')) 'build.ps1 must verify the locked PresentMon file.'
 Assert-Contract ($buildText.Contains('$lock.webView2StandaloneInstaller')) 'build.ps1 must verify the locked WebView2 standalone installer.'
 Assert-Contract ($buildText.Contains('Resolved NuGet dependency')) 'build.ps1 must print resolved NuGet package versions.'
@@ -143,7 +178,7 @@ $assignments = @($buildAst.FindAll({
             param($node)
             return $node -is [System.Management.Automation.Language.AssignmentStatementAst]
         }, $true))
-$assignedSourceArrays = @{}
+$sourceAssignments = @{}
 foreach ($assignment in $assignments) {
     if ($assignment.Left -isnot [System.Management.Automation.Language.VariableExpressionAst]) {
         continue
@@ -151,8 +186,18 @@ foreach ($assignment in $assignments) {
 
     $variableName = $assignment.Left.VariablePath.UserPath
     if ($variableName -match '(?i)Sources$') {
-        $assignedSourceArrays[$variableName] = $true
+        if (-not $sourceAssignments.ContainsKey($variableName)) {
+            $sourceAssignments[$variableName] = New-Object Collections.ArrayList
+        }
+        [void]$sourceAssignments[$variableName].Add($assignment)
     }
+}
+$validSourceAssignments = @{}
+foreach ($variableName in $sourceAssignments.Keys) {
+    $items = @($sourceAssignments[$variableName])
+    $isStatic = Test-StaticSourceArrayDefinition -Assignments $items
+    Assert-Contract $isStatic "Source array `$$variableName must have one static '=' array definition and no later overwrite, +=, or -= mutation."
+    if ($isStatic) { $validSourceAssignments[$variableName] = $items[0] }
 }
 
 $buildCommands = @($buildAst.FindAll({
@@ -185,11 +230,29 @@ Assert-Contract (
     $fixtureSourceArrays[0] -ceq 'commonCoreSources'
 ) "Build-contract self-test must bind source coverage only to -Sources arguments (found: $($fixtureSourceArrays -join ', '))."
 
+$mutationTokens = $null
+$mutationErrors = $null
+$mutationAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    "`$fixtureSources = @('src\a.cs'); `$fixtureSources -= 'src\a.cs'",
+    [ref]$mutationTokens,
+    [ref]$mutationErrors
+)
+$mutationAssignments = @($mutationAst.FindAll({
+            param($node)
+            return $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+                $node.Left.VariablePath.UserPath -eq 'fixtureSources'
+        }, $true))
+Assert-Contract (
+    $mutationErrors.Count -eq 0 -and
+    -not (Test-StaticSourceArrayDefinition -Assignments $mutationAssignments)
+) 'Build-contract self-test must reject overwritten or incrementally mutated source arrays.'
+
 foreach ($requiredArray in @('commonCoreSources', 'monitorSources', 'reportSources', 'samplerSources')) {
-    Assert-Contract ($assignedSourceArrays.ContainsKey($requiredArray)) "build.ps1 must define `$$requiredArray."
+    Assert-Contract ($validSourceAssignments.ContainsKey($requiredArray)) "build.ps1 must define `$$requiredArray as one static array."
     Assert-Contract ($usedSourceArrays.ContainsKey($requiredArray)) "build.ps1 must pass `$$requiredArray to Invoke-CSharpBuild."
 }
-Assert-Contract ($assignedSourceArrays.ContainsKey('packagingOnlySources')) 'build.ps1 must define the explicit $packagingOnlySources exemption array.'
+Assert-Contract ($validSourceAssignments.ContainsKey('packagingOnlySources')) 'build.ps1 must define the explicit $packagingOnlySources exemption as one static array.'
 Assert-Contract ($buildCommands.Count -gt 0) 'build.ps1 must compile targets through Invoke-CSharpBuild.'
 Assert-Contract (([regex]::Matches($buildText, '(?im)^\s*&\s*\$csc\b')).Count -eq 1) 'build.ps1 must have exactly one direct csc invocation, inside Invoke-CSharpBuild.'
 
@@ -210,6 +273,9 @@ foreach ($sourceString in $sourceStrings) {
     }
 
     $arrayName = $parent.Left.VariablePath.UserPath
+    if (-not $validSourceAssignments.ContainsKey($arrayName) -or $validSourceAssignments[$arrayName] -ne $parent) {
+        continue
+    }
     $normalizedPath = Normalize-SourcePath $sourceString.Value
     if ($arrayName -ieq 'packagingOnlySources') {
         $packagingOnlySources[$normalizedPath] = $true
