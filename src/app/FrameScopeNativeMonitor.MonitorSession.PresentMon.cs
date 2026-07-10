@@ -52,23 +52,34 @@ internal static partial class FrameScopeNativeMonitor
 
     private static bool RequestPresentMonStopWithTargetedFallback(string presentMonPath, string sessionName)
     {
-        bool requestSucceeded = RequestPresentMonStop(presentMonPath, sessionName);
-        if (!requestSucceeded) StopEtwSessionWithLogman(sessionName);
-        return requestSucceeded;
+        FrameScopePresentMonSessionStopResult result = FrameScopePresentMonSessionPolicy.StopOwnedSession(
+            sessionName,
+            delegate(string ownedSession) { return RequestPresentMonStop(presentMonPath, ownedSession); },
+            delegate(string ownedSession) { return StopEtwSessionWithLogman(ownedSession); });
+        WriteFrameScopeLog(
+            "presentmon-owned-session-stop session=" + result.SessionName
+            + " primarySucceeded=" + result.PrimarySucceeded
+            + " fallbackAttempted=" + result.FallbackAttempted
+            + " fallbackSucceeded=" + result.FallbackSucceeded
+            + " stopped=" + result.Succeeded);
+        return result.Succeeded;
     }
 
     private static void CleanupStaleOwnedPresentMonSessions(string presentMonPath)
     {
-        var staleSessions = FrameScopePresentMonSessionPolicy.SelectStaleOwnedSessions(
+        IList<FrameScopePresentMonSessionStopResult> results = FrameScopePresentMonSessionPolicy.StopStaleOwnedSessions(
             QueryFrameScopePresentMonSessions(),
-            IsPresentMonSessionOwnerAlive).ToList();
-        foreach (var session in staleSessions)
+            IsPresentMonSessionOwnerAlive,
+            delegate(string ownedSession) { return RequestPresentMonStop(presentMonPath, ownedSession); },
+            delegate(string ownedSession) { return StopEtwSessionWithLogman(ownedSession); });
+        if (results.Count > 0)
         {
-            RequestPresentMonStopWithTargetedFallback(presentMonPath, session);
-        }
-        if (staleSessions.Count > 0)
-        {
-            WriteFrameScopeLog("presentmon-stale-owned-session-cleanup count=" + staleSessions.Count);
+            int stoppedCount = results.Count(result => result.Succeeded);
+            int failedCount = results.Count - stoppedCount;
+            WriteFrameScopeLog(
+                "presentmon-stale-owned-session-cleanup attempted=" + results.Count.ToString(CultureInfo.InvariantCulture)
+                + " stopped=" + stoppedCount.ToString(CultureInfo.InvariantCulture)
+                + " failed=" + failedCount.ToString(CultureInfo.InvariantCulture));
         }
     }
 
@@ -78,8 +89,8 @@ internal static partial class FrameScopeNativeMonitor
         var sessions = QueryFrameScopePresentMonSessions();
         if (!sessions.Contains(sessionName, StringComparer.OrdinalIgnoreCase)) return;
 
-        RequestPresentMonStopWithTargetedFallback(presentMonPath, sessionName);
-        WriteFrameScopeLog("presentmon-owned-session-cleanup session=" + sessionName);
+        bool stopped = RequestPresentMonStopWithTargetedFallback(presentMonPath, sessionName);
+        WriteFrameScopeLog("presentmon-owned-session-cleanup session=" + sessionName + " stopped=" + stopped);
     }
 
     private static bool IsPresentMonSessionOwnerAlive(int ownerPid)

@@ -3,6 +3,27 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 
+public sealed class FrameScopePresentMonSessionStopResult
+{
+    internal FrameScopePresentMonSessionStopResult(
+        string sessionName,
+        bool primarySucceeded,
+        bool fallbackAttempted,
+        bool fallbackSucceeded)
+    {
+        SessionName = sessionName;
+        PrimarySucceeded = primarySucceeded;
+        FallbackAttempted = fallbackAttempted;
+        FallbackSucceeded = fallbackSucceeded;
+    }
+
+    public string SessionName { get; private set; }
+    public bool PrimarySucceeded { get; private set; }
+    public bool FallbackAttempted { get; private set; }
+    public bool FallbackSucceeded { get; private set; }
+    public bool Succeeded { get { return PrimarySucceeded || FallbackSucceeded; } }
+}
+
 public static class FrameScopePresentMonSessionPolicy
 {
     public const string SessionPrefix = "FrameScopeNativePresentMon_";
@@ -82,6 +103,43 @@ public static class FrameScopePresentMonSessionPolicy
         }
 
         return staleSessions;
+    }
+
+    public static IList<FrameScopePresentMonSessionStopResult> StopStaleOwnedSessions(
+        IEnumerable<string> sessions,
+        Func<int, bool> isOwnerAlive,
+        Func<string, bool> primaryStop,
+        Func<string, bool> fallbackStop)
+    {
+        if (primaryStop == null) throw new ArgumentNullException("primaryStop");
+        if (fallbackStop == null) throw new ArgumentNullException("fallbackStop");
+
+        var results = new List<FrameScopePresentMonSessionStopResult>();
+        foreach (string session in SelectStaleOwnedSessions(sessions, isOwnerAlive))
+        {
+            results.Add(StopOwnedSession(session, primaryStop, fallbackStop));
+        }
+        return results;
+    }
+
+    public static FrameScopePresentMonSessionStopResult StopOwnedSession(
+        string sessionName,
+        Func<string, bool> primaryStop,
+        Func<string, bool> fallbackStop)
+    {
+        int ownerPid;
+        if (!TryGetOwnerPid(sessionName, out ownerPid)) throw new ArgumentException("Session name is not in the owned FrameScope format.", "sessionName");
+        if (primaryStop == null) throw new ArgumentNullException("primaryStop");
+        if (fallbackStop == null) throw new ArgumentNullException("fallbackStop");
+
+        bool primarySucceeded = primaryStop(sessionName);
+        bool fallbackAttempted = !primarySucceeded;
+        bool fallbackSucceeded = fallbackAttempted && fallbackStop(sessionName);
+        return new FrameScopePresentMonSessionStopResult(
+            sessionName,
+            primarySucceeded,
+            fallbackAttempted,
+            fallbackSucceeded);
     }
 
     private static string SanitizeLabel(string label)

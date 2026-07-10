@@ -11,6 +11,9 @@ public static class FrameScopeMonitoringReliabilityTests
         SessionNamesSanitizeAndBoundLabels();
         OwnerPidParsingAcceptsOnlyOwnedFormat();
         StaleSelectionStopsOnlyProvenDeadOwners();
+        StartupStopTargetsOnlyStaleOwnedSessions();
+        OwnedShutdownTargetsOnlyTheExplicitSession();
+        FailedOwnedShutdownReportsFailure();
         Console.WriteLine("FrameScopeMonitoringReliabilityTests: PASS");
         return 0;
     }
@@ -109,6 +112,90 @@ public static class FrameScopeMonitoringReliabilityTests
                 }));
 
         AssertSequence(new[] { stale }, selected, "only dead proven owner is stale");
+    }
+
+    private static void StartupStopTargetsOnlyStaleOwnedSessions()
+    {
+        string active = FrameScopePresentMonSessionPolicy.CreateSessionName("PUBG", 4100, "a1");
+        string stale = FrameScopePresentMonSessionPolicy.CreateSessionName("PUBG", 4200, "b2");
+        var primaryCalls = new List<string>();
+        var fallbackCalls = new List<string>();
+
+        IList<FrameScopePresentMonSessionStopResult> results =
+            FrameScopePresentMonSessionPolicy.StopStaleOwnedSessions(
+                new[]
+                {
+                    active,
+                    stale,
+                    "ThirdPartyPresentMon",
+                    SessionPrefix + "legacy",
+                    SessionPrefix + "PUBG_pnot-a-pid_x"
+                },
+                delegate(int pid) { return pid == 4100; },
+                delegate(string session)
+                {
+                    primaryCalls.Add(session);
+                    return false;
+                },
+                delegate(string session)
+                {
+                    fallbackCalls.Add(session);
+                    return true;
+                });
+
+        AssertSequence(new[] { stale }, primaryCalls, "startup primary receives only stale owned session");
+        AssertSequence(new[] { stale }, fallbackCalls, "startup fallback receives only the same stale owned session");
+        AssertEqual(1, results.Count, "startup stop result count");
+        AssertEqual(stale, results[0].SessionName, "startup stop result session");
+        AssertFalse(results[0].PrimarySucceeded, "startup primary result");
+        AssertTrue(results[0].FallbackAttempted, "startup fallback attempted");
+        AssertTrue(results[0].FallbackSucceeded, "startup fallback result");
+        AssertTrue(results[0].Succeeded, "fallback success makes startup stop successful");
+    }
+
+    private static void OwnedShutdownTargetsOnlyTheExplicitSession()
+    {
+        string owned = FrameScopePresentMonSessionPolicy.CreateSessionName("PUBG", 5100, "owner1");
+        string peer = FrameScopePresentMonSessionPolicy.CreateSessionName("PUBG", 5200, "peer1");
+        var primaryCalls = new List<string>();
+        var fallbackCalls = new List<string>();
+
+        FrameScopePresentMonSessionStopResult result = FrameScopePresentMonSessionPolicy.StopOwnedSession(
+            owned,
+            delegate(string session)
+            {
+                primaryCalls.Add(session);
+                return false;
+            },
+            delegate(string session)
+            {
+                fallbackCalls.Add(session);
+                return true;
+            });
+
+        AssertSequence(new[] { owned }, primaryCalls, "owned shutdown primary receives only explicit session");
+        AssertSequence(new[] { owned }, fallbackCalls, "owned shutdown fallback receives only explicit session");
+        AssertFalse(primaryCalls.Contains(peer), "owned shutdown must not receive peer session");
+        AssertFalse(fallbackCalls.Contains(peer), "owned shutdown fallback must not receive peer session");
+        AssertFalse(result.PrimarySucceeded, "owned shutdown primary result");
+        AssertTrue(result.FallbackAttempted, "owned shutdown fallback attempted");
+        AssertTrue(result.FallbackSucceeded, "owned shutdown fallback result");
+        AssertTrue(result.Succeeded, "owned shutdown result");
+    }
+
+    private static void FailedOwnedShutdownReportsFailure()
+    {
+        string owned = FrameScopePresentMonSessionPolicy.CreateSessionName("PUBG", 5300, "owner2");
+
+        FrameScopePresentMonSessionStopResult result = FrameScopePresentMonSessionPolicy.StopOwnedSession(
+            owned,
+            delegate(string session) { return false; },
+            delegate(string session) { return false; });
+
+        AssertFalse(result.PrimarySucceeded, "failed shutdown primary result");
+        AssertTrue(result.FallbackAttempted, "failed shutdown fallback attempted");
+        AssertFalse(result.FallbackSucceeded, "failed shutdown fallback result");
+        AssertFalse(result.Succeeded, "failed shutdown combined result");
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)
