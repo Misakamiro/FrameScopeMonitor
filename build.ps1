@@ -360,6 +360,26 @@ $setupReferences = @(
     'System.Web.Extensions.dll'
 )
 
+function Resolve-GeneratedReleasePath {
+    param(
+        [string]$Path,
+        [string]$ExpectedPrefix
+    )
+    $fullRoot = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $leaf = Split-Path -Leaf $fullPath
+    if (-not $fullPath.StartsWith($fullRoot, [StringComparison]::OrdinalIgnoreCase) -or -not $leaf.StartsWith($ExpectedPrefix, [StringComparison]::Ordinal)) {
+        throw "Unsafe generated release path: $fullPath"
+    }
+    return $fullPath
+}
+
+$dist = Join-Path $root 'dist'
+$releaseToken = [guid]::NewGuid().ToString('N')
+$distStage = Resolve-GeneratedReleasePath -Path (Join-Path $root ("dist.stage.$releaseToken")) -ExpectedPrefix 'dist.stage.'
+$distBackup = Resolve-GeneratedReleasePath -Path (Join-Path $root ("dist.backup.$releaseToken")) -ExpectedPrefix 'dist.backup.'
+$distPublished = $false
+
 Push-Location $root
 try {
     Invoke-CSharpBuild -OutputPath 'FrameScopeMonitor.exe' -Target 'winexe' `
@@ -383,9 +403,9 @@ try {
     Copy-Item -LiteralPath $webView2WinForms -Destination (Join-Path $root 'Microsoft.Web.WebView2.WinForms.dll') -Force
     Copy-Item -LiteralPath $webView2Loader -Destination (Join-Path $root 'WebView2Loader.dll') -Force
 
-    $dist = Join-Path $root 'dist'
-    $payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
-    $sourceRoot = Join-Path $dist 'FrameScopeMonitor-installer-source'
+    New-Item -ItemType Directory -Path $distStage -Force | Out-Null
+    $payloadRoot = Join-Path $distStage 'FrameScopeMonitor-payload'
+    $sourceRoot = Join-Path $distStage 'FrameScopeMonitor-installer-source'
     $frontendDist = Join-Path $root 'src\frontend\dist'
     if (-not (Test-Path -LiteralPath (Join-Path $frontendDist 'index.html'))) {
         throw "Frontend dist was not found. Run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Run-Frontend.ps1 build"
@@ -462,30 +482,61 @@ try {
     $payloadZipSha256 = (Get-FileHash -LiteralPath $payloadZip -Algorithm SHA256).Hash.ToUpperInvariant()
     Write-Host "Payload provenance: version=$version buildId=$buildId SHA256=$payloadZipSha256 files=$($payloadEntries.Count)"
 
-    $setupExe = Join-Path $dist 'FrameScopeMonitor-Setup.exe'
+    $setupExe = Join-Path $distStage 'FrameScopeMonitor-Setup.exe'
     Invoke-CSharpBuild -OutputPath $setupExe -Target 'winexe' `
         -Sources @($commonCoreSources + $setupSources) `
         -References $setupReferences -Resources @("$payloadZip,FrameScopePayload") -Win32Icon $appIcon
 
-    $fullSetupExe = Join-Path $dist 'FrameScopeMonitor-Full-Setup.exe'
+    $fullSetupExe = Join-Path $distStage 'FrameScopeMonitor-Full-Setup.exe'
     Invoke-CSharpBuild -OutputPath $fullSetupExe -Target 'winexe' `
         -Sources @($commonCoreSources + $setupSources) `
         -References $setupReferences `
         -Resources @("$payloadZip,FrameScopePayload", "$webView2StandaloneInstaller,FrameScopeWebView2RuntimeInstaller") `
         -Win32Icon $appIcon
 
-    $legacyCleanupExe = Join-Path $dist 'FrameScopeMonitor-LegacyCleanup.exe'
-    $distReadme = Join-Path $dist 'README-FrameScopeMonitor.txt'
+    $legacyCleanupExe = Join-Path $distStage 'FrameScopeMonitor-LegacyCleanup.exe'
+    $distReadme = Join-Path $distStage 'README-FrameScopeMonitor.txt'
     Copy-Item -LiteralPath (Join-Path $root 'FrameScopeLegacyCleanup.exe') -Destination $legacyCleanupExe -Force
     Copy-Item -LiteralPath (Join-Path $root 'packaging\README-FrameScopeMonitor.txt') -Destination $distReadme -Force
 
-    $releaseZip = Join-Path $dist 'FrameScopeMonitor-Installer.zip'
+    $releaseZip = Join-Path $distStage 'FrameScopeMonitor-Installer.zip'
     if (Test-Path -LiteralPath $releaseZip) { Remove-Item -LiteralPath $releaseZip -Force }
     Compress-Archive -LiteralPath @($setupExe, $fullSetupExe, $legacyCleanupExe, $distReadme) -DestinationPath $releaseZip -Force
 
-    "Build complete: $setupExe"
-    "Full setup complete: $fullSetupExe"
+    & (Join-Path $root 'tools\Test-FrameScopePackages.ps1') -RepoRoot $root -DistRoot $distStage | Out-Host
+
+    $hadPreviousDist = Test-Path -LiteralPath $dist -PathType Container
+    if ($hadPreviousDist) {
+        Move-Item -LiteralPath $dist -Destination $distBackup
+    }
+    try {
+        Move-Item -LiteralPath $distStage -Destination $dist
+        $distPublished = $true
+    }
+    catch {
+        if ($hadPreviousDist -and -not (Test-Path -LiteralPath $dist) -and (Test-Path -LiteralPath $distBackup)) {
+            Move-Item -LiteralPath $distBackup -Destination $dist
+        }
+        throw
+    }
+    if (Test-Path -LiteralPath $distBackup) {
+        Remove-Item -LiteralPath $distBackup -Recurse -Force
+    }
+
+    "Build complete: $(Join-Path $dist 'FrameScopeMonitor-Setup.exe')"
+    "Full setup complete: $(Join-Path $dist 'FrameScopeMonitor-Full-Setup.exe')"
 }
 finally {
+    if (-not $distPublished -and (Test-Path -LiteralPath $distStage)) {
+        Remove-Item -LiteralPath $distStage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $distBackup) {
+        if (-not (Test-Path -LiteralPath $dist)) {
+            Move-Item -LiteralPath $distBackup -Destination $dist -ErrorAction SilentlyContinue
+        }
+        else {
+            Remove-Item -LiteralPath $distBackup -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
     Pop-Location
 }

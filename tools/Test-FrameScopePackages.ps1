@@ -1,5 +1,6 @@
 param(
-    [string]$RepoRoot = ''
+    [string]$RepoRoot = '',
+    [string]$DistRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,22 +9,57 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = Split-Path -Parent $PSScriptRoot
 }
 $root = (Resolve-Path -LiteralPath $RepoRoot).Path
-$dist = Join-Path $root 'dist'
+if ([string]::IsNullOrWhiteSpace($DistRoot)) {
+    $DistRoot = Join-Path $root 'dist'
+}
+$dist = [IO.Path]::GetFullPath($DistRoot)
 $payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
 $version = (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()
 $required = @(
-    'dist/FrameScopeMonitor-Setup.exe',
-    'dist/FrameScopeMonitor-Full-Setup.exe',
-    'dist/FrameScopeMonitor-Installer.zip',
-    'dist/FrameScopeMonitor-LegacyCleanup.exe',
-    'dist/FrameScopeMonitor-payload/FrameScopeBuildManifest.json'
+    'FrameScopeMonitor-Setup.exe',
+    'FrameScopeMonitor-Full-Setup.exe',
+    'FrameScopeMonitor-Installer.zip',
+    'FrameScopeMonitor-LegacyCleanup.exe',
+    'FrameScopeMonitor-payload/FrameScopeBuildManifest.json'
 )
 
 foreach ($relativePath in $required) {
-    $path = Join-Path $root ($relativePath -replace '/', '\')
+    $path = Join-Path $dist ($relativePath -replace '/', '\')
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Missing package: $relativePath"
     }
+}
+
+function Assert-InstallerPathGuards {
+    param([string]$AssemblyPath)
+
+    $assembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($AssemblyPath))
+    $type = $assembly.GetType('FrameScopeSetupNative', $true)
+    $flags = [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Static
+    $normalize = $type.GetMethod('NormalizePayloadArchivePath', $flags)
+    $safeCombine = $type.GetMethod('SafeCombine', $flags)
+    if ($null -eq $normalize -or $null -eq $safeCombine) { throw 'Installer path guard methods were not found.' }
+    $normalizePath = [Delegate]::CreateDelegate([Func[string, string]], $normalize)
+    $combinePath = [Delegate]::CreateDelegate([Func[string, string, string]], $safeCombine)
+
+    Assert-Equal 'dir/file.bin' ([string]$normalizePath.Invoke('dir/file.bin')) 'installer normalized path'
+    foreach ($invalid in @('../file.bin', 'dir/../file.bin', 'dir/./file.bin', '/file.bin', 'C:/file.bin', 'dir//file.bin')) {
+        $rejected = $false
+        try { $null = $normalizePath.Invoke([string]$invalid) }
+        catch { $rejected = $true }
+        if (-not $rejected) { throw "Installer accepted unsafe payload path: $invalid" }
+    }
+
+    $guardRoot = Join-Path $env:TEMP ('framescope-safe-root-' + [guid]::NewGuid().ToString('N'))
+    $valid = [string]$combinePath.Invoke($guardRoot, 'dir\file.bin')
+    $rootPrefix = [IO.Path]::GetFullPath($guardRoot).TrimEnd('\') + '\'
+    if (-not $valid.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Installer SafeCombine rejected its own root: $valid"
+    }
+    $escaped = $false
+    try { $null = $combinePath.Invoke($guardRoot, ('..\' + (Split-Path -Leaf $guardRoot) + '-sibling\file.bin')) }
+    catch { $escaped = $true }
+    if (-not $escaped) { throw 'Installer SafeCombine accepted a prefix-sibling escape.' }
 }
 
 Add-Type -AssemblyName System.IO.Compression
@@ -224,6 +260,7 @@ try {
     $fullPayload = Join-Path $temp 'full-payload'
     $setupInfo = Expand-PayloadResource -AssemblyPath $setupPath -Destination $setupPayload
     $fullInfo = Expand-PayloadResource -AssemblyPath $fullSetupPath -Destination $fullPayload
+    Assert-InstallerPathGuards -AssemblyPath $setupPath
 
     $payloadManifest = Assert-Manifest -Directory $payloadRoot
     $setupManifest = Assert-Manifest -Directory $setupPayload

@@ -196,15 +196,16 @@ internal static class FrameScopeSetupNative
     {
         if (archive == null) throw new ArgumentNullException("archive");
         const string manifestName = "FrameScopeBuildManifest.json";
-        var entries = new Dictionary<string, ZipArchiveEntry>(StringComparer.Ordinal);
+        var entries = new Dictionary<string, ZipArchiveEntry>(StringComparer.OrdinalIgnoreCase);
+        var archiveTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         ZipArchiveEntry manifestEntry = null;
         foreach (ZipArchiveEntry entry in archive.Entries)
         {
+            string path = NormalizePayloadArchivePath(entry.FullName);
+            if (!archiveTargets.Add(path)) throw new InvalidOperationException("安装包损坏：payload 包含重复目标路径：" + path);
             if (string.IsNullOrEmpty(entry.Name)) continue;
-            string path = entry.FullName.Replace('\\', '/');
-            if (entries.ContainsKey(path)) throw new InvalidOperationException("安装包损坏：payload 包含重复路径：" + path);
             entries[path] = entry;
-            if (string.Equals(path, manifestName, StringComparison.Ordinal)) manifestEntry = entry;
+            if (string.Equals(path, manifestName, StringComparison.OrdinalIgnoreCase)) manifestEntry = entry;
         }
         if (manifestEntry == null) throw new InvalidOperationException("安装包损坏：找不到 payload 构建清单。");
 
@@ -228,18 +229,14 @@ internal static class FrameScopeSetupNative
         }
         if (manifest.files == null) throw new InvalidOperationException("安装包损坏：payload 文件清单缺失。");
 
-        var declared = new HashSet<string>(StringComparer.Ordinal);
+        var declared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (PayloadBuildFile file in manifest.files)
         {
-            string path = file == null ? "" : (file.path ?? "").Replace('\\', '/');
-            if (string.IsNullOrWhiteSpace(path) || path.StartsWith("/", StringComparison.Ordinal) || path.Contains("../"))
-            {
-                throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
-            }
+            string path = NormalizePayloadArchivePath(file == null ? "" : file.path);
             if (!declared.Add(path)) throw new InvalidOperationException("安装包损坏：payload 文件清单包含重复路径：" + path);
 
             ZipArchiveEntry entry;
-            if (!entries.TryGetValue(path, out entry) || string.Equals(path, manifestName, StringComparison.Ordinal))
+            if (!entries.TryGetValue(path, out entry) || string.Equals(path, manifestName, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException("安装包损坏：payload 文件缺失：" + path);
             }
@@ -265,16 +262,44 @@ internal static class FrameScopeSetupNative
         }
         foreach (string path in entries.Keys)
         {
-            if (!string.Equals(path, manifestName, StringComparison.Ordinal) && !declared.Contains(path))
+            if (!string.Equals(path, manifestName, StringComparison.OrdinalIgnoreCase) && !declared.Contains(path))
             {
                 throw new InvalidOperationException("安装包损坏：payload 文件未登记：" + path);
             }
         }
     }
 
+    private static string NormalizePayloadArchivePath(string value)
+    {
+        string path = (value ?? "").Replace('\\', '/');
+        if (string.IsNullOrWhiteSpace(path) || path.StartsWith("/", StringComparison.Ordinal) || Path.IsPathRooted(path))
+        {
+            throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
+        }
+
+        string[] rawSegments = path.Split('/');
+        var segments = new List<string>();
+        for (int index = 0; index < rawSegments.Length; index++)
+        {
+            string segment = rawSegments[index];
+            if (segment.Length == 0)
+            {
+                if (index == rawSegments.Length - 1 && segments.Count > 0) continue;
+                throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
+            }
+            if (string.Equals(segment, ".", StringComparison.Ordinal) || string.Equals(segment, "..", StringComparison.Ordinal) || segment.IndexOf(':') >= 0)
+            {
+                throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
+            }
+            segments.Add(segment);
+        }
+        if (segments.Count == 0) throw new InvalidOperationException("安装包损坏：payload 文件路径无效：" + path);
+        return string.Join("/", segments.ToArray());
+    }
+
     private static string SafeCombine(string root, string relative)
     {
-        string fullRoot = Path.GetFullPath(root);
+        string fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
         string fullPath = Path.GetFullPath(Path.Combine(fullRoot, relative));
         if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
         {
