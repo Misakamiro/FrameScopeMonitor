@@ -296,4 +296,3 @@ Expected: build completes and both consistency executables pass.
 Run: `rg -n "1\.1\.3|0\.0\.0\.0" src packaging build.ps1 tools tests -g '!src/frontend/node_modules/**' -g '!src/frontend/dist/**'`
 
 Expected: no production occurrence; fixture text is allowed only when explicitly labeled as legacy compatibility data.
-
