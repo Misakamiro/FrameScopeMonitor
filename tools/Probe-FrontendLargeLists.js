@@ -77,10 +77,15 @@ function connectCdp(wsUrl) {
   const ws = new WebSocket(wsUrl);
   let nextId = 1;
   const pending = new Map();
+  const events = [];
 
   ws.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
-    if (!message.id || !pending.has(message.id)) return;
+    if (!message.id) {
+      if (message.method === "Runtime.exceptionThrown" || message.method === "Runtime.consoleAPICalled") events.push(message);
+      return;
+    }
+    if (!pending.has(message.id)) return;
     const item = pending.get(message.id);
     pending.delete(message.id);
     if (message.error) item.reject(new Error(JSON.stringify(message.error)));
@@ -104,6 +109,9 @@ function connectCdp(wsUrl) {
           } catch {
             // ignored
           }
+        },
+        getEvents() {
+          return events.slice();
         },
       });
     });
@@ -140,6 +148,8 @@ function startVite(repoRoot, port) {
   const frontendRoot = path.join(repoRoot, "src", "frontend");
   const viteBin = path.join(frontendRoot, "node_modules", "vite", "bin", "vite.js");
   if (!fs.existsSync(viteBin)) throw new Error(`Vite binary not found: ${viteBin}`);
+  const productVersion = fs.readFileSync(path.join(repoRoot, "VERSION"), "utf8").trim();
+  if (!/^\d+\.\d+\.\d+$/.test(productVersion)) throw new Error(`Invalid VERSION: ${productVersion}`);
   return spawn(process.execPath, [
     viteBin,
     "--host",
@@ -150,6 +160,7 @@ function startVite(repoRoot, port) {
   ], {
     cwd: frontendRoot,
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, VITE_FRAMESCOPE_VERSION: productVersion },
   });
 }
 
@@ -176,7 +187,19 @@ function pageUrl(baseUrl, params = {}) {
 
 async function navigateApp(page, url, pageId) {
   await page.send("Page.navigate", { url });
-  await waitForExpression(page, "document.readyState === 'complete' && !!document.querySelector('[data-smoke-nav]')", 15000);
+  try {
+    await waitForExpression(page, "document.readyState === 'complete' && !!document.querySelector('[data-smoke-nav]')", 15000);
+  } catch (error) {
+    const diagnostics = await evaluate(page, `(() => ({
+      url: location.href,
+      readyState: document.readyState,
+      rootHtml: document.querySelector('#root')?.innerHTML?.slice(0, 1200) || '',
+      bodyText: document.body?.innerText?.slice(0, 1200) || '',
+      scripts: Array.from(document.scripts).map((item) => item.src || '[inline]'),
+      resources: performance.getEntriesByType('resource').map((item) => ({ name: item.name, duration: item.duration })),
+    }))()`);
+    throw new Error(`${error.message}; diagnostics=${JSON.stringify(diagnostics)}; events=${JSON.stringify(page.getEvents().slice(-8))}`);
+  }
   return await evaluate(
     page,
     `new Promise((resolve) => {

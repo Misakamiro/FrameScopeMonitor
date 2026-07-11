@@ -571,8 +571,8 @@ try {
         throw 'OriginalWorkspace must be separate from the remediation worktree.'
     }
     $originalBefore = Get-GitWorkspaceFingerprint -Workspace $originalRoot
-    $branch = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'branch', '--show-current')) -join "`n").Trim()
-    $commit = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'rev-parse', 'HEAD')) -join "`n").Trim()
+    $branch = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'branch', '--show-current') -StandardOutputOnly) -join "`n").Trim()
+    $commit = (@(Invoke-External -FilePath 'git.exe' -Arguments @('-C', $root, 'rev-parse', 'HEAD') -StandardOutputOnly) -join "`n").Trim()
     $nodeExe = Resolve-NodeExe
     $powershellExe = (Get-Command powershell.exe -ErrorAction Stop).Source
     $dotnetExe = (Get-Command dotnet.exe -ErrorAction Stop).Source
@@ -629,7 +629,7 @@ try {
             '-Scenario', 'stable',
             '-DurationSeconds', '4',
             '-OwnershipPath', $script:SimulationOwnershipPath
-        )
+        ) -StandardOutputOnly
         $script:SimulationResult = ($simulationOutput | Out-String | ConvertFrom-Json)
         Assert-SimulationChildExitCodes `
             -MonitorExit ([int]$script:SimulationResult.monitorExit) `
