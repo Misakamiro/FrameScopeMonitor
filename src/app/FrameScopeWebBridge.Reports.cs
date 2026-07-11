@@ -269,7 +269,7 @@ internal sealed partial class FrameScopeWebBridge
                 RunDir = fullRunDir,
                 ReportHtml = fullReportHtml,
                 MonitorExitCode = monitorExitCode,
-                ReportExists = artifacts.IsComplete,
+                ReportExists = File.Exists(fullReportHtml),
                 RunDirExists = true,
                 ReportSizeBytes = reportInfo == null ? 0 : reportInfo.Length,
                 LastWriteTime = reportInfo == null ? Directory.GetLastWriteTime(fullRunDir).ToString("O", CultureInfo.InvariantCulture) : reportInfo.LastWriteTime.ToString("O", CultureInfo.InvariantCulture),

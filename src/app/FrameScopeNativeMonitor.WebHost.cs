@@ -174,11 +174,11 @@ internal static partial class FrameScopeNativeMonitor
             try
             {
                 FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(runDir);
-                if (!artifacts.IsComplete ||
-                    string.IsNullOrWhiteSpace(reportHtml) ||
+                if (string.IsNullOrWhiteSpace(reportHtml) ||
+                    !File.Exists(reportHtml) ||
                     !string.Equals(Path.GetFullPath(reportHtml), artifacts.HtmlPath, StringComparison.OrdinalIgnoreCase))
                 {
-                    return FrameScopeWebBridgeHostResult.Failure("report_missing", "The report artifact set is incomplete.", null);
+                    return FrameScopeWebBridgeHostResult.Failure("report_missing", "The report HTML does not exist.", null);
                 }
 
                 if (!TryOpenPath(reportHtml))

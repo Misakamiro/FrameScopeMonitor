@@ -128,6 +128,11 @@ describe("FrameScope UI interaction contract", () => {
     expect(reportsPageSource).toContain("data-smoke-action={`regenerate-report-${smokeIndex}`}");
   });
 
+  it("does not let an early stale snapshot erase a successful monitor start", () => {
+    expect(bridgeStateSource).toContain("monitorRuntimeOverrideUntil");
+    expect(bridgeStateSource).toContain("data.watcher.running || monitorRuntimeOverrideUntil.current > Date.now()");
+  });
+
   it("shows canonical full reports with frame data as complete success", () => {
     expect(reportStatusToneSource).toContain('case "full":');
     expect(reportStatusToneSource).toContain('return report.hasFrameData ? "success" : "warning";');

@@ -155,6 +155,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
 
   const latestProcessRequestId = useRef("");
   const latestMonitorRequestId = useRef("");
+  const monitorRuntimeOverrideUntil = useRef(0);
   const latestDiagnosticsRequestId = useRef("");
   const reportRequestMap = useRef(new Map<string, { kind: ReportOperationKind; reportId: string }>());
   const processEventTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -242,8 +243,10 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
         error: "",
         updatedAt: now,
       });
+      const effectiveMonitorRunning = data.watcher.running || monitorRuntimeOverrideUntil.current > Date.now();
+      if (data.watcher.running) monitorRuntimeOverrideUntil.current = 0;
       setMonitorRuntime({
-        running: data.watcher.running,
+        running: effectiveMonitorRunning,
         pid: data.watcher.pid,
         message: data.watcher.running ? "监控 worker 正在运行。" : "监控 worker 未启动。",
         updatedAt: data.generatedAt || now,
@@ -531,6 +534,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     });
     try {
       const accepted = await adapter.request<MonitorActionAcceptedPayload>("monitor.start", {}, { timeoutMs: 10000 });
+      monitorRuntimeOverrideUntil.current = Date.now() + 15000;
       latestMonitorRequestId.current = accepted.requestId;
       setMonitorAction({
         status: "loading",
@@ -846,6 +850,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       }
 
       if (payload.status === "monitor.started") {
+        monitorRuntimeOverrideUntil.current = Date.now() + 15000;
         clearMonitorEventTimeout();
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
         setMonitorAction({
@@ -865,6 +870,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       }
 
       if (payload.status === "monitor.stopped") {
+        monitorRuntimeOverrideUntil.current = 0;
         clearMonitorEventTimeout();
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
         setMonitorAction({

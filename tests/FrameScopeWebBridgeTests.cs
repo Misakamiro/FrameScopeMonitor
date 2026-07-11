@@ -26,7 +26,7 @@ public static class FrameScopeWebBridgeTests
             ReportsListSkipsNoisyFallbackButKeepsHistoryAndExpectedReports();
             ReportOpenRejectsFrontendPathPayload();
             ReportOpenUsesValidatedReportId();
-            HtmlOnlyReportCannotOpen();
+            LegacyHtmlOnlyReportCanOpen();
             ReportOpenDirectoryUsesValidatedReportId();
             LogsOpenDirectoryRejectsFrontendPathPayload();
             LogsOpenDirectoryUsesHostResolvedLogDirectory();
@@ -384,7 +384,7 @@ public static class FrameScopeWebBridgeTests
         AssertEqual(true, adapter.LastReportPath.EndsWith("framescope-interactive-report.html", StringComparison.OrdinalIgnoreCase), "opened report path");
     }
 
-    private static void HtmlOnlyReportCannotOpen()
+    private static void LegacyHtmlOnlyReportCanOpen()
     {
         string root = CreateTempRoot("report-open-html-only");
         string runDir = CreateReportRun(root, "Bridge Game", true);
@@ -395,8 +395,8 @@ public static class FrameScopeWebBridgeTests
         var bridge = CreateBridge(root, null, adapter);
 
         var response = Decode(bridge.HandleJsonMessage(Request("report-open-html-only-1", "reports.open", "{\"reportId\":\"" + Escape(reportId) + "\"}")));
-        AssertEqual(false, AsBool(response, "ok"), "HTML-only report open rejected");
-        AssertEqual(0, adapter.OpenReportCount, "HTML-only report never reaches host adapter");
+        AssertEqual(true, AsBool(response, "ok"), "legacy HTML-only report open accepted");
+        AssertEqual(1, adapter.OpenReportCount, "legacy HTML-only report reaches host adapter");
     }
 
     private static void ReportOpenDirectoryUsesValidatedReportId()
