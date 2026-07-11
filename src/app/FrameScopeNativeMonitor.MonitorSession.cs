@@ -53,6 +53,7 @@ internal static partial class FrameScopeNativeMonitor
             var targetProcessName = GetArgValue(args, "--TargetProcessName", "cs2.exe");
             var runRoot = GetArgValue(args, "--RunRoot", DefaultDataRoot);
             var runNamePrefix = GetArgValue(args, "--RunNamePrefix", GetTargetBaseName(targetProcessName));
+            var requestedRunDirectory = GetArgValue(args, "--RunDirectory", "");
             var requestedPresentMon = GetArgValue(args, "--PresentMonExe", "");
             var requestedProcessSampler = GetArgValue(args, "--ProcessSamplerExe", "");
             var requestedSystemSampler = GetArgValue(args, "--SystemSamplerExe", "");
@@ -84,10 +85,27 @@ internal static partial class FrameScopeNativeMonitor
             if (!Path.IsPathRooted(runRoot)) runRoot = Path.Combine(Root, runRoot);
             Directory.CreateDirectory(runRoot);
 
-            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
             var prefix = SafeName(runNamePrefix, targetBaseName);
-            paths = CreateMonitorSessionPaths(Path.Combine(runRoot, prefix + "-" + stamp));
-            Directory.CreateDirectory(paths.RunDir);
+            string runDirectory;
+            if (string.IsNullOrWhiteSpace(requestedRunDirectory))
+            {
+                runDirectory = FrameScopeTargetLifecycle.ReserveUniqueRunDirectory(
+                    runRoot,
+                    prefix,
+                    DateTime.Now,
+                    Process.GetCurrentProcess().Id,
+                    Guid.NewGuid().ToString("N"));
+            }
+            else
+            {
+                runDirectory = Path.GetFullPath(requestedRunDirectory);
+                string fullRunRoot = Path.GetFullPath(runRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (!runDirectory.StartsWith(fullRunRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Reserved run directory is outside the configured run root.");
+                if (!Directory.Exists(runDirectory) || !File.Exists(Path.Combine(runDirectory, ".framescope-run-owner")))
+                    throw new InvalidOperationException("Reserved run directory is missing its ownership marker.");
+            }
+            paths = CreateMonitorSessionPaths(runDirectory);
             var presentMonSessionName = FrameScopePresentMonSessionPolicy.CreateSessionName(
                 prefix,
                 Process.GetCurrentProcess().Id,

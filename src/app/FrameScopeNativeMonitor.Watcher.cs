@@ -21,6 +21,7 @@ internal sealed class ActiveMonitor
     public Process Process;
     public int MonitorPid;
     public string RunRoot;
+    public string RunDir;
     public DateTime StartedAt;
 }
 
@@ -78,7 +79,9 @@ internal static partial class FrameScopeNativeMonitor
                 var item = activeMonitors[key];
                 if (!MonitorHasExited(item)) continue;
 
-                var run = LatestRunDirectory(item.RunRoot);
+                var run = !string.IsNullOrWhiteSpace(item.RunDir) && Directory.Exists(item.RunDir)
+                    ? new DirectoryInfo(item.RunDir)
+                    : null;
                 var status = run != null ? ReadStatusDictionary(run.FullName) : null;
                 var exitCode = GetMonitorExitCode(item, status);
                 if (run != null)
@@ -224,6 +227,21 @@ internal static partial class FrameScopeNativeMonitor
         var cpuVidSampleMs = telemetrySampleMs;
         var cpuVidProvider = "auto";
         var safeName = SafeName(target.Name, processBaseNames.Count > 0 ? processBaseNames[0] : GetTargetBaseName(target.ProcessName));
+        string reservedRunDir;
+        try
+        {
+            reservedRunDir = FrameScopeTargetLifecycle.ReserveUniqueRunDirectory(
+                runRoot,
+                safeName,
+                DateTime.Now,
+                Process.GetCurrentProcess().Id,
+                Guid.NewGuid().ToString("N"));
+        }
+        catch (Exception ex)
+        {
+            WriteFrameScopeLog("native-monitor-run-reservation-failed game=" + target.Name + " error=" + ex.Message);
+            return null;
+        }
         var aliasArg = string.Join(";", processBaseNames.ToArray());
         var args =
             "--monitor-session" +
@@ -248,7 +266,8 @@ internal static partial class FrameScopeNativeMonitor
             " --EnablePerformanceDiagnosticsLogs " + (FrameScopeLoggingPolicy.IsPerformanceDiagnosticsEnabled(config) ? "true" : "false") +
             " --ControlPollIntervalMs 3000" +
             " --RunRoot " + Quote(runRoot) +
-            " --RunNamePrefix " + Quote(safeName);
+            " --RunNamePrefix " + Quote(safeName) +
+            " --RunDirectory " + Quote(reservedRunDir);
 
         WriteVerboseFrameScopeLog(config, delegate
         {
@@ -285,11 +304,14 @@ internal static partial class FrameScopeNativeMonitor
                 Process = process,
                 MonitorPid = process.Id,
                 RunRoot = runRoot,
+                RunDir = reservedRunDir,
                 StartedAt = DateTime.Now
             };
         }
         catch (Exception ex)
         {
+            try { if (Directory.Exists(reservedRunDir)) Directory.Delete(reservedRunDir, true); }
+            catch { }
             WriteFrameScopeLog("native-monitor-start-failed game=" + target.Name + " error=" + ex.Message);
             return null;
         }
@@ -347,7 +369,8 @@ internal static partial class FrameScopeNativeMonitor
             WorkerProcessName = "FrameScopeMonitor.exe",
             WorkerExplanation = "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。",
             MonitorPid = MonitorHasExited(entry.Value) ? (int?)null : entry.Value.MonitorPid,
-            RunRoot = entry.Value.RunRoot
+            RunRoot = entry.Value.RunRoot,
+            RunDir = entry.Value.RunDir
         }).ToArray();
 
         var state = new

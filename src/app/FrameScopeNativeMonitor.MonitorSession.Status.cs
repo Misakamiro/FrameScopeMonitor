@@ -18,6 +18,7 @@ internal static partial class FrameScopeNativeMonitor
 {
     private static void WriteNativeMonitorStatus(MonitorSessionPaths paths, string phase, string targetProcess, string captureMode, int sampleIntervalMs, int processSampleIntervalMs, int slowSampleIntervalMs, int controlPollIntervalMs, string presentMonPath, string processSamplerPath, string systemSamplerPath, Dictionary<string, object> extra)
     {
+        FrameScopeMonitorOwnerIdentity monitorIdentity = FrameScopeReportRecoveryPolicy.CaptureCurrentProcessIdentity();
         var status = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
         {
             { "Time", DateTime.Now.ToString("o") },
@@ -25,7 +26,9 @@ internal static partial class FrameScopeNativeMonitor
             { "RunDir", paths.RunDir },
             { "MonitorScript", NativeMonitorMode },
             { "MonitorMode", NativeMonitorMode },
-            { "MonitorPid", Process.GetCurrentProcess().Id },
+            { "MonitorPid", monitorIdentity.ProcessId },
+            { "MonitorProcessPath", monitorIdentity.ExecutablePath },
+            { "MonitorStartedAtUtc", monitorIdentity.StartedAtUtcText },
             { "PresentMonCsv", paths.PresentMonCsv },
             { "PresentMonExe", presentMonPath },
             { "PresentMonOut", paths.PresentMonStdout },

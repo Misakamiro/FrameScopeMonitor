@@ -14,6 +14,7 @@ internal static class FrameScopeRunRetentionTests
         try
         {
             SelectionProtectsActiveNewestRecoverableAndOutsidePaths();
+            ExhaustedIncompleteRunBecomesRetentionEligible();
             DiskCapSelectsOldestEligibleRuns();
             ConcurrentAppendAndCompactionKeepValidHistory();
             Console.WriteLine("FrameScopeRunRetentionTests: PASS");
@@ -78,6 +79,23 @@ internal static class FrameScopeRunRetentionTests
 
         AssertContains(selected, oldest, "oldest selected to meet cap");
         AssertNotContains(selected, middle, "one deletion is sufficient");
+        AssertNotContains(selected, newest, "newest remains protected");
+    }
+
+    private static void ExhaustedIncompleteRunBecomesRetentionEligible()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "framescope-retention-exhausted-root");
+        DateTime now = DateTime.UtcNow;
+        FrameScopeRunRetentionCandidate exhausted = Candidate(root, "Game", "exhausted", "done", now.AddDays(-30), 600);
+        exhausted.ReportComplete = false;
+        exhausted.HasUsableMonitorData = true;
+        exhausted.RecoveryExhausted = true;
+        FrameScopeRunRetentionCandidate newest = Candidate(root, "Game", "newest", "done", now.AddDays(-1), 600);
+
+        List<FrameScopeRunRetentionCandidate> selected = FrameScopeRunRetention.Select(
+            root, new[] { exhausted, newest }, now, 14, 10000);
+
+        AssertContains(selected, exhausted, "exhausted incomplete run can be reclaimed");
         AssertNotContains(selected, newest, "newest remains protected");
     }
 

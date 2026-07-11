@@ -130,7 +130,8 @@ public static class FrameScopeReportManifestTests
             {
                 { "report", finalReport },
                 { "data", finalData },
-                { "frames", 1 }
+                { "frames", 1 },
+                { FrameScopeReportArtifacts.InputFingerprintFieldName, FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value }
             }));
     }
 

@@ -135,6 +135,7 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         Process watcher = null;
         int monitorPid = 0;
         string runDir = "";
+        string decoyRunDir = "";
         bool passed = false;
 
         try
@@ -161,6 +162,10 @@ public static class FrameScopeTargetLifecycleIntegrationTests
                 return CountValidCsvRows(Path.Combine(runDir, "process-samples.csv"), 11) > 0 &&
                     CountValidCsvRows(Path.Combine(runDir, "system-samples.csv"), 21) > 0;
             }, 15000, "initial process and system samples");
+
+            decoyRunDir = Path.Combine(Directory.GetParent(runDir).FullName, "newer-unowned-decoy");
+            Directory.CreateDirectory(decoyRunDir);
+            Directory.SetLastWriteTimeUtc(decoyRunDir, DateTime.UtcNow.AddMinutes(10));
 
             File.WriteAllText(aStop, "stop");
             AssertTrue(targetA.WaitForExit(5000), "primary alias exits");
@@ -221,6 +226,9 @@ public static class FrameScopeTargetLifecycleIntegrationTests
             AssertEqual("healthy", Convert.ToString(summary["SystemSamplerStatus"], CultureInfo.InvariantCulture), "summary system sampler health");
             AssertTrue(Convert.ToInt32(status["ProcessSamplerValidRows"], CultureInfo.InvariantCulture) > 0, "status process sampler valid rows");
             AssertTrue(Convert.ToInt32(status["SystemSamplerValidRows"], CultureInfo.InvariantCulture) > 0, "status system sampler valid rows");
+            string statusFingerprint = Convert.ToString(status["ReportInputFingerprint"], CultureInfo.InvariantCulture);
+            AssertTrue(!string.IsNullOrWhiteSpace(statusFingerprint), "status report input fingerprint");
+            AssertEqual(statusFingerprint, Convert.ToString(summary["ReportInputFingerprint"], CultureInfo.InvariantCulture), "summary report input fingerprint");
 
             AssertNonEmpty(Path.Combine(runDir, "charts", "framescope-interactive-report.html"));
             AssertNonEmpty(Path.Combine(runDir, "charts", "framescope-interactive-data.js"));
@@ -232,12 +240,14 @@ public static class FrameScopeTargetLifecycleIntegrationTests
             AssertTrue(Regex.IsMatch(manifest, "\\\"processSamples\\\"\\s*:\\s*[1-9][0-9]*", RegexOptions.IgnoreCase), "report manifest has process samples");
             AssertTrue(Regex.IsMatch(manifest, "\\\"systemSamples\\\"\\s*:\\s*[1-9][0-9]*", RegexOptions.IgnoreCase), "report manifest has system samples");
             AssertEqual("full", Convert.ToString(manifestMap["reportKind"], CultureInfo.InvariantCulture), "manifest report kind");
+            AssertEqual(statusFingerprint, Convert.ToString(manifestMap["inputFingerprint"], CultureInfo.InvariantCulture), "manifest report input fingerprint");
             AssertEqual("healthy", Convert.ToString(manifestMap["processSamplerStatus"], CultureInfo.InvariantCulture), "manifest process sampler health");
             AssertEqual("healthy", Convert.ToString(manifestMap["systemSamplerStatus"], CultureInfo.InvariantCulture), "manifest system sampler health");
             string historyPath = Path.Combine(fixture, "framescope-history.jsonl");
             AssertEqual(1, File.ReadAllLines(historyPath).Count(line => !string.IsNullOrWhiteSpace(line)), "one watcher history entry");
             Dictionary<string, object> history = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }
                 .Deserialize<Dictionary<string, object>>(File.ReadAllLines(historyPath).Single(line => !string.IsNullOrWhiteSpace(line)));
+            AssertEqual(Path.GetFullPath(runDir), Path.GetFullPath(Convert.ToString(history["RunDir"], CultureInfo.InvariantCulture)), "watcher history uses the worker's exact run directory");
             AssertEqual("full", Convert.ToString(history["ReportKind"], CultureInfo.InvariantCulture), "history report kind");
             AssertEqual("healthy", Convert.ToString(history["ProcessSamplerStatus"], CultureInfo.InvariantCulture), "history process sampler health");
             AssertEqual("healthy", Convert.ToString(history["SystemSamplerStatus"], CultureInfo.InvariantCulture), "history system sampler health");

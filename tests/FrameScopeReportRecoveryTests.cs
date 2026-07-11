@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Web.Script.Serialization;
 
 internal static class FrameScopeReportRecoveryTests
@@ -16,8 +18,14 @@ internal static class FrameScopeReportRecoveryTests
             CorruptManifestIsIncomplete();
             ManifestPathEscapeIsIncomplete();
             CompleteArtifactSetPasses();
+            CsvChangeInvalidatesCompleteArtifactSet();
             MonitorCsvRequiresADataRow();
             RecoveryPolicyHonorsPhaseAndActivity();
+            LiveOwnerIdentityBlocksRecovery();
+            RecoveryOwnerGateCoversTerminalAndLegacyRuns();
+            RecoverySelectionFiltersBeforeApplyingLimits();
+            FailedRecoveryAttemptsBecomeExhausted();
+            GenerationSuccessRequiresVerifiedStableArtifacts();
             Console.WriteLine("FrameScopeReportRecoveryTests: PASS");
             return 0;
         }
@@ -88,6 +96,24 @@ internal static class FrameScopeReportRecoveryTests
         finally { DeleteFixture(run); }
     }
 
+    private static void CsvChangeInvalidatesCompleteArtifactSet()
+    {
+        string run = CreateRun("fingerprint-change");
+        try
+        {
+            string csv = Path.Combine(run, "presentmon.csv");
+            File.WriteAllText(csv, "Application,MsBetweenPresents" + Environment.NewLine + "game.exe,6.9" + Environment.NewLine);
+            WriteArtifactSet(run);
+            AssertTrue(FrameScopeReportArtifacts.Inspect(run).IsComplete, "matching input fingerprint");
+
+            File.AppendAllText(csv, "game.exe,7.1" + Environment.NewLine);
+            FrameScopeReportArtifactState changed = FrameScopeReportArtifacts.Inspect(run);
+            AssertFalse(changed.IsComplete, "CSV changes must invalidate published artifacts");
+            AssertFalse(changed.InputFingerprintMatches, "changed CSV fingerprint mismatch");
+        }
+        finally { DeleteFixture(run); }
+    }
+
     private static void MonitorCsvRequiresADataRow()
     {
         string run = CreateRun("csv-rows");
@@ -114,6 +140,76 @@ internal static class FrameScopeReportRecoveryTests
         AssertFalse(FrameScopeReportRecoveryPolicy.ShouldRecover("starting", true, false, false), "non-recoverable phase");
     }
 
+    private static void LiveOwnerIdentityBlocksRecovery()
+    {
+        FrameScopeMonitorOwnerIdentity identity = FrameScopeReportRecoveryPolicy.CaptureCurrentProcessIdentity();
+        AssertEqual(
+            FrameScopeMonitorOwnerState.Active,
+            FrameScopeReportRecoveryPolicy.ProbeMonitorOwner(identity.ProcessId, identity.ExecutablePath, identity.StartedAtUtcText),
+            "matching live owner");
+        AssertEqual(
+            FrameScopeMonitorOwnerState.Uncertain,
+            FrameScopeReportRecoveryPolicy.ProbeMonitorOwner(identity.ProcessId, identity.ExecutablePath, identity.StartedAtUtc.AddSeconds(-1).ToString("o")),
+            "PID reuse/start-time mismatch is not recoverable");
+        AssertEqual(
+            FrameScopeMonitorOwnerState.Exited,
+            FrameScopeReportRecoveryPolicy.ProbeMonitorOwner(Int32.MaxValue, identity.ExecutablePath, identity.StartedAtUtcText),
+            "missing owner process");
+    }
+
+    private static void RecoveryOwnerGateCoversTerminalAndLegacyRuns()
+    {
+        AssertTrue(
+            FrameScopeReportRecoveryPolicy.IsRecoveryCaptureActive("done", true, FrameScopeMonitorOwnerState.Active),
+            "terminal run with a live recorded owner stays blocked");
+        AssertTrue(
+            FrameScopeReportRecoveryPolicy.IsRecoveryCaptureActive("error", true, FrameScopeMonitorOwnerState.Uncertain),
+            "terminal run with an uncertain recorded owner stays blocked");
+        AssertFalse(
+            FrameScopeReportRecoveryPolicy.IsRecoveryCaptureActive("done", true, FrameScopeMonitorOwnerState.Exited),
+            "terminal run with a confirmed exited owner can recover");
+        AssertFalse(
+            FrameScopeReportRecoveryPolicy.IsRecoveryCaptureActive("done", false, FrameScopeMonitorOwnerState.Uncertain),
+            "legacy terminal run without owner identity remains recoverable");
+        AssertTrue(
+            FrameScopeReportRecoveryPolicy.IsRecoveryCaptureActive("capturing", false, FrameScopeMonitorOwnerState.Uncertain),
+            "legacy capturing run without owner identity remains conservatively blocked");
+
+        AssertFalse(FrameScopeReportRecoveryPolicy.HasRecordedMonitorOwnerIdentity(0, "", ""), "legacy status has no owner identity");
+        AssertTrue(FrameScopeReportRecoveryPolicy.HasRecordedMonitorOwnerIdentity(4100, "", ""), "partial PID identity is recorded");
+    }
+
+    private static void RecoverySelectionFiltersBeforeApplyingLimits()
+    {
+        DateTime now = DateTime.UtcNow;
+        var newestComplete = RecoveryCandidate("game", "newest-complete", now, true, true, true, false);
+        var olderIncomplete = RecoveryCandidate("game", "older-incomplete", now.AddDays(-1), false, true, true, false);
+        var unstable = RecoveryCandidate("game", "unstable", now.AddDays(-2), false, true, false, false);
+        var active = RecoveryCandidate("other", "active", now.AddDays(-3), false, true, true, true);
+
+        List<FrameScopeReportRecoveryCandidate> selected = FrameScopeReportRecoveryPolicy.SelectCandidates(
+            new[] { newestComplete, olderIncomplete, unstable, active }, 1, 1);
+
+        AssertEqual(1, selected.Count, "recovery selection count");
+        AssertEqual(olderIncomplete.RunDirectory, selected[0].RunDirectory, "complete newest run must not hide older incomplete run");
+    }
+
+    private static void FailedRecoveryAttemptsBecomeExhausted()
+    {
+        AssertFalse(FrameScopeReportRecoveryPolicy.IsRecoveryExhausted(2, false), "attempts below limit");
+        AssertTrue(FrameScopeReportRecoveryPolicy.IsRecoveryExhausted(3, false), "third failed attempt exhausts recovery");
+        AssertFalse(FrameScopeReportRecoveryPolicy.IsRecoveryExhausted(3, true), "success clears exhaustion");
+    }
+
+    private static void GenerationSuccessRequiresVerifiedStableArtifacts()
+    {
+        AssertTrue(FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(false, 0, false, true, true), "fully verified generation");
+        AssertFalse(FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(true, 0, false, true, true), "timeout");
+        AssertFalse(FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(false, 0, true, true, true), "retryable result");
+        AssertFalse(FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(false, 0, false, false, true), "incomplete artifacts");
+        AssertFalse(FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(false, 0, false, true, false), "input fingerprint mismatch");
+    }
+
     private static string CreateRun(string name)
     {
         string run = Path.Combine(Path.GetTempPath(), "FrameScopeReportRecoveryTests", name, Guid.NewGuid().ToString("N"));
@@ -129,12 +225,36 @@ internal static class FrameScopeReportRecoveryTests
         Directory.CreateDirectory(charts);
         File.WriteAllText(report, "<html></html>");
         File.WriteAllText(data, "window.__FRAMESCOPE_REPORT__ = {};");
+        string inputFingerprint = FrameScopeReportArtifacts.CaptureInputFingerprint(run).Value;
         File.WriteAllText(Path.Combine(charts, "framescope-interactive-manifest.json"), Json.Serialize(new Dictionary<string, object>
         {
             { "report", reportOverride ?? report },
             { "data", dataOverride ?? data },
-            { "frames", 1 }
+            { "frames", 1 },
+            { "inputFingerprint", inputFingerprint }
         }));
+    }
+
+    private static FrameScopeReportRecoveryCandidate RecoveryCandidate(
+        string target,
+        string name,
+        DateTime writeTime,
+        bool complete,
+        bool hasData,
+        bool stable,
+        bool active)
+    {
+        return new FrameScopeReportRecoveryCandidate
+        {
+            RunDirectory = Path.Combine(target, name),
+            TargetKey = target,
+            LastWriteTimeUtc = writeTime,
+            Phase = "done",
+            ReportComplete = complete,
+            HasUsableMonitorData = hasData,
+            InputStable = stable,
+            CaptureActive = active
+        };
     }
 
     private static void DeleteFixture(string run)
@@ -150,5 +270,10 @@ internal static class FrameScopeReportRecoveryTests
     private static void AssertFalse(bool value, string message)
     {
         if (value) throw new Exception("ASSERT FALSE FAILED: " + message);
+    }
+
+    private static void AssertEqual<T>(T expected, T actual, string message)
+    {
+        if (!object.Equals(expected, actual)) throw new Exception(message + ": expected " + expected + ", actual " + actual);
     }
 }

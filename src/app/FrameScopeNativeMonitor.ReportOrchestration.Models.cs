@@ -123,5 +123,9 @@ internal sealed class ReportGenerationResult
     public DateTime GenerationEndedAt;
     public bool TimedOut;
     public bool CanRetry;
+    public string InputFingerprint = "";
+    public bool InputFingerprintStable;
+    public bool ArtifactsComplete;
+    public bool InputFingerprintMatches;
     public Dictionary<string, object> SamplerEvidenceFields;
 }

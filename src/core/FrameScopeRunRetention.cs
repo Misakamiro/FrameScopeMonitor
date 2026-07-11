@@ -13,6 +13,7 @@ internal sealed class FrameScopeRunRetentionCandidate
     internal bool ReportComplete;
     internal bool HasUsableMonitorData;
     internal bool ReportGenerationInProgress;
+    internal bool RecoveryExhausted;
 }
 
 internal static class FrameScopeRunRetention
@@ -39,7 +40,7 @@ internal static class FrameScopeRunRetention
         List<FrameScopeRunRetentionCandidate> eligible = valid
             .Where(candidate => !newest.Contains(candidate) && IsTerminalPhase(candidate.Phase))
             .Where(candidate => !candidate.ReportGenerationInProgress)
-            .Where(candidate => candidate.ReportComplete || !candidate.HasUsableMonitorData)
+            .Where(candidate => candidate.ReportComplete || !candidate.HasUsableMonitorData || candidate.RecoveryExhausted)
             .OrderBy(candidate => candidate.LastWriteTimeUtc)
             .ToList();
 

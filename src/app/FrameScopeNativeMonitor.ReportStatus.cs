@@ -16,7 +16,7 @@ using System.Runtime.InteropServices;
 
 internal static partial class FrameScopeNativeMonitor
 {
-    private static Dictionary<string, object> UpdateStatusAfterReportGeneration(string runDir, Dictionary<string, object> status, ReportGenerationResult result, int monitorExitCode)
+    private static Dictionary<string, object> UpdateStatusAfterReportGeneration(string runDir, Dictionary<string, object> status, ReportGenerationResult result, int monitorExitCode, bool recoveryAttempt = false)
     {
         var statusPath = Path.Combine(runDir, "status.json");
         var map = status != null
@@ -42,16 +42,37 @@ internal static partial class FrameScopeNativeMonitor
         map["ReportProcessSampleCount"] = result.ProcessSampleCount;
         map["ReportSystemSampleCount"] = result.SystemSampleCount;
         map["ReportKind"] = result.ReportKind;
+        map["ReportInputFingerprint"] = result.InputFingerprint ?? "";
+        map["ReportInputFingerprintStable"] = result.InputFingerprintStable;
+        map["ReportArtifactsComplete"] = result.ArtifactsComplete;
+        map["ReportInputFingerprintMatches"] = result.InputFingerprintMatches;
+        bool generationSucceeded = FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(
+            result.TimedOut,
+            result.ExitCode,
+            result.CanRetry,
+            result.ArtifactsComplete,
+            result.InputFingerprintMatches);
+        int recoveryAttempts = StatusInt(map, "ReportRecoveryAttempts", 0);
+        if (generationSucceeded)
+        {
+            recoveryAttempts = 0;
+            map["ReportRecoveryExhausted"] = false;
+        }
+        else if (recoveryAttempt)
+        {
+            map["ReportRecoveryExhausted"] = FrameScopeReportRecoveryPolicy.IsRecoveryExhausted(recoveryAttempts, false);
+        }
+        map["ReportRecoveryAttempts"] = recoveryAttempts;
         ApplyReportSamplerEvidence(map, result);
         FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));
 
         try { FrameScopeJsonFile.Write(statusPath, Json.Serialize(map)); }
         catch (Exception ex) { WriteFrameScopeLog("status-update-failed run=" + runDir + " error=" + ex.Message); }
-        UpdateSummaryAfterReportGeneration(runDir, result);
+        UpdateSummaryAfterReportGeneration(runDir, result, map);
         return map;
     }
 
-    private static void UpdateSummaryAfterReportGeneration(string runDir, ReportGenerationResult result)
+    private static void UpdateSummaryAfterReportGeneration(string runDir, ReportGenerationResult result, Dictionary<string, object> status)
     {
         try
         {
@@ -75,6 +96,12 @@ internal static partial class FrameScopeNativeMonitor
             map["ReportProcessSampleCount"] = result.ProcessSampleCount;
             map["ReportSystemSampleCount"] = result.SystemSampleCount;
             map["ReportKind"] = result.ReportKind;
+            map["ReportInputFingerprint"] = result.InputFingerprint ?? "";
+            map["ReportInputFingerprintStable"] = result.InputFingerprintStable;
+            map["ReportArtifactsComplete"] = result.ArtifactsComplete;
+            map["ReportInputFingerprintMatches"] = result.InputFingerprintMatches;
+            map["ReportRecoveryAttempts"] = StatusInt(status, "ReportRecoveryAttempts", 0);
+            map["ReportRecoveryExhausted"] = StatusBool(status, "ReportRecoveryExhausted", false);
             ApplyReportSamplerEvidence(map, result);
             object reportsValue;
             Dictionary<string, object> reports = map.TryGetValue("Reports", out reportsValue)
@@ -95,6 +122,10 @@ internal static partial class FrameScopeNativeMonitor
             reports["FrameCount"] = result.FrameCount;
             reports["ProcessSampleCount"] = result.ProcessSampleCount;
             reports["SystemSampleCount"] = result.SystemSampleCount;
+            reports["InputFingerprint"] = result.InputFingerprint ?? "";
+            reports["InputFingerprintStable"] = result.InputFingerprintStable;
+            reports["ArtifactsComplete"] = result.ArtifactsComplete;
+            reports["InputFingerprintMatches"] = result.InputFingerprintMatches;
             ApplyReportSamplerEvidence(reports, result);
             map["Reports"] = reports;
             FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));

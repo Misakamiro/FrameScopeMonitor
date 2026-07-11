@@ -82,6 +82,7 @@ Invoke-TestBuild `
         'src\core\FrameScopeHistoryFile.cs',
         'src\core\FrameScopeConfigStore.cs',
         'src\core\FrameScopeReportProgress.cs',
+        'src\core\FrameScopeReportRecoveryPolicy.cs',
         'src\app\FrameScopeNativeMonitor.ReportOrchestration.Models.cs',
         'src\app\FrameScopeNativeMonitor.ReportStatus.cs',
         'tests\FrameScopeReportStatusTests.cs'

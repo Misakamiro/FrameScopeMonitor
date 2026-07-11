@@ -1,10 +1,18 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
 
 public static class FrameScopeTargetLifecycle
 {
     public const int DefaultAliasQuiescenceMilliseconds = 2000;
     public const int AliasProbeIntervalMilliseconds = 250;
+    private const int LegacyMaximumPathCharacters = 259;
+    private const int ReportPublicationPathHeadroom = 89;
+    private const int MaximumRunDirectoryPathCharacters = LegacyMaximumPathCharacters - ReportPublicationPathHeadroom;
+    private const int MaximumRunNonceCharacters = 8;
+    private const int MinimumRunNonceCharacters = 4;
 
     public static bool ShouldStopCapture(bool untilTargetExit, bool selectedPidExited, bool anyAliasRunning, bool deadlineReached)
     {
@@ -85,6 +93,63 @@ public static class FrameScopeTargetLifecycle
         return elapsedMilliseconds - startMilliseconds >= Math.Max(0, requiredMilliseconds);
     }
 
+    public static string ReserveUniqueRunDirectory(string runRoot, string prefix, DateTime timestamp, int ownerPid, string nonce)
+    {
+        if (string.IsNullOrWhiteSpace(runRoot)) throw new ArgumentException("Run root is empty.", "runRoot");
+        if (ownerPid <= 0) throw new ArgumentOutOfRangeException("ownerPid");
+        string fullRunRoot = Path.GetFullPath(runRoot);
+        Directory.CreateDirectory(fullRunRoot);
+
+        string safePrefix = SafeRunComponent(prefix, "run");
+        string safeNonce = SafeRunComponent(nonce, Guid.NewGuid().ToString("N"));
+        string ownerIdentity = timestamp.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) +
+            "-p" + ownerPid.ToString(CultureInfo.InvariantCulture) + "-";
+        int maximumNameLength = MaximumRunDirectoryPathCharacters - fullRunRoot.Length - 1;
+        for (int suffix = 0; suffix < 10000; suffix++)
+        {
+            string collisionSuffix = suffix == 0 ? "" : "-" + suffix.ToString(CultureInfo.InvariantCulture);
+            int nonceLength = Math.Min(
+                MaximumRunNonceCharacters,
+                maximumNameLength - ownerIdentity.Length - collisionSuffix.Length);
+            if (nonceLength < MinimumRunNonceCharacters)
+            {
+                throw new PathTooLongException(
+                    "The FrameScope run root is too long to reserve a legacy-compatible run directory: " + fullRunRoot);
+            }
+
+            string nonceToken = safeNonce.Substring(0, Math.Min(nonceLength, safeNonce.Length));
+            if (nonceToken.Length < MinimumRunNonceCharacters)
+            {
+                nonceToken = Guid.NewGuid().ToString("N").Substring(0, nonceLength);
+            }
+            string identity = ownerIdentity + nonceToken;
+            int prefixLength = Math.Min(
+                safePrefix.Length,
+                Math.Max(0, maximumNameLength - identity.Length - collisionSuffix.Length - 1));
+            string name = (prefixLength > 0 ? safePrefix.Substring(0, prefixLength) + "-" : "") +
+                identity + collisionSuffix;
+            string candidate = Path.Combine(fullRunRoot, name);
+            Directory.CreateDirectory(candidate);
+            string marker = Path.Combine(candidate, ".framescope-run-owner");
+            try
+            {
+                using (FileStream stream = new FileStream(marker, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+                using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.Write(ownerPid.ToString(CultureInfo.InvariantCulture));
+                    writer.Write('|');
+                    writer.Write(safeNonce);
+                }
+                return candidate;
+            }
+            catch (IOException)
+            {
+                if (!File.Exists(marker)) throw;
+            }
+        }
+        throw new IOException("Unable to reserve a unique FrameScope run directory.");
+    }
+
     private static List<string> NormalizeAliases(IEnumerable<string> aliases, bool stripExeSuffix)
     {
         var normalized = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -102,6 +167,21 @@ public static class FrameScopeTargetLifecycle
         }
 
         return new List<string>(normalized);
+    }
+
+    private static string SafeRunComponent(string value, string fallback)
+    {
+        string input = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+        StringBuilder result = new StringBuilder(Math.Min(80, input.Length));
+        foreach (char ch in input)
+        {
+            if (result.Length >= 80) break;
+            bool safe = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-';
+            result.Append(safe ? ch : '-');
+        }
+        string text = result.ToString().Trim('-');
+        return string.IsNullOrWhiteSpace(text) ? fallback : text;
     }
 
     private static string JoinAliases(List<string> normalized)

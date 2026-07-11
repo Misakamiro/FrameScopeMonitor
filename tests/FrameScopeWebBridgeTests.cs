@@ -604,7 +604,8 @@ public static class FrameScopeWebBridgeTests
             { "frames", 1 },
             { "processSamples", 0 },
             { "systemSamples", 0 },
-            { "reportKind", "full" }
+            { "reportKind", "full" },
+            { FrameScopeReportArtifacts.InputFingerprintFieldName, FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value }
         }));
         if (appendHistory)
         {

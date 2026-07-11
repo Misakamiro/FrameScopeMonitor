@@ -20,10 +20,11 @@ internal static partial class FrameScopeReportGenerator
     private static int Main(string[] args)
     {
         string progressPath = args == null ? "" : GetArgValue(args, "--progress", "");
+        string requestedInputFingerprint = args == null ? "" : GetArgValue(args, "--input-fingerprint", "");
         try
         {
             string runDir = args != null && args.Length > 0 ? Path.GetFullPath(args[0]) : FindLatestRun(Directory.GetCurrentDirectory());
-            Generate(runDir, progressPath);
+            Generate(runDir, progressPath, requestedInputFingerprint);
             return 0;
         }
         catch (Exception ex)
@@ -38,15 +39,18 @@ internal static partial class FrameScopeReportGenerator
         }
     }
 
-    private static void Generate(string runDir, string progressPath)
+    private static void Generate(string runDir, string progressPath, string requestedInputFingerprint)
     {
+        string inputFingerprint = string.IsNullOrWhiteSpace(requestedInputFingerprint)
+            ? FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value
+            : requestedInputFingerprint;
         FrameScopeReportPublisher.Publish(runDir, delegate(string outputDirectory)
         {
-            GenerateArtifacts(runDir, progressPath, outputDirectory);
+            GenerateArtifacts(runDir, progressPath, outputDirectory, inputFingerprint);
         });
     }
 
-    private static void GenerateArtifacts(string runDir, string progressPath, string chartsDir)
+    private static void GenerateArtifacts(string runDir, string progressPath, string chartsDir, string inputFingerprint)
     {
         DateTime progressStart = DateTime.Now;
         Directory.CreateDirectory(chartsDir);
@@ -218,6 +222,7 @@ internal static partial class FrameScopeReportGenerator
             { "presentMonSelectedTrack", GetDiagnostic(present.Diagnostics, "selectedTrack") },
             { "hasFrameData", frames.Count > 0 },
             { "reportKind", reportKind },
+            { FrameScopeReportArtifacts.InputFingerprintFieldName, inputFingerprint },
             { "processes", process.Names.Count },
             { "processSamples", processSampleCount },
             { "systemSamples", systemSampleCount },
@@ -288,7 +293,7 @@ internal static partial class FrameScopeReportGenerator
 
     internal static void GenerateForTests(string runDir)
     {
-        Generate(runDir, "");
+        Generate(runDir, "", FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value);
     }
 
     private static void AddSamplerManifestFields(Dictionary<string, object> manifest, string prefix, FrameScopeSamplerEvidence evidence)

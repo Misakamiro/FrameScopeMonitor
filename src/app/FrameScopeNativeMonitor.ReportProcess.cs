@@ -29,6 +29,9 @@ internal static partial class FrameScopeNativeMonitor
             ReportKind = "error",
             CanRetry = false
         };
+        FrameScopeReportInputFingerprint inputBefore = FrameScopeReportArtifacts.CaptureInputFingerprint(runDir);
+        result.InputFingerprint = inputBefore.Value;
+        result.InputFingerprintStable = inputBefore.Stable;
 
         if (!File.Exists(ReportGeneratorExe))
         {
@@ -50,7 +53,7 @@ internal static partial class FrameScopeNativeMonitor
         {
             FrameScopeProcessResult process = FrameScopeBoundedProcessRunner.Run(
                 ReportGeneratorExe,
-                Quote(runDir) + " --progress " + Quote(result.ProgressPath),
+                Quote(runDir) + " --progress " + Quote(result.ProgressPath) + " --input-fingerprint " + Quote(result.InputFingerprint),
                 Root,
                 timeoutMs,
                 delegate { UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath); });
@@ -100,7 +103,6 @@ internal static partial class FrameScopeNativeMonitor
                     CompleteReportProgress(runDir, result, progressStartedAt);
                 }
             }
-            UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath);
         }
         catch (Exception ex)
         {
@@ -109,12 +111,46 @@ internal static partial class FrameScopeNativeMonitor
             result.CanRetry = true;
             result.GenerationEndedAt = DateTime.UtcNow;
             WriteFailureProgress(result, progressStartedAt, "Generation failed");
-            UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath);
             WriteReportLog(result.LogPath, ex.ToString());
             WriteFrameScopeLog("report-generate-error run=" + runDir + " error=" + ex.Message);
         }
 
+        VerifyFinalReportArtifacts(runDir, result, inputBefore, progressStartedAt);
+        UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath);
+
         return FinishReportGeneration(result, config, totalTimer);
+    }
+
+    private static void VerifyFinalReportArtifacts(
+        string runDir,
+        ReportGenerationResult result,
+        FrameScopeReportInputFingerprint inputBefore,
+        DateTime progressStartedAt)
+    {
+        FrameScopeReportInputFingerprint inputAfter = FrameScopeReportArtifacts.CaptureInputFingerprint(runDir);
+        FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(runDir);
+        result.InputFingerprintStable = inputBefore.Stable && inputAfter.Stable &&
+            string.Equals(inputBefore.Value, inputAfter.Value, StringComparison.OrdinalIgnoreCase);
+        result.ArtifactsComplete = artifacts.IsComplete;
+        result.InputFingerprintMatches = artifacts.InputFingerprintMatches && result.InputFingerprintStable &&
+            string.Equals(result.InputFingerprint, artifacts.ManifestInputFingerprint, StringComparison.OrdinalIgnoreCase);
+
+        if (result.ExitCode == 0 && !FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(
+            result.TimedOut,
+            result.ExitCode,
+            result.CanRetry,
+            result.ArtifactsComplete,
+            result.InputFingerprintMatches))
+        {
+            result.CanRetry = true;
+            if (string.IsNullOrWhiteSpace(result.Error))
+            {
+                result.Error = result.InputFingerprintStable
+                    ? "Report generator finished without a verified artifact set."
+                    : "Monitor CSV inputs changed during report generation.";
+            }
+            WriteFailureProgress(result, progressStartedAt, "Generation failed");
+        }
     }
 
     private static void WriteFailureProgress(ReportGenerationResult result, DateTime startedAt, string phase)

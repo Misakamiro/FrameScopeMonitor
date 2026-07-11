@@ -23,7 +23,7 @@ public static class FrameScopeJsonFile
 
         string temporaryPath = Path.Combine(
             directoryPath,
-            "." + Path.GetFileName(destinationPath) + ".tmp-" + Guid.NewGuid().ToString("N"));
+            ".fsj-" + Guid.NewGuid().ToString("N").Substring(0, 16));
 
         try
         {

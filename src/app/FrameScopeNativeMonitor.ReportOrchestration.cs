@@ -21,31 +21,58 @@ internal static partial class FrameScopeNativeMonitor
         {
             var root = new DirectoryInfo(dataRoot);
             if (!root.Exists) return;
-            var candidates = new List<DirectoryInfo>();
+            var candidates = new List<FrameScopeReportRecoveryCandidate>();
             foreach (var gameDir in root.GetDirectories())
             {
-                candidates.AddRange(gameDir.GetDirectories()
-                    .OrderByDescending(d => d.LastWriteTimeUtc)
-                    .Take(3)
-                    .Where(run =>
-                        !FrameScopeReportArtifacts.Inspect(run.FullName).IsComplete &&
-                        FrameScopeReportArtifacts.HasUsableMonitorData(run.FullName) &&
-                        DateTime.Now - LatestMonitorCsvWriteTime(run.FullName) > TimeSpan.FromMinutes(2)));
+                foreach (DirectoryInfo run in gameDir.GetDirectories())
+                {
+                    Dictionary<string, object> status = ReadStatusDictionary(run.FullName);
+                    string phase = StatusString(status, "Phase", "");
+                    FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(run.FullName);
+                    FrameScopeReportInputFingerprint input = FrameScopeReportArtifacts.CaptureInputFingerprint(run.FullName);
+                    FrameScopeMonitorOwnerState owner = ProbeRecoveryOwner(status);
+                    bool captureActive = IsRecoveryCaptureActive(status, phase, owner);
+                    candidates.Add(new FrameScopeReportRecoveryCandidate
+                    {
+                        RunDirectory = run.FullName,
+                        TargetKey = gameDir.FullName,
+                        Phase = phase,
+                        LastWriteTimeUtc = run.LastWriteTimeUtc,
+                        ReportComplete = artifacts.IsComplete,
+                        HasUsableMonitorData = FrameScopeReportArtifacts.HasUsableMonitorData(run.FullName),
+                        InputStable = input.Stable && DateTime.Now - LatestMonitorCsvWriteTime(run.FullName) > TimeSpan.FromMinutes(2),
+                        InputFingerprint = input.Value,
+                        CaptureActive = captureActive,
+                        Attempts = StatusInt(status, "ReportRecoveryAttempts", 0),
+                        Exhausted = StatusBool(status, "ReportRecoveryExhausted", false)
+                    });
+                }
             }
 
-            foreach (var run in candidates.OrderByDescending(d => d.LastWriteTimeUtc).Take(5))
+            foreach (FrameScopeReportRecoveryCandidate candidate in FrameScopeReportRecoveryPolicy.SelectCandidates(candidates, 3, 5))
             {
-                var status = ReadStatusDictionary(run.FullName);
-                var phase = StatusString(status, "Phase", "");
-                FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(run.FullName);
-                if (FrameScopeReportRecoveryPolicy.ShouldRecover(
-                    phase,
-                    FrameScopeReportArtifacts.HasUsableMonitorData(run.FullName),
-                    artifacts.IsComplete,
-                    false))
+                Dictionary<string, object> status = ReadStatusDictionary(candidate.RunDirectory);
+                FrameScopeReportInputFingerprint before = FrameScopeReportArtifacts.CaptureInputFingerprint(candidate.RunDirectory);
+                FrameScopeMonitorOwnerState ownerBefore = ProbeRecoveryOwner(status);
+                if (!before.Stable || !string.Equals(before.Value, candidate.InputFingerprint, StringComparison.OrdinalIgnoreCase)) continue;
+                if (IsRecoveryCaptureActive(status, candidate.Phase, ownerBefore)) continue;
+
+                status = MarkRecoveryAttemptStarted(candidate.RunDirectory, status);
+                WriteFrameScopeLog("recover-stale-report run=" + candidate.RunDirectory + " phase=" + candidate.Phase);
+                status = EnsureReportForCompletedRun(
+                    candidate.RunDirectory,
+                    status,
+                    StatusInt(status, "ExitCode", -1),
+                    config,
+                    true);
+
+                FrameScopeReportInputFingerprint after = FrameScopeReportArtifacts.CaptureInputFingerprint(candidate.RunDirectory);
+                Dictionary<string, object> statusAfter = ReadStatusDictionary(candidate.RunDirectory) ?? status;
+                FrameScopeMonitorOwnerState ownerAfter = ProbeRecoveryOwner(statusAfter);
+                if (!after.Stable || !string.Equals(before.Value, after.Value, StringComparison.OrdinalIgnoreCase) ||
+                    IsRecoveryCaptureActive(statusAfter, candidate.Phase, ownerAfter))
                 {
-                    WriteFrameScopeLog("recover-stale-report run=" + run.FullName + " phase=" + phase);
-                    EnsureReportForCompletedRun(run.FullName, status, StatusInt(status, "ExitCode", -1), config);
+                    InvalidateRecoveryPublication(candidate.RunDirectory, statusAfter, "Capture ownership or monitor CSV inputs changed during recovery.");
                 }
             }
         }
@@ -55,7 +82,7 @@ internal static partial class FrameScopeNativeMonitor
         }
     }
 
-    private static Dictionary<string, object> EnsureReportForCompletedRun(string runDir, Dictionary<string, object> status, int monitorExitCode, FrameScopeConfig config)
+    private static Dictionary<string, object> EnsureReportForCompletedRun(string runDir, Dictionary<string, object> status, int monitorExitCode, FrameScopeConfig config, bool recoveryAttempt = false)
     {
         FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(runDir);
         var reportHtml = artifacts.HtmlPath;
@@ -68,6 +95,7 @@ internal static partial class FrameScopeNativeMonitor
         bool hasUsableMonitorData = FrameScopeReportArtifacts.HasUsableMonitorData(runDir);
         if (!hasUsableMonitorData)
         {
+            FrameScopeReportInputFingerprint input = FrameScopeReportArtifacts.CaptureInputFingerprint(runDir);
             WriteFrameScopeLog("report-generate-skip missing-monitor-data run=" + runDir);
             return UpdateStatusAfterReportGeneration(runDir, status, new ReportGenerationResult
             {
@@ -77,8 +105,12 @@ internal static partial class FrameScopeNativeMonitor
                 LogPath = Path.Combine(runDir, "report-generation.log"),
                 ProgressPath = Path.Combine(runDir, "report-progress.json"),
                 Error = "No monitor CSV data was found.",
-                ReportKind = "error"
-            }, monitorExitCode);
+                ReportKind = "error",
+                InputFingerprint = input.Value,
+                InputFingerprintStable = input.Stable,
+                ArtifactsComplete = false,
+                InputFingerprintMatches = false
+            }, monitorExitCode, recoveryAttempt);
         }
 
         string phase = StatusString(status, "Phase", "");
@@ -94,7 +126,75 @@ internal static partial class FrameScopeNativeMonitor
         }
 
         var result = RunReportGeneration(runDir, config);
-        return UpdateStatusAfterReportGeneration(runDir, status, result, monitorExitCode);
+        return UpdateStatusAfterReportGeneration(runDir, status, result, monitorExitCode, recoveryAttempt);
+    }
+
+    private static FrameScopeMonitorOwnerState ProbeRecoveryOwner(Dictionary<string, object> status)
+    {
+        return FrameScopeReportRecoveryPolicy.ProbeMonitorOwner(
+            StatusInt(status, "MonitorPid", 0),
+            StatusString(status, "MonitorProcessPath", ""),
+            StatusString(status, "MonitorStartedAtUtc", ""));
+    }
+
+    private static bool IsRecoveryCaptureActive(
+        Dictionary<string, object> status,
+        string phase,
+        FrameScopeMonitorOwnerState ownerState)
+    {
+        bool hasRecordedOwnerIdentity = FrameScopeReportRecoveryPolicy.HasRecordedMonitorOwnerIdentity(
+            StatusInt(status, "MonitorPid", 0),
+            StatusString(status, "MonitorProcessPath", ""),
+            StatusString(status, "MonitorStartedAtUtc", ""));
+        return FrameScopeReportRecoveryPolicy.IsRecoveryCaptureActive(phase, hasRecordedOwnerIdentity, ownerState);
+    }
+
+    private static Dictionary<string, object> MarkRecoveryAttemptStarted(string runDir, Dictionary<string, object> status)
+    {
+        var map = status != null
+            ? new Dictionary<string, object>(status, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        map["ReportRecoveryAttempts"] = StatusInt(map, "ReportRecoveryAttempts", 0) + 1;
+        map["ReportRecoveryExhausted"] = false;
+        map["ReportRecoveryLastAttemptAt"] = DateTime.Now.ToString("o", CultureInfo.InvariantCulture);
+        FrameScopeJsonFile.Write(Path.Combine(runDir, "status.json"), Json.Serialize(map));
+        return map;
+    }
+
+    private static void InvalidateRecoveryPublication(string runDir, Dictionary<string, object> status, string error)
+    {
+        try
+        {
+            string manifest = Path.Combine(runDir, "charts", FrameScopeReportArtifacts.ManifestFileName);
+            if (File.Exists(manifest)) File.Delete(manifest);
+        }
+        catch { }
+
+        Dictionary<string, object> current = ReadStatusDictionary(runDir) ?? status ?? new Dictionary<string, object>();
+        current["ReportArtifactsComplete"] = false;
+        current["ReportInputFingerprintMatches"] = false;
+        current["ReportCanRetry"] = true;
+        current["ReportError"] = error;
+        int attempts = StatusInt(current, "ReportRecoveryAttempts", 0);
+        current["ReportRecoveryExhausted"] = FrameScopeReportRecoveryPolicy.IsRecoveryExhausted(attempts, false);
+        FrameScopeJsonFile.Write(Path.Combine(runDir, "status.json"), Json.Serialize(current));
+
+        try
+        {
+            string summaryPath = Path.Combine(runDir, "summary.json");
+            Dictionary<string, object> summary = File.Exists(summaryPath)
+                ? Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(summaryPath, Encoding.UTF8))
+                : new Dictionary<string, object>();
+            if (summary == null) summary = new Dictionary<string, object>();
+            summary["ReportArtifactsComplete"] = false;
+            summary["ReportInputFingerprintMatches"] = false;
+            summary["ReportCanRetry"] = true;
+            summary["ReportError"] = error;
+            summary["ReportRecoveryAttempts"] = attempts;
+            summary["ReportRecoveryExhausted"] = current["ReportRecoveryExhausted"];
+            FrameScopeJsonFile.Write(summaryPath, Json.Serialize(summary));
+        }
+        catch { }
     }
 
     private static bool HasAnyMonitorCsv(string runDir)

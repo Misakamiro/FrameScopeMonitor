@@ -24,6 +24,8 @@ public static class FrameScopeMonitoringReliabilityTests
             CanonicalTargetKeyDistinguishesAliasSets();
             CanonicalTargetKeyHandlesEmptyInput();
             OverlappingAliasesCannotBeClaimedTwice();
+            ConcurrentRunDirectoryReservationsAreUnique();
+            RunDirectoryReservationsLeaveLegacyPathHeadroom();
             WatcherUsesCanonicalAliasIdentity();
             CaptureLoopUsesFullAliasLifetimePolicy();
             Console.WriteLine("FrameScopeMonitoringReliabilityTests: PASS");
@@ -291,6 +293,66 @@ public static class FrameScopeMonitoringReliabilityTests
         string editedKey = FrameScopeTargetLifecycle.CanonicalBaseNameTargetKey(new[] { "foo", "baz" });
         AssertNotEqual(oldKey, editedKey, "config edit changes exact-set key");
         AssertFalse(FrameScopeTargetLifecycle.CanClaimAliases(new[] { "foo", "baz" }, new[] { new[] { "foo" } }), "config edit cannot duplicate an existing alias claim");
+    }
+
+    private static void ConcurrentRunDirectoryReservationsAreUnique()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "framescope-run-reservation-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            DateTime timestamp = new DateTime(2026, 7, 11, 1, 2, 3, DateTimeKind.Local);
+            string first = FrameScopeTargetLifecycle.ReserveUniqueRunDirectory(root, "PUBG", timestamp, 4100, "same-nonce");
+            string second = FrameScopeTargetLifecycle.ReserveUniqueRunDirectory(root, "PUBG", timestamp, 4100, "same-nonce");
+
+            AssertNotEqual(first, second, "same-target same-second reservations must not share a directory");
+            AssertTrue(Directory.Exists(first), "first directory exists");
+            AssertTrue(Directory.Exists(second), "second directory exists");
+            AssertTrue(File.Exists(Path.Combine(first, ".framescope-run-owner")), "first atomic owner marker");
+            AssertTrue(File.Exists(Path.Combine(second, ".framescope-run-owner")), "second atomic owner marker");
+        }
+        finally
+        {
+            try { if (Directory.Exists(root)) Directory.Delete(root, true); }
+            catch { }
+        }
+    }
+
+    private static void RunDirectoryReservationsLeaveLegacyPathHeadroom()
+    {
+        string seed = Path.Combine(Path.GetTempPath(), "framescope-run-budget-" + Guid.NewGuid().ToString("N"));
+        int paddingLength = Math.Max(1, 130 - seed.Length - 1);
+        string root = Path.Combine(seed, new string('r', paddingLength));
+        try
+        {
+            string nonce = "0123456789abcdef0123456789abcdef";
+            string run = FrameScopeTargetLifecycle.ReserveUniqueRunDirectory(
+                root,
+                new string('P', 160),
+                new DateTime(2026, 7, 11, 1, 2, 3, DateTimeKind.Local),
+                4100,
+                nonce);
+
+            string deepestReportPath = Path.Combine(
+                run,
+                ".framescope-report-" + new string('0', 32),
+                "framescope-interactive-manifest.json");
+            AssertTrue(deepestReportPath.Length < 260, "run reservation must leave legacy report publication path headroom");
+            AssertTrue(Path.GetFileName(run).Contains("-p4100-"), "run reservation retains owner PID identity");
+            AssertTrue(Path.GetFileName(run).Contains("01234567"), "run reservation retains a nonce identity");
+
+            FrameScopeJsonFile.Write(Path.Combine(run, "status.json"), "{}");
+            AssertTrue(File.Exists(Path.Combine(run, "status.json")), "atomic status JSON write stays below the legacy path limit");
+
+            string staging = Path.GetDirectoryName(deepestReportPath);
+            Directory.CreateDirectory(staging);
+            FrameScopeJsonFile.Write(deepestReportPath, "{}");
+            AssertTrue(File.Exists(deepestReportPath), "atomic report manifest write stays below the legacy path limit");
+        }
+        finally
+        {
+            try { if (Directory.Exists(seed)) Directory.Delete(seed, true); }
+            catch { }
+        }
     }
 
     private static void WatcherUsesCanonicalAliasIdentity()

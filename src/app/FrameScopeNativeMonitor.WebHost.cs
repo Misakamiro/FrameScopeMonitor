@@ -287,7 +287,14 @@ internal static partial class FrameScopeNativeMonitor
                 var status = ReadStatusDictionary(runDir);
                 var result = RunReportGeneration(runDir, config);
                 UpdateStatusAfterReportGeneration(runDir, status, result, StatusInt(status, "ExitCode", 0));
-                if (result.ExitCode != 0)
+                FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(runDir);
+                bool generationSucceeded = FrameScopeReportRecoveryPolicy.IsGenerationSuccessful(
+                    result.TimedOut,
+                    result.ExitCode,
+                    result.CanRetry,
+                    artifacts.IsComplete,
+                    artifacts.InputFingerprintMatches && result.InputFingerprintStable);
+                if (!generationSucceeded)
                 {
                     return FrameScopeWebBridgeHostResult.Failure("report_regenerate_failed", result.Error ?? "Report generation failed.", BuildReportGenerationPayload(result));
                 }

@@ -30,7 +30,8 @@ internal static partial class FrameScopeNativeMonitor
                     SizeBytes = DirectorySize(directory.FullName),
                     ReportComplete = artifacts.IsComplete,
                     HasUsableMonitorData = FrameScopeReportArtifacts.HasUsableMonitorData(directory.FullName),
-                    ReportGenerationInProgress = IsReportGenerationInProgress(status)
+                    ReportGenerationInProgress = IsReportGenerationInProgress(status),
+                    RecoveryExhausted = StatusBool(status, "ReportRecoveryExhausted", false)
                 });
             }
 
