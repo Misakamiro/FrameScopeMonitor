@@ -134,6 +134,16 @@ Start-Sleep -Seconds 4
         catch { $exitFailure = $_ }
         Assert-True ($null -ne $exitFailure) 'nonzero child exit did not fail its check.'
         Assert-Equal 37 $script:results[0].exitCode 'real child exit code'
+
+        $script:results = New-Object Collections.ArrayList
+        Invoke-Check -Name 'contract-text-output' -TimeoutSeconds 5 -Action {
+            Invoke-External -FilePath (Get-Command powershell.exe).Source -Arguments @(
+                '-NoProfile', '-Command', "[Console]::WriteLine('plain-output')"
+            )
+        } 6>$null
+        $textOutputLog = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $tempRoot 'contract-text-output.log')
+        Assert-True ($textOutputLog -match 'plain-output') 'successful child output was not captured.'
+        Assert-True ($textOutputLog -notmatch '#< CLIXML') ('successful child output was polluted by CLIXML metadata: ' + $textOutputLog.Trim())
     }
     finally {
         if ($descendantPid -gt 0) { Stop-Process -Id $descendantPid -Force -ErrorAction SilentlyContinue }

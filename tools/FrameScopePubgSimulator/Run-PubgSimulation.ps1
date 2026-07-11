@@ -85,7 +85,7 @@ if (-not (Test-Path -LiteralPath $csc)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
-    $OutputRoot = Join-Path $root ("artifacts\pubg-simulator\" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + "-" + $Scenario)
+    $OutputRoot = Join-Path $root ("artifacts\ps\" + (Get-Date -Format 'yyyyMMddHHmmssfff') + "-" + $Scenario)
 }
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 if ([string]::IsNullOrWhiteSpace($OwnershipPath)) {
@@ -206,8 +206,8 @@ try {
     $statusPath = Join-Path $runDir.FullName 'status.json'
     $summaryPath = Join-Path $runDir.FullName 'summary.json'
     $manifestPath = Join-Path $runDir.FullName 'charts\framescope-interactive-manifest.json'
-    $status = Get-Content -Raw -LiteralPath $statusPath | ConvertFrom-Json
-    $summary = Get-Content -Raw -LiteralPath $summaryPath | ConvertFrom-Json
+    $status = Get-Content -Raw -Encoding UTF8 -LiteralPath $statusPath | ConvertFrom-Json
+    $summary = Get-Content -Raw -Encoding UTF8 -LiteralPath $summaryPath | ConvertFrom-Json
     $manifestText = Get-Content -Raw -LiteralPath $manifestPath
     $manifestFramesMatch = [regex]::Match($manifestText, '"frames"\s*:\s*(\d+)')
     $manifestHasFrameDataMatch = [regex]::Match($manifestText, '"hasFrameData"\s*:\s*(true|false)')

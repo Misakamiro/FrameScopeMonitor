@@ -247,7 +247,8 @@ function Set-ProcessTimeoutEvidence {
 function Write-AvailableProcessOutput {
     param([IO.StreamReader]$Reader)
     while ($null -ne $Reader -and $Reader.Peek() -ge 0) {
-        $Reader.ReadLine()
+        $line = $Reader.ReadLine()
+        if (-not [string]::Equals($line, '#< CLIXML', [StringComparison]::Ordinal)) { $line }
     }
 }
 
@@ -281,10 +282,16 @@ function Invoke-External {
         throw "Verification $($timeout.Scope) timeout after $($timeout.Seconds)s before starting $FilePath in '$($script:CurrentCheckName)'."
     }
 
+    $effectiveArguments = @($Arguments)
+    if ([string]::Equals([IO.Path]::GetFileName($FilePath), 'powershell.exe', [StringComparison]::OrdinalIgnoreCase) -and
+        -not @($effectiveArguments | Where-Object { [string]$_ -ieq '-OutputFormat' }).Count) {
+        $effectiveArguments = @('-OutputFormat', 'Text') + $effectiveArguments
+    }
+
     $exitCodePath = Join-Path $checksRoot ('process-' + [guid]::NewGuid().ToString('N') + '.exitcode')
     $payload = [ordered]@{
         filePath = $FilePath
-        arguments = @($Arguments)
+        arguments = $effectiveArguments
         workingDirectory = $WorkingDirectory
         exitCodePath = $exitCodePath
     }
@@ -326,7 +333,7 @@ exit `$childExitCode
     $stderrBuffer = New-Object Collections.Generic.List[string]
     try {
         $process = Start-Process -FilePath (Get-Command powershell.exe -ErrorAction Stop).Source `
-            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedWrapper) `
+            -ArgumentList @('-NoProfile', '-OutputFormat', 'Text', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedWrapper) `
             -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
         $stdoutReader = New-Object IO.StreamReader([IO.File]::Open($stdoutPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
