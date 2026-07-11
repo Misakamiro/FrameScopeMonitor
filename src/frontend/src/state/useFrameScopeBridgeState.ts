@@ -155,6 +155,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
 
   const latestProcessRequestId = useRef("");
   const latestMonitorRequestId = useRef("");
+  const completedMonitorRequestId = useRef("");
   const monitorRuntimeOverrideUntil = useRef(0);
   const latestDiagnosticsRequestId = useRef("");
   const reportRequestMap = useRef(new Map<string, { kind: ReportOperationKind; reportId: string }>());
@@ -536,6 +537,10 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       const accepted = await adapter.request<MonitorActionAcceptedPayload>("monitor.start", {}, { timeoutMs: 10000 });
       monitorRuntimeOverrideUntil.current = Date.now() + 15000;
       latestMonitorRequestId.current = accepted.requestId;
+      if (completedMonitorRequestId.current === accepted.requestId) {
+        scheduleImmediateSnapshotRefresh();
+        return;
+      }
       setMonitorAction({
         status: "loading",
         message: accepted.message,
@@ -579,6 +584,10 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
     try {
       const accepted = await adapter.request<MonitorActionAcceptedPayload>("monitor.stop", {}, { timeoutMs: 10000 });
       latestMonitorRequestId.current = accepted.requestId;
+      if (completedMonitorRequestId.current === accepted.requestId) {
+        scheduleImmediateSnapshotRefresh();
+        return;
+      }
       setMonitorAction({
         status: "loading",
         message: accepted.message,
@@ -850,6 +859,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       }
 
       if (payload.status === "monitor.started") {
+        completedMonitorRequestId.current = payload.requestId || "";
         monitorRuntimeOverrideUntil.current = Date.now() + 15000;
         clearMonitorEventTimeout();
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
@@ -870,6 +880,7 @@ export function useFrameScopeBridgeState(adapterOverride?: FrameScopeBridgeAdapt
       }
 
       if (payload.status === "monitor.stopped") {
+        completedMonitorRequestId.current = payload.requestId || "";
         monitorRuntimeOverrideUntil.current = 0;
         clearMonitorEventTimeout();
         latestMonitorRequestId.current = payload.requestId || latestMonitorRequestId.current;
