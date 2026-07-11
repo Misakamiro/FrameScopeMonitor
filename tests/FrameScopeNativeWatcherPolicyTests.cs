@@ -12,6 +12,7 @@ public static class FrameScopeNativeWatcherPolicyTests
             WatcherLoopUsesFixedInternalPollInterval();
             WatcherStartArgumentsKeepSamplerIntervalsSeparateFromPollInterval();
             WorkerProcessRoleIsVisibleInSources();
+            WatcherPublishesRunningStateBeforeRecoveryAndBlocksDuplicateStarts();
             Console.WriteLine("FrameScopeNativeWatcherPolicyTests: PASS");
             return 0;
         }
@@ -73,6 +74,17 @@ public static class FrameScopeNativeWatcherPolicyTests
         AssertContains(cleanupSource, "commandLower.Contains(\"--watcher\") || commandLower.Contains(\"--monitor-session\")", "stop policy should include watcher and monitor-session workers");
     }
 
+    private static void WatcherPublishesRunningStateBeforeRecoveryAndBlocksDuplicateStarts()
+    {
+        string watcherSource = ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
+        string webHostSource = ReadSource("src", "app", "FrameScopeNativeMonitor.WebHost.cs");
+        int initialStateWrite = watcherSource.IndexOf("WriteNativeWatcherState(configPath, \"starting\"", StringComparison.Ordinal);
+        int recovery = watcherSource.IndexOf("RecoverStaleMissingReports(dataRoot, config)", StringComparison.Ordinal);
+
+        AssertTrue(initialStateWrite >= 0 && initialStateWrite < recovery, "watcher must publish PID before stale report recovery");
+        AssertContains(webHostSource, "HasFrameScopeBackgroundProcesses()", "start action must detect watcher processes before state file exists");
+    }
+
     private static string ReadWatcherSource()
     {
         return ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
@@ -111,6 +123,11 @@ public static class FrameScopeNativeWatcherPolicyTests
         {
             throw new Exception(label + ": unexpected <" + unexpected + ">");
         }
+    }
+
+    private static void AssertTrue(bool value, string label)
+    {
+        if (!value) throw new Exception(label);
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)

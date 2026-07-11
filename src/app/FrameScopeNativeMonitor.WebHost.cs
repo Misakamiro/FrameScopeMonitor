@@ -78,7 +78,7 @@ internal static partial class FrameScopeNativeMonitor
                 FrameScopeConfigStore.Save(ConfigPath, config);
 
                 int existingPid;
-                if (IsWatcherRunning(out existingPid))
+                if (IsWatcherRunning(out existingPid) || HasFrameScopeBackgroundProcesses())
                 {
                     return FrameScopeWebBridgeHostResult.Success(
                         "monitor.started",

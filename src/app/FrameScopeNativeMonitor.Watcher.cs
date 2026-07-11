@@ -48,6 +48,7 @@ internal static partial class FrameScopeNativeMonitor
         var lastRetentionCleanup = DateTime.MinValue;
 
         WriteFrameScopeLog("native-watcher-start config=" + configPath);
+        WriteNativeWatcherState(configPath, "starting", activeMonitors, completedRuns, lastReport);
 
         while (true)
         {
