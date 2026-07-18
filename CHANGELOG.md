@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## 2026-07-18 - FrameScope Monitor v1.2.1 安装包更新
+
+### 用户可见修复
+
+- 修复“启动监测”需要重复点击的问题：watcher 启动后立即写入运行状态，界面不会被旧报告恢复过程覆盖为“未启动”。
+- 增加重复 worker 防护：监测 worker 已存在时不会再次启动多个 worker。
+- 修复报告列表打开旧版 HTML 报告失败的问题；旧报告可以打开，新报告继续执行完整 artifact 校验。
+
+### 稳定性与打包
+
+- 强化报告恢复、运行目录保留、报告 manifest、进程生命周期和验证过程边界。
+- 强化安装器 payload、版本、路径、ZIP 条目和打包一致性检查。
+- 前端 bridge、模拟器和大列表探针改为确定性运行，失败时输出更明确的诊断信息。
+
+### 项目边界
+
+- 移除 FrameScope 仓库内遗留的 GameLite 兼容脚本入口。
+- FrameScope 不再依赖独立 GameLite 项目路径，也不包含 GameLite WMI 执行逻辑。
+- 清理历史内部报告、协作记录和过期计划；保留当前用户需要的项目说明、模块文档和验证说明。
+
+### 验证
+
+- 前端测试：72/72 PASS。
+- GameLite 分离、当前文档、build contract、package parity：PASS。
+- 本地安装包与构建 payload 哈希一致。
+
 ## 2026-06-14 - FrameScope Monitor v1.2 发布窗口
 
 ### 用户可见变化
