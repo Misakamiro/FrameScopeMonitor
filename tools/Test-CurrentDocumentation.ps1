@@ -21,16 +21,6 @@ $rootRepoPathAllowlist = @(
     'README.md',
     'CHANGELOG.md',
     '.gitignore',
-    'Install-GameLiteAutoTrigger.ps1',
-    'Check-GameLiteAutoTrigger.ps1',
-    'Remove-GameLiteAutoTrigger.ps1',
-    'GameLiteSession.ps1',
-    'Enter-GameLite.ps1',
-    'Exit-GameLite.ps1',
-    'Invoke-GameLiteSGuardThrottle.ps1',
-    'Install-GameLiteAutoTrigger.cmd',
-    'Check-GameLiteAutoTrigger.cmd',
-    'Remove-GameLiteAutoTrigger.cmd',
     'Uninstall-FrameScopeMonitor.cmd'
 )
 

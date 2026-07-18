@@ -612,11 +612,9 @@ try {
         Invoke-External -FilePath $nodeExe -Arguments @((Join-Path $root 'tests\chart-sampling-tests.js'))
     }
     Invoke-Check -Name 'lightweight-separation' -Action {
-        $gameLiteRoot = Join-Path (Split-Path -Parent $originalRoot) 'gamelite-auto-lightweight'
         Invoke-External -FilePath $powershellExe -Arguments @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass',
-            '-File', (Join-Path $root 'tests\lightweight-separation-tests.ps1'),
-            '-StandaloneProjectRoot', $gameLiteRoot
+            '-File', (Join-Path $root 'tests\lightweight-separation-tests.ps1')
         )
     }
     Invoke-Check -Name 'render-probe-build' -Action {
