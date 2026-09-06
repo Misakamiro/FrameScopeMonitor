@@ -120,6 +120,26 @@ internal static class FrameScopeHardwareProvider
             }
             catch { continue; }
             if (cmd == "exit") break;
+            if (cmd == "static")
+            {
+                // Full WMI static info: expensive, quasi-constant — cache it.
+                if (_staticCache == null || (DateTime.UtcNow - _staticCacheAt).TotalSeconds > 30)
+                {
+                    List<string> staticErrors = new List<string>();
+                    Dictionary<string, object> hardware = BuildStaticFull(staticErrors);
+                    _staticCache = hardware.Count > 0 ? hardware : null;
+                    _staticCacheErrors = staticErrors.ToArray();
+                    _staticCacheAt = DateTime.UtcNow;
+                }
+                var staticPayload = new Dictionary<string, object>
+                {
+                    { "capturedAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) },
+                    { "staticFull", _staticCache },
+                    { "errors", _staticCacheErrors }
+                };
+                stdout.WriteLine(Json.Serialize(staticPayload));
+                continue;
+            }
             if (cmd != "read") continue;
 
             sequence++;
@@ -221,6 +241,442 @@ internal static class FrameScopeHardwareProvider
             });
         }
         foreach (object child in Enumerate(Get(hardware, "SubHardware"))) ReadHardware(child, output, hw);
+    }
+
+    private static Dictionary<string, object> _staticCache;
+    private static string[] _staticCacheErrors = new string[0];
+    private static DateTime _staticCacheAt = DateTime.MinValue;
+
+    private static string WmiGet(System.Management.ManagementObject o, string p)
+    {
+        try { return StringValue(o[p]); } catch { return ""; }
+    }
+
+    private static double? WmiGetDouble(System.Management.ManagementObject o, string p)
+    {
+        try { if (o[p] == null) return null; return Convert.ToDouble(o[p], CultureInfo.InvariantCulture); } catch { return null; }
+    }
+
+    private static string WmiFriendlyDate(object value)
+    {
+        try { return System.Management.ManagementDateTimeConverter.ToDateTime(StringValue(value)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture); } catch { return ""; }
+    }
+
+    private static double RegistryGpuMemoryBytes(string pnpDeviceId, string gpuName)
+    {
+        // AdapterRAM (uint32) overflows for cards with >4GB; the display-class
+        // registry key carries the true 64-bit HardwareInformation.qwMemorySize.
+        // MatchingDeviceId values vary (some lack the instance path), so match
+        // by DriverDesc first, then by the device-id prefix.
+        try
+        {
+            string baseKey = @"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
+            using (var root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(baseKey))
+            {
+                if (root == null) return 0;
+                foreach (string sub in root.GetSubKeyNames())
+                {
+                    using (var key = root.OpenSubKey(sub))
+                    {
+                        if (key == null) continue;
+                        object rawSize = key.GetValue("HardwareInformation.qwMemorySize");
+                        if (rawSize == null) continue;
+                        string driverDesc = Convert.ToString(key.GetValue("DriverDesc"), CultureInfo.InvariantCulture) ?? "";
+                        string matchingId = Convert.ToString(key.GetValue("MatchingDeviceId"), CultureInfo.InvariantCulture) ?? "";
+                        bool descMatch = !String.IsNullOrWhiteSpace(gpuName) && driverDesc.Equals(gpuName, StringComparison.OrdinalIgnoreCase);
+                        bool idMatch = !String.IsNullOrWhiteSpace(pnpDeviceId) && pnpDeviceId.StartsWith(matchingId, StringComparison.OrdinalIgnoreCase);
+                        if (!descMatch && !idMatch) continue;
+                        double parsedSize;
+                        if (rawSize is long) return (long)rawSize;
+                        if (rawSize is int) return (int)rawSize;
+                        if (Double.TryParse(StringValue(rawSize), NumberStyles.Float, CultureInfo.InvariantCulture, out parsedSize)) return parsedSize;
+                    }
+                }
+            }
+        }
+        catch { }
+        return 0;
+    }
+
+    private static string GpuVendorFor(string adapterCompatibility)
+    {
+        string value = adapterCompatibility ?? "";
+        if (value.IndexOf("NVIDIA", StringComparison.OrdinalIgnoreCase) >= 0) return "NVIDIA";
+        if (value.IndexOf("Advanced Micro", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("ATI", StringComparison.OrdinalIgnoreCase) >= 0) return "AMD";
+        if (value.IndexOf("Intel", StringComparison.OrdinalIgnoreCase) >= 0) return "Intel";
+        return "Unknown";
+    }
+
+    private static string[] WmiStringArray(System.Management.ManagementObject o, string p)
+    {
+        try
+        {
+            object raw = o[p];
+            if (raw is System.Collections.IEnumerable && !(raw is string))
+            {
+                List<string> result = new List<string>();
+                foreach (object item in (System.Collections.IEnumerable)raw) result.Add(StringValue(item));
+                return result.ToArray();
+            }
+        }
+        catch { }
+        return new string[0];
+    }
+
+    /// Full frontend-facing static hardware info (snake_case contract shared
+    /// with the NexBox-derived UI). Every field degrades to null/"" on its own.
+    private static Dictionary<string, object> BuildStaticFull(List<string> errors)
+    {
+        var cpu = new Dictionary<string, object>();
+        var gpus = new List<object>();
+        var memory = new List<object>();
+        var disks = new List<object>();
+        var soundCards = new List<object>();
+        var networkCards = new List<object>();
+        var monitors = new List<object>();
+        var motherboard = new Dictionary<string, object>();
+
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_Processor"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    double? architecture = WmiGetDouble(o, "Architecture");
+                    string archText = architecture.HasValue
+                        ? (architecture.Value == 9 ? "x64" : architecture.Value == 0 ? "x86" : architecture.Value == 12 ? "ARM64" : architecture.Value == 6 ? "Itanium" : architecture.Value.ToString(CultureInfo.InvariantCulture))
+                        : "";
+                    cpu["name"] = WmiGet(o, "Name");
+                    cpu["manufacturer"] = WmiGet(o, "Manufacturer");
+                    cpu["cores"] = WmiGetDouble(o, "NumberOfCores") ?? 0;
+                    cpu["threads"] = WmiGetDouble(o, "NumberOfLogicalProcessors") ?? 0;
+                    cpu["max_clock_speed"] = WmiGetDouble(o, "MaxClockSpeed") ?? 0;
+                    cpu["l2_cache_size"] = WmiGetDouble(o, "L2CacheSize") ?? 0;
+                    cpu["l3_cache_size"] = WmiGetDouble(o, "L3CacheSize") ?? 0;
+                    cpu["load_percentage"] = WmiGetDouble(o, "LoadPercentage");
+                    cpu["architecture"] = archText;
+                    cpu["socket"] = WmiGet(o, "SocketDesignation");
+                    cpu["l2_cache_speed"] = WmiGetDouble(o, "L2CacheSpeed");
+                    cpu["l3_cache_speed"] = WmiGetDouble(o, "L3CacheSpeed");
+                    cpu["current_clock_speed"] = WmiGetDouble(o, "CurrentClockSpeed");
+                    cpu["ext_clock"] = WmiGetDouble(o, "ExtClock");
+                    cpu["processor_id"] = WmiGet(o, "ProcessorId");
+                    cpu["family"] = WmiGetDouble(o, "Family");
+                    cpu["stepping"] = WmiGet(o, "Stepping");
+                    cpu["revision"] = WmiGet(o, "Revision");
+                    cpu["enabled_cores"] = WmiGetDouble(o, "NumberOfEnabledCore");
+                    double? voltageCaps = WmiGetDouble(o, "VoltageCaps");
+                    cpu["voltage_caps"] = voltageCaps.HasValue && voltageCaps.Value != 0 ? voltageCaps.Value.ToString(CultureInfo.InvariantCulture) : (object)"";
+                    break; // one physical CPU entry is enough for the UI
+                }
+            }
+        }
+        catch (Exception ex) { errors.Add("Win32_Processor failed: " + RootMessage(ex)); }
+        if (cpu.Count == 0) { foreach (string key in new[] { "name", "manufacturer", "architecture", "socket", "processor_id", "stepping", "revision" }) cpu[key] = ""; }
+
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_VideoController"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    double? ram = WmiGetDouble(o, "AdapterRAM");
+                    string gpuName = WmiGet(o, "Name");
+                    double registryBytes = RegistryGpuMemoryBytes(WmiGet(o, "PNPDeviceID"), gpuName);
+                    if (registryBytes > 0) ram = registryBytes;
+                    double? memoryGb = ram.HasValue && ram.Value > 0 ? Math.Round(ram.Value / 1073741824.0, 1) : (double?)null;
+                    double? width = WmiGetDouble(o, "CurrentHorizontalResolution");
+                    double? height = WmiGetDouble(o, "CurrentVerticalResolution");
+                    double? refresh = WmiGetDouble(o, "CurrentRefreshRate");
+                    double? memoryType = WmiGetDouble(o, "VideoMemoryType");
+                    double? architectureCode = WmiGetDouble(o, "VideoArchitecture");
+                    gpus.Add(new Dictionary<string, object>
+                    {
+                        { "name", WmiGet(o, "Name") },
+                        { "vendor", GpuVendorFor(WmiGet(o, "AdapterCompatibility")) },
+                        { "memory_gb", memoryGb },
+                        { "driver_version", WmiGet(o, "DriverVersion") },
+                        { "temperature", (object)null },
+                        { "usage", (object)null },
+                        { "video_processor", WmiGet(o, "VideoProcessor") },
+                        { "adapter_compatibility", WmiGet(o, "AdapterCompatibility") },
+                        { "driver_date", WmiFriendlyDate(o["DriverDate"]) },
+                        { "installed_drivers", WmiGet(o, "InstalledDisplayDrivers") },
+                        { "video_mode", WmiGet(o, "VideoModeDescription") },
+                        { "resolution_width", width },
+                        { "resolution_height", height },
+                        { "refresh_rate", refresh },
+                        { "device_id", WmiGet(o, "DeviceID") },
+                        { "pnp_device_id", WmiGet(o, "PNPDeviceID") },
+                        { "status", WmiGet(o, "Status") },
+                        { "inf_filename", WmiGet(o, "InfFilename") },
+                        { "video_architecture", architectureCode.HasValue ? architectureCode.Value.ToString(CultureInfo.InvariantCulture) : (object)null },
+                        { "video_memory_type", memoryType.HasValue ? memoryType.Value.ToString(CultureInfo.InvariantCulture) : (object)null }
+                    });
+                }
+            }
+        }
+        catch (Exception ex) { errors.Add("Win32_VideoController failed: " + RootMessage(ex)); }
+
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_PhysicalMemory"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    double? capacity = WmiGetDouble(o, "Capacity");
+                    double? smbiosType = WmiGetDouble(o, "SMBIOSMemoryType");
+                    double? formFactor = WmiGetDouble(o, "FormFactor");
+                    string formFactorText = formFactor.HasValue ? (formFactor.Value == 8 ? "DIMM" : formFactor.Value == 12 ? "SODIMM" : formFactor.Value.ToString(CultureInfo.InvariantCulture)) : "";
+                    string memoryTypeText = smbiosType.HasValue
+                        ? (smbiosType.Value == 20 ? "DDR" : smbiosType.Value == 21 ? "DDR2" : smbiosType.Value == 24 ? "DDR3" : smbiosType.Value == 26 ? "DDR4" : smbiosType.Value == 34 ? "DDR5" : smbiosType.Value.ToString(CultureInfo.InvariantCulture))
+                        : "";
+                    memory.Add(new Dictionary<string, object>
+                    {
+                        { "manufacturer", WmiGet(o, "Manufacturer") },
+                        { "part_number", WmiGet(o, "PartNumber").Trim('\0').Trim() },
+                        { "capacity_gb", capacity.HasValue ? Math.Round(capacity.Value / 1073741824.0, 1) : 0 },
+                        { "speed_mhz", WmiGetDouble(o, "Speed") ?? 0 },
+                        { "bank_label", WmiGet(o, "BankLabel") },
+                        { "form_factor", formFactorText },
+                        { "memory_type", memoryTypeText },
+                        { "configured_clock_speed", WmiGetDouble(o, "ConfiguredClockSpeed") },
+                        { "configured_voltage", WmiGetDouble(o, "ConfiguredVoltage") },
+                        { "data_width", WmiGetDouble(o, "DataWidth") },
+                        { "total_width", WmiGetDouble(o, "TotalWidth") },
+                        { "serial_number", WmiGet(o, "SerialNumber") },
+                        { "type_detail", WmiGet(o, "TypeDetail") }
+                    });
+                }
+            }
+        }
+        catch (Exception ex) { errors.Add("Win32_PhysicalMemory failed: " + RootMessage(ex)); }
+
+        try
+        {
+            string baseboardProduct = "", baseboardManufacturer = "", baseboardSerial = "", baseboardVersion = "";
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_BaseBoard"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    baseboardProduct = WmiGet(o, "Product");
+                    baseboardManufacturer = WmiGet(o, "Manufacturer");
+                    baseboardSerial = WmiGet(o, "SerialNumber");
+                    baseboardVersion = WmiGet(o, "Version");
+                    break;
+                }
+            }
+            string biosVendor = "", biosVersion = "", biosDate = "";
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_BIOS"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    biosVendor = WmiGet(o, "Manufacturer");
+                    biosVersion = WmiGet(o, "SMBIOSBIOSVersion");
+                    biosDate = WmiFriendlyDate(o["ReleaseDate"]);
+                    break;
+                }
+            }
+            string systemManufacturer = "", systemModel = "", systemType = "";
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_ComputerSystem"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    systemManufacturer = WmiGet(o, "Manufacturer");
+                    systemModel = WmiGet(o, "Model");
+                    systemType = WmiGet(o, "SystemType");
+                    break;
+                }
+            }
+            string chassisType = "";
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_SystemEnclosure"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    string[] chassisTypes = WmiStringArray(o, "ChassisTypes");
+                    if (chassisTypes.Length > 0)
+                    {
+                        double code = 0;
+                        if (Double.TryParse(chassisTypes[0], NumberStyles.Float, CultureInfo.InvariantCulture, out code))
+                            chassisType = code == 3 || code == 4 || code == 6 || code == 7 ? "Desktop" : code == 8 || code == 9 || code == 10 || code == 14 ? "Laptop" : code == 31 || code == 32 ? "Convertible" : chassisTypes[0];
+                    }
+                    break;
+                }
+            }
+            motherboard["product"] = baseboardProduct;
+            motherboard["manufacturer"] = baseboardManufacturer;
+            motherboard["serial_number"] = baseboardSerial;
+            motherboard["version"] = baseboardVersion;
+            motherboard["bios_vendor"] = biosVendor;
+            motherboard["bios_version"] = biosVersion;
+            motherboard["bios_release_date"] = biosDate;
+            motherboard["system_manufacturer"] = systemManufacturer;
+            motherboard["system_model"] = systemModel;
+            motherboard["system_type"] = systemType;
+            motherboard["chassis_type"] = chassisType;
+        }
+        catch (Exception ex) { errors.Add("motherboard info failed: " + RootMessage(ex)); }
+
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_DiskDrive"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    double? size = WmiGetDouble(o, "Size");
+                    double? bytesPerSector = WmiGetDouble(o, "BytesPerSector");
+                    string model = WmiGet(o, "Model");
+                    string mediaType = WmiGet(o, "MediaType");
+                    bool isSsd = mediaType.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0
+                        || model.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0
+                        || model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0;
+                    disks.Add(new Dictionary<string, object>
+                    {
+                        { "model", model },
+                        { "size_gb", size.HasValue ? Math.Round(size.Value / 1073741824.0, 1) : 0 },
+                        { "interface_type", WmiGet(o, "InterfaceType") },
+                        { "serial_number", WmiGet(o, "SerialNumber") },
+                        { "firmware_revision", WmiGet(o, "FirmwareRevision") },
+                        { "media_type", mediaType },
+                        { "bytes_per_sector", bytesPerSector },
+                        { "partitions", WmiGetDouble(o, "Partitions") ?? 0 },
+                        { "status", WmiGet(o, "Status") },
+                        { "is_ssd", isSsd }
+                    });
+                }
+            }
+        }
+        catch (Exception ex) { errors.Add("Win32_DiskDrive failed: " + RootMessage(ex)); }
+
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_SoundDevice"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    soundCards.Add(new Dictionary<string, object>
+                    {
+                        { "name", WmiGet(o, "Name") },
+                        { "manufacturer", WmiGet(o, "Manufacturer") },
+                        { "status", WmiGet(o, "Status") },
+                        { "device_id", WmiGet(o, "DeviceID") },
+                        { "pnp_device_id", WmiGet(o, "PNPDeviceID") }
+                    });
+                }
+            }
+        }
+        catch (Exception ex) { errors.Add("Win32_SoundDevice failed: " + RootMessage(ex)); }
+
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_NetworkAdapter"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    object physical = null;
+                    try { physical = o["Physical"]; } catch { }
+                    string connectionName = WmiGet(o, "NetConnectionID");
+                    string adapterName = WmiGet(o, "Name");
+                    // Some systems report Physical=false for every adapter
+                    // (virtualized NICs); fall back to connected, non-miniport
+                    // adapters so real hardware is not hidden.
+                    bool isPhysical = physical is bool && (bool)physical;
+                    bool looksReal = connectionName.Length > 0 && adapterName.IndexOf("Miniport", StringComparison.OrdinalIgnoreCase) < 0;
+                    if (!isPhysical && !looksReal) continue;
+                    double? speed = WmiGetDouble(o, "Speed");
+                    // WMI reports unknown link speed as the int64 sentinel.
+                    double? speedMbps = speed.HasValue && speed.Value > 0 && speed.Value < 1e15 ? Math.Round(speed.Value / 1000000.0) : (double?)null;
+                    networkCards.Add(new Dictionary<string, object>
+                    {
+                        { "name", WmiGet(o, "Name") },
+                        { "manufacturer", WmiGet(o, "Manufacturer") },
+                        { "adapter_type", WmiGet(o, "AdapterType") },
+                        { "mac_address", WmiGet(o, "MACAddress") },
+                        { "speed_mbps", speedMbps ?? 0 },
+                        { "connection_name", WmiGet(o, "NetConnectionID") },
+                        { "service_name", WmiGet(o, "ServiceName") },
+                        { "index", WmiGetDouble(o, "Index") ?? 0 },
+                        { "max_speed", (object)null },
+                        { "guid", WmiGet(o, "GUID") }
+                    });
+                }
+            }
+        }
+        catch (Exception ex) { errors.Add("Win32_NetworkAdapter failed: " + RootMessage(ex)); }
+
+        try
+        {
+            // Monitor identity from WmiMonitorID (root\wmi), mode from the
+            // active video controller. Friendly names arrive as ushort arrays.
+            var monitorNames = new List<Tuple<string, string, string>>();
+            using (var searcher = new System.Management.ManagementObjectSearcher("root\\wmi", "SELECT * FROM WmiMonitorID"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    monitorNames.Add(Tuple.Create(DecodeMonitorId(o["UserFriendlyName"]), DecodeMonitorId(o["ManufacturerName"]), WmiGet(o, "InstanceName")));
+                }
+            }
+            var videoModes = new List<Tuple<double?, double?, double?>>();
+            using (var searcher = new System.Management.ManagementObjectSearcher("SELECT CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate FROM Win32_VideoController"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject o in results)
+                {
+                    videoModes.Add(Tuple.Create(WmiGetDouble(o, "CurrentHorizontalResolution"), WmiGetDouble(o, "CurrentVerticalResolution"), WmiGetDouble(o, "CurrentRefreshRate")));
+                }
+            }
+            for (int i = 0; i < monitorNames.Count; i++)
+            {
+                Tuple<double?, double?, double?> mode = videoModes.Count > 0 ? videoModes[Math.Min(i, videoModes.Count - 1)] : Tuple.Create<double?, double?, double?>(null, null, null);
+                monitors.Add(new Dictionary<string, object>
+                {
+                    { "name", monitorNames[i].Item1.Length > 0 ? monitorNames[i].Item1 : monitorNames[i].Item2 },
+                    { "manufacturer", monitorNames[i].Item2 },
+                    { "screen_width", mode.Item1 },
+                    { "screen_height", mode.Item2 },
+                    { "refresh_rate", mode.Item3 },
+                    { "pnp_device_id", monitorNames[i].Item3 },
+                    { "status", "" },
+                    { "availability", (object)null }
+                });
+            }
+        }
+        catch (Exception ex) { errors.Add("monitor info failed: " + RootMessage(ex)); }
+
+        return new Dictionary<string, object>
+        {
+            { "cpu", cpu }, { "gpu", gpus.ToArray() }, { "memory", memory.ToArray() },
+            { "motherboard", motherboard }, { "disk", disks.ToArray() }, { "sound_card", soundCards.ToArray() },
+            { "network_card", networkCards.ToArray() }, { "monitor", monitors.ToArray() }
+        };
+    }
+
+    private static string DecodeMonitorId(object value)
+    {
+        try
+        {
+            if (!(value is System.Collections.IEnumerable) || value is string) return "";
+            var bytes = new List<byte>();
+            foreach (object item in (System.Collections.IEnumerable)value)
+            {
+                ushort code = Convert.ToUInt16(item, CultureInfo.InvariantCulture);
+                if (code == 0) break;
+                bytes.Add((byte)code);
+            }
+            return Encoding.ASCII.GetString(bytes.ToArray()).Trim();
+        }
+        catch { return ""; }
     }
 
     private static Dictionary<string, object> BuildStatic(List<Reading> readings)

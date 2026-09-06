@@ -1,4 +1,5 @@
 pub mod overlay;
+pub mod ping;
 pub mod provider;
 
 use provider::ResidentProvider;
@@ -76,7 +77,7 @@ fn resident() -> &'static ResidentState {
 
 // Wired up by the resident ICMP thread (NexBox game_ping port).
 fn ping_sample() -> Option<u32> {
-    None
+    ping::last_ping()
 }
 
 // Wired up by the ETW FPS module (NexBox game_fps port).
@@ -337,10 +338,14 @@ fn static_hardware_response(state: &ServiceState) -> serde_json::Value {
     };
     match result {
         Ok(value) => {
-            let hardware = value
+            let mut hardware = value
                 .get("staticFull")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            if !hardware.is_null() {
+                let overlay = overlay_data_response(state);
+                merge_live_into_static(&mut hardware, &overlay);
+            }
             let errors = value
                 .get("errors")
                 .cloned()
@@ -361,6 +366,43 @@ fn static_hardware_response(state: &ServiceState) -> serde_json::Value {
             "hardware": null,
             "errors": [error]
         }),
+    }
+}
+
+/// The provider's static payload carries null live values; the UI expects the
+/// current GPU temperature/usage and CPU load inline, so overlay them in.
+fn merge_live_into_static(hardware: &mut serde_json::Value, overlay: &serde_json::Value) {
+    if let Some(obj) = hardware.as_object_mut() {
+        if let (Some(cpu), Some(usage)) = (
+            obj.get_mut("cpu").and_then(|v| v.as_object_mut()),
+            overlay.get("cpu_usage"),
+        ) {
+            if !usage.is_null() {
+                cpu.insert("load_percentage".into(), usage.clone());
+            }
+        }
+        if let Some(gpus) = obj.get_mut("gpu").and_then(|v| v.as_array_mut()) {
+            let sensors = overlay
+                .get("gpu_sensors")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for (index, gpu) in gpus.iter_mut().enumerate() {
+                let name = gpu.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let sensor = sensors
+                    .iter()
+                    .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))
+                    .or_else(|| sensors.get(index));
+                if let (Some(gpu_obj), Some(sensor)) = (gpu.as_object_mut(), sensor) {
+                    for key in ["temperature", "usage"] {
+                        let value = sensor.get(key).cloned().unwrap_or(serde_json::Value::Null);
+                        if !value.is_null() {
+                            gpu_obj.insert(key.to_string(), value);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
