@@ -70,11 +70,13 @@ function Get-NpmCliPath {
         return (Resolve-Path -LiteralPath $cachedCli).Path
     }
 
-    $nodeRoot = (Resolve-Path -LiteralPath (Join-Path (Split-Path -Parent $ResolvedNodeExe) '..') -ErrorAction SilentlyContinue)
-    if ($null -ne $nodeRoot) {
-        $bundledCli = Join-Path $nodeRoot.Path 'node_modules\npm\bin\npm-cli.js'
-        if (Test-Path -LiteralPath $bundledCli) {
-            return (Resolve-Path -LiteralPath $bundledCli).Path
+    $nodeDir = Split-Path -Parent $ResolvedNodeExe
+    foreach ($candidate in @(
+                (Join-Path $nodeDir 'node_modules\npm\bin\npm-cli.js'),
+                (Join-Path (Split-Path -Parent $nodeDir) 'node_modules\npm\bin\npm-cli.js')
+            )) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
 
