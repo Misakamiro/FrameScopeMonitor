@@ -1,10 +1,12 @@
+pub mod game_fps;
+pub mod optimization;
 pub mod overlay;
 pub mod ping;
 pub mod provider;
 
 use provider::ResidentProvider;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -80,9 +82,20 @@ fn ping_sample() -> Option<u32> {
     ping::last_ping()
 }
 
-// Wired up by the ETW FPS module (NexBox game_fps port).
+// The ETW FPS monitor (NexBox game_fps port) starts lazily on the first
+// overlay request; without admin rights the session start fails and the
+// values stay null (fail-closed).
+static FPS_STARTED: AtomicBool = AtomicBool::new(false);
+
 fn fps_sample() -> (Option<f64>, Option<f64>, Option<f64>) {
-    (None, None, None)
+    if !FPS_STARTED.swap(true, Ordering::SeqCst) {
+        game_fps::start_fps_monitor();
+    }
+    (
+        game_fps::get_cached_fps().map(f64::from),
+        game_fps::get_cached_1low_fps().map(f64::from),
+        game_fps::get_cached_01low_fps().map(f64::from),
+    )
 }
 
 pub fn dispatch(request: Request) -> serde_json::Value {
