@@ -1,0 +1,411 @@
+/* 自定义字体 */
+@font-face {
+  font-family: "Sinter-Regular";
+  src: url("/fonts/Sinter-Regular.otf") format("opentype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MiSans";
+  src: url("/fonts/MiSansVF.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "AiDianFengYaHei";
+  src: url("/fonts/AiDianFengYaHei.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Cubic";
+  src: url("/fonts/Cubic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* 思源宋体 Heavy（沉浸式歌词专用） */
+@font-face {
+  font-family: "NotoSerifSC-900";
+  src: url("/fonts/NotoSerifSC-900.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  font-family: var(--app-font-family, "Sinter-Regular"), Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* 全局隐藏滚动条（保留滚动功能）：
+   所有滚动条不再渲染，视觉上彻底消除滚动条出现/消失/闪烁（含横向滚动条闪烁）；
+   页面滚动照常工作（滚轮/拖拽/键盘均可）。 */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
+/* 视口级禁止横向滚动（兜底）：
+   果冻弹跳动画（scale 1.05）会把 fixed 导航栏等元素瞬时放大，
+   transform 溢出计入 scrollable overflow，可能在 body/html 层产生横向滚动条。 */
+html,
+body {
+  overflow-x: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}
+
+[data-backdrop-filter] {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* 页面切换动画期间（framer-motion 会把页面提升为独立合成层），
+   层内 backdrop-filter 无法采样层外真实背景，会导致液态玻璃（含边缘折射条）
+   先透明、动画结束瞬间突变模糊/闪烁。
+   动画期间统一关闭所有 backdrop-filter，动画结束、合成层合并后
+   再配合各组件的 backdrop-filter transition 平滑浮现。 */
+.page-animating,
+.page-animating * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.chakra-ui-backdrop {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* 全局滚动条样式 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 10px 0;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--theme-primary, #98DDD0);
+  border-radius: 3px;
+  min-height: 40px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-primary-hover, #7FD1C1);
+}
+
+/* 碟片旋转动画 */
+@keyframes vinylSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* MiniMusicPlayer 按钮慢速旋转动画 */
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================================
+   果冻弹跳缩放动画（scale 弹性，非上下位移）
+   ============================================================ */
+@keyframes jellyBounce {
+  0% {
+    transform: scale(1) translateZ(0);
+  }
+  18% {
+    transform: scale(1.05) translateZ(0);
+  }
+  38% {
+    transform: scale(0.97) translateZ(0);
+  }
+  58% {
+    transform: scale(1.02) translateZ(0);
+  }
+  76% {
+    transform: scale(0.99) translateZ(0);
+  }
+  100% {
+    transform: scale(1) translateZ(0);
+  }
+}
+
+/* 果冻弹跳的轻量版（用于导航栏按钮） */
+@keyframes jellyBounceSubtle {
+  0% {
+    transform: scale(1) translateZ(0);
+  }
+  22% {
+    transform: scale(1.06) translateZ(0);
+  }
+  48% {
+    transform: scale(0.97) translateZ(0);
+  }
+  72% {
+    transform: scale(1.015) translateZ(0);
+  }
+  100% {
+    transform: scale(1) translateZ(0);
+  }
+}
+
+/* 导航栏外层容器专用（侧边模式，需保留 translateY(-50%) 定位） */
+@keyframes jellyBounceSidebarLeft {
+  0%   { transform: translateY(-50%) translateZ(0) scale(1); }
+  18%  { transform: translateY(-50%) translateZ(0) scale(1.05); }
+  38%  { transform: translateY(-50%) translateZ(0) scale(0.97); }
+  58%  { transform: translateY(-50%) translateZ(0) scale(1.02); }
+  76%  { transform: translateY(-50%) translateZ(0) scale(0.99); }
+  100% { transform: translateY(-50%) translateZ(0) scale(1); }
+}
+
+/* 导航栏外层容器专用（顶部模式，需保留 translateX(-50%) 定位） */
+@keyframes jellyBounceSidebarTop {
+  0%   { transform: translateX(-50%) translateZ(0) scale(1); }
+  18%  { transform: translateX(-50%) translateZ(0) scale(1.05); }
+  38%  { transform: translateX(-50%) translateZ(0) scale(0.97); }
+  58%  { transform: translateX(-50%) translateZ(0) scale(1.02); }
+  76%  { transform: translateX(-50%) translateZ(0) scale(0.99); }
+  100% { transform: translateX(-50%) translateZ(0) scale(1); }
+}
+
+/* ============================================================
+   触发规则
+   ============================================================ */
+
+/* 路由切换时，JS 在 body 添加 .jelly-bounce-active，
+   所有带 jelly-bounce-* className 的元素播放动画。
+   动画结束后 JS 移除该 class，这样异步加载的内容不会触发动画。 */
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-card,
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-tool-card,
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-menu-item,
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-button {
+  animation: jellyBounce 0.62s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 跳过弹跳：局部卡片（如首页反馈/QQ群卡片）不需要路由切换弹跳动画 */
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-card.no-bounce {
+  animation: none !important;
+}
+
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-nav-button {
+  animation: jellyBounceSubtle 0.56s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-sidebar-left {
+  animation: jellyBounceSidebarLeft 0.62s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-sidebar-top {
+  animation: jellyBounceSidebarTop 0.62s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 导航栏状态切换时触发（通过 JS 添加 .jelly-bouncing class） */
+body.jelly-bounce-enabled .jelly-bounce-sidebar-content.jelly-bouncing {
+  animation: jellyBounce 0.62s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.jelly-bounce-enabled .jelly-bounce-nav-button.jelly-bouncing {
+  animation: jellyBounceSubtle 0.56s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.jelly-bounce-enabled .jelly-bounce-sidebar-left.jelly-bouncing {
+  animation: jellyBounceSidebarLeft 0.62s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.jelly-bounce-enabled .jelly-bounce-sidebar-top.jelly-bouncing {
+  animation: jellyBounceSidebarTop 0.62s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================================
+   透明液态玻璃效果 (Transparent Liquid Glass Effect)
+   参考 Mineradio 项目：SVG feDisplacementMap 实现边缘折射
+   配合多层 inset 阴影营造深度感
+   ============================================================ */
+
+/* 基础类：SVG 折射液态玻璃
+   不设置 position，避免覆盖组件自身的 position（如 sidebar 的 fixed） */
+.real-liquid-glass {
+  isolation: isolate;
+}
+
+/* ── 多层 inset 阴影：模拟玻璃边缘高光 + 内部深度 ──
+   白色 inset 阴影：模拟玻璃边缘的光线折射（细微高光）
+   深色 inset 阴影：模拟玻璃内部的深度和暗角
+   外部阴影：投影 */
+.real-liquid-glass {
+  box-shadow:
+    inset 0 0 2px 1px rgba(255, 255, 255, 0.18),
+    inset 0 0 10px 4px rgba(255, 255, 255, 0.06),
+    inset 0 4px 16px rgba(0, 0, 0, 0.04),
+    inset 0 8px 24px rgba(0, 0, 0, 0.03),
+    0 4px 16px rgba(0, 0, 0, 0.08),
+    0 8px 24px rgba(0, 0, 0, 0.04);
+}
+
+/* 暗色模式：减弱白色高光，增强深色阴影 */
+.chakra-ui-dark .real-liquid-glass {
+  box-shadow:
+    inset 0 0 2px 1px rgba(255, 255, 255, 0.10),
+    inset 0 0 10px 4px rgba(255, 255, 255, 0.03),
+    inset 0 4px 16px rgba(0, 0, 0, 0.12),
+    inset 0 8px 24px rgba(0, 0, 0, 0.08),
+    0 4px 16px rgba(0, 0, 0, 0.20),
+    0 8px 24px rgba(0, 0, 0, 0.10);
+}
+
+/* SVG 滤镜容器：隐藏不占空间 */
+.real-liquid-glass-svg-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ============================================================
+   启动页背景层（仿 Mineradio WebGL 霓虹线）
+   背景结构：网格渐变（底层）→ WebGL canvas（动画）→ 暗角 → 噪点
+   ============================================================ */
+.nexbox-splash {
+  background: #010304; /* 深蓝黑，非纯黑 */
+  overflow: hidden;
+  color: #fff;
+}
+
+/* 渐变斜光 + 细网格线 + 呼吸（对应 Mineradio #splash::before） */
+.nexbox-splash-grid {
+  position: absolute;
+  inset: -8%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      115deg,
+      transparent 0%,
+      rgba(255, 83, 103, 0.055) 24%,
+      transparent 42%,
+      rgba(244, 210, 138, 0.052) 62%,
+      transparent 82%
+    ),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 54px),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 46px),
+    linear-gradient(180deg, #020606 0%, #050607 42%, #000 100%);
+  filter: blur(0.4px);
+  opacity: 0.9;
+  animation: nexbox-splash-breathe 7s ease-in-out infinite alternate;
+}
+
+/* WebGL 霓虹线动画画布（对应 Mineradio #splash-canvas） */
+.nexbox-splash-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+/* 四周暗角（对应 Mineradio #splash::after） */
+.nexbox-splash-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.82), transparent 21%, transparent 79%, rgba(0, 0, 0, 0.82)),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.68), transparent 32%, transparent 64%, rgba(0, 0, 0, 0.74));
+}
+
+/* 胶片噪点（对应 Mineradio .splash-bg-noise） */
+.nexbox-splash-noise {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  opacity: 0.038;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  mix-blend-mode: screen;
+}
+
+@keyframes nexbox-splash-breathe {
+  0% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1.035);
+  }
+}
+
+/* 桌面歌词 - 细条主题色音量滑块 */
+input.lyrics-vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--vol-color) 0%,
+    var(--vol-color) var(--vol-fill, 50%),
+    rgba(255, 255, 255, 0.22) var(--vol-fill, 50%),
+    rgba(255, 255, 255, 0.22) 100%
+  );
+  outline: none;
+  cursor: pointer;
+}
+input.lyrics-vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--vol-color);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+

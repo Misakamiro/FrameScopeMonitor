@@ -51,3 +51,12 @@ Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+
+# Isolated NexBox frontend preview
+reference/
+desktop-preview/node_modules/
+desktop-preview/dist/
+desktop-preview/src-tauri/target/
+desktop-preview/src-tauri/gen/
+desktop-preview/.vite/
+desktop-preview/coverage/

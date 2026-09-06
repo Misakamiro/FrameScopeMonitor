@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FrameScope UI Preview",
+  "version": "0.1.0",
+  "identifier": "com.framescope.ui-preview",
+  "build": {
+    "devUrl": "http://127.0.0.1:1430",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "FrameScope UI Preview",
+      "width": 1230,
+      "height": 771,
+      "minWidth": 1140,
+      "minHeight": 715,
+      "decorations": false,
+      "resizable": true,
+      "center": true
+    }],
+    "security": {
+      "assetProtocol": { "enable": true, "scope": ["$HOME/**"] },
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}

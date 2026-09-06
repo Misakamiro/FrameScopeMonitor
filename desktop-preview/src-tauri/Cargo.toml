@@ -1,0 +1,35 @@
+[package]
+name = "framescope-ui-preview"
+version = "0.1.0"
+description = "Isolated FrameScope UI preview host"
+edition = "2021"
+license = "GPL-3.0"
+
+[workspace]
+
+[lib]
+name = "framescope_ui_preview"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.5", features = [] }
+
+[dependencies]
+tauri = { version = "2.10", features = ["tray-icon", "protocol-asset", "devtools"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+chrono = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_GdiPlus",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_LibraryLoader"
+] }
