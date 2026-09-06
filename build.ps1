@@ -215,6 +215,32 @@ $webView2Core = $nativeDependencies.WebView2Core
 $webView2WinForms = $nativeDependencies.WebView2WinForms
 $webView2Loader = $nativeDependencies.WebView2Loader
 
+function Build-HardwareService {
+    $manifest = Join-Path $root 'src\hardware-service\Cargo.toml'
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw "Hardware service manifest was not found: $manifest"
+    }
+    $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($null -eq $cargo) {
+        throw 'cargo.exe was not found. It is required to build FrameScopeHardwareService.exe.'
+    }
+    Push-Location (Split-Path -Parent $manifest)
+    try {
+        $lockFile = Join-Path (Split-Path -Parent $manifest) 'Cargo.lock'
+        if (-not (Test-Path -LiteralPath $lockFile -PathType Leaf)) {
+            & $cargo.Source generate-lockfile
+            if ($LASTEXITCODE -ne 0) { throw 'cargo generate-lockfile failed: FrameScopeHardwareService' }
+        }
+        & $cargo.Source build --release --locked
+        if ($LASTEXITCODE -ne 0) { throw 'cargo build --release --locked failed: FrameScopeHardwareService.exe' }
+    }
+    finally { Pop-Location }
+    $built = Join-Path (Split-Path -Parent $manifest) 'target\release\framescope-hardware-service.exe'
+    if (-not (Test-Path -LiteralPath $built -PathType Leaf)) { throw "Rust hardware service output was not found: $built" }
+    Copy-Item -LiteralPath $built -Destination (Join-Path $root 'FrameScopeHardwareService.exe') -Force
+    return (Join-Path $root 'FrameScopeHardwareService.exe')
+}
+
 $buildMetadata = & (Join-Path $root 'tools\Write-FrameScopeBuildMetadata.ps1') -RepoRoot $root
 & (Join-Path $root 'tools\Export-FrameScopeDefaultConfig.ps1') -RepoRoot $root | Out-Host
 
@@ -385,6 +411,9 @@ $uninstallerSources = @(
 $legacyCleanupSources = @(
     'packaging\FrameScopeLegacyCleanup.cs'
 )
+$hardwareProviderSources = @(
+    'src\app\FrameScopeHardwareProvider.cs'
+)
 $packagingOnlySources = @()
 
 $monitorReferences = @(
@@ -438,6 +467,7 @@ $distPublished = $false
 
 Push-Location $root
 try {
+    $hardwareServiceExe = Build-HardwareService
     Invoke-CSharpBuild -OutputPath 'FrameScopeMonitor.exe' -Target 'winexe' `
         -Sources @($commonCoreSources + $monitorSources) `
         -References $monitorReferences -Win32Icon $appIcon
@@ -454,6 +484,9 @@ try {
     Invoke-CSharpBuild -OutputPath 'FrameScopeLegacyCleanup.exe' -Target 'winexe' `
         -Sources $legacyCleanupSources `
         -References @($windowsFormsReferences + 'System.Management.dll') -Win32Icon $appIcon
+    Invoke-CSharpBuild -OutputPath 'FrameScopeHardwareProvider.exe' -Target 'exe' `
+        -Sources $hardwareProviderSources `
+        -References @('System.Management.dll', 'System.Web.Extensions.dll')
 
     Copy-Item -LiteralPath $webView2Core -Destination (Join-Path $root 'Microsoft.Web.WebView2.Core.dll') -Force
     Copy-Item -LiteralPath $webView2WinForms -Destination (Join-Path $root 'Microsoft.Web.WebView2.WinForms.dll') -Force
@@ -477,11 +510,14 @@ try {
         'FrameScopeSystemSampler.exe',
         'FrameScopeReportGenerator.exe',
         'FrameScopeUninstaller.exe',
+        'FrameScopeHardwareService.exe',
+        'FrameScopeHardwareProvider.exe',
         'Microsoft.Web.WebView2.Core.dll',
         'Microsoft.Web.WebView2.WinForms.dll',
         'WebView2Loader.dll',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
-        'packaging\README-FrameScopeMonitor.txt'
+        'packaging\README-FrameScopeMonitor.txt',
+        'THIRD-PARTY-NOTICES.md'
     )
     $payloadFiles += $hardwareTelemetryDependencyNames
     foreach ($file in $payloadFiles) {

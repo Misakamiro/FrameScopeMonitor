@@ -60,3 +60,6 @@ desktop-preview/src-tauri/target/
 desktop-preview/src-tauri/gen/
 desktop-preview/.vite/
 desktop-preview/coverage/
+
+# Hardware service Rust build output
+src/hardware-service/target/
