@@ -1,11 +1,15 @@
+pub mod overlay;
+pub mod provider;
+
+use provider::ResidentProvider;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const MIN_INTERVAL_MS: u64 = 250;
 const MAX_INTERVAL_MS: u64 = 5000;
+const DEFAULT_THROTTLE_MS: u64 = 1000;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -45,6 +49,41 @@ impl Default for ServiceState {
     }
 }
 
+/// Process-wide resident sampling state. Unlike `ServiceState` (per pipe
+/// connection) this survives client reconnects so the overlay cache, the
+/// throttle window, and the resident provider child outlive any single client.
+struct ResidentState {
+    provider: Mutex<ResidentProvider>,
+    last_payload: Mutex<Option<serde_json::Value>>,
+    last_real_read: Mutex<Option<Instant>>,
+    overlay_cache: Mutex<Option<overlay::OverlayData>>,
+    active_gpu: AtomicUsize,
+    throttle: Mutex<Duration>,
+}
+
+static RESIDENT: OnceLock<ResidentState> = OnceLock::new();
+
+fn resident() -> &'static ResidentState {
+    RESIDENT.get_or_init(|| ResidentState {
+        provider: Mutex::new(ResidentProvider::new()),
+        last_payload: Mutex::new(None),
+        last_real_read: Mutex::new(None),
+        overlay_cache: Mutex::new(None),
+        active_gpu: AtomicUsize::new(0),
+        throttle: Mutex::new(Duration::from_millis(DEFAULT_THROTTLE_MS)),
+    })
+}
+
+// Wired up by the resident ICMP thread (NexBox game_ping port).
+fn ping_sample() -> Option<u32> {
+    None
+}
+
+// Wired up by the ETW FPS module (NexBox game_fps port).
+fn fps_sample() -> (Option<f64>, Option<f64>, Option<f64>) {
+    (None, None, None)
+}
+
 pub fn dispatch(request: Request) -> serde_json::Value {
     let mut state = ServiceState::default();
     dispatch_with_state(request, &mut state)
@@ -56,12 +95,17 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
         "handshake" => serde_json::json!({
             "protocol": "framescope-hardware-service/1",
             "service": "framescope-hardware-service",
-            "capabilities": ["get_static_info", "get_snapshot", "get_sensors", "set_sampling_interval", "get_overlay_metrics", "start", "stop"]
+            "capabilities": [
+                "get_static_info", "get_snapshot", "get_sensors", "set_sampling_interval",
+                "get_overlay_metrics", "get_overlay_data", "get_static_hardware",
+                "get_memory_status", "get_disk_status", "set_active_gpu", "clear_cache",
+                "restart_provider", "start", "stop"
+            ]
         }),
-        "get_static_info" => capture_from_lhm(state, "get_static_info"),
+        "get_static_info" => capture_snapshot(state, "get_static_info"),
         "get_snapshot" => {
             state.sequence = state.sequence.saturating_add(1);
-            let mut value = capture_from_lhm(state, "get_snapshot");
+            let mut value = capture_snapshot(state, "get_snapshot");
             if let Some(obj) = value.as_object_mut() {
                 obj.insert("sequence".into(), serde_json::json!(state.sequence));
                 obj.insert(
@@ -74,7 +118,7 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
             value
         }
         "get_sensors" => {
-            let snapshot = capture_from_lhm(state, "get_sensors");
+            let snapshot = capture_snapshot(state, "get_sensors");
             serde_json::json!({
                 "availability": snapshot.get("availability").cloned().unwrap_or_else(|| serde_json::json!("unavailable")),
                 "sensors": snapshot.get("sensors").cloned().unwrap_or_else(|| serde_json::json!([])),
@@ -91,6 +135,10 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
                 .unwrap_or("");
             capture_overlay_metrics(data_root)
         }
+        "get_overlay_data" => overlay_data_response(state),
+        "get_memory_status" => memory_status_response(state),
+        "get_disk_status" => disk_status_response(),
+        "get_static_hardware" => static_hardware_response(state),
         "set_sampling_interval" => {
             let interval = request
                 .params
@@ -99,10 +147,32 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
             match interval {
                 Some(value) if (MIN_INTERVAL_MS..=MAX_INTERVAL_MS).contains(&value) => {
                     state.sampling_interval_ms = value;
+                    *resident().throttle.lock().unwrap() = Duration::from_millis(value);
                     serde_json::json!({ "status": "accepted", "samplingIntervalMs": value })
                 }
                 _ => return error_response(id, "invalid_sampling_interval"),
             }
+        }
+        "set_active_gpu" => {
+            let index = request.params.get("index").and_then(|v| v.as_u64());
+            match index {
+                Some(value) => {
+                    resident().active_gpu.store(value as usize, Ordering::Relaxed);
+                    serde_json::json!({ "status": "accepted", "activeGpuIndex": value })
+                }
+                None => return error_response(id, "invalid_gpu_index"),
+            }
+        }
+        "clear_cache" => {
+            let res = resident();
+            *res.last_payload.lock().unwrap() = None;
+            *res.overlay_cache.lock().unwrap() = None;
+            res.active_gpu.store(0, Ordering::Relaxed);
+            serde_json::json!({ "status": "cleared" })
+        }
+        "restart_provider" => {
+            resident().provider.lock().unwrap().kill();
+            serde_json::json!({ "status": "restarting" })
         }
         "start" => {
             state.running = true;
@@ -116,6 +186,190 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
     };
 
     serde_json::json!({"id": id, "ok": true, "result": response, "error": null})
+}
+
+/// One snapshot from the resident provider, throttled: repeated calls inside
+/// the sampling interval reuse the last payload instead of re-reading LHM.
+fn read_snapshot(state: &ServiceState) -> Result<serde_json::Value, String> {
+    let res = resident();
+    res.provider
+        .lock()
+        .unwrap()
+        .set_helper(state.lhm_helper_path.clone());
+
+    let throttle = *res.throttle.lock().unwrap();
+    {
+        let payload = res.last_payload.lock().unwrap();
+        if let Some(payload) = payload.as_ref() {
+            if let Some(last) = *res.last_real_read.lock().unwrap() {
+                if last.elapsed() < throttle {
+                    return Ok(payload.clone());
+                }
+            }
+        }
+    }
+
+    let payload = res.provider.lock().unwrap().read()?;
+    *res.last_payload.lock().unwrap() = Some(payload.clone());
+    *res.last_real_read.lock().unwrap() = Some(Instant::now());
+    Ok(payload)
+}
+
+fn capture_snapshot(state: &ServiceState, method: &str) -> serde_json::Value {
+    if state.lhm_helper_path.as_deref().unwrap_or("").trim().is_empty() {
+        return unavailable_payload(method);
+    }
+    match read_snapshot(state) {
+        Ok(value) => value,
+        Err(error) => unavailable_with_error(method, error),
+    }
+}
+
+/// Aggregated overlay snapshot. On provider trouble the last good overlay data
+/// is served so the overlay does not blink (NexBox behavior); with no data at
+/// all the all-null default is returned — never synthetic numbers.
+fn overlay_data_response(state: &ServiceState) -> serde_json::Value {
+    let res = resident();
+    let data = match read_snapshot(state) {
+        Ok(payload) => {
+            let requested = res.active_gpu.load(Ordering::Relaxed);
+            let mut data =
+                overlay::build_overlay_data(&payload, fps_sample(), ping_sample(), requested);
+            let mut cache = res.overlay_cache.lock().unwrap();
+            if let Some(old) = cache.as_ref() {
+                overlay::merge_overlay(&mut data, old);
+            }
+            *cache = Some(data.clone());
+            data
+        }
+        Err(error) => {
+            eprintln!("framescope-hardware-service: overlay read failed: {error}");
+            res.overlay_cache
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_default()
+        }
+    };
+    serde_json::to_value(&data).unwrap_or(serde_json::Value::Null)
+}
+
+fn memory_status_response(state: &ServiceState) -> serde_json::Value {
+    let Ok(payload) = read_snapshot(state) else {
+        return serde_json::Value::Null;
+    };
+    let used_gb = dynamic_value(&payload, "memoryUsedGb");
+    let total_gb = dynamic_value(&payload, "memoryTotalGb");
+    match (used_gb, total_gb) {
+        (Some(used), Some(total)) if total > 0.0 => serde_json::json!({
+            "total": total * 1024.0,
+            "used": used * 1024.0,
+            "available": (total - used) * 1024.0,
+            "usage_percent": (used / total * 100.0).clamp(0.0, 100.0)
+        }),
+        _ => serde_json::Value::Null,
+    }
+}
+
+#[cfg(windows)]
+fn disk_status_response() -> serde_json::Value {
+    use std::ffi::OsStr;
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+    let root = format!("{drive}\\");
+    let wide: Vec<u16> = OsStr::new(&root).encode_wide().chain(once(0)).collect();
+    let mut free_to_caller: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut free_bytes: u64 = 0;
+    // SAFETY: root is a NUL-terminated wide string; out-params are plain u64s.
+    let ok = unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free_to_caller,
+            &mut total_bytes,
+            &mut free_bytes,
+        )
+    };
+    if ok == 0 || total_bytes == 0 {
+        return serde_json::Value::Null;
+    }
+    let gib = 1024.0 * 1024.0 * 1024.0;
+    let total = total_bytes as f64 / gib;
+    let available = free_bytes as f64 / gib;
+    let used = total - available;
+    serde_json::json!({
+        "name": drive,
+        "total_gb": (total * 100.0).round() / 100.0,
+        "used_gb": (used * 100.0).round() / 100.0,
+        "available_gb": (available * 100.0).round() / 100.0,
+        "usage_percent": (used / total * 100.0).clamp(0.0, 100.0)
+    })
+}
+
+#[cfg(not(windows))]
+fn disk_status_response() -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+/// Full WMI-backed static hardware info; served from the provider's cached
+/// `static` payload (computed on demand by the provider — expensive WMI work).
+fn static_hardware_response(state: &ServiceState) -> serde_json::Value {
+    if state
+        .lhm_helper_path
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        return serde_json::json!({
+            "availability": "unavailable",
+            "hardware": null,
+            "errors": ["LibreHardwareMonitor provider is not configured"]
+        });
+    }
+    let res = resident();
+    let result = {
+        let mut provider = res.provider.lock().unwrap();
+        provider.set_helper(state.lhm_helper_path.clone());
+        provider.send_raw("{\"cmd\":\"static\"}")
+    };
+    match result {
+        Ok(value) => {
+            let hardware = value
+                .get("staticFull")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let errors = value
+                .get("errors")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let availability = if hardware.is_null() { "unavailable" } else { "available" };
+            serde_json::json!({
+                "availability": availability,
+                "hardware": hardware,
+                "errors": errors,
+                "capturedAt": value
+                    .get("capturedAt")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!(chrono_like_timestamp()))
+            })
+        }
+        Err(error) => serde_json::json!({
+            "availability": "unavailable",
+            "hardware": null,
+            "errors": [error]
+        }),
+    }
+}
+
+fn dynamic_value(snapshot: &serde_json::Value, key: &str) -> Option<f64> {
+    snapshot
+        .get("dynamic")
+        .and_then(|dynamic| dynamic.get(key))
+        .and_then(|metric| metric.get("value"))
+        .and_then(serde_json::Value::as_f64)
 }
 
 fn capture_overlay_metrics(data_root: &str) -> serde_json::Value {
@@ -173,18 +427,18 @@ fn unavailable_overlay_metrics(captured_at: String, error: &str) -> serde_json::
     })
 }
 
-fn find_latest_presentmon(data_root: &str) -> Option<PathBuf> {
+fn find_latest_presentmon(data_root: &str) -> Option<std::path::PathBuf> {
     if data_root.trim().is_empty() {
         return None;
     }
-    let root = Path::new(data_root);
+    let root = std::path::Path::new(data_root);
     if !root.is_dir() {
         return None;
     }
-    let mut latest: Option<(PathBuf, std::time::SystemTime)> = None;
+    let mut latest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -217,8 +471,8 @@ fn find_latest_presentmon(data_root: &str) -> Option<PathBuf> {
     latest.map(|(path, _)| path)
 }
 
-fn read_frame_times(path: &Path) -> Result<Vec<f64>, String> {
-    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+fn read_frame_times(path: &std::path::Path) -> Result<Vec<f64>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut lines = text.lines();
     let header = lines.next().unwrap_or("");
     let index = split_csv(header)
@@ -278,68 +532,6 @@ fn slow_average(values: &[f64], fraction: f64) -> f64 {
 fn round(value: f64, digits: i32) -> f64 {
     let scale = 10_f64.powi(digits);
     (value * scale).round() / scale
-}
-
-fn capture_from_lhm(state: &ServiceState, method: &str) -> serde_json::Value {
-    let Some(path) = state
-        .lhm_helper_path
-        .as_deref()
-        .filter(|p| !p.trim().is_empty())
-    else {
-        return unavailable_payload(method);
-    };
-    let mut child = match Command::new(path)
-        .arg("--json")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            return unavailable_with_error(
-                method,
-                format!("LibreHardwareMonitor helper start failed: {error}"),
-            )
-        }
-    };
-    let request = serde_json::json!({"method": method});
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(error) = writeln!(stdin, "{}", request) {
-            let _ = child.kill();
-            return unavailable_with_error(
-                method,
-                format!("LibreHardwareMonitor helper write failed: {error}"),
-            );
-        }
-    }
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(error) => {
-            return unavailable_with_error(
-                method,
-                format!("LibreHardwareMonitor helper wait failed: {error}"),
-            )
-        }
-    };
-    if !output.status.success() {
-        return unavailable_with_error(
-            method,
-            format!("LibreHardwareMonitor helper exited with {}", output.status),
-        );
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let clean = text
-        .trim_matches('\0')
-        .trim_start_matches('\u{feff}')
-        .trim();
-    match serde_json::from_str::<serde_json::Value>(clean) {
-        Ok(value) => value,
-        Err(error) => unavailable_with_error(
-            method,
-            format!("LibreHardwareMonitor helper returned invalid JSON: {error}"),
-        ),
-    }
 }
 
 fn unavailable_payload(method: &str) -> serde_json::Value {
@@ -413,11 +605,16 @@ mod tests {
             response["result"]["protocol"],
             "framescope-hardware-service/1"
         );
-        assert!(response["result"]["capabilities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "get_snapshot"));
+        for capability in ["get_snapshot", "get_overlay_data", "get_static_hardware"] {
+            assert!(
+                response["result"]["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == capability),
+                "missing capability {capability}"
+            );
+        }
     }
 
     #[test]
@@ -481,5 +678,78 @@ mod tests {
         assert_eq!(response["result"]["availability"], "unavailable");
         assert!(response["result"]["fps"].is_null());
         assert!(response["result"]["errors"].as_array().unwrap().len() >= 1);
+    }
+
+    #[test]
+    fn overlay_data_fails_closed_without_helper() {
+        let mut state = ServiceState::default();
+        let response = dispatch_with_state(
+            Request {
+                id: "7".into(),
+                method: "get_overlay_data".into(),
+                params: serde_json::Value::Null,
+            },
+            &mut state,
+        );
+        assert_eq!(response["ok"], true);
+        let data = &response["result"];
+        assert!(data["cpu_usage"].is_null());
+        assert!(data["gpu_temp"].is_null());
+        assert!(data["fps"].is_null());
+        assert_eq!(data["gpu_sensors"].as_array().unwrap().len(), 0);
+        assert_eq!(data["active_gpu_index"], 0);
+    }
+
+    #[test]
+    fn static_hardware_fails_closed_without_helper() {
+        let mut state = ServiceState::default();
+        let response = dispatch_with_state(
+            Request {
+                id: "8".into(),
+                method: "get_static_hardware".into(),
+                params: serde_json::Value::Null,
+            },
+            &mut state,
+        );
+        assert_eq!(response["result"]["availability"], "unavailable");
+        assert!(response["result"]["hardware"].is_null());
+    }
+
+    #[test]
+    fn set_active_gpu_accepts_index_and_clear_cache_resets_it() {
+        let response = dispatch(Request {
+            id: "9".into(),
+            method: "set_active_gpu".into(),
+            params: serde_json::json!({"index": 1}),
+        });
+        assert_eq!(response["result"]["activeGpuIndex"], 1);
+        assert_eq!(
+            dispatch(Request {
+                id: "10".into(),
+                method: "set_active_gpu".into(),
+                params: serde_json::json!({"index": "x"}),
+            })["error"],
+            "invalid_gpu_index"
+        );
+        let cleared = dispatch(Request {
+            id: "11".into(),
+            method: "clear_cache".into(),
+            params: serde_json::Value::Null,
+        });
+        assert_eq!(cleared["result"]["status"], "cleared");
+    }
+
+    #[test]
+    fn memory_status_fails_closed_without_helper() {
+        let mut state = ServiceState::default();
+        let response = dispatch_with_state(
+            Request {
+                id: "12".into(),
+                method: "get_memory_status".into(),
+                params: serde_json::Value::Null,
+            },
+            &mut state,
+        );
+        assert!(response["result"].is_null());
     }
 }

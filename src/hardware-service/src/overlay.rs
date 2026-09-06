@@ -1,0 +1,354 @@
+//! Overlay aggregation: builds the frontend `OverlayHardwareData` snapshot
+//! (snake_case contract shared with the NexBox-derived UI) from one provider
+//! snapshot, and carries forward the previous snapshot's non-null fields so a
+//! transiently missing sensor never blinks the overlay to "--".
+
+use serde::Serialize;
+use serde_json::Value;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct GpuSensorData {
+    pub name: String,
+    pub hardware_type: String,
+    pub temperature: Option<f64>,
+    pub usage: Option<f64>,
+    pub fan_speed: Option<f64>,
+    pub power: Option<f64>,
+    pub clock: Option<f64>,
+    pub memory_clock: Option<f64>,
+    pub vram_used: Option<f64>,
+    pub vram_total: Option<f64>,
+    pub voltage: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct OverlayData {
+    pub fps: Option<f64>,
+    pub fps_1low: Option<f64>,
+    pub fps_01low: Option<f64>,
+    pub cpu_usage: Option<f64>,
+    pub cpu_temp: Option<f64>,
+    pub cpu_clock: Option<f64>,
+    pub cpu_voltage: Option<f64>,
+    pub cpu_power: Option<f64>,
+    pub cpu_fan_speed: Option<f64>,
+    pub gpu_temp: Option<f64>,
+    pub gpu_usage: Option<f64>,
+    pub gpu_fan_speed: Option<f64>,
+    pub gpu_power: Option<f64>,
+    pub gpu_clock: Option<f64>,
+    pub gpu_voltage: Option<f64>,
+    pub gpu_memory_clock: Option<f64>,
+    pub memory_usage: Option<f64>,
+    pub ssd_temp: Option<f64>,
+    pub delta_password: Option<String>,
+    pub game_ping: Option<u32>,
+    pub gpu_vram_used: Option<f64>,
+    pub gpu_vram_total: Option<f64>,
+    pub net_time_offset_ms: Option<f64>,
+    pub gpu_sensors: Vec<GpuSensorData>,
+    pub active_gpu_index: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SensorRow<'a> {
+    hardware: &'a str,
+    hardware_type: &'a str,
+    name: &'a str,
+    sensor_type: &'a str,
+    value: f64,
+}
+
+fn contains(haystack: &str, needle: &str) -> bool {
+    haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
+}
+
+fn parse_sensors(snapshot: &Value) -> Vec<SensorRow<'_>> {
+    snapshot
+        .get("sensors")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let value = row.get("value").and_then(Value::as_f64)?;
+                    Some(SensorRow {
+                        hardware: row.get("hardware").and_then(Value::as_str).unwrap_or(""),
+                        hardware_type: row.get("hardwareType").and_then(Value::as_str).unwrap_or(""),
+                        name: row.get("name").and_then(Value::as_str).unwrap_or(""),
+                        sensor_type: row.get("sensorType").and_then(Value::as_str).unwrap_or(""),
+                        value,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Reads `dynamic.<key>.value` from the provider payload.
+fn dynamic_value(snapshot: &Value, key: &str) -> Option<f64> {
+    snapshot
+        .get("dynamic")
+        .and_then(|dynamic| dynamic.get(key))
+        .and_then(|metric| metric.get("value"))
+        .and_then(Value::as_f64)
+}
+
+fn find_sensor<'a>(
+    rows: &'a [SensorRow<'a>],
+    sensor_type: &str,
+    hardware_type: &str,
+    names: &[&str],
+) -> Option<&'a SensorRow<'a>> {
+    // Preferred: sensor type + hardware class + any of the name hints.
+    // Fallback: first sensor of that type within the hardware class, so an
+    // empty name list (or unexpected sensor naming) still yields a value.
+    rows.iter()
+        .find(|row| {
+            contains(row.sensor_type, sensor_type)
+                && (hardware_type.is_empty() || contains(row.hardware_type, hardware_type))
+                && names
+                    .iter()
+                    .any(|name| contains(&format!("{} {}", row.hardware, row.name), name))
+        })
+        .or_else(|| {
+            rows.iter().find(|row| {
+                contains(row.sensor_type, sensor_type)
+                    && (hardware_type.is_empty() || contains(row.hardware_type, hardware_type))
+            })
+        })
+}
+
+fn sensor_value(
+    rows: &[SensorRow<'_>],
+    sensor_type: &str,
+    hardware_type: &str,
+    names: &[&str],
+) -> Option<f64> {
+    find_sensor(rows, sensor_type, hardware_type, names).map(|row| row.value)
+}
+
+pub fn build_overlay_data(
+    snapshot: &Value,
+    fps: (Option<f64>, Option<f64>, Option<f64>),
+    ping: Option<u32>,
+    requested_gpu_index: usize,
+) -> OverlayData {
+    let rows = parse_sensors(snapshot);
+
+    // One GpuSensorData per distinct GPU hardware, in first-seen order.
+    let mut gpu_names: Vec<&str> = Vec::new();
+    for row in &rows {
+        if contains(row.hardware_type, "gpu") && !gpu_names.iter().any(|name| name.eq_ignore_ascii_case(row.hardware)) {
+            gpu_names.push(row.hardware);
+        }
+    }
+
+    let gpu_sensors: Vec<GpuSensorData> = gpu_names
+        .iter()
+        .map(|gpu| {
+            let per_gpu: Vec<SensorRow<'_>> = rows
+                .iter()
+                .filter(|row| row.hardware.eq_ignore_ascii_case(gpu))
+                .copied()
+                .collect();
+            GpuSensorData {
+                name: (*gpu).to_string(),
+                hardware_type: per_gpu.first().map(|row| row.hardware_type).unwrap_or("").to_string(),
+                temperature: sensor_value(&per_gpu, "Temperature", "", &["GPU Core", "GPU Hot Spot", "GPU"]),
+                usage: sensor_value(&per_gpu, "Load", "", &["GPU Core", "GPU"]),
+                fan_speed: sensor_value(&per_gpu, "Fan", "", &["GPU"]),
+                power: sensor_value(&per_gpu, "Power", "", &["GPU Power", "GPU"]),
+                clock: sensor_value(&per_gpu, "Clock", "", &["GPU Core", "GPU"]),
+                memory_clock: sensor_value(&per_gpu, "Clock", "", &["GPU Memory"]),
+                vram_used: sensor_value(&per_gpu, "SmallData", "", &["GPU Memory Used"]).map(|mb| mb / 1024.0),
+                vram_total: sensor_value(&per_gpu, "SmallData", "", &["GPU Memory Total"]).map(|mb| mb / 1024.0),
+                voltage: sensor_value(&per_gpu, "Voltage", "", &["GPU VDDC", "GPU Voltage", "GPU Core"]),
+            }
+        })
+        .collect();
+
+    let active_gpu_index = if gpu_sensors.is_empty() {
+        0
+    } else {
+        requested_gpu_index.min(gpu_sensors.len() - 1)
+    };
+    let active = gpu_sensors.get(active_gpu_index);
+
+    // Memory usage percent from the provider's WMI-backed totals.
+    let memory_used_gb = dynamic_value(snapshot, "memoryUsedGb");
+    let memory_total_gb = dynamic_value(snapshot, "memoryTotalGb");
+    let memory_usage = match (memory_used_gb, memory_total_gb) {
+        (Some(used), Some(total)) if total > 0.0 => Some((used / total * 100.0).clamp(0.0, 100.0)),
+        _ => None,
+    };
+
+    OverlayData {
+        fps: fps.0,
+        fps_1low: fps.1,
+        fps_01low: fps.2,
+        cpu_usage: dynamic_value(snapshot, "cpuUsage"),
+        cpu_temp: dynamic_value(snapshot, "cpuTemperature"),
+        cpu_clock: dynamic_value(snapshot, "cpuFrequency"),
+        cpu_power: dynamic_value(snapshot, "cpuPower"),
+        cpu_voltage: sensor_value(&rows, "Voltage", "cpu", &["Vcore", "VBcore", "CPU Vcore"]),
+        cpu_fan_speed: sensor_value(&rows, "Fan", "", &["CPU"]),
+        gpu_temp: active.and_then(|gpu| gpu.temperature),
+        gpu_usage: active.and_then(|gpu| gpu.usage),
+        gpu_fan_speed: active.and_then(|gpu| gpu.fan_speed),
+        gpu_power: active.and_then(|gpu| gpu.power),
+        gpu_clock: active.and_then(|gpu| gpu.clock),
+        gpu_voltage: active.and_then(|gpu| gpu.voltage),
+        gpu_memory_clock: active.and_then(|gpu| gpu.memory_clock),
+        memory_usage,
+        ssd_temp: sensor_value(&rows, "Temperature", "storage", &[]).or_else(|| sensor_value(&rows, "Temperature", "storage", &["Drive", "SSD"])),
+        delta_password: None,
+        game_ping: ping,
+        gpu_vram_used: active.and_then(|gpu| gpu.vram_used),
+        gpu_vram_total: active.and_then(|gpu| gpu.vram_total),
+        net_time_offset_ms: None,
+        gpu_sensors,
+        active_gpu_index,
+    }
+}
+
+macro_rules! carry_forward {
+    ($new:expr, $old:expr) => {
+        if $new.is_none() {
+            $new = $old.clone();
+        }
+    };
+}
+
+/// Field-level OR merge: a null in `new` inherits the previous snapshot's value.
+pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
+    carry_forward!(new.fps, old.fps);
+    carry_forward!(new.fps_1low, old.fps_1low);
+    carry_forward!(new.fps_01low, old.fps_01low);
+    carry_forward!(new.cpu_usage, old.cpu_usage);
+    carry_forward!(new.cpu_temp, old.cpu_temp);
+    carry_forward!(new.cpu_clock, old.cpu_clock);
+    carry_forward!(new.cpu_voltage, old.cpu_voltage);
+    carry_forward!(new.cpu_power, old.cpu_power);
+    carry_forward!(new.cpu_fan_speed, old.cpu_fan_speed);
+    carry_forward!(new.gpu_temp, old.gpu_temp);
+    carry_forward!(new.gpu_usage, old.gpu_usage);
+    carry_forward!(new.gpu_fan_speed, old.gpu_fan_speed);
+    carry_forward!(new.gpu_power, old.gpu_power);
+    carry_forward!(new.gpu_clock, old.gpu_clock);
+    carry_forward!(new.gpu_voltage, old.gpu_voltage);
+    carry_forward!(new.gpu_memory_clock, old.gpu_memory_clock);
+    carry_forward!(new.memory_usage, old.memory_usage);
+    carry_forward!(new.ssd_temp, old.ssd_temp);
+    carry_forward!(new.delta_password, old.delta_password);
+    carry_forward!(new.game_ping, old.game_ping);
+    carry_forward!(new.gpu_vram_used, old.gpu_vram_used);
+    carry_forward!(new.gpu_vram_total, old.gpu_vram_total);
+    carry_forward!(new.net_time_offset_ms, old.net_time_offset_ms);
+    for (gpu, old_gpu) in new.gpu_sensors.iter_mut().zip(old.gpu_sensors.iter()) {
+        carry_forward!(gpu.temperature, old_gpu.temperature);
+        carry_forward!(gpu.usage, old_gpu.usage);
+        carry_forward!(gpu.fan_speed, old_gpu.fan_speed);
+        carry_forward!(gpu.power, old_gpu.power);
+        carry_forward!(gpu.clock, old_gpu.clock);
+        carry_forward!(gpu.memory_clock, old_gpu.memory_clock);
+        carry_forward!(gpu.vram_used, old_gpu.vram_used);
+        carry_forward!(gpu.vram_total, old_gpu.vram_total);
+        carry_forward!(gpu.voltage, old_gpu.voltage);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_snapshot() -> Value {
+        json!({
+            "availability": "available",
+            "dynamic": {
+                "cpuUsage": {"value": 42.0},
+                "cpuTemperature": {"value": 61.5},
+                "cpuFrequency": {"value": 4850.0},
+                "cpuPower": {"value": 65.0},
+                "memoryUsedGb": {"value": 12.8},
+                "memoryTotalGb": {"value": 32.0}
+            },
+            "sensors": [
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1", "sensorType": "Load", "value": 40.0},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core (Vcore)", "sensorType": "Voltage", "value": 1.24},
+                {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Core", "sensorType": "Load", "value": 97.0},
+                {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Core", "sensorType": "Temperature", "value": 71.0},
+                {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Memory Used", "sensorType": "SmallData", "value": 8192.0},
+                {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Memory Total", "sensorType": "SmallData", "value": 10240.0},
+                {"hardware": "Samsung SSD 980 PRO", "hardwareType": "Storage", "name": "Drive Temperature", "sensorType": "Temperature", "value": 44.0}
+            ]
+        })
+    }
+
+    #[test]
+    fn builds_overlay_data_from_snapshot() {
+        let data = build_overlay_data(&sample_snapshot(), (None, None, None), None, 0);
+        assert_eq!(data.cpu_usage, Some(42.0));
+        assert_eq!(data.cpu_temp, Some(61.5));
+        assert_eq!(data.cpu_voltage, Some(1.24));
+        assert_eq!(data.memory_usage, Some(40.0));
+        assert_eq!(data.ssd_temp, Some(44.0));
+        assert_eq!(data.gpu_sensors.len(), 1);
+        let gpu = &data.gpu_sensors[0];
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 3080");
+        assert_eq!(gpu.usage, Some(97.0));
+        assert_eq!(gpu.temperature, Some(71.0));
+        assert_eq!(gpu.vram_used, Some(8.0));
+        assert_eq!(gpu.vram_total, Some(10.0));
+        assert_eq!(data.active_gpu_index, 0);
+        assert_eq!(data.gpu_temp, Some(71.0));
+        assert_eq!(data.gpu_vram_used, Some(8.0));
+    }
+
+    #[test]
+    fn requested_gpu_index_is_clamped() {
+        let data = build_overlay_data(&sample_snapshot(), (None, None, None), None, 9);
+        assert_eq!(data.active_gpu_index, 0);
+    }
+
+    #[test]
+    fn merge_carries_previous_non_null_fields() {
+        let mut stale = build_overlay_data(&sample_snapshot(), (None, None, None), None, 0);
+        stale.cpu_temp = Some(61.5);
+        stale.game_ping = Some(12);
+
+        let degraded = build_overlay_data(
+            &json!({"availability": "partial", "dynamic": {}, "sensors": []}),
+            (None, None, None),
+            None,
+            0,
+        );
+        let mut merged = degraded;
+        merge_overlay(&mut merged, &stale);
+        assert_eq!(merged.cpu_temp, Some(61.5));
+        assert_eq!(merged.game_ping, Some(12));
+        assert_eq!(merged.gpu_sensors.len(), 0);
+    }
+
+    #[test]
+    fn serializes_with_frontend_field_names() {
+        let data = build_overlay_data(&sample_snapshot(), (Some(60.0), Some(45.0), Some(30.0)), Some(9), 0);
+        let json = serde_json::to_value(&data).unwrap();
+        for key in [
+            "fps", "fps_1low", "fps_01low", "cpu_usage", "cpu_temp", "cpu_clock", "cpu_voltage",
+            "cpu_power", "cpu_fan_speed", "gpu_temp", "gpu_usage", "gpu_fan_speed", "gpu_power",
+            "gpu_clock", "gpu_voltage", "gpu_memory_clock", "memory_usage", "ssd_temp",
+            "delta_password", "game_ping", "gpu_vram_used", "gpu_vram_total", "net_time_offset_ms",
+            "gpu_sensors", "active_gpu_index",
+        ] {
+            assert!(json.get(key).is_some(), "missing field {key}");
+        }
+        let gpu = &json["gpu_sensors"][0];
+        for key in [
+            "name", "hardware_type", "temperature", "usage", "fan_speed", "power", "clock",
+            "memory_clock", "vram_used", "vram_total", "voltage",
+        ] {
+            assert!(gpu.get(key).is_some(), "missing gpu field {key}");
+        }
+    }
+}

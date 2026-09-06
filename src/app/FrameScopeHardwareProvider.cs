@@ -27,8 +27,15 @@ internal static class FrameScopeHardwareProvider
 
     private static int Main(string[] args)
     {
-        Console.OutputEncoding = new UTF8Encoding(false);
-        Console.InputEncoding = new UTF8Encoding(false);
+        // Setting the console encodings throws when the process was started
+        // without a console (CREATE_NO_WINDOW); encoding is handled explicitly
+        // in serve mode via raw streams, so failures here are non-fatal.
+        try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
+        try { Console.InputEncoding = new UTF8Encoding(false); } catch { }
+        if (args.Any(a => String.Equals(a, "--serve", StringComparison.OrdinalIgnoreCase)))
+        {
+            return ServeMain();
+        }
         string method = ResolveMethod(args);
         try
         {
@@ -46,6 +53,106 @@ internal static class FrameScopeHardwareProvider
             }));
             return 0;
         }
+    }
+
+    // Resident mode: open LibreHardwareMonitor once, then serve snapshot reads from
+    // stdin. Mirrors the NexBoxMonitor pull protocol: each `{"cmd":"read"}` line
+    // yields one JSON payload line; `{"cmd":"exit"}` shuts the process down. A
+    // hung Computer.Open() must not take the resident process with it, so Open
+    // runs on a worker with a 15s timeout and the process stays alive either way.
+    private static int ServeMain()
+    {
+        // Raw redirected streams with explicit UTF-8 (no BOM): the resident
+        // process may run without any console at all (CREATE_NO_WINDOW).
+        var stdout = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+        var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
+
+        object computer = null;
+        List<string> openErrors = new List<string>();
+        Dictionary<string, object> pawnIoStatus = new Dictionary<string, object> { { "installed", false }, { "version", "" } };
+        long sequence = 0;
+        try
+        {
+            string dll = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "LibreHardwareMonitorLib.dll");
+            if (!File.Exists(dll)) throw new FileNotFoundException("LibreHardwareMonitorLib.dll was not found", dll);
+            Assembly assembly = Assembly.LoadFrom(dll);
+            pawnIoStatus = ReadPawnIoStatus(assembly);
+            var openTask = System.Threading.Tasks.Task.Run(delegate
+            {
+                try
+                {
+                    object c = Activator.CreateInstance(assembly.GetType("LibreHardwareMonitor.Hardware.Computer", true));
+                    Set(c, "IsCpuEnabled", true); Set(c, "IsGpuEnabled", true);
+                    Set(c, "IsMemoryEnabled", true); Set(c, "IsMotherboardEnabled", true);
+                    Set(c, "IsStorageEnabled", true); Set(c, "IsControllerEnabled", true);
+                    Invoke(c, "Open");
+                    computer = c;
+                    Console.Error.WriteLine("[FrameScopeHardwareProvider] serve: Computer.Open() completed");
+                }
+                catch (Exception ex)
+                {
+                    lock (openErrors) { openErrors.Add(RootMessage(ex)); }
+                    Console.Error.WriteLine("[FrameScopeHardwareProvider] serve: hardware init error: " + RootMessage(ex));
+                }
+            });
+            if (!openTask.Wait(TimeSpan.FromSeconds(15)))
+            {
+                Console.Error.WriteLine("[FrameScopeHardwareProvider] serve: Computer.Open() timed out (15s); serving partial data");
+            }
+        }
+        catch (Exception ex)
+        {
+            lock (openErrors) { openErrors.Add(RootMessage(ex)); }
+        }
+
+        string line;
+        while ((line = stdin.ReadLine()) != null)
+        {
+            line = line.Trim('\0').TrimStart('\uFEFF').Trim();
+            if (line.Length == 0) continue;
+            string cmd = "";
+            try
+            {
+                Dictionary<string, object> request = Json.Deserialize<Dictionary<string, object>>(line);
+                object value;
+                if (request != null && request.TryGetValue("cmd", out value) && value != null)
+                    cmd = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+            }
+            catch { continue; }
+            if (cmd == "exit") break;
+            if (cmd != "read") continue;
+
+            sequence++;
+            string capturedAt = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture);
+            List<Reading> readings = new List<Reading>();
+            List<string> errors;
+            lock (openErrors) { errors = new List<string>(openErrors); }
+            if (computer != null)
+            {
+                foreach (object hardware in Enumerate(Get(computer, "Hardware")))
+                {
+                    try { ReadHardware(hardware, readings, null); }
+                    catch (Exception ex) { errors.Add("hardware read failed: " + RootMessage(ex)); }
+                }
+            }
+            else if (errors.Count == 0)
+            {
+                errors.Add("LibreHardwareMonitor provider is still initializing");
+            }
+
+            string availability = readings.Count > 0 ? (errors.Count > 0 ? "partial" : "available") : "unavailable";
+            Dictionary<string, object> payload = new Dictionary<string, object>
+            {
+                { "capturedAt", capturedAt }, { "sequence", sequence }, { "availability", availability },
+                { "static", BuildStatic(readings) }, { "dynamic", BuildDynamic(readings, capturedAt) },
+                { "sensors", readings.Select(ToJson).Cast<object>().ToArray() },
+                { "errors", errors.ToArray() }, { "pawnIo", pawnIoStatus }
+            };
+            stdout.WriteLine(Json.Serialize(payload));
+        }
+
+        if (computer != null) { try { Invoke(computer, "Close"); } catch { } }
+        return 0;
     }
 
     private static Dictionary<string, object> Capture(string method)
