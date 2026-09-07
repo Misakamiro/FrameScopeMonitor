@@ -1,6 +1,22 @@
 # FrameScope UI 重建 · 交接文档
 
-> 交接日期：2026-09-07　|　交接人：ZCode（接替 Codex）　|　状态：**前端预览已由用户验收通过**
+> 交接日期：2026-09-07　|　交接人：ZCode（接替 Codex）　|　状态：**前端预览已验收；后端迁移 M0-M4 已完成（同日）**
+
+---
+
+## 〇、2026-09-07 后端迁移完成更新（必读，覆盖下文过时描述）
+
+用户验收前端后，同日完成了后端迁移计划 M0-M4（12+ 笔提交，均在本地，未推 GitHub）：
+
+- **架构定型（用户拍板"硬件服务为核"）**：Tauri 宿主为薄客户端；`FrameScopeHardwareService.exe`（Rust，`src/hardware-service/`）为采样核心，常驻持有 `FrameScopeHardwareProvider.exe --serve`（C#，LHM 0.9.6 常驻拉取模式）；宿主经命名管道 `FrameScopeHardwareService` 调用（`desktop-preview/src-tauri/src/hardware_service.rs`）。
+- **M0**：硬件链落位 + build.ps1 纳编（cargo --locked + csc）+ THIRD-PARTY-NOTICES。
+- **M1**：常驻采样核心（8s 超时/30s 冷却/5 次放弃/fail-closed、1Hz 节流缓存、字段级 OR 合并、`get_overlay_data` 对齐前端 OverlayHardwareData、全量 WMI 静态 HardwareInfo、ICMP ping、NexBox `game_fps.rs` 整文件移植为 ETW 实时 FPS）。坑：老 csc 4.0.30319 只支持 C#5；CREATE_NO_WINDOW 下 .NET Console 编码设置会崩（用 raw UTF-8 流）；windows-sys 0.59 的 OpenTraceW 门控在 `Win32_System_Time`。
+- **M2**：宿主接桥——`preview_native` 实现全部硬件数据命令（fail-closed），宿主 1Hz poller 取代前端 fixture 推送（GDI 悬浮条吃 `sanitize_for_gdi` 整数副本、事件保留全精度），前端 core.ts 桌面端转发/浏览器保留 fixture。
+- **M3**：`backend.rs` 复刻 v1.2.2 C# bridge 语义（config PascalCase 契约/targets/monitor_start-stop-status/reports_list+open+regenerate/processes_refresh），前端目标页/报告页/主页切真实采集管线。端到端实测：UI 加目标→watcher→worker→PresentMon+双 sampler→报告自动生成→列表→打开。
+- **M4**：`requireAdministrator` manifest（**覆盖 app_manifest 必须保留 Tauri 默认 Common-Controls dependency，且不可加自身 assemblyIdentity，否则 SxS 失败/挂死**）+ PerMonitorV2；`pawnio.rs`（check/install/uninstall，安装包未分发则 fail-closed）；桌面端隐藏预览场景卡片。
+- **黑屏事件与修复**：PawnIO 安装按钮曾导致整窗黑屏——真因是 install 命令把内层 `Result` 序列化成 `{"Ok":...}` 发给前端，弹窗把对象塞进 React child 抛异常且无 ErrorBoundary → 整树卸载。修复：正确解包 + 弹窗防御 + 新增 `RootErrorBoundary`（`src/components/RootErrorBoundary.tsx`，任何渲染异常显示重载卡片而非黑屏）。安装/卸载 PawnIO 前会先停采样服务避免驱动加载竞态。CDP 调试法（临时 `additionalBrowserArgs: "--remote-debugging-port=9333"` + `http://127.0.0.1:9333/json/list`）对查前端状态极其有效，用完记得还原。
+- **部署布局**：`tools/Deploy-PreviewBackend.ps1` 把后端链（HardwareService/Provider/Monitor/samplers/ReportGenerator/LHM DLL/tools\PresentMon）部署到预览 exe 同目录；config/history/state 都在 exe 旁（自包含）。验收机 shell 已是 High 提升级别，requireAdministrator exe 启动不弹 UAC；普通用户双击会弹 UAC（预期）。
+- **遗留（低优先级）**：报告时长曾显示 0 秒（时区 bug 已修 d7e38fc）；SMART 直读精化、NVML 双源 GPU 合并（LHM 值已覆盖同等数据）；DPI 缩放实测留给日常使用。watcher 是常驻进程，cmd.exe 等常见进程做目标会被反复捕获（设计使然，测试目标已停用）。
 
 ---
 
@@ -91,14 +107,14 @@ npx tauri build --no-bundle   # 宿主构建（内嵌 dist，改前端后必须�
 
 ---
 
-## 六、下一阶段路线（后端迁移，待用户发起）
+## 六、下一阶段路线（后端迁移，**已于同日完成**，见第〇节）
 
-按既定计划，前端验收后单独规划：
+原计划四项全部落地：
 
-1. NexBox 硬件采样链迁移（Rust service → LibreHardwareMonitor/PawnIO，或复用 FrameScope 既有 C# HardwareProvider，需方案对比后由用户拍板）。
-2. FrameScope 既有采集报告链接管（watcher → worker → PresentMon/ProcessSampler/SystemSampler → 报告生成 → HTML+data.js+manifest 契约）。
-3. 最终宿主架构决策：保留 Tauri 宿主，还是回到 C# WinForms+WebView2（届时以已验收前端为约束）。
-4. 模拟层（`src/preview/runtime/`）逐步替换为真实命令；场景开关移除。
+1. ~~NexBox 硬件采样链迁移~~ → 完成：FrameScope 硬件服务为核（用户拍板），NexBox 式常驻拉取 + ETW FPS 整文件移植。
+2. ~~采集报告链接管~~ → 完成：M3 `backend.rs` 对齐 watcher→worker→PresentMon/ProcessSampler/SystemSampler→ReportGenerator→三件套契约。
+3. ~~宿主架构决策~~ → 暂定 Tauri 宿主 + Rust 硬件服务 + C# 采集链协作（采样层独立于宿主，日后换宿主不重做采样）。
+4. ~~模拟层替换~~ → 完成：硬件/目标/采集/报告全真实；浏览器预览保留 fixture 作开发回退，场景卡片仅浏览器可见。
 
 ---
 
