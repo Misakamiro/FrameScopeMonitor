@@ -83,7 +83,48 @@ were removed before the final build. To debug the webviews again, temporarily ad
   theme-primary outline, invisible on light wallpaper) and "清除数据" (translucent bg
   added under the red text).
 
+## Session 2026-09-07 (round 4): real backend bridge (M2)
+
+Frontend layout untouched. Desktop data commands now answer from the real
+sampling chain instead of fixtures; browser preview keeps the fixture fallback.
+
+- `desktop-preview/src-tauri/src/hardware_service.rs` (new): named-pipe client
+  for FrameScopeHardwareService (`framescope-hardware-service/1`). Spawns the
+  service on demand next to the preview exe (override: `FRAMESCOPE_BACKEND_DIR`),
+  `--lhm-helper` points at the sibling provider; persistent connection, one
+  reconnect on transport failure, 5s spawn cooldown. GPL boundary: none of the
+  service code comes from NexBox except `game_fps.rs` (ported in M1, noted there).
+- Deviation from preview-fixture contract: `preview_set_hardware` no longer
+  feeds the GDI panel — a host-side 1 Hz poller reads `get_overlay_data` from
+  the service, publishes a rounded copy for the integer-typed GDI struct
+  (`sanitize_for_gdi`: clocks/percents/VRAM f64 → int) and emits the raw
+  full-precision snapshot as `vertical-overlay-data`. The frontend fixture
+  push in `state.ts` tick is desktop-skipped.
+- New host commands (whitelist additions): `get_hardware`/`get_hardware_info`,
+  `get_all_sensors`, `get_overlay_hardware_data`, `get_memory_status`,
+  `get_disk_status`, `is_nvidia_gpu` (active GPU name check), 
+  `set_active_gpu_index` → service `set_active_gpu`, `clear_hardware_data` →
+  `clear_cache`, `get_system_locale` (GetUserDefaultLocaleName),
+  `get_system_username`. Error propagation: service unavailability surfaces
+  as a command error (fail-closed, no synthetic data).
+- `export_hardware_report` (desktop, JSON): content now assembled host-side
+  from live overlay + static hardware; frontend no longer ships fixture text.
+  HTML export path unchanged (still writes the passed-through content).
+- Frontend `core.ts`: the ten data commands forward to the host on desktop
+  (`isDesktop()`), fixtures remain the browser-preview path. `nativeCommands`
+  whitelist unchanged.
+- `tools/Deploy-PreviewBackend.ps1` (new): copies service/provider/LHM runtime
+  DLLs from repo root (locked restore output) next to the built preview exe.
+- windows-sys features added to the preview host: `Win32_Security`,
+  `Win32_Storage_FileSystem`, `Win32_System_IO`, `Win32_System_Pipes`,
+  `Win32_Globalization` (CreateFileW is Security-gated, Read/WriteFile IO-gated,
+  GENERIC_READ/WRITE live in Foundation).
+- Verified live: home/hardware pages real values, sensor window 219 real
+  sensors at 1 Hz, GDI panel `CPU 8% 4950MHz 0.594V 32.3W 1286RPM | GPU 31%
+  49°C 225MHz | RAM 51%`, FPS `--` with no game foreground (fail-closed).
+
 ## Delivery boundary
-Standalone FrameScope UI Preview. Real window behavior, simulated business data.
-No production installer or hardware/game sampling. Existing HTML report layout stays unchanged.
-Final backend and production host architecture remain a later decision.
+Standalone FrameScope UI Preview. Real window behavior; hardware data now
+served by the real FrameScopeHardwareService chain (M0–M2). Business flows
+around targets/capture/reports remain simulated until M3. Existing HTML report
+layout stays unchanged.

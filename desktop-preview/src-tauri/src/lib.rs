@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests;
+mod hardware_service;
 mod overlay_panel;
 use serde_json::{json, Value};
 use std::sync::Mutex;
@@ -13,6 +14,10 @@ const COMMANDS: &[&str] = &[
     "set_vertical_overlay_click_through", "resize_vertical_overlay", "save_vertical_overlay_position",
     "reset_vertical_overlay_position", "vertical_overlay_ready", "minimize_to_tray", "exit_app",
     "set_overlay_hotkey", "export_hardware_report", "open_report_sample",
+    // Real hardware data, served by FrameScopeHardwareService over the named pipe.
+    "get_hardware", "get_hardware_info", "get_all_sensors", "get_overlay_hardware_data",
+    "get_memory_status", "get_disk_status", "is_nvidia_gpu", "set_active_gpu_index",
+    "clear_hardware_data", "get_system_locale", "get_system_username",
 ];
 fn ensure_allowed(command: &str) -> Result<(), String> {
     if COMMANDS.contains(&command) { Ok(()) } else { Err(format!("Unsupported preview command: {command}")) }
@@ -100,9 +105,52 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
         std::thread::spawn(move || job(&app));
     }
     match command.as_str() {
+        // ---- Real hardware data (FrameScopeHardwareService named pipe) ----
+        "get_hardware" | "get_hardware_info" => {
+            let response = hardware_service::call("get_static_hardware", json!({}))?;
+            let hardware = response["hardware"].clone();
+            if hardware.is_null() {
+                let error = response["errors"].as_array().and_then(|e| e[0].as_str()).unwrap_or("硬件信息不可用");
+                return Err(error.to_string());
+            }
+            return Ok(hardware);
+        }
+        "get_all_sensors" => {
+            let response = hardware_service::call("get_sensors", json!({}))?;
+            if response["availability"] == "unavailable" && response["sensors"].as_array().map(|s| s.is_empty()).unwrap_or(true) {
+                let error = response["errors"].as_array().and_then(|e| e[0].as_str()).unwrap_or("传感器数据不可用");
+                return Err(error.to_string());
+            }
+            return Ok(json!({
+                "updatedAt": response["updatedAt"],
+                "sensors": response["sensors"],
+                "availability": response["availability"],
+                "errors": response["errors"],
+                "pawnIo": response["pawnIo"],
+            }));
+        }
+        "get_overlay_hardware_data" => return hardware_service::call("get_overlay_data", json!({})),
+        "get_memory_status" => return hardware_service::call("get_memory_status", json!({})),
+        "get_disk_status" => return hardware_service::call("get_disk_status", json!({})),
+        "is_nvidia_gpu" => {
+            let overlay = hardware_service::call("get_overlay_data", json!({}))?;
+            let index = overlay["active_gpu_index"].as_u64().unwrap_or(0) as usize;
+            let name = overlay["gpu_sensors"].as_array().and_then(|gpus| gpus.get(index))
+                .and_then(|gpu| gpu["name"].as_str()).unwrap_or("");
+            return Ok(json!(name.to_ascii_lowercase().contains("nvidia")));
+        }
+        "set_active_gpu_index" => {
+            let index = args["index"].as_u64().ok_or("GPU index required")?;
+            hardware_service::call("set_active_gpu", json!({"index": index}))?;
+        }
+        "clear_hardware_data" => { hardware_service::call("clear_cache", json!({}))?; },
+        "get_system_locale" => return Ok(json!(system_locale())),
+        "get_system_username" => return Ok(json!(std::env::var("USERNAME").unwrap_or_default())),
+
+        // ---- Preview-side-effect commands ----
         "preview_set_hardware" => {
             let data = decode_fixture(args.get("data").cloned().unwrap_or_else(|| json!({})))?;
-            overlay_panel::publish_fixture(data.clone());
+            overlay_panel::publish_hardware_data(data.clone());
             app.emit("vertical-overlay-data", data).map_err(|e| e.to_string())?;
         }
         "open_sensor_monitor" => spawn_job(&app, |app| {
@@ -211,13 +259,42 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
             if !path.to_ascii_lowercase().ends_with(".html") && !path.to_ascii_lowercase().ends_with(".json") {
                 return Err("Export must be HTML or JSON".into());
             }
-            let content = args["content"].as_str().ok_or("content required")?;
+            // Real backend mode: the host assembles the snapshot itself instead
+            // of trusting fixture content from the frontend.
+            let content = match args["content"].as_str() {
+                Some(content) => content.to_string(),
+                None => {
+                    let overlay = hardware_service::call("get_overlay_data", json!({}))?;
+                    let hardware = hardware_service::call("get_static_hardware", json!({}))
+                        .ok()
+                        .and_then(|response| response["hardware"].clone().as_object().cloned());
+                    serde_json::to_string_pretty(&json!({
+                        "brand": "FrameScope",
+                        "generatedAt": chrono::Utc::now().to_rfc3339(),
+                        "overlay": overlay,
+                        "hardware": hardware,
+                    })).map_err(|e| e.to_string())?
+                }
+            };
             std::fs::write(path, content).map_err(|e| e.to_string())?;
             return Ok(json!(path));
         }
         _ => return Err("Unimplemented preview command".into()),
     }
     Ok(json!({"success": true, "message": "预览操作完成"}))
+}
+
+fn system_locale() -> String {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
+        let mut buffer = [0u16; 85]; // LOCALE_NAME_MAX_LENGTH
+        let len = GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32);
+        if len > 1 {
+            return String::from_utf16_lossy(&buffer[..(len - 1) as usize]);
+        }
+    }
+    "zh-CN".into()
 }
 pub fn run() {
     let app = tauri::Builder::default()
@@ -247,6 +324,27 @@ pub fn run() {
                     "quit" => { let _ = stop_windows(app); app.exit(0); }
                     _ => {}
                 }).build(app)?;
+            // Resident hardware poller (NexBox start_hardware_poller pattern):
+            // 1 Hz service reads feed the GDI overlay cache and the vertical
+            // overlay event stream, so both overlays show real data without
+            // any frontend fixture push.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(1000));
+                match hardware_service::call("get_overlay_data", json!({})) {
+                    Ok(data) => {
+                        // The GDI panel stores clocks/percent as integers; feed
+                        // it a rounded copy while the frontend event keeps the
+                        // full-precision service snapshot.
+                        match decode_fixture(hardware_service::sanitize_for_gdi(data.clone())) {
+                            Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
+                            Err(e) => eprintln!("hardware poller: decode failed: {e}"),
+                        }
+                        let _ = handle.emit("vertical-overlay-data", data);
+                    }
+                    Err(e) => eprintln!("hardware poller: {e}"),
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

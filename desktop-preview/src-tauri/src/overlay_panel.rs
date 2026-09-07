@@ -1632,7 +1632,7 @@ pub fn update_settings(settings: OverlaySettings) -> Result<(), String> {
     Ok(())
 }
 
-pub fn publish_fixture(data: OverlayHardwareData) {
+pub fn publish_hardware_data(data: OverlayHardwareData) {
     *CURRENT_HARDWARE_DATA.lock().unwrap() = Some(data);
 }
 

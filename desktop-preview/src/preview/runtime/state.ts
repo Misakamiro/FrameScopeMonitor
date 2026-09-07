@@ -44,7 +44,6 @@ const listeners = new Set<PreviewListener>();
 let bus: ReturnType<typeof connectStateBus> | undefined;
 let timer: ReturnType<typeof setInterval> | undefined;
 let users = 0;
-let nativePending = false;
 export function getPreviewState(): PreviewState { return state; }
 export function subscribePreviewState(listener: PreviewListener) { listeners.add(listener); return () => { listeners.delete(listener); }; }
 export function mutatePreview(mutator: (draft: PreviewState) => void): void {
@@ -86,11 +85,13 @@ function tick() {
     } else if (monitor.phase === "stopping") monitor.phase = "generating";
     else if (monitor.phase === "generating") finishReport(next);
   });
-  const data = overlayFixture(state);
-  void emitPreviewEvent("vertical-overlay-data", data).catch(console.error);
-  if (isDesktop() && !nativePending) {
-    nativePending = true;
-    void nativeOperation("preview_set_hardware", { data }).catch(console.error).finally(() => { nativePending = false; });
+  if (isDesktop()) {
+    // Desktop: the host poller owns hardware data — it refreshes the overlay
+    // cache and emits vertical-overlay-data with real service snapshots, so
+    // the frontend no longer pushes fixtures on this path.
+  } else {
+    const data = overlayFixture(state);
+    void emitPreviewEvent("vertical-overlay-data", data).catch(console.error);
   }
 }
 export function startPreviewRuntime(): () => void {

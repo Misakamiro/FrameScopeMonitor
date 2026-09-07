@@ -63,3 +63,6 @@ desktop-preview/coverage/
 
 # Hardware service Rust build output
 src/hardware-service/target/
+
+# Local runtime logs
+host-stderr.log

@@ -13,32 +13,54 @@ const nativeCommands = new Set([
 ]);
 export async function invoke<T = unknown>(command: string, args: Record<string, any> = {}): Promise<T> {
   const state = getPreviewState();
+  // Desktop builds answer hardware/data commands from the real backend
+  // (FrameScopeHardwareService via the host); browser previews keep the
+  // fixture fallback so the UI stays developable without a backend.
+  const realBackend = isDesktop();
   let result: unknown;
   switch (command) {
-    case "get_system_locale": result = "zh-CN"; break;
-    case "get_system_username": result = "FrameScope UI Preview"; break;
+    case "get_system_locale":
+      if (realBackend) { result = await nativeOperation(command); break; }
+      result = "zh-CN"; break;
+    case "get_system_username":
+      if (realBackend) { result = await nativeOperation(command); break; }
+      result = "FrameScope UI Preview"; break;
     case "is_autostart_mode": result = false; break;
     case "get_hardware":
     case "get_hardware_info":
+      if (realBackend) { result = await nativeOperation("get_hardware"); break; }
       if (state.scenario === "failure") throw new Error("Simulated：硬件信息读取失败");
       result = hardwareFixture(state); break;
     case "get_all_sensors":
+      if (realBackend) { result = await nativeOperation("get_all_sensors"); break; }
       if (state.scenario === "failure") throw new Error("Simulated：传感器读取失败");
       result = sensorsFixture(state); break;
-    case "get_overlay_hardware_data": result = overlayFixture(state); break;
+    case "get_overlay_hardware_data":
+      if (realBackend) { result = await nativeOperation("get_overlay_hardware_data"); break; }
+      result = overlayFixture(state); break;
     case "get_memory_status": {
+      if (realBackend) { result = await nativeOperation("get_memory_status"); break; }
       const usage = overlayFixture(state).memory_usage;
       result = usage === null ? null : { total: 32768, used: 32768 * usage / 100, available: 32768 * (1 - usage / 100), usage_percent: usage };
       break;
     }
-    case "get_disk_status": result = state.scenario === "empty" ? null : { name: "Preview NVMe SSD", total_gb: 1000, used_gb: 420, available_gb: 580, usage_percent: 42 }; break;
-    case "is_nvidia_gpu": result = true; break;
+    case "get_disk_status":
+      if (realBackend) { result = await nativeOperation("get_disk_status"); break; }
+      result = state.scenario === "empty" ? null : { name: "Preview NVMe SSD", total_gb: 1000, used_gb: 420, available_gb: 580, usage_percent: 42 }; break;
+    case "is_nvidia_gpu":
+      if (realBackend) { result = await nativeOperation("is_nvidia_gpu"); break; }
+      result = true; break;
     case "set_active_gpu_index":
+      if (realBackend) { result = await nativeOperation("set_active_gpu_index", args); break; }
       if (!Number.isInteger(args.index) || args.index < 0 || args.index >= overlayFixture(state).gpu_sensors.length) throw new Error("GPU 索引超出范围");
       mutatePreview(next => { next.activeGpuIndex = args.index; });
       result = null; break;
-    case "clear_hardware_data": mutatePreview(next => { next.tick = 0; }); result = null; break;
-    case "get_overlay_current_settings": result = state.overlay.settings; break;
+    case "clear_hardware_data":
+      if (realBackend) { result = await nativeOperation("clear_hardware_data"); break; }
+      mutatePreview(next => { next.tick = 0; }); result = null; break;
+    case "get_overlay_current_settings":
+      if (realBackend) { result = await nativeOperation("get_overlay_current_settings"); break; }
+      result = state.overlay.settings; break;
     case "update_overlay_settings": {
       const settings = args.settings as OverlaySettings;
       if (!settings || !Array.isArray(settings.display_items) || !Number.isFinite(settings.opacity) || settings.opacity < 0 || settings.opacity > 255) throw new Error("无效悬浮窗设置");
@@ -62,7 +84,6 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     default:
       if (!nativeCommands.has(command)) throw new Error(`Unsupported preview command: ${command}`);
       if (command === "start_overlay_panel" && args.settings) await invoke("update_overlay_settings", args);
-      if (command === "export_hardware_report") args = { ...args, content: JSON.stringify(hardwareFixture(state), null, 2) };
       if (isDesktop()) result = await nativeOperation(command, args);
       else if (command === "get_overlay_panel_status") result = state.overlay.enabled;
       else if (command === "open_report_sample") { window.open("/samples/charts/framescope-interactive-report.html", "report-sample"); result = true; }
