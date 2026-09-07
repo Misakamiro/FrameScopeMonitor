@@ -344,6 +344,10 @@ internal static partial class FrameScopeNativeMonitor
                 var selectedPidExited = false;
                 var anyAliasRunning = true;
                 long aliasQuiescenceStartedMs = -1;
+                // The overlay's own snapshot stream: one hardware-samples.csv row
+                // per second so the report shows exactly what the user saw.
+                var hardwareRecorder = new FrameScopeHardwareSampleRecorder(paths.HardwareSamplesCsv);
+                hardwareRecorder.Start();
 
                 while (true)
                 {
@@ -457,6 +461,7 @@ internal static partial class FrameScopeNativeMonitor
                     }
                 }
                 captureLoopStopwatch.Stop();
+                hardwareRecorder.Stop();
                 WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
                 {
                     return "monitor-capture-loop-ms=" + captureLoopStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +

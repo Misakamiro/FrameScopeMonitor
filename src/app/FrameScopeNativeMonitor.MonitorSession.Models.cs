@@ -23,6 +23,7 @@ internal sealed class MonitorSessionPaths
     public string PresentMonStderr;
     public string PresentMonInfoPath;
     public string SamplesCsv;
+    public string HardwareSamplesCsv;
     public string CpuCoreSamplesCsv;
     public string CpuCoreTelemetryStatusPath;
     public string CpuVoltageSamplesCsv;

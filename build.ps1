@@ -359,6 +359,7 @@ $monitorSources = @(
     'src\app\FrameScopeNativeMonitor.MonitorSession.PresentMon.cs'
     'src\app\FrameScopeNativeMonitor.MonitorSession.ChildProcesses.cs'
     'src\app\FrameScopeNativeMonitor.MonitorSession.Status.cs'
+    'src\monitoring\FrameScopeHardwareServiceClient.cs'
 )
 $samplerSources = @(
     'src\core\FrameScopeTargetLifecycle.cs'
@@ -417,6 +418,7 @@ $hardwareProviderSources = @(
 $packagingOnlySources = @()
 
 $monitorReferences = @(
+    'System.Core.dll'
     'System.Windows.Forms.dll'
     'System.Drawing.dll'
     'System.Management.dll'

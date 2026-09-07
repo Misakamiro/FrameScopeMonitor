@@ -27,6 +27,7 @@ internal static partial class FrameScopeNativeMonitor
             PresentMonStderr = Path.Combine(runDir, "presentmon.stderr.log"),
             PresentMonInfoPath = Path.Combine(runDir, "presentmon-info.json"),
             SamplesCsv = Path.Combine(runDir, "system-samples.csv"),
+            HardwareSamplesCsv = Path.Combine(runDir, "hardware-samples.csv"),
             CpuCoreSamplesCsv = Path.Combine(runDir, "cpu-core-samples.csv"),
             CpuCoreTelemetryStatusPath = Path.Combine(runDir, "cpu-core-telemetry-status.json"),
             CpuVoltageSamplesCsv = Path.Combine(runDir, "cpu-voltage-samples.csv"),
