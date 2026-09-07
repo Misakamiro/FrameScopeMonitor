@@ -192,6 +192,37 @@ browser preview keeps every simulated path untouched.
   message in browser mode; a truly unknown command still fails with
   "Unsupported preview command".
 
+## Session 2026-09-08: data-consistency pass (hardware source unification)
+
+Goal: the report must record the same values the overlay displays. FPS stays
+dual-source by user decision (overlay ETW realtime vs PresentMon per-PID
+recording).
+
+- `src/hardware-service/src/main.rs`: the named pipe is now a multi-instance
+  accept loop - each client (Tauri host, capture worker) gets its own session
+  thread sharing the process-wide resident provider; the process exits only on
+  a global stop request. Handles are passed into session threads as usize
+  (raw pointers defeat the closure Send analysis even inside a Send wrapper).
+- New `src/monitoring/FrameScopeHardwareServiceClient.cs`: short-lived-connection
+  pipe client (connect 800ms, read 4s, auto-spawn the service from the app
+  directory when absent). Written for the in-box csc 4.0.30319 (C# 5: no
+  `using` nesting shorthand, no `when` filters, explicit lambdas - method
+  groups are ambiguous over Action/Func<T>).
+- `MonitorSession` starts a `FrameScopeHardwareSampleRecorder` when capture
+  begins: one hardware-samples.csv row per second with the overlay's own
+  snapshot fields (Time, CpuUsage/TempC/ClockMHz/PowerW/Voltage, GpuUtilPct/
+  TempC/PowerW/ClockMHz/MemClockMHz/VramUsedMiB/VramTotalMiB, MemoryUsedPct,
+  SsdTempC, GamePing). Paths/models/build.ps1 extended; System.Core reference
+  added to the monitor build.
+- ReportGenerator: `MergeHardwareOverlaySamples` overlays each system-samples
+  row's GPU columns with the nearest hardware-samples row within two seconds
+  (non-null fields only), so GPU stats/charts share the overlay's data source
+  instead of nvidia-smi. 21-column contract, fingerprints, and older runs are
+  untouched.
+- Live-verified: a cmd.exe capture round produced 76 hardware-samples rows and
+  a regenerated report whose GPU series (37/37/36/36/39...) matched the
+  hardware-samples LHM values, while nvidia-smi had recorded 2%.
+
 ## Delivery boundary
 Standalone FrameScope UI Preview. Real window behavior; hardware data now
 served by the real FrameScopeHardwareService chain (M0–M2). Business flows
