@@ -58,6 +58,9 @@ internal static partial class FrameScopeReportGenerator
 
         PresentReadResult present = ReadPresentMon(Path.Combine(runDir, "presentmon.csv"));
         List<SystemRow> systemRows = ReadSystem(Path.Combine(runDir, "system-samples.csv"));
+        // The GPU columns come from the hardware-service snapshot stream (the
+        // overlay's own data source) when hardware-samples.csv exists.
+        int overlayMergedRows = MergeHardwareOverlaySamples(systemRows, Path.Combine(runDir, "hardware-samples.csv"));
         string processPath = Path.Combine(runDir, "process-samples.csv");
         int timeShiftHours;
         List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(present.Frames, systemRows, out timeShiftHours);

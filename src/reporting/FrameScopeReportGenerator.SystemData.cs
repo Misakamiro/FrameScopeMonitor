@@ -46,6 +46,46 @@ internal static partial class FrameScopeReportGenerator
         return rows;
     }
 
+    /// Overlays the GPU columns of systemRows with hardware-samples.csv values
+    /// (the same hardware-service snapshot the overlay displays). Each system
+    /// row inherits the nearest overlay row's non-null GPU fields within a
+    /// two-second window; system data stays untouched otherwise. Returns the
+    /// number of system rows that received overlay values.
+    private static int MergeHardwareOverlaySamples(List<SystemRow> systemRows, string path)
+    {
+        if (systemRows == null || systemRows.Count == 0 || !File.Exists(path)) return 0;
+        List<SystemRow> overlayRows = ReadSystem(path);
+        if (overlayRows.Count == 0) return 0;
+
+        var merged = 0;
+        foreach (SystemRow row in systemRows)
+        {
+            SystemRow nearest = null;
+            var nearestDelta = Double.MaxValue;
+            foreach (SystemRow candidate in overlayRows)
+            {
+                var delta = Math.Abs((candidate.Time - row.Time).TotalSeconds);
+                if (delta < nearestDelta)
+                {
+                    nearestDelta = delta;
+                    nearest = candidate;
+                }
+            }
+            if (nearest == null || nearestDelta > 2.0) continue;
+
+            var applied = false;
+            if (nearest.Gpu.HasValue) { row.Gpu = nearest.Gpu; applied = true; }
+            if (nearest.GpuTemp.HasValue) { row.GpuTemp = nearest.GpuTemp; applied = true; }
+            if (nearest.GpuClock.HasValue) { row.GpuClock = nearest.GpuClock; applied = true; }
+            if (nearest.MemClock.HasValue) { row.MemClock = nearest.MemClock; applied = true; }
+            if (nearest.Power.HasValue) { row.Power = nearest.Power; applied = true; }
+            if (nearest.VramUsedMiB.HasValue) { row.VramUsedMiB = nearest.VramUsedMiB; applied = true; }
+            if (nearest.VramTotalMiB.HasValue) { row.VramTotalMiB = nearest.VramTotalMiB; applied = true; }
+            if (applied) merged++;
+        }
+        return merged;
+    }
+
     private static Dictionary<string, object> SeriesFromSystem(List<SystemRow> rows, DateTime start, double? totalMemoryMb)
     {
         List<double> t = new List<double>();
