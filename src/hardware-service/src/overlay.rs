@@ -59,6 +59,17 @@ struct SensorRow<'a> {
     value: f64,
 }
 
+/// LibreHardwareMonitor values carry f32 precision noise (11.279999732971191);
+/// the UI renders them directly, so keep one decimal for percent/temperature
+/// and two for clocks/power/voltages/VRAM.
+fn r1(value: Option<f64>) -> Option<f64> {
+    value.map(|v| (v * 10.0).round() / 10.0)
+}
+
+fn r2(value: Option<f64>) -> Option<f64> {
+    value.map(|v| (v * 100.0).round() / 100.0)
+}
+
 fn contains(haystack: &str, needle: &str) -> bool {
     haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
 }
@@ -154,15 +165,15 @@ pub fn build_overlay_data(
             GpuSensorData {
                 name: (*gpu).to_string(),
                 hardware_type: per_gpu.first().map(|row| row.hardware_type).unwrap_or("").to_string(),
-                temperature: sensor_value(&per_gpu, "Temperature", "", &["GPU Core", "GPU Hot Spot", "GPU"]),
-                usage: sensor_value(&per_gpu, "Load", "", &["GPU Core", "GPU"]),
-                fan_speed: sensor_value(&per_gpu, "Fan", "", &["GPU"]),
-                power: sensor_value(&per_gpu, "Power", "", &["GPU Power", "GPU"]),
-                clock: sensor_value(&per_gpu, "Clock", "", &["GPU Core", "GPU"]),
-                memory_clock: sensor_value(&per_gpu, "Clock", "", &["GPU Memory"]),
-                vram_used: sensor_value(&per_gpu, "SmallData", "", &["GPU Memory Used"]).map(|mb| mb / 1024.0),
-                vram_total: sensor_value(&per_gpu, "SmallData", "", &["GPU Memory Total"]).map(|mb| mb / 1024.0),
-                voltage: sensor_value(&per_gpu, "Voltage", "", &["GPU VDDC", "GPU Voltage", "GPU Core"]),
+                temperature: r1(sensor_value(&per_gpu, "Temperature", "", &["GPU Core", "GPU Hot Spot", "GPU"])),
+                usage: r1(sensor_value(&per_gpu, "Load", "", &["GPU Core", "GPU"])),
+                fan_speed: sensor_value(&per_gpu, "Fan", "", &["GPU"]).map(|v| v.round()),
+                power: r2(sensor_value(&per_gpu, "Power", "", &["GPU Power", "GPU"])),
+                clock: sensor_value(&per_gpu, "Clock", "", &["GPU Core", "GPU"]).map(|v| v.round()),
+                memory_clock: sensor_value(&per_gpu, "Clock", "", &["GPU Memory"]).map(|v| v.round()),
+                vram_used: r2(sensor_value(&per_gpu, "SmallData", "", &["GPU Memory Used"]).map(|mb| mb / 1024.0)),
+                vram_total: r2(sensor_value(&per_gpu, "SmallData", "", &["GPU Memory Total"]).map(|mb| mb / 1024.0)),
+                voltage: r2(sensor_value(&per_gpu, "Voltage", "", &["GPU VDDC", "GPU Voltage", "GPU Core"])),
             }
         })
         .collect();
@@ -181,17 +192,19 @@ pub fn build_overlay_data(
         (Some(used), Some(total)) if total > 0.0 => Some((used / total * 100.0).clamp(0.0, 100.0)),
         _ => None,
     };
+    let ssd_temp = sensor_value(&rows, "Temperature", "storage", &[])
+        .or_else(|| sensor_value(&rows, "Temperature", "storage", &["Drive", "SSD"]));
 
     OverlayData {
-        fps: fps.0,
-        fps_1low: fps.1,
-        fps_01low: fps.2,
-        cpu_usage: dynamic_value(snapshot, "cpuUsage"),
-        cpu_temp: dynamic_value(snapshot, "cpuTemperature"),
-        cpu_clock: dynamic_value(snapshot, "cpuFrequency"),
-        cpu_power: dynamic_value(snapshot, "cpuPower"),
-        cpu_voltage: sensor_value(&rows, "Voltage", "cpu", &["Vcore", "VBcore", "CPU Vcore"]),
-        cpu_fan_speed: sensor_value(&rows, "Fan", "", &["CPU"]),
+        fps: fps.0.map(|v| (v * 10.0).round() / 10.0),
+        fps_1low: fps.1.map(|v| (v * 10.0).round() / 10.0),
+        fps_01low: fps.2.map(|v| (v * 10.0).round() / 10.0),
+        cpu_usage: r1(dynamic_value(snapshot, "cpuUsage")),
+        cpu_temp: r1(dynamic_value(snapshot, "cpuTemperature")),
+        cpu_clock: dynamic_value(snapshot, "cpuFrequency").map(|v| v.round()),
+        cpu_power: r2(dynamic_value(snapshot, "cpuPower")),
+        cpu_voltage: r2(sensor_value(&rows, "Voltage", "cpu", &["Vcore", "VBcore", "CPU Vcore"])),
+        cpu_fan_speed: sensor_value(&rows, "Fan", "", &["CPU"]).map(|v| v.round()),
         gpu_temp: active.and_then(|gpu| gpu.temperature),
         gpu_usage: active.and_then(|gpu| gpu.usage),
         gpu_fan_speed: active.and_then(|gpu| gpu.fan_speed),
@@ -199,8 +212,8 @@ pub fn build_overlay_data(
         gpu_clock: active.and_then(|gpu| gpu.clock),
         gpu_voltage: active.and_then(|gpu| gpu.voltage),
         gpu_memory_clock: active.and_then(|gpu| gpu.memory_clock),
-        memory_usage,
-        ssd_temp: sensor_value(&rows, "Temperature", "storage", &[]).or_else(|| sensor_value(&rows, "Temperature", "storage", &["Drive", "SSD"])),
+        memory_usage: r1(memory_usage),
+        ssd_temp: r1(ssd_temp),
         delta_password: None,
         game_ping: ping,
         gpu_vram_used: active.and_then(|gpu| gpu.vram_used),

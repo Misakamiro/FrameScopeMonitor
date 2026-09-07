@@ -194,14 +194,33 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
                 return Err("Overlay size outside preview limits".into());
             }
             let was_active = active(&app);
-            stop_windows(&app)?;
-            overlay_panel::update_settings(settings.clone())?;
-            save_native_settings(&app)?;
-            if was_active {
-                spawn_job(&app, |app| {
-                    let _lock = OVERLAY_OPERATION.lock().unwrap();
-                    if let Err(e) = start_selected(app) { eprintln!("update_overlay_settings restart: {e}"); }
-                });
+            if settings.style == "vertical_panel" {
+                // The vertical panel is a webview that applies the new settings
+                // live from the emitted event (and re-measures its size via
+                // resize_vertical_overlay). Tearing the window down here would
+                // race its async destroy and the rebuild would fail with a
+                // duplicate-label error — the panel would just vanish.
+                let was_vertical = overlay_panel::get_or_init_settings().style == "vertical_panel";
+                overlay_panel::update_settings(settings.clone())?;
+                save_native_settings(&app)?;
+                if was_active && !was_vertical {
+                    // Style switched GDI → vertical: retire the GDI panel and
+                    // open the webview panel (open_vertical stops the GDI one).
+                    spawn_job(&app, |app| {
+                        let _lock = OVERLAY_OPERATION.lock().unwrap();
+                        if let Err(e) = start_selected(app) { eprintln!("update_overlay_settings switch: {e}"); }
+                    });
+                }
+            } else {
+                stop_windows(&app)?;
+                overlay_panel::update_settings(settings.clone())?;
+                save_native_settings(&app)?;
+                if was_active {
+                    spawn_job(&app, |app| {
+                        let _lock = OVERLAY_OPERATION.lock().unwrap();
+                        if let Err(e) = start_selected(app) { eprintln!("update_overlay_settings restart: {e}"); }
+                    });
+                }
             }
             app.emit("vertical-overlay-settings", settings).map_err(|e| e.to_string())?;
         }
