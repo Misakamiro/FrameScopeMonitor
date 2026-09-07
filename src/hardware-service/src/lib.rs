@@ -59,7 +59,7 @@ struct ResidentState {
     provider: Mutex<ResidentProvider>,
     last_payload: Mutex<Option<serde_json::Value>>,
     last_real_read: Mutex<Option<Instant>>,
-    overlay_cache: Mutex<Option<overlay::OverlayData>>,
+    overlay_cache: Mutex<Option<(overlay::OverlayData, Instant)>>,
     active_gpu: AtomicUsize,
     throttle: Mutex<Duration>,
 }
@@ -239,10 +239,13 @@ fn capture_snapshot(state: &ServiceState, method: &str) -> serde_json::Value {
     }
 }
 
-/// Aggregated overlay snapshot. On provider trouble the last good overlay data
-/// is served so the overlay does not blink (NexBox behavior); with no data at
-/// all the all-null default is returned — never synthetic numbers.
+/// Aggregated overlay snapshot. Carry-forward (field-level OR merge against
+/// the previous snapshot) is only applied while the previous sample is fresh
+/// (≤5s old) — without that bound a retired sensor or an exited game would
+/// keep serving its last value forever. Stale/failing paths return nulls
+/// (fail-closed), never synthetic numbers.
 fn overlay_data_response(state: &ServiceState) -> serde_json::Value {
+    const OVERLAY_FRESH: Duration = Duration::from_secs(5);
     let res = resident();
     let data = match read_snapshot(state) {
         Ok(payload) => {
@@ -250,19 +253,22 @@ fn overlay_data_response(state: &ServiceState) -> serde_json::Value {
             let mut data =
                 overlay::build_overlay_data(&payload, fps_sample(), ping_sample(), requested);
             let mut cache = res.overlay_cache.lock().unwrap();
-            if let Some(old) = cache.as_ref() {
-                overlay::merge_overlay(&mut data, old);
+            if let Some((old, at)) = cache.as_ref() {
+                if at.elapsed() <= OVERLAY_FRESH {
+                    overlay::merge_overlay(&mut data, old);
+                }
             }
-            *cache = Some(data.clone());
+            *cache = Some((data.clone(), Instant::now()));
             data
         }
         Err(error) => {
             eprintln!("framescope-hardware-service: overlay read failed: {error}");
-            res.overlay_cache
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or_default()
+            let cached = res.overlay_cache.lock().unwrap().clone();
+            match cached {
+                // Serve the last good snapshot only while it is fresh.
+                Some((old, at)) if at.elapsed() <= OVERLAY_FRESH => old,
+                _ => overlay::OverlayData::default(),
+            }
         }
     };
     serde_json::to_value(&data).unwrap_or(serde_json::Value::Null)

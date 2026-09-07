@@ -27,7 +27,7 @@ import {
   useDisclosure,
 } from "@chakra-ui/react";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
@@ -364,12 +364,10 @@ export default function OverlayPanelPage() {
   }, []);
 
   useEffect(() => {
-    let requestId = 0;
     const interval = setInterval(() => {
-      const currentRequestId = ++requestId;
-      loadHardwareData(currentRequestId);
-    }, 1000);
-    return () => clearInterval(interval);
+      hardwareRequestIdRef.current += 1;
+      loadHardwareData(hardwareRequestIdRef.current);
+    }, 1000);    return () => clearInterval(interval);
   }, []);
 
   const loadStatus = async () => {
@@ -381,34 +379,37 @@ export default function OverlayPanelPage() {
     }
   };
 
+  const hardwareRequestIdRef = useRef(0);
   const loadHardwareData = async (requestId: number) => {
     try {
       const data = await invoke<HardwareData>("get_overlay_hardware_data");
-      setHardwareData(prev => {
-        return {
-          fps: data.fps ?? prev.fps,
-          fps_1low: data.fps_1low ?? prev.fps_1low,
-          fps_01low: data.fps_01low ?? prev.fps_01low,
-          cpu_usage: data.cpu_usage ?? prev.cpu_usage,
-          cpu_temp: data.cpu_temp ?? prev.cpu_temp,
-          cpu_clock: data.cpu_clock ?? prev.cpu_clock,
-          cpu_voltage: data.cpu_voltage ?? prev.cpu_voltage,
-          cpu_power: data.cpu_power ?? prev.cpu_power,
-          cpu_fan_speed: data.cpu_fan_speed ?? prev.cpu_fan_speed,
-          gpu_temp: data.gpu_temp ?? prev.gpu_temp,
-          gpu_usage: data.gpu_usage ?? prev.gpu_usage,
-          gpu_fan_speed: data.gpu_fan_speed ?? prev.gpu_fan_speed,
-          gpu_power: data.gpu_power ?? prev.gpu_power,
-          gpu_clock: data.gpu_clock ?? prev.gpu_clock,
-          gpu_voltage: data.gpu_voltage ?? prev.gpu_voltage,
-          gpu_memory_clock: data.gpu_memory_clock ?? prev.gpu_memory_clock,
-          memory_usage: data.memory_usage ?? prev.memory_usage,
-          ssd_temp: data.ssd_temp ?? prev.ssd_temp,
-          delta_password: data.delta_password ?? prev.delta_password,
-          game_ping: data.game_ping ?? prev.game_ping,
-          gpu_vram_used: data.gpu_vram_used ?? prev.gpu_vram_used,
-          gpu_vram_total: data.gpu_vram_total ?? prev.gpu_vram_total,
-        };
+      // Replace wholesale: null means the value is genuinely unavailable
+      // right now, so it must reach the UI as "--" instead of freezing on
+      // the last nonzero reading.
+      if (requestId < hardwareRequestIdRef.current) return; // stale response
+      setHardwareData({
+        fps: data.fps ?? null,
+        fps_1low: data.fps_1low ?? null,
+        fps_01low: data.fps_01low ?? null,
+        cpu_usage: data.cpu_usage ?? null,
+        cpu_temp: data.cpu_temp ?? null,
+        cpu_clock: data.cpu_clock ?? null,
+        cpu_voltage: data.cpu_voltage ?? null,
+        cpu_power: data.cpu_power ?? null,
+        cpu_fan_speed: data.cpu_fan_speed ?? null,
+        gpu_temp: data.gpu_temp ?? null,
+        gpu_usage: data.gpu_usage ?? null,
+        gpu_fan_speed: data.gpu_fan_speed ?? null,
+        gpu_power: data.gpu_power ?? null,
+        gpu_clock: data.gpu_clock ?? null,
+        gpu_voltage: data.gpu_voltage ?? null,
+        gpu_memory_clock: data.gpu_memory_clock ?? null,
+        memory_usage: data.memory_usage ?? null,
+        ssd_temp: data.ssd_temp ?? null,
+        delta_password: data.delta_password ?? null,
+        game_ping: data.game_ping ?? null,
+        gpu_vram_used: data.gpu_vram_used ?? null,
+        gpu_vram_total: data.gpu_vram_total ?? null,
       });
     } catch (error) {
       console.error("Failed to load hardware data:", error);

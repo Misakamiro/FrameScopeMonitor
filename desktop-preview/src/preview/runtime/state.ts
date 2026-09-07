@@ -101,6 +101,9 @@ function tick() {
 
 let desktopSyncBusy = false;
 let targetsSynced = false;
+// Watcher CompletedRuns when the current capture began; used to tell a real
+// finished run (report regenerated) from an abnormally exited watcher.
+let completedRunsBaseline: number | null = null;
 
 function mapBackendReport(raw: any): PreviewReport {
   const kind = ["full", "partial", "diagnostic", "error"].includes(raw?.kind) ? raw.kind : "full";
@@ -118,7 +121,7 @@ async function syncDesktopMonitor(): Promise<void> {
   if (desktopSyncBusy) return;
   desktopSyncBusy = true;
   try {
-    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number }>("monitor_status");
+    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; completedRuns?: number }>("monitor_status");
     mutatePreview(next => {
       const monitor = next.monitor;
       // The backend watcher is the source of truth for capture state; local
@@ -134,10 +137,18 @@ async function syncDesktopMonitor(): Promise<void> {
         if (monitor.phase !== "waiting") {
           Object.assign(monitor, { ...initial().monitor, phase: "waiting" });
         }
+        if (completedRunsBaseline == null && typeof status.completedRuns === "number") {
+          completedRunsBaseline = status.completedRuns;
+        }
       } else if (["waiting", "capturing", "stopping", "generating"].includes(monitor.phase)) {
-        // Watcher gone or idle: the run ended and the backend wrote the report.
-        monitor.phase = "completed";
+        // Watcher gone or idle: the run ended. A report means a real finished
+        // run; no new report means the pipeline died abnormally.
         void refreshDesktopReports();
+        const base = completedRunsBaseline ?? status.completedRuns ?? 0;
+        const hadNewReport = typeof status.completedRuns === "number" && status.completedRuns > base;
+        monitor.phase = hadNewReport ? "completed" : "error";
+        monitor.error = hadNewReport ? null : "采集进程异常退出，未能生成报告";
+        completedRunsBaseline = null;
       }
     });
   } catch { /* backend not deployed: keep whatever local phase is running. */ }

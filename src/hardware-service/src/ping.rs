@@ -3,7 +3,7 @@
 //! leave the last value untouched so the overlay does not blink; with no
 //! successful probe yet the value stays null (fail-closed, never faked).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -11,8 +11,12 @@ use std::time::Duration;
 pub const PING_HOST: &str = "game.qq.com";
 const PING_INTERVAL: Duration = Duration::from_secs(2);
 const PING_TIMEOUT_MS: u32 = 1000;
+/// After this many consecutive failed probes the last value is retired
+/// (fail-closed: a dead connection must not freeze a stale ping on screen).
+const FAIL_RETIRED_LIMIT: u32 = 5;
 
 static LAST_PING: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+static FAIL_STREAK: AtomicU32 = AtomicU32::new(0);
 static THREAD_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Lazily starts the resident ping thread; safe to call on every request.
@@ -23,9 +27,19 @@ pub fn ensure_started() {
     let started = thread::Builder::new().name("framescope-ping".into()).spawn(|| {
         loop {
             let rtt = probe_once();
-            if let Ok(mut last) = LAST_PING.get_or_init(|| Mutex::new(None)).lock() {
-                if rtt.is_some() {
-                    *last = rtt;
+            let last = LAST_PING.get_or_init(|| Mutex::new(None));
+            if let Ok(mut guard) = last.lock() {
+                match rtt {
+                    Some(value) => {
+                        FAIL_STREAK.store(0, Ordering::Relaxed);
+                        *guard = Some(value);
+                    }
+                    None => {
+                        let streak = FAIL_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+                        if streak >= FAIL_RETIRED_LIMIT {
+                            *guard = None;
+                        }
+                    }
                 }
             }
             thread::sleep(PING_INTERVAL);

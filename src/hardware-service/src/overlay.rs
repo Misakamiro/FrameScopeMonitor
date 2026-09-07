@@ -110,9 +110,10 @@ fn find_sensor<'a>(
     hardware_type: &str,
     names: &[&str],
 ) -> Option<&'a SensorRow<'a>> {
-    // Preferred: sensor type + hardware class + any of the name hints.
-    // Fallback: first sensor of that type within the hardware class, so an
-    // empty name list (or unexpected sensor naming) still yields a value.
+    // Strict matching: the sensor type, hardware class and one of the name
+    // hints must all agree. Deliberately NO "first sensor of that type"
+    // fallback — a loose fallback used to match chassis fans as the CPU fan
+    // and GPU memory temperature as the GPU temperature.
     rows.iter()
         .find(|row| {
             contains(row.sensor_type, sensor_type)
@@ -120,12 +121,6 @@ fn find_sensor<'a>(
                 && names
                     .iter()
                     .any(|name| contains(&format!("{} {}", row.hardware, row.name), name))
-        })
-        .or_else(|| {
-            rows.iter().find(|row| {
-                contains(row.sensor_type, sensor_type)
-                    && (hardware_type.is_empty() || contains(row.hardware_type, hardware_type))
-            })
         })
 }
 

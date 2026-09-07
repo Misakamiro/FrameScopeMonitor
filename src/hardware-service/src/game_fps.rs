@@ -944,6 +944,9 @@ fn process_tracker_loop() {
                     now - last_frame
                 );
                 SMOOTHED_FPS.store(0, Ordering::Relaxed);
+                // 过期同时清掉低分位，避免悬浮框长期滞留上一局的 1%/0.1% Low。
+                ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
+                ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
             }
         }
 
