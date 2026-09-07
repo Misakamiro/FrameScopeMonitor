@@ -424,8 +424,8 @@ pub fn monitor_status() -> Result<Value, String> {
 }
 
 /// `Counter-Strike-2-20260907-142530-p1234-ab12` -> unix seconds. The C#
-/// pipeline encodes local time; elapsed math treats it as UTC which matches
-/// wall-clock deltas as long as no DST boundary is crossed.
+/// pipeline encodes *local* wall-clock time; convert it with the actual local
+/// offset so the result compares against real file mtimes.
 fn parse_run_timestamp(name: &str) -> Option<u64> {
     let segments: Vec<&str> = name.split('-').collect();
     if segments.len() < 3 {
@@ -437,25 +437,16 @@ fn parse_run_timestamp(name: &str) -> Option<u64> {
     if date.len() != 8 || time.len() != 6 {
         return None;
     }
-    let (y, mo, d) = (
-        date[0..4].parse::<i64>().ok()?,
-        date[4..6].parse::<i64>().ok()?,
-        date[6..8].parse::<i64>().ok()?,
-    );
-    let (h, mi, s) = (
-        time[0..2].parse::<i64>().ok()?,
-        time[2..4].parse::<i64>().ok()?,
-        time[4..6].parse::<i64>().ok()?,
-    );
-    // Days since epoch for a proleptic Gregorian date (Hinnant's algorithm).
-    let y_adj = if mo <= 2 { y - 1 } else { y };
-    let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
-    let yoe = y_adj - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some((days * 86_400 + h * 3_600 + mi * 60 + s) as u64)
+    let naive = chrono::NaiveDateTime::parse_from_str(
+        &format!("{} {}", date, time),
+        "%Y%m%d %H%M%S",
+    )
+    .ok()?;
+    use chrono::TimeZone;
+    chrono::Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|datetime| datetime.timestamp().max(0) as u64)
 }
 
 fn now_unix() -> i64 {
