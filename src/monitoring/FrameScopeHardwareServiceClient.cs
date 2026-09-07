@@ -124,9 +124,11 @@ internal sealed class FrameScopeHardwareSampleRecorder
 {
     private static readonly string[] Header =
     {
+        // Column names after "Time" for the GPU block intentionally match the
+        // system-samples.csv GPU columns so the report merge can overlay them.
         "Time", "CpuUsage", "CpuTempC", "CpuClockMHz", "CpuPowerW", "CpuVoltage",
-        "GpuUtilPct", "GpuTempC", "GpuPowerW", "GpuClockMHz", "GpuMemClockMHz",
-        "GpuVramUsedMiB", "GpuVramTotalMiB", "MemoryUsedPct", "SsdTempC", "GamePing"
+        "GpuUtilPct", "GpuTempC", "PowerW", "GpuClockMHz", "MemClockMHz",
+        "VramUsedMiB", "VramTotalMiB", "MemoryUsedPct", "SsdTempC", "GamePing"
     };
 
     private readonly string _csvPath;

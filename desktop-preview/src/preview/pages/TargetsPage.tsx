@@ -7,7 +7,7 @@ import { Search, Plus, Pencil, Trash2 } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, useFloatingFieldStyle } from "./shared";
-import { invoke } from "@tauri-apps/api/core";
+import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
 import type { PreviewTarget } from "@/preview/runtime";
 
 const fallbackProcesses = ["cs2.exe", "VALORANT-Win64-Shipping.exe", "TslGame.exe", "GamePreview.exe"];
@@ -18,18 +18,22 @@ export default function TargetsPage() {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Partial<PreviewTarget> | null>(null);
   const [removing, setRemoving] = useState<PreviewTarget | null>(null);
-  // Real backend: window-titled processes first (same shape as the preview
-  // list); browser previews keep the static examples.
-  const [processes, setProcesses] = useState<string[]>(fallbackProcesses);
+  // Desktop: real window-titled process enumeration (fallback examples only
+  // apply to the browser preview, and a load failure surfaces in the UI
+  // instead of silently masquerading as real data).
+  const [processes, setProcesses] = useState<string[]>(isDesktop() ? [] : fallbackProcesses);
+  const [processesUnavailable, setProcessesUnavailable] = useState(false);
   useEffect(() => {
+    if (!isDesktop()) return;
     let cancelled = false;
-    invoke<{ processes: Array<{ processName: string }> }>("processes_refresh", { query: "" })
+    backendInvoke<{ processes: Array<{ processName: string }> }>("processes_refresh", { query: "" })
       .then(payload => {
         if (cancelled) return;
         const names = (payload.processes ?? []).map(p => p.processName).filter(Boolean);
         if (names.length) setProcesses(names);
+        else setProcessesUnavailable(true);
       })
-      .catch(() => { /* browser preview or backend undeployed: keep examples */ });
+      .catch(() => { if (!cancelled) setProcessesUnavailable(true); });
     return () => { cancelled = true; };
   }, []);
   const busy = ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);

@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, formatMetric, useFloatingFieldStyle } from "./shared";
-import { isDesktop } from "@/preview/runtime/platform";
+import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
 import { refreshDesktopReports } from "@/preview/runtime/state";
 const labels = { full: "完整", partial: "部分数据", diagnostic: "诊断", error: "失败" };
 const colors = { full: "green", partial: "yellow", diagnostic: "blue", error: "red" };
@@ -32,14 +32,14 @@ export default function ReportsPage() {
   const open = async () => {
     try {
       setOpenError("");
-      if (isDesktop() && report?.runDir) await invoke("report_open", { id: report.id });
+      if (isDesktop() && report?.runDir) await backendInvoke("report_open", { id: report.id });
       else await invoke("open_report_sample");
     } catch (cause) { setOpenError(String(cause)); }
   };
   const openDirectory = async () => {
     try {
       setOpenError("");
-      if (isDesktop() && report?.runDir) await invoke("report_open_directory", { id: report.id });
+      if (isDesktop() && report?.runDir) await backendInvoke("report_open_directory", { id: report.id });
       else setDirectory(true);
     } catch (cause) { setOpenError(String(cause)); }
   };
