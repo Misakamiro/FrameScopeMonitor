@@ -192,7 +192,7 @@ function getItemValue(item: DisplayItemConfig, data: HardwareData | null): strin
       return data.gpu_voltage != null ? `${data.gpu_voltage.toFixed(2)}V` : "--";
     case "gpu_vram":
       if (data.gpu_vram_used != null && data.gpu_vram_total != null) {
-        return `${data.gpu_vram_used}/${data.gpu_vram_total}MB`;
+        return `${data.gpu_vram_used}/${data.gpu_vram_total}GB`;
       }
       return "--";
     case "gpu_memory_clock":

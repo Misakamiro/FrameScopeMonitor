@@ -755,11 +755,11 @@ mod win32 {
                     items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
                 }
                 "gpu_vram" => {
+                    // The hardware service already reports VRAM in GB (the
+                    // NexBox upstream feed was MiB, hence the old /1024 here).
                     let val = match (data.gpu_vram_used, data.gpu_vram_total) {
                         (Some(used), Some(total)) => {
-                            let used_gb = used as f64 / 1024.0;
-                            let total_gb = total as f64 / 1024.0;
-                            format!("{:.1}G/{:.1}G", used_gb, total_gb)
+                            format!("{:.1}G/{:.1}G", used as f64, total as f64)
                         }
                         _ => "--G/--G".to_string(),
                     };
