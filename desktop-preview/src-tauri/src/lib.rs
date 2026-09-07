@@ -3,6 +3,7 @@ mod tests;
 mod backend;
 mod hardware_service;
 mod overlay_panel;
+mod pawnio;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -24,6 +25,9 @@ const COMMANDS: &[&str] = &[
     "targets_get", "targets_save", "processes_refresh",
     "monitor_start", "monitor_stop", "monitor_status",
     "reports_list", "report_open", "report_open_directory", "report_regenerate",
+    // PawnIO driver detection / install / uninstall.
+    "check_pawnio_status", "install_pawnio_driver", "uninstall_pawnio_driver",
+    "restart_monitor_process",
 ];
 fn ensure_allowed(command: &str) -> Result<(), String> {
     if COMMANDS.contains(&command) { Ok(()) } else { Err(format!("Unsupported preview command: {command}")) }
@@ -188,6 +192,32 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
             });
             return receiver.recv().map_err(|_| "report generation worker died".to_string())?;
         }
+        // ---- PawnIO driver ----
+        "check_pawnio_status" => return Ok(pawnio::status()),
+        "install_pawnio_driver" => {
+            // The installer runs elevated (UAC prompt) and blocks; worker thread.
+            // The modal expects the plain strings "success"/"already_installed".
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = pawnio::install().and_then(|value| {
+                    value["result"]
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "unexpected installer result".to_string())
+                });
+                let _ = sender.send(result);
+            });
+            let result = receiver.recv().map_err(|_| "pawnio worker died".to_string())?;
+            return Ok(json!(result));
+        }
+        "uninstall_pawnio_driver" => {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(pawnio::uninstall());
+            });
+            return receiver.recv().map_err(|_| "pawnio worker died".to_string())?;
+        }
+        "restart_monitor_process" => { hardware_service::call("restart_provider", json!({}))?; }
 
         // ---- Preview-side-effect commands ----
         "preview_set_hardware" => {

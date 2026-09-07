@@ -11,7 +11,14 @@ describe("isolated preview runtime", () => {
   afterEach(() => { stop?.(); stop = undefined; vi.useRealTimers(); });
 
   it("rejects unsupported commands and never delegates hardware reads", async () => {
-    await expect(invoke("install_pawnio_driver")).rejects.toThrow("Unsupported preview command");
+    // install_pawnio_driver became a real desktop command (M4); a command
+    // that is still unknown to both layers must keep failing loudly.
+    await expect(invoke("install_pawnio_driver")).rejects.toThrow(
+      "Native window operation requires desktop",
+    );
+    await expect(invoke("definitely_not_a_command")).rejects.toThrow(
+      "Unsupported preview command",
+    );
     expect(await invoke("get_system_locale")).toBe("zh-CN");
     expect(await invoke("is_autostart_mode")).toBe(false);
   });

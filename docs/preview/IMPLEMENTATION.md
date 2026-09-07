@@ -170,6 +170,28 @@ browser preview keeps every simulated path untouched.
   (18.7k process-sample rows) with history entry; the report page listed the
   real run and the watcher auto-opened the interactive HTML report.
 
+## Session 2026-09-07 (round 6): hardening (M4)
+
+- Admin manifest: `build.rs` overrides the Windows manifest via
+  `tauri_build::WindowsAttributes::app_manifest` with `requireAdministrator`
+  (ETW capture, driver-backed LHM sensors and PawnIO need elevation; spawned
+  children inherit the token) plus `PerMonitorV2` DPI awareness. The override
+  MUST keep Tauri's default `Microsoft.Windows.Common-Controls` dependency —
+  a manifest without it SxS-fails ("无法找到入口"/parallel-config) or hangs
+  the process at 4.6MB; a self `assemblyIdentity` also breaks SxS.
+- PawnIO: new `pawnio.rs` + commands `check_pawnio_status` (uninstall
+  registry key), `install_pawnio_driver` / `uninstall_pawnio_driver`
+  (elevated PawnIO_setup.exe from `dependencies\PawnIO\` — not redistributed
+  in the current build, so they fail closed with a clear message),
+  `restart_monitor_process` → hardware-service `restart_provider`. The
+  frontend PawnioInstallModal (HardwarePage) now reaches the real backend.
+- Settings: the fixture-scenario card is hidden on desktop (real backend has
+  no scenarios); About text updated to reflect the real pipeline. Browser
+  preview keeps the scenario switch and fixtures.
+- Test updated: `install_pawnio_driver` now expects the desktop-only refusal
+  message in browser mode; a truly unknown command still fails with
+  "Unsupported preview command".
+
 ## Delivery boundary
 Standalone FrameScope UI Preview. Real window behavior; hardware data now
 served by the real FrameScopeHardwareService chain (M0–M2). Business flows

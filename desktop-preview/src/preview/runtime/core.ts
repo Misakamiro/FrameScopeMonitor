@@ -10,6 +10,7 @@ const nativeCommands = new Set([
   "vertical_overlay_ready", "open_vertical_overlay", "stop_vertical_overlay", "minimize_to_tray", "exit_app",
   "export_hardware_report",
   "open_report_sample",
+  "check_pawnio_status", "install_pawnio_driver", "uninstall_pawnio_driver", "restart_monitor_process",
 ]);
 
 // Commands that only exist on the real backend live in platform.ts

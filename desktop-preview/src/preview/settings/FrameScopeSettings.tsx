@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Box, Heading, Text, VStack, HStack, Input, NumberInput, NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, Switch, Button, Select, FormControl, FormLabel } from "@chakra-ui/react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { usePreviewState, usePreviewAction, ActionError } from "../pages/shared";
+import { isDesktop } from "../runtime/platform";
 import type { PreviewScenario } from "../runtime";
 export function FrameScopeSettings() {
   const state = usePreviewState();
@@ -25,12 +26,14 @@ export function FrameScopeSettings() {
           {saved && <Text role="status" fontSize="sm" color="teal.500">设置已保存</Text>}
         </VStack>
       </LiquidGlassCard>
-      <LiquidGlassCard p={6} borderRadius="xl">
+      {/* Fixture scenarios only make sense for the browser preview; on
+          desktop every value comes from the real backend. */}
+      {!isDesktop() && <LiquidGlassCard p={6} borderRadius="xl">
         <FormControl><FormLabel>预览数据场景</FormLabel><Select aria-label="预览数据场景" value={state.scenario} onChange={e => void run("scenario.set", e.target.value as PreviewScenario)}>
           <option value="normal">正常硬件</option><option value="multi-gpu">多 GPU</option><option value="missing-sensors">部分传感器缺失</option><option value="empty">空数据</option><option value="failure">采样失败</option>
         </Select></FormControl>
         <Text mt={3} fontSize="sm" opacity={.7}>仅模拟数据，不启动硬件或游戏采集。</Text>
-      </LiquidGlassCard>
+      </LiquidGlassCard>}
     </VStack>
   </Box>;
 }
@@ -38,7 +41,7 @@ export function AboutSettings() {
   return <Box><Heading size="lg" mb={6}>关于</Heading>
     <LiquidGlassCard p={6} borderRadius="xl"><VStack spacing={4} align="stretch">
       <Text fontSize="xl" fontWeight="bold">FrameScope UI Preview</Text><Text>独立桌面前端预览 · 0.1.0</Text>
-      <Text fontSize="sm">界面直接复用 NexBox 9.5.3。硬件、游戏和报告操作使用模拟数据，未接入正式 FrameScope 后端。</Text>
+      <Text fontSize="sm">界面直接复用 NexBox 9.5.3。硬件数据来自 FrameScope 硬件服务；目标、采集与报告已接入真实采集管线。</Text>
       <Text fontSize="sm">NexBox 来源：MuLiuSaMa/NexBox · c800dc5</Text>
       <Text fontSize="sm">FrameScope 功能基线：Misakamiro/FrameScopeMonitor · 2c48031</Text>
       <Text fontSize="sm">NexBox 原作者及贡献者的版权与 GPL-3.0 许可保留在随附 LICENSE、LICENSE.EXTRA 和源码来源清单中。</Text>
