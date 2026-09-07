@@ -15,6 +15,7 @@ import { AppStartupProvider } from "./contexts/app-startup-context";
 import { FontProvider } from "./contexts/font-context";
 import { ThemeModeProvider } from "./contexts/theme-mode-context";
 import { LiquidGlassSvgFilter } from "./components/special/liquid-glass-svg-filter";
+import { RootErrorBoundary } from "./components/RootErrorBoundary";
 import theme from "./lib/theme";
 import { startPreviewRuntime } from "./preview/runtime";
 const emotionCache = createCache({ key: "css", prepend: true });
@@ -49,4 +50,10 @@ function Root() {
     </I18nextProvider>
   </CacheProvider>;
 }
-ReactDOM.createRoot(document.getElementById("root")!).render(<React.StrictMode><Root /></React.StrictMode>);
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <RootErrorBoundary>
+      <Root />
+    </RootErrorBoundary>
+  </React.StrictMode>
+);

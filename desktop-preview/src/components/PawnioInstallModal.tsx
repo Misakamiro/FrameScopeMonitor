@@ -43,12 +43,11 @@ export function PawnioInstallModal({ isOpen, onClose, onSuccess }: PawnioInstall
     setPhase("installing");
     try {
       const result = await invoke<string>("install_pawnio_driver");
-      if (result === "already_installed") {
-        setPhase("success");
-      } else if (result === "success") {
+      const message = typeof result === "string" ? result : JSON.stringify(result);
+      if (message === "already_installed" || message === "success") {
         setPhase("success");
       } else {
-        setErrorMsg(result);
+        setErrorMsg(message || "安装失败");
         setPhase("failure");
       }
     } catch (e) {

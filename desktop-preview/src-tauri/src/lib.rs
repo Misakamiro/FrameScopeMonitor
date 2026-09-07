@@ -197,6 +197,9 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
         "install_pawnio_driver" => {
             // The installer runs elevated (UAC prompt) and blocks; worker thread.
             // The modal expects the plain strings "success"/"already_installed".
+            // recv() yields the inner Result<String, String> (the worker sends
+            // the fallible result) — unwrap THAT, not the recv envelope, or the
+            // serialized {"Ok":...} envelope leaks to the UI and crashes React.
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let result = pawnio::install().and_then(|value| {
@@ -207,8 +210,9 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
                 });
                 let _ = sender.send(result);
             });
-            let result = receiver.recv().map_err(|_| "pawnio worker died".to_string())?;
-            return Ok(json!(result));
+            let inner: Result<String, String> =
+                receiver.recv().map_err(|_| "pawnio worker died".to_string())?;
+            return inner.map(|s| json!(s));
         }
         "uninstall_pawnio_driver" => {
             let (sender, receiver) = std::sync::mpsc::channel();
