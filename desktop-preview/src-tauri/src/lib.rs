@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests;
+mod backend;
 mod hardware_service;
 mod overlay_panel;
 use serde_json::{json, Value};
@@ -18,6 +19,11 @@ const COMMANDS: &[&str] = &[
     "get_hardware", "get_hardware_info", "get_all_sensors", "get_overlay_hardware_data",
     "get_memory_status", "get_disk_status", "is_nvidia_gpu", "set_active_gpu_index",
     "clear_hardware_data", "get_system_locale", "get_system_username",
+    // Real capture pipeline (FrameScopeMonitor.exe chain, same file contracts
+    // as the C# WebView2 bridge).
+    "targets_get", "targets_save", "processes_refresh",
+    "monitor_start", "monitor_stop", "monitor_status",
+    "reports_list", "report_open", "report_open_directory", "report_regenerate",
 ];
 fn ensure_allowed(command: &str) -> Result<(), String> {
     if COMMANDS.contains(&command) { Ok(()) } else { Err(format!("Unsupported preview command: {command}")) }
@@ -146,6 +152,42 @@ fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result
         "clear_hardware_data" => { hardware_service::call("clear_cache", json!({}))?; },
         "get_system_locale" => return Ok(json!(system_locale())),
         "get_system_username" => return Ok(json!(std::env::var("USERNAME").unwrap_or_default())),
+        // ---- Real capture pipeline ----
+        "targets_get" => return backend::targets_payload("loaded"),
+        "targets_save" => {
+            let targets = args["targets"].as_array().ok_or("targets array required")?;
+            return backend::targets_save(targets);
+        }
+        "processes_refresh" => {
+            let query = args["query"].as_str().unwrap_or("");
+            return backend::processes_refresh(query);
+        }
+        "monitor_start" => {
+            let target_id = args["targetId"].as_str().ok_or("targetId required")?;
+            return backend::monitor_start(target_id);
+        }
+        "monitor_stop" => return backend::monitor_stop(),
+        "monitor_status" => return backend::monitor_status(),
+        "reports_list" => return backend::reports_list(),
+        "report_open" => {
+            let id = args["id"].as_str().ok_or("id required")?;
+            return backend::report_open(id);
+        }
+        "report_open_directory" => {
+            let id = args["id"].as_str().ok_or("id required")?;
+            return backend::report_open_directory(id);
+        }
+        "report_regenerate" => {
+            let id = args["id"].as_str().ok_or("id required")?;
+            // Long-running (generator can take a while); run on a worker
+            // thread so the webview IPC is not stalled.
+            let id = id.to_string();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(backend::report_regenerate(&id));
+            });
+            return receiver.recv().map_err(|_| "report generation worker died".to_string())?;
+        }
 
         // ---- Preview-side-effect commands ----
         "preview_set_hardware" => {

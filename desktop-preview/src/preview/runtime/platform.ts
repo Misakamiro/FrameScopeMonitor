@@ -16,6 +16,20 @@ export async function nativeOperation<T>(command: string, args: Record<string, u
   const native = await import("@preview/native-core");
   return native.invoke<T>("preview_native", { command, args });
 }
+
+// Commands that only exist on the real capture backend; browser previews must
+// never send them (they have local equivalents in the preview switch).
+const backendOnlyCommands = new Set([
+  "targets_save", "processes_refresh", "monitor_start", "monitor_stop",
+  "reports_list", "report_open", "report_open_directory", "report_regenerate",
+]);
+
+/** Backend-only commands: desktop forwards, browser previews reject. */
+export async function backendInvoke<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (!backendOnlyCommands.has(command)) throw new Error(`Unsupported backend command: ${command}`);
+  if (!isDesktop()) throw new Error(`Backend command requires desktop: ${command}`);
+  return nativeOperation<T>(command, args);
+}
 export async function emitPreviewEvent(event: string, payload: unknown): Promise<void> {
   if (isDesktop()) {
     const { emit } = await import("@tauri-apps/api/event");

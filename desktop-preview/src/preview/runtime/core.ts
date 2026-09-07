@@ -11,6 +11,10 @@ const nativeCommands = new Set([
   "export_hardware_report",
   "open_report_sample",
 ]);
+
+// Commands that only exist on the real backend live in platform.ts
+// (backendInvoke); browser previews must never send them.
+
 export async function invoke<T = unknown>(command: string, args: Record<string, any> = {}): Promise<T> {
   const state = getPreviewState();
   // Desktop builds answer hardware/data commands from the real backend
@@ -81,6 +85,14 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     }
     case "get_hotkeys_enabled_cmd": result = state.hotkeysEnabled; break;
     case "get_overlay_hotkey_enabled": result = state.overlayHotkeyEnabled; break;
+    case "targets_get":
+      if (realBackend) { result = await nativeOperation("targets_get"); break; }
+      result = { status: "loaded", targets: state.targets, targetCount: state.targets.length,
+        enabledTargetCount: state.targets.filter(t => t.enabled).length }; break;
+    case "monitor_status":
+      if (realBackend) { result = await nativeOperation("monitor_status"); break; }
+      result = { running: state.monitor.phase !== "idle", phase: state.monitor.phase,
+        elapsedSeconds: state.monitor.elapsedSeconds }; break;
     default:
       if (!nativeCommands.has(command)) throw new Error(`Unsupported preview command: ${command}`);
       if (command === "start_overlay_panel" && args.settings) await invoke("update_overlay_settings", args);

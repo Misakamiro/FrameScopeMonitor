@@ -13,7 +13,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $target 'framescope-ui-preview.exe')
 }
 
 $lock = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'dependencies.lock.json') | ConvertFrom-Json
-$files = @('FrameScopeHardwareService.exe', 'FrameScopeHardwareProvider.exe')
+$files = @(
+    'FrameScopeHardwareService.exe',
+    'FrameScopeHardwareProvider.exe',
+    'FrameScopeMonitor.exe',
+    'FrameScopeProcessSampler.exe',
+    'FrameScopeSystemSampler.exe',
+    'FrameScopeReportGenerator.exe'
+)
 foreach ($property in $lock.runtimeFiles.PSObject.Properties) {
     if ($property.Name -notlike 'Microsoft.Web.*' -and $property.Name -ne 'WebView2Loader.dll') {
         $files += $property.Name
@@ -28,4 +35,14 @@ foreach ($file in $files) {
     Copy-Item -LiteralPath $source -Destination (Join-Path $target $file) -Force
     Write-Host "Deployed $file"
 }
+
+# PresentMon must sit under tools\ next to the preview exe (the monitor
+# session resolves it at <root>\tools\PresentMon*.exe).
+$toolsTarget = Join-Path $target 'tools'
+New-Item -ItemType Directory -Path $toolsTarget -Force | Out-Null
+$presentMon = Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools') -Filter 'PresentMon*.exe' -File |
+    Select-Object -First 1
+if ($null -eq $presentMon) { throw 'PresentMon exe was not found under repo tools\' }
+Copy-Item -LiteralPath $presentMon.FullName -Destination (Join-Path $toolsTarget $presentMon.Name) -Force
+Write-Host "Deployed tools\$($presentMon.Name)"
 Write-Host "Preview backend ready: $target"

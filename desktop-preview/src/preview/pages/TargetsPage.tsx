@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Box, Heading, Text, HStack, VStack, Input, InputGroup, InputLeftElement,
   Button, IconButton, Switch, FormControl, FormLabel, Select, Badge, Tooltip,
@@ -7,9 +7,10 @@ import { Search, Plus, Pencil, Trash2 } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, useFloatingFieldStyle } from "./shared";
+import { invoke } from "@tauri-apps/api/core";
 import type { PreviewTarget } from "@/preview/runtime";
 
-const processes = ["cs2.exe", "VALORANT-Win64-Shipping.exe", "TslGame.exe", "GamePreview.exe"];
+const fallbackProcesses = ["cs2.exe", "VALORANT-Win64-Shipping.exe", "TslGame.exe", "GamePreview.exe"];
 export default function TargetsPage() {
   const state = usePreviewState();
   const color = useAdaptiveTextColor();
@@ -17,6 +18,20 @@ export default function TargetsPage() {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Partial<PreviewTarget> | null>(null);
   const [removing, setRemoving] = useState<PreviewTarget | null>(null);
+  // Real backend: window-titled processes first (same shape as the preview
+  // list); browser previews keep the static examples.
+  const [processes, setProcesses] = useState<string[]>(fallbackProcesses);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ processes: Array<{ processName: string }> }>("processes_refresh", { query: "" })
+      .then(payload => {
+        if (cancelled) return;
+        const names = (payload.processes ?? []).map(p => p.processName).filter(Boolean);
+        if (names.length) setProcesses(names);
+      })
+      .catch(() => { /* browser preview or backend undeployed: keep examples */ });
+    return () => { cancelled = true; };
+  }, []);
   const busy = ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);
   const field = useFloatingFieldStyle();
   const targets = state.targets.filter(t => `${t.name} ${t.executable}`.toLowerCase().includes(query.toLowerCase()));

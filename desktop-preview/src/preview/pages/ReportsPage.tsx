@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, formatMetric, useFloatingFieldStyle } from "./shared";
+import { isDesktop } from "@/preview/runtime/platform";
+import { refreshDesktopReports } from "@/preview/runtime/state";
 const labels = { full: "完整", partial: "部分数据", diagnostic: "诊断", error: "失败" };
 const colors = { full: "green", partial: "yellow", diagnostic: "blue", error: "red" };
 export default function ReportsPage() {
@@ -19,10 +21,28 @@ export default function ReportsPage() {
   const [directory, setDirectory] = useState(false);
   const { run, pending, error } = usePreviewAction();
   const field = useFloatingFieldStyle();
+  // Real backend reports arrive through the runtime sync; refresh on mount so
+  // a completed capture (or backend-side run) shows up without a restart.
+  useEffect(() => {
+    if (isDesktop()) void refreshDesktopReports();
+  }, []);
   useEffect(() => { if (params.get("id")) setSelected(params.get("id")); }, [params]);
   const reports = state.reports.filter(r => (kind === "all" || r.kind === kind) && r.targetName.toLowerCase().includes(query.toLowerCase()));
   const report = state.reports.find(r => r.id === selected);
-  const open = async () => { try { setOpenError(""); await invoke("open_report_sample"); } catch (cause) { setOpenError(String(cause)); } };
+  const open = async () => {
+    try {
+      setOpenError("");
+      if (isDesktop() && report?.runDir) await invoke("report_open", { id: report.id });
+      else await invoke("open_report_sample");
+    } catch (cause) { setOpenError(String(cause)); }
+  };
+  const openDirectory = async () => {
+    try {
+      setOpenError("");
+      if (isDesktop() && report?.runDir) await invoke("report_open_directory", { id: report.id });
+      else setDirectory(true);
+    } catch (cause) { setOpenError(String(cause)); }
+  };
   return <Box pt={8}>
     <Heading size="lg" mb={6} color={color.text} textShadow={color.shadow}>报告</Heading>
     <HStack spacing={3} mb={5}>
@@ -52,7 +72,7 @@ export default function ReportsPage() {
         </SimpleGrid>
         <HStack wrap="wrap">
           <Button size="sm" leftIcon={<ExternalLink size={14} />} onClick={() => void open()}>打开图表报告</Button>
-          <Button size="sm" leftIcon={<FolderOpen size={14} />} variant="outline" onClick={() => setDirectory(true)}>报告目录</Button>
+          <Button size="sm" leftIcon={<FolderOpen size={14} />} variant="outline" onClick={() => void openDirectory()}>报告目录</Button>
         </HStack>
         <HStack wrap="wrap">
           <Button size="sm" variant="outline" leftIcon={<RefreshCw size={14} />} isLoading={pending && report.operation === "regenerating"} isDisabled={pending}
@@ -65,8 +85,8 @@ export default function ReportsPage() {
       </VStack>}
     </PreviewDialog>
     <PreviewDialog title="预览报告目录" isOpen={directory} onClose={() => setDirectory(false)}>
-      <Text fontFamily="monospace" fontSize="sm">{state.config.outputDirectory}/{report?.id}</Text>
-      <Text fontSize="sm" mt={4}>模拟目录，不访问真实运行数据。</Text>
+      <Text fontFamily="monospace" fontSize="sm">{report?.runDir ?? `${state.config.outputDirectory}/${report?.id}`}</Text>
+      <Text fontSize="sm" mt={4}>{isDesktop() && report?.runDir ? "真实运行目录。" : "模拟目录，不访问真实运行数据。"}</Text>
       <VStack align="stretch" mt={4} spacing={2}><Text>framescope-interactive-report.html</Text><Text>framescope-interactive-data.js</Text><Text>framescope-interactive-manifest.json</Text></VStack>
     </PreviewDialog>
   </Box>;

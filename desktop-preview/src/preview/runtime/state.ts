@@ -1,5 +1,6 @@
 import type { PreviewAction, PreviewActionPayloads, PreviewState, PreviewListener, PreviewReport, OverlaySettings } from "./types";
-import { connectStateBus, readPersistedState, persistState, isMainWindow, isDesktop, nativeOperation, emitPreviewEvent } from "./platform";
+import { connectStateBus, readPersistedState, persistState, isMainWindow, isDesktop, nativeOperation, backendInvoke, emitPreviewEvent } from "./platform";
+import { invoke } from "./core";
 import { FIXTURE_EPOCH, overlayFixture } from "./fixtures";
 
 export const defaultOverlay: OverlaySettings = {
@@ -86,13 +87,89 @@ function tick() {
     else if (monitor.phase === "generating") finishReport(next);
   });
   if (isDesktop()) {
-    // Desktop: the host poller owns hardware data — it refreshes the overlay
-    // cache and emits vertical-overlay-data with real service snapshots, so
-    // the frontend no longer pushes fixtures on this path.
+    // Desktop: the host poller owns hardware data (overlay cache +
+    // vertical-overlay-data events), and the real watcher owns the capture
+    // state machine — reconcile the local phase with the backend each tick.
+    if (isMainWindow()) void syncDesktopMonitor();
   } else {
     const data = overlayFixture(state);
     void emitPreviewEvent("vertical-overlay-data", data).catch(console.error);
   }
+}
+
+// ---- Real capture pipeline (desktop) ----
+
+let desktopSyncBusy = false;
+let targetsSynced = false;
+
+function mapBackendReport(raw: any): PreviewReport {
+  const kind = ["full", "partial", "diagnostic", "error"].includes(raw?.kind) ? raw.kind : "full";
+  return {
+    id: String(raw?.id ?? ""), kind,
+    targetId: String(raw?.processName ?? ""), targetName: String(raw?.targetName ?? ""),
+    createdAt: String(raw?.createdAt ?? ""), durationSeconds: Number(raw?.durationSeconds ?? 0),
+    averageFps: raw?.averageFps ?? null, low1Fps: raw?.low1Fps ?? null,
+    low01Fps: raw?.low01Fps ?? null, frameTimeMs: raw?.frameTimeMs ?? null,
+    samples: [], simulated: false, runDir: raw?.runDir,
+  };
+}
+
+async function syncDesktopMonitor(): Promise<void> {
+  if (desktopSyncBusy) return;
+  desktopSyncBusy = true;
+  try {
+    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number }>("monitor_status");
+    mutatePreview(next => {
+      const monitor = next.monitor;
+      // The backend watcher is the source of truth for capture state; local
+      // phases only add the "completed + refresh reports" edge.
+      if (status.phase === "capturing") {
+        if (monitor.phase !== "capturing") {
+          monitor.phase = "capturing";
+          monitor.startedAt = monitor.startedAt ?? new Date().toISOString();
+          monitor.samples = [];
+        }
+        monitor.elapsedSeconds = status.elapsedSeconds ?? monitor.elapsedSeconds;
+      } else if (status.phase === "waiting") {
+        if (monitor.phase !== "waiting") {
+          Object.assign(monitor, { ...initial().monitor, phase: "waiting" });
+        }
+      } else if (["waiting", "capturing", "stopping", "generating"].includes(monitor.phase)) {
+        // Watcher gone or idle: the run ended and the backend wrote the report.
+        monitor.phase = "completed";
+        void refreshDesktopReports();
+      }
+    });
+  } catch { /* backend not deployed: keep whatever local phase is running. */ }
+  finally { desktopSyncBusy = false; }
+}
+
+export async function refreshDesktopReports(): Promise<void> {
+  if (!isDesktop()) return;
+  try {
+    const payload = await backendInvoke<{ reports: any[] }>("reports_list");
+    const mapped = (payload.reports ?? []).map(mapBackendReport).filter(report => report.id);
+    mutatePreview(next => { next.reports = mapped; });
+  } catch (error) { console.error("reports_list failed", error); }
+}
+
+async function syncTargetsFromBackend(): Promise<void> {
+  try {
+    const payload = await invoke<{ targets: any[] }>("targets_get");
+    const targets = (payload.targets ?? []) as PreviewState["targets"];
+    if (!Array.isArray(targets) || !targets.length) return;
+    mutatePreview(next => {
+      next.targets = targets;
+      if (!next.targets.some(t => t.id === next.selectedTargetId)) {
+        next.selectedTargetId = next.targets.find(t => t.enabled)?.id ?? next.targets[0]?.id ?? null;
+      }
+    });
+  } catch (error) { console.error("targets_get failed", error); }
+}
+
+function persistTargetsToBackend(): void {
+  void backendInvoke("targets_save", { targets: state.targets })
+    .catch(error => console.error("targets_save failed", error));
 }
 export function startPreviewRuntime(): () => void {
   users++;
@@ -102,6 +179,11 @@ export function startPreviewRuntime(): () => void {
     listeners.forEach(fn => fn(state));
   });
   if (!timer && isMainWindow()) timer = setInterval(tick, 1000);
+  if (isDesktop() && isMainWindow() && !targetsSynced) {
+    targetsSynced = true;
+    void syncTargetsFromBackend();
+    void refreshDesktopReports();
+  }
   let closed = false;
   return () => {
     if (closed) return;
@@ -137,24 +219,36 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
         if (existing) Object.assign(next.targets.find(t => t.id === existing.id)!, p, { name, executable });
         else next.targets.push({ id: `target-${Date.now()}`, name, executable, enabled: p.enabled ?? true });
       });
+      persistTargetsToBackend();
     } else if (action === "target.remove") mutatePreview(next => {
       next.targets = next.targets.filter(t => t.id !== p.id);
       if (next.selectedTargetId === p.id) next.selectedTargetId = next.targets[0]?.id ?? null;
     });
     else if (action === "target.select") mutatePreview(next => { next.selectedTargetId = p.id; });
     else throw new Error(`Unsupported preview action: ${action}`);
+    if (action === "target.remove") persistTargetsToBackend();
     return;
   }
   if (action === "monitor.start") {
     if (busy()) throw new Error("模拟监控已经启动");
     const target = state.targets.find(t => t.id === (p?.targetId ?? state.selectedTargetId));
     if (!target?.enabled) throw new Error("请先选择已启用目标");
+    // The real watcher must be up before the UI flips to "waiting"; its
+    // failures (missing exe, disabled target) surface verbatim.
+    if (isDesktop()) await backendInvoke("monitor_start", { targetId: target.executable });
     mutatePreview(next => { next.monitor = { ...initial().monitor, phase: "waiting", targetId: target.id, startedAt: new Date().toISOString() }; });
     return;
   }
   if (action === "monitor.stop") {
     if (!["waiting", "capturing"].includes(state.monitor.phase)) throw new Error("没有正在运行的模拟采集");
-    mutatePreview(next => { next.monitor.phase = "stopping"; }); return;
+    if (isDesktop()) {
+      // Real stop kills the pipeline tree; there is no report to finalize.
+      await backendInvoke("monitor_stop");
+      mutatePreview(next => { next.monitor = { ...initial().monitor, phase: "idle" }; });
+    } else {
+      mutatePreview(next => { next.monitor.phase = "stopping"; });
+    }
+    return;
   }
   if (action === "monitor.reset") { if (busy()) throw new Error("请先停止监控"); mutatePreview(next => { next.monitor = initial().monitor; }); return; }
   if (action === "config.update") {
@@ -169,14 +263,38 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
     const report = state.reports.find(r => r.id === p?.id);
     if (!report) throw new Error("报告不存在");
     if (action === "report.remove") { mutatePreview(next => { next.reports = next.reports.filter(r => r.id !== p.id); }); return; }
-    if (action === "report.regenerate" || action === "report.diagnose") {
-      mutatePreview(next => { next.reports.find(r => r.id === p.id)!.operation = action === "report.regenerate" ? "regenerating" : "diagnosing"; });
+    if (action === "report.regenerate") {
+      mutatePreview(next => { next.reports.find(r => r.id === p.id)!.operation = "regenerating"; });
+      if (isDesktop()) {
+        try {
+          await backendInvoke("report_regenerate", { id: p.id });
+          await refreshDesktopReports();
+          mutatePreview(next => { next.reports.find(r => r.id === p.id)!.operation = "ready"; });
+        } catch (error) {
+          mutatePreview(next => {
+            const item = next.reports.find(r => r.id === p.id);
+            if (item) { item.operation = "ready"; item.diagnostic = String(error); }
+          });
+          throw error;
+        }
+        return;
+      }
+      mutatePreview(next => {
+        const item = next.reports.find(r => r.id === p.id);
+        if (!item) return;
+        item.operation = "ready";
+        item.diagnostic = "模拟报告重新生成完成。";
+      });
+      return;
+    }
+    if (action === "report.diagnose") {
+      mutatePreview(next => { next.reports.find(r => r.id === p.id)!.operation = "diagnosing"; });
       await new Promise(resolve => setTimeout(resolve, 600));
       mutatePreview(next => {
         const item = next.reports.find(r => r.id === p.id);
         if (!item) return;
         item.operation = "ready";
-        item.diagnostic = action === "report.diagnose" ? `模拟诊断：${item.kind}；未执行真实采样、驱动检查或文件扫描。` : "模拟报告重新生成完成。";
+        item.diagnostic = `模拟诊断：${item.kind}；未执行真实采样、驱动检查或文件扫描。`;
       });
       return;
     }

@@ -20,7 +20,10 @@ export interface PreviewReport {
   low01Fps: number | null;
   frameTimeMs: number | null;
   samples: Array<{ second: number; fps: number | null; frameTimeMs: number | null }>;
-  simulated: true;
+  /** True for in-memory preview fixtures; absent/false for backend reports. */
+  simulated?: boolean;
+  /** Real backend reports carry the run directory (for open-directory etc.). */
+  runDir?: string;
 }
 export interface PreviewConfig {
   pollIntervalMs: number;

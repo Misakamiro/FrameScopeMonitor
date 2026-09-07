@@ -123,6 +123,53 @@ sampling chain instead of fixtures; browser preview keeps the fixture fallback.
   sensors at 1 Hz, GDI panel `CPU 8% 4950MHz 0.594V 32.3W 1286RPM | GPU 31%
   49°C 225MHz | RAM 51%`, FPS `--` with no game foreground (fail-closed).
 
+## Session 2026-09-07 (round 5): real capture pipeline bridge (M3)
+
+Targets / monitor / reports leave the in-memory simulation on desktop; the
+browser preview keeps every simulated path untouched.
+
+- `desktop-preview/src-tauri/src/backend.rs` (new): a Rust re-implementation of
+  the C# WebView2 bridge semantics against the same file contracts:
+  - `framescope-config.json` (PascalCase FrameScopeConfigStore schema; default
+    targets created verbatim on first access, atomic tmp+rename writes).
+    `targets_get` maps to the camelCase PreviewTarget shape (ProcessName is the
+    id); `targets_save` replaces only the Targets array, normalizing process
+    names per FrameScopeTargetEditRules (`.exe` suffix, `;` alias cleanup).
+  - `monitor_start` spawns `FrameScopeMonitor.exe --watcher --config <path>`
+    (idempotent when the watcher lives); `monitor_stop` kills the pipeline
+    process family (monitor/samplers/PresentMon) and removes the state file.
+    `monitor_status` reads `framescope-watcher-state.json` and maps
+    Phase/ActiveMonitors onto the frontend machine (idle/waiting/capturing,
+    elapsed from the run-directory timestamp).
+  - `reports_list` merges `framescope-history.jsonl` (newest first) with a
+    bounded data-root scan; reportId = SHA256-Base64url of the normalized
+    uppercase runDir (C# algorithm); frame stats are parsed out of the
+    report's `framescope-interactive-data.js` (`window.FRAMESCOPE_DATA`).
+  - `report_open` / `report_open_directory` shell-open; `report_regenerate`
+    runs `FrameScopeReportGenerator.exe <runDir> --progress ... --input-fingerprint ...`
+    (fingerprint = SHA256 over the three monitor CSVs' name|size|mtime).
+  - `processes_refresh`: sysinfo enumeration + EnumWindows titles, front-
+    window-first ordering, 250 cap (v1.2.2 semantics).
+  - Backend root discovery: `FRAMESCOPE_BACKEND_DIR` > exe directory > up to
+    four ancestors containing FrameScopeMonitor.exe (dev tree layout).
+- Frontend (mixed mode): `platform.ts` gains `backendInvoke` for backend-only
+  commands (desktop forwards, browser rejects). `state.ts` syncs targets and
+  reports from the backend on startup, persists target edits through
+  `targets_save`, routes monitor.start/stop to the real watcher, and each tick
+  reconciles the local monitor phase with `monitor_status` (backend is the
+  source of truth; completed edge triggers a reports refresh). TargetsPage
+  fills its process dropdown from real `processes_refresh`; ReportsPage lists
+  backend reports, opens the real HTML in the system browser and the run
+  directory in Explorer, and regenerates through the real generator.
+- `tools/Deploy-PreviewBackend.ps1` now also deploys the capture chain
+  (FrameScopeMonitor/samplers/ReportGenerator + tools\PresentMon).
+- End-to-end verified live: added a `cmd.exe` target in the UI (persisted to
+  framescope-config.json), started monitoring from the home page (watcher →
+  monitor-session → PresentMon + both samplers, status "monitoring"), closed
+  the target processes, and the watcher wrote a diagnostic-kind report
+  (18.7k process-sample rows) with history entry; the report page listed the
+  real run and the watcher auto-opened the interactive HTML report.
+
 ## Delivery boundary
 Standalone FrameScope UI Preview. Real window behavior; hardware data now
 served by the real FrameScopeHardwareService chain (M0–M2). Business flows
