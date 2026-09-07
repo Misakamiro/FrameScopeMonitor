@@ -71,6 +71,10 @@ fn setup_package() -> Option<std::path::PathBuf> {
 }
 
 pub fn install() -> Result<Value, String> {
+    // Stop the sampling service first: the driver load while LibreHardwareMonitor
+    // is polling full sensor sets is what crashed the WebView2 renderer (the
+    // "black window" report). The next service call respawns it fresh.
+    stop_sampling_service();
     let (installed, version) = read_registry();
     if installed {
         return Ok(json!({"result": "already_installed", "version": version}));
@@ -87,6 +91,7 @@ pub fn install() -> Result<Value, String> {
 }
 
 pub fn uninstall() -> Result<Value, String> {
+    stop_sampling_service();
     let (installed, version) = read_registry();
     if !installed {
         return Ok(json!({"result": "already_uninstalled"}));
@@ -97,6 +102,22 @@ pub fn uninstall() -> Result<Value, String> {
     })?;
     run_elevated(&package, &["/uninstall", "/silent"])?;
     Ok(json!({"result": "success"}))
+}
+
+/// Kills the hardware service and its provider child so the driver load does
+/// not race the 1 Hz sensor polling. Callers reconnect lazily afterwards.
+fn stop_sampling_service() {
+    use std::process::{Command, Stdio};
+    for name in ["FrameScopeHardwareService.exe", "FrameScopeHardwareProvider.exe"] {
+        let mut command = Command::new("taskkill");
+        command.arg("/F").arg("/IM").arg(name);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
 }
 
 /// Runs the installer elevated and waits (UAC prompt goes to the user).

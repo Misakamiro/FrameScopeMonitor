@@ -73,7 +73,7 @@ export function PawnioInstallModal({ isOpen, onClose, onSuccess }: PawnioInstall
               <Alert status="info" borderRadius="md">
                 <AlertIcon />
                 <Text fontSize="sm">
-                  安装完成后将自动生效，无需重启系统。
+                  安装过程中会加载内核驱动，软件画面可能短暂变黑或无响应；如安装后画面异常，请关闭并重新打开软件。
                 </Text>
               </Alert>
             </ModalBody>
@@ -109,7 +109,7 @@ export function PawnioInstallModal({ isOpen, onClose, onSuccess }: PawnioInstall
               <Alert status="warning" borderRadius="md">
                 <AlertIcon />
                 <Text fontSize="sm">
-                  请重启 NexBox 后，即可获取 CPU 温度等传感器数据。
+                  若软件画面出现黑屏或无响应，请关闭并重新打开软件，即可获取 CPU 温度等完整传感器数据。
                 </Text>
               </Alert>
             </ModalBody>
