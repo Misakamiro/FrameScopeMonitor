@@ -541,10 +541,11 @@ export default function SensorMonitorPage() {
         if (!isMounted.current) return;
         setError(String(e));
       } finally {
-        if (isMounted.current) {
-          fetchingRef.current = false;
-          setLoading(false);
-        }
+        // Reset unconditionally: gating the reset on isMounted stranded the
+        // flag when unmount raced an in-flight request (StrictMode remount
+        // then never fetched again - permanent spinner).
+        fetchingRef.current = false;
+        if (isMounted.current) setLoading(false);
       }
     };
   }, []);

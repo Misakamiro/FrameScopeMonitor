@@ -12,7 +12,11 @@ export class LazyStore {
     window.dispatchEvent(new CustomEvent(PREFIX + this.path, { detail: { key, value } }));
   }
   async has(key: string) { return Object.prototype.hasOwnProperty.call(this.read(), key); }
-  async delete(key: string) { const values = this.read(); delete values[key]; localStorage.setItem(PREFIX + this.path, JSON.stringify(values)); return true; }
+  async delete(key: string) {
+    const values = this.read(); delete values[key];
+    try { localStorage.setItem(PREFIX + this.path, JSON.stringify(values)); } catch { }
+    return true;
+  }
   async clear() { localStorage.removeItem(PREFIX + this.path); }
   async keys() { return Object.keys(this.read()); }
   async values() { return Object.values(this.read()); }
