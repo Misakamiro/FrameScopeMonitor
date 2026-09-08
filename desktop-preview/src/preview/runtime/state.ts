@@ -72,6 +72,16 @@ function finishReport(next: PreviewState) {
   next.monitor.reportId = report.id;
 }
 function tick() {
+  if (isDesktop()) {
+    // Desktop: the host poller owns hardware data (overlay cache +
+    // vertical-overlay-data events), and the real watcher owns the capture
+    // state machine — reconcile the local phase with the backend each tick.
+    // The fixture machine below must never run alongside it: one missed
+    // reconciliation (backend busy, pipe hiccup) would let it finish a
+    // simulated run and inject a simulated report into the real list.
+    if (isMainWindow()) void syncDesktopMonitor();
+    return;
+  }
   mutatePreview(next => {
     next.tick++;
     const monitor = next.monitor;
@@ -86,15 +96,8 @@ function tick() {
     } else if (monitor.phase === "stopping") monitor.phase = "generating";
     else if (monitor.phase === "generating") finishReport(next);
   });
-  if (isDesktop()) {
-    // Desktop: the host poller owns hardware data (overlay cache +
-    // vertical-overlay-data events), and the real watcher owns the capture
-    // state machine — reconcile the local phase with the backend each tick.
-    if (isMainWindow()) void syncDesktopMonitor();
-  } else {
-    const data = overlayFixture(state);
-    void emitPreviewEvent("vertical-overlay-data", data).catch(console.error);
-  }
+  const data = overlayFixture(state);
+  void emitPreviewEvent("vertical-overlay-data", data).catch(console.error);
 }
 
 // ---- Real capture pipeline (desktop) ----
@@ -131,6 +134,13 @@ async function syncDesktopMonitor(): Promise<void> {
           monitor.phase = "capturing";
           monitor.startedAt = monitor.startedAt ?? new Date().toISOString();
           monitor.samples = [];
+          // A capture can start before we ever observed "waiting" (game
+          // already running): capture the baseline here too, or a real
+          // finish would compare against the current count and always
+          // misreport as error.
+          if (completedRunsBaseline == null && typeof status.completedRuns === "number") {
+            completedRunsBaseline = status.completedRuns;
+          }
         }
         monitor.elapsedSeconds = status.elapsedSeconds ?? monitor.elapsedSeconds;
         // The watcher may have started a different enabled target than the
@@ -175,9 +185,13 @@ export async function refreshDesktopReports(): Promise<void> {
   } catch (error) { console.error("reports_list failed", error); }
 }
 
+let targetsSyncRetryTimer: ReturnType<typeof setTimeout> | undefined;
 async function syncTargetsFromBackend(): Promise<void> {
   try {
     const payload = await invoke<{ targets: any[] }>("targets_get");
+    // Only a successful read lifts the guard: marking synced up front would
+    // let a later edit persist a stale local table over the real config.
+    targetsSynced = true;
     const targets = (payload.targets ?? []) as PreviewState["targets"];
     if (!Array.isArray(targets) || !targets.length) return;
     mutatePreview(next => {
@@ -186,10 +200,22 @@ async function syncTargetsFromBackend(): Promise<void> {
         next.selectedTargetId = next.targets.find(t => t.enabled)?.id ?? next.targets[0]?.id ?? null;
       }
     });
-  } catch (error) { console.error("targets_get failed", error); }
+  } catch (error) {
+    console.error("targets_get failed", error);
+    if (!targetsSynced) {
+      // Backend not up yet (not deployed / cold start): keep retrying so the
+      // guard lifts as soon as the real config becomes readable.
+      targetsSyncRetryTimer = setTimeout(() => { void syncTargetsFromBackend(); }, 5000);
+    }
+  }
 }
 
 function persistTargetsToBackend(): void {
+  // Before the first successful sync, state.targets may be a stale localStorage
+  // table (or the hardcoded initial pair); saving it would silently overwrite
+  // the real backend config. Surface nothing else — the retry loop lifts the
+  // guard, after which edits flow through normally.
+  if (!targetsSynced) return;
   void backendInvoke("targets_save", { targets: state.targets })
     .catch(error => console.error("targets_save failed", error));
 }
@@ -202,7 +228,8 @@ export function startPreviewRuntime(): () => void {
   });
   if (!timer && isMainWindow()) timer = setInterval(tick, 1000);
   if (isDesktop() && isMainWindow() && !targetsSynced) {
-    targetsSynced = true;
+    // syncTargetsFromBackend sets targetsSynced itself once it succeeds and
+    // retries until then — never mark it here.
     void syncTargetsFromBackend();
     void refreshDesktopReports();
   }
@@ -211,7 +238,11 @@ export function startPreviewRuntime(): () => void {
     if (closed) return;
     closed = true;
     users--;
-    if (users <= 0) { if (timer) clearInterval(timer); timer = undefined; bus?.close(); bus = undefined; }
+    if (users <= 0) {
+      if (timer) clearInterval(timer); timer = undefined;
+      if (targetsSyncRetryTimer) { clearTimeout(targetsSyncRetryTimer); targetsSyncRetryTimer = undefined; }
+      bus?.close(); bus = undefined;
+    }
   };
 }
 const busy = () => ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);
