@@ -81,7 +81,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     const PIPE_READMODE_MESSAGE: Dword = 0x00000002;
     const PIPE_WAIT: Dword = 0x00000000;
     const PIPE_UNLIMITED_INSTANCES: Dword = 255;
-    const FILE_FLAG_FIRST_PIPE_INSTANCE: Dword = 0x0005_0000;
+    const FILE_FLAG_FIRST_PIPE_INSTANCE: Dword = 0x0008_0000;
     const ERROR_PIPE_CONNECTED: i32 = 535;
     const ERROR_ACCESS_DENIED: i32 = 5;
 
@@ -134,12 +134,23 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     // its own session thread. The process only exits on a global stop request.
     let global_stop = Arc::new(AtomicBool::new(false));
     let mut session_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    // FIRST_PIPE_INSTANCE must be asserted only on the very first instance:
+    // later accept-loop recreations run while the previous instance is still
+    // being served by its session thread, and asserting "first" there fails
+    // with ERROR_ACCESS_DENIED (which would be misread as "redundant spawn").
+    let mut first_instance = true;
 
     loop {
+        let open_mode = if first_instance {
+            first_instance = false;
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE
+        } else {
+            PIPE_ACCESS_DUPLEX
+        };
         let handle = unsafe {
             CreateNamedPipeW(
                 wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                open_mode,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
                 65536,
@@ -153,7 +164,11 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
             if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
                 // Another service process already owns this pipe name - it is
                 // alive and serving, so treat this spawn as redundant and exit
-                // quietly instead of running a second provider chain.
+                // quietly instead of running a second provider chain. Drain any
+                // sessions this process did accept before bowing out.
+                for join in session_handles.drain(..) {
+                    let _ = join.join();
+                }
                 return Ok(());
             }
             // A stop request may have raced an accept failure; honor it.

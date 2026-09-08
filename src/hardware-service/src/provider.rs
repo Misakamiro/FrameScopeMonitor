@@ -209,7 +209,17 @@ impl ResidentProvider {
                 proc.stdin.write_all(b"{\"cmd\":\"exit\"}
 ").ok()?;
                 proc.stdin.flush().ok()?;
-                proc._child.wait().ok().map(|_| ())
+                // A hung provider (an LHM driver stall is exactly why kill
+                // exists) must not hold the provider mutex forever: bound the
+                // graceful wait and fall through to kill on timeout.
+                for _ in 0..30 {
+                    match proc._child.try_wait() {
+                        Ok(Some(_)) => return Some(()),
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                        Err(_) => return None,
+                    }
+                }
+                None
             })();
             if graceful.is_none() {
                 let _ = proc._child.kill();
