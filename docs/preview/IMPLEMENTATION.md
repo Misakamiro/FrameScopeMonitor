@@ -349,3 +349,33 @@ targets_save).
   ETW blocked by Javelin as before, diagnostic report degradation confirmed
   (presentmon-etw-access-denied, 175 system samples). Overhead measured
   0.79% CPU / ~333MB for the whole monitoring chain.
+
+
+## Session 2026-09-09 (late): anti-cheat FPS fallback (user-requested feature)
+
+User goal: games whose anti-cheat blocks PresentMon must still produce fully
+usable reports. BF6 live evidence showed the resident ETW FPS session keeps
+working while PresentMon's per-launch trace is denied, so the report now
+rebuilds its FPS series from the recorder's samples when PresentMon yields
+no frames:
+
+- `FrameScopeHardwareServiceClient.cs`: hardware-samples.csv gained a `Fps`
+  column (the overlay snapshot's own ETW FPS value). Old CSVs without it read
+  back as null - no migration needed.
+- `FrameScopeReportGenerator.cs` + `.SystemData.cs`: when PresentMon yields
+  no frames, the frame series is synthesized from the Fps samples
+  (frame ms = 1000/fps, 1 Hz) and the run classifies full;
+  frameCaptureStatus becomes `etw-fps-sampled` with a message naming the
+  anti-cheat substitution. source-boundaries locks the column on both sides.
+- `backend.rs` build_report_entry trusts the generator manifest's reportKind,
+  so a regenerate can upgrade a worker-preclassified diagnostic stub.
+- Live BF6 verification: a real run regenerated from diagnostic to full with
+  178 samples / averageFps 125.7. Future runs synthesize automatically at
+  capture end. PresentMon's absence stays honestly reported (access denied,
+  1 Hz sampling instead of per-frame), which is the hard anti-cheat boundary.
+- Batch-3 hardening that rode along: SensorMonitorPage fetchingRef reset
+  (R-C7), LazyStore guarded localStorage writes (R-C9).
+
+Process note: build.ps1 csc failures were masked twice by shell output
+filters - always verify the deployed exe timestamp after building, never
+trust a filtered log line.
