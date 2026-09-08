@@ -106,4 +106,29 @@ describe("isolated preview runtime", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(getPreviewState().monitor).toMatchObject({ phase: "error", error: expect.stringContaining("Simulated") });
   });
+
+  it("update_overlay_settings appends missing defaults and keeps the password map selection", async () => {
+    // Pre-fix normalization (M5/R-C2): filtering down to the preview default
+    // list dropped the native-only rows and force-cleared delta_password_maps
+    // on the first save. Simulate a stale 20-item saved state that predates
+    // the native-only rows.
+    const stale = getPreviewState().overlay.settings;
+    const withoutNativeRows = stale.display_items.filter(
+      item => item.id !== "game_ping" && item.id !== "delta_password",
+    );
+    await invoke("update_overlay_settings", {
+      settings: {
+        ...stale,
+        display_items: withoutNativeRows,
+        delta_password_maps: ["潮汐监狱"],
+      },
+    });
+    const saved = getPreviewState().overlay.settings;
+    const ids = saved.display_items.map(item => item.id);
+    expect(ids).toContain("game_ping");
+    expect(ids).toContain("delta_password");
+    // The caller's items and their ordering survive; defaults append after.
+    expect(ids.slice(0, withoutNativeRows.length)).toEqual(withoutNativeRows.map(item => item.id));
+    expect(saved.delta_password_maps).toEqual(["潮汐监狱"]);
+  });
 });
