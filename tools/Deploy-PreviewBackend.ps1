@@ -12,6 +12,15 @@ if (-not (Test-Path -LiteralPath (Join-Path $target 'framescope-ui-preview.exe')
     throw "Preview executable not found - run 'npx tauri build --no-bundle' first: $target"
 }
 
+# Stop any running FrameScope processes first - Copy-Item -Force fails on
+# in-use executables, which would leave a half-updated deployment.
+foreach ($name in @('framescope-ui-preview', 'FrameScopeMonitor', 'FrameScopeHardwareService',
+        'FrameScopeHardwareProvider', 'FrameScopeProcessSampler', 'FrameScopeSystemSampler',
+        'PresentMon-2.4.1-x64')) {
+    Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Milliseconds 500
+
 $lock = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'dependencies.lock.json') | ConvertFrom-Json
 $files = @(
     'FrameScopeHardwareService.exe',

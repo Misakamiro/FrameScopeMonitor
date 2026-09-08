@@ -101,10 +101,13 @@ fn save_native_settings(app: &tauri::AppHandle) -> Result<(), String> {
     std::fs::write(dir.join("preview-native-settings.json"), data.to_string()).map_err(|e| e.to_string())
 }
 // Sync command. Window-creating flows are dispatched to worker threads below:
-// creating a webview inside this handler would deadlock the main thread on Windows
+// creating a webview inside this handler would deadlock the main thread
 // (WebView2 controller init needs the message pump that the handler is blocking).
+// The command itself is async so long-running calls (report generation,
+// PawnIO installer, hardware queries) occupy the async runtime's thread pool
+// instead of freezing the window's message pump.
 #[tauri::command]
-fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
+async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
     ensure_allowed(&command)?;
     // Creating a webview window from inside the command handler deadlocks the main
     // thread (WebView2 controller init needs the message pump that is currently

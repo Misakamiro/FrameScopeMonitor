@@ -205,47 +205,44 @@ pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
 
 /// One request against the hardware service; connects (and spawns the service
 /// process when needed) on first use and after any transport failure.
-pub fn call(method: &str, params: Value) -> Result<Value, String> {    let mut guard = CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut connected_here = false;
-    for attempt in 0..=1 {
-        if guard.is_none() {
-            let (service, helper) = backend_paths()?;
-            spawn_service(&service, &helper)?;
-            let mut last_error = String::new();
-            let mut client = None;
-            for _ in 0..CONNECT_RETRIES {
-                match open_pipe() {
-                    Ok(opened) => {
-                        client = Some(opened);
-                        break;
+pub fn call(method: &str, params: Value) -> Result<Value, String> {
+    // Fast path under the lock: reuse the published connection, holding the
+    // lock only for the request itself.
+    {
+        let mut guard = CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(client) = guard.as_mut() {
+            match client.request(method, &params) {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    if !error.contains("pipe ") {
+                        return Err(error); // protocol-level answer, surface as-is
                     }
-                    Err(error) => {
-                        last_error = error;
-                        std::thread::sleep(Duration::from_millis(CONNECT_RETRY_MS));
-                    }
+                    *guard = None; // transport broke; fall through to reconnect
                 }
-            }
-            match client {
-                Some(opened) => {
-                    *guard = Some(opened);
-                    connected_here = true;
-                }
-                None => return Err(format!("hardware service unavailable: {last_error}")),
-            }
-        }
-        let result = guard.as_mut().expect("connected").request(method, &params);
-        match result {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                // Transport-level breakage recycles the connection; protocol
-                // errors (ok:false) are real answers and must surface as-is.
-                let transport = error.contains("pipe ");
-                if connected_here || attempt == 1 || !transport {
-                    return Err(error);
-                }
-                *guard = None;
             }
         }
     }
-    unreachable!("retry loop returns on both branches")
+
+    // Slow path OUTSIDE the lock: spawn (cooled) + bounded connect retries, so
+    // a slow connect can never stall other caller threads.
+    let (service, helper) = backend_paths()?;
+    spawn_service(&service, &helper)?;
+    let mut last_error = String::new();
+    let mut opened: Option<PipeClient> = None;
+    for _ in 0..CONNECT_RETRIES {
+        match open_pipe() {
+            Ok(client) => {
+                opened = Some(client);
+                break;
+            }
+            Err(error) => {
+                last_error = error;
+                std::thread::sleep(Duration::from_millis(CONNECT_RETRY_MS));
+            }
+        }
+    }
+    let mut client = opened.ok_or_else(|| format!("hardware service unavailable: {last_error}"))?;
+    let value = client.request(method, &params)?;
+    *CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(client);
+    Ok(value)
 }

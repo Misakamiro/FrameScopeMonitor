@@ -121,7 +121,7 @@ async function syncDesktopMonitor(): Promise<void> {
   if (desktopSyncBusy) return;
   desktopSyncBusy = true;
   try {
-    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; completedRuns?: number }>("monitor_status");
+    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; targetName?: string; completedRuns?: number }>("monitor_status");
     mutatePreview(next => {
       const monitor = next.monitor;
       // The backend watcher is the source of truth for capture state; local
@@ -133,6 +133,17 @@ async function syncDesktopMonitor(): Promise<void> {
           monitor.samples = [];
         }
         monitor.elapsedSeconds = status.elapsedSeconds ?? monitor.elapsedSeconds;
+        // The watcher may have started a different enabled target than the
+        // one selected in the UI (alreadyRunning / auto-capture); align the
+        // selection with what is actually being recorded.
+        const activeName = typeof status.targetName === "string" ? status.targetName : "";
+        if (activeName) {
+          const match = next.targets.find(t => t.name === activeName || t.id === activeName);
+          if (match) {
+            monitor.targetId = match.id;
+            if (next.selectedTargetId !== match.id) next.selectedTargetId = match.id;
+          }
+        }
       } else if (status.phase === "waiting") {
         if (monitor.phase !== "waiting") {
           Object.assign(monitor, { ...initial().monitor, phase: "waiting" });

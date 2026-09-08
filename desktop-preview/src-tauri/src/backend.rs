@@ -105,7 +105,10 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let temp = path.with_extension(format!("fsj-{}", std::process::id()));
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!("fsj-{}-{}", std::process::id(), seq));
     std::fs::write(&temp, serde_json::to_string_pretty(value).unwrap_or_default())
         .map_err(|e| e.to_string())?;
     std::fs::rename(&temp, path).map_err(|e| e.to_string())
@@ -383,13 +386,17 @@ fn watcher_running() -> bool {
 pub fn monitor_status() -> Result<Value, String> {
     let state_path = watcher_state_path()?;
     let Ok(state) = std::fs::read_to_string(&state_path) else {
-        return Ok(json!({"running": false, "phase": "idle"}));
+        return Ok(json!({"running": false, "phase": "idle", "completedRuns": 0}));
     };
     let Ok(value) = serde_json::from_str::<Value>(&state) else {
-        return Ok(json!({"running": false, "phase": "idle"}));
+        return Ok(json!({"running": false, "phase": "idle", "completedRuns": 0}));
     };
+    let completed_runs = value
+        .get("CompletedRuns")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     if !watcher_running() {
-        return Ok(json!({"running": false, "phase": "idle"}));
+        return Ok(json!({"running": false, "phase": "idle", "completedRuns": completed_runs}));
     }
     let monitors = value
         .get("ActiveMonitors")
@@ -417,10 +424,11 @@ pub fn monitor_status() -> Result<Value, String> {
             "running": true, "phase": "capturing",
             "targetName": monitor.get("Game").cloned().unwrap_or(Value::Null),
             "runDir": run_dir,
-            "elapsedSeconds": elapsed
+            "elapsedSeconds": elapsed,
+            "completedRuns": completed_runs
         }));
     }
-    Ok(json!({"running": true, "phase": "waiting"}))
+    Ok(json!({"running": true, "phase": "waiting", "completedRuns": completed_runs}))
 }
 
 /// `Counter-Strike-2-20260907-142530-p1234-ab12` -> unix seconds. The C#
