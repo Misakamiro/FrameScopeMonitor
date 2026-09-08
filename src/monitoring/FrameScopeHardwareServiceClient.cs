@@ -154,7 +154,8 @@ internal sealed class FrameScopeHardwareSampleRecorder
     public void Stop()
     {
         _stop = true;
-        if (_thread != null) _thread.Join(5000);
+        // One exchange can take ~6s worst case (spawn probe + connect + read timeouts).
+        if (_thread != null) _thread.Join(8000);
     }
 
     private void RecordLoop()
