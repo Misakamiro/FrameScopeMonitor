@@ -38,7 +38,8 @@ internal static partial class FrameScopeReportGenerator
                     MemClock = ParseNullableDouble(Get(row, h, "MemClockMHz")),
                     Power = ParseNullableDouble(Get(row, h, "PowerW")),
                     VramUsedMiB = ParseNullableDouble(Get(row, h, "VramUsedMiB")),
-                    VramTotalMiB = ParseNullableDouble(Get(row, h, "VramTotalMiB"))
+                    VramTotalMiB = ParseNullableDouble(Get(row, h, "VramTotalMiB")),
+                    Fps = ParseNullableDouble(Get(row, h, "Fps"))
                 });
             }
         }
@@ -100,6 +101,23 @@ internal static partial class FrameScopeReportGenerator
             if (applied) merged++;
         }
         return merged;
+    }
+
+    /// Anti-cheat fallback: builds a 1 Hz "frame" series from the ETW FPS
+    /// values the recorder captured (the overlay's own FPS source). Used when
+    /// PresentMon's ETW trace was denied (Battlefield 6 / EA Javelin) so the
+    /// run still gets a full FPS report instead of a diagnostic stub. Frame
+    /// ms is the reciprocal of each one-second sample.
+    private static List<KeyValuePair<DateTime, double>> SynthesizeFramesFromHardwareSamples(List<SystemRow> systemRows)
+    {
+        var frames = new List<KeyValuePair<DateTime, double>>();
+        if (systemRows == null) return frames;
+        foreach (SystemRow row in systemRows)
+        {
+            if (!row.Fps.HasValue || row.Fps.Value <= 0 || row.Fps.Value > 1000) continue;
+            frames.Add(new KeyValuePair<DateTime, double>(row.Time, 1000.0 / row.Fps.Value));
+        }
+        return frames;
     }
 
     private static Dictionary<string, object> SeriesFromSystem(List<SystemRow> rows, DateTime start, double? totalMemoryMb)

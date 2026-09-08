@@ -671,10 +671,23 @@ fn build_report_entry(run_dir: &str, html: &str, seen: &mut Vec<String>) -> Opti
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_ascii_lowercase();
-    let kind = match kind_raw.as_str() {
+    let mut kind = match kind_raw.as_str() {
         "full" | "partial" | "diagnostic" | "error" => kind_raw,
         _ => "full".to_string(),
     };
+    // The generator's manifest reflects what was actually built: a regenerate
+    // can upgrade a worker-preclassified diagnostic stub into a full report
+    // (anti-cheat fallback series from ETW FPS samples). Prefer it.
+    if let Ok(manifest_text) = std::fs::read_to_string(run_path.join("charts").join("framescope-interactive-manifest.json")) {
+        if let Ok(manifest) = serde_json::from_str::<Value>(&manifest_text) {
+            if let Some(manifest_kind) = manifest.get("reportKind").and_then(Value::as_str) {
+                let manifest_kind = manifest_kind.to_ascii_lowercase();
+                if matches!(manifest_kind.as_str(), "full" | "partial" | "diagnostic" | "error") {
+                    kind = manifest_kind;
+                }
+            }
+        }
+    }
     let stats = frame_stats(&run_path.join("charts").join("framescope-interactive-data.js"))
         .unwrap_or_else(|| {
             json!({"averageFps": null, "low1Fps": null, "low01Fps": null, "frameTimeMs": null})

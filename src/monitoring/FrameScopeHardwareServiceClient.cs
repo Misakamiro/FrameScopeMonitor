@@ -128,7 +128,11 @@ internal sealed class FrameScopeHardwareSampleRecorder
         // system-samples.csv GPU columns so the report merge can overlay them.
         "Time", "CpuUsage", "CpuTempC", "CpuClockMHz", "CpuPowerW", "CpuVoltage",
         "GpuUtilPct", "GpuTempC", "PowerW", "GpuClockMHz", "MemClockMHz",
-        "VramUsedMiB", "VramTotalMiB", "MemoryUsedPct", "SsdTempC", "GamePing"
+        "VramUsedMiB", "VramTotalMiB", "MemoryUsedPct", "SsdTempC", "GamePing",
+        // Fps is the resident ETW FPS session's value from the same overlay
+        // snapshot. It lets the report still build a full FPS series when an
+        // anti-cheat denies PresentMon's own ETW trace (Battlefield 6).
+        "Fps"
     };
 
     private readonly string _csvPath;
@@ -196,7 +200,8 @@ internal sealed class FrameScopeHardwareSampleRecorder
             GibToMib(Text(data, "gpu_vram_total")),
             Text(data, "memory_usage"),
             Text(data, "ssd_temp"),
-            Text(data, "game_ping")
+            Text(data, "game_ping"),
+            Text(data, "fps")
         };
         File.AppendAllText(_csvPath, string.Join(",", values) + "\r\n", new UTF8Encoding(false));
     }

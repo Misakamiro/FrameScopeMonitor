@@ -68,6 +68,7 @@ internal static partial class FrameScopeReportGenerator
         public double? Power;
         public double? VramUsedMiB;
         public double? VramTotalMiB;
+        public double? Fps;
     }
 
     private sealed class FrameStatsSummary

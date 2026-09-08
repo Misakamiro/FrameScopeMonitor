@@ -74,5 +74,10 @@ describe("preview source boundaries", () => {
     for (const column of ["GpuUtilPct", "GpuTempC", "PowerW", "GpuClockMHz", "MemClockMHz", "VramUsedMiB", "VramTotalMiB"]) {
       expect(systemData).toContain(`Get(row, h, "${column}")`);
     }
+    // The Fps column (anti-cheat fallback series) must exist on both sides:
+    // recorder writes it, the report reads it to synthesize frames when an
+    // anti-cheat denies PresentMon's ETW trace.
+    expect(client).toContain(`"Fps"`);
+    expect(systemData).toContain(`Get(row, h, "Fps")`);
   });
 });

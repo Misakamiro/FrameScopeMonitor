@@ -63,7 +63,17 @@ internal static partial class FrameScopeReportGenerator
         int overlayMergedRows = MergeHardwareOverlaySamples(systemRows, Path.Combine(runDir, "hardware-samples.csv"));
         string processPath = Path.Combine(runDir, "process-samples.csv");
         int timeShiftHours;
-        List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(present.Frames, systemRows, out timeShiftHours);
+        bool framesFromHardwareSamples = false;
+        List<KeyValuePair<DateTime, double>> framesSource = present.Frames;
+        if (framesSource.Count == 0)
+        {
+            // The Fps column lives in hardware-samples.csv (the recorder's
+            // overlay snapshot), not in system-samples.csv.
+            List<SystemRow> hardwareRows = ReadSystem(Path.Combine(runDir, "hardware-samples.csv"));
+            framesSource = SynthesizeFramesFromHardwareSamples(hardwareRows);
+            framesFromHardwareSamples = framesSource.Count > 0;
+        }
+        List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(framesSource, systemRows, out timeShiftHours);
         WriteProgress(progressPath, "处理数据", 20, "对齐帧时间和系统采样时间线", progressStart, null, false);
 
         DateTime start;
@@ -164,8 +174,8 @@ internal static partial class FrameScopeReportGenerator
             { "frameDataCaptured", frames.Count > 0 },
             { "cpuFrequencyCaptured", ListHasValue(((Dictionary<string, object>)((Dictionary<string, object>)systemSeries["perf"]))["cpuFreq"]) },
             { "presentMonSelectionMode", present.Diagnostics.ContainsKey("selectionMode") ? present.Diagnostics["selectionMode"] : null },
-            { "frameCaptureStatus", captureDiagnostics.ContainsKey("FrameCaptureStatus") ? captureDiagnostics["FrameCaptureStatus"] : (frames.Count > 0 ? "captured" : "no-frame-data") },
-            { "frameCaptureMessage", captureDiagnostics.ContainsKey("FrameCaptureMessage") ? captureDiagnostics["FrameCaptureMessage"] : "" },
+            { "frameCaptureStatus", framesFromHardwareSamples ? "etw-fps-sampled" : (captureDiagnostics.ContainsKey("FrameCaptureStatus") ? captureDiagnostics["FrameCaptureStatus"] : (frames.Count > 0 ? "captured" : "no-frame-data")) },
+            { "frameCaptureMessage", framesFromHardwareSamples ? "PresentMon was denied by anti-cheat; the FPS series was rebuilt from the resident ETW FPS samples (1 Hz)." : (captureDiagnostics.ContainsKey("FrameCaptureMessage") ? captureDiagnostics["FrameCaptureMessage"] : "") },
             { "generator", "native-csharp" }
         };
 
