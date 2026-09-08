@@ -390,3 +390,51 @@ stays the real-time overlay source plus the automatic fallback for
 anti-cheat-blocked runs (the etw-fps-sampled path shipped in 6aba278).
 Retiring PresentMon in favor of an in-house per-frame ETW writer remains a
 possible future project, not a current task.
+
+
+## Session 2026-09-09 (final): remaining low-risk hardening batch
+
+- **R-A5** (`overlay.rs`): find_sensor now ranks candidates by hint priority
+  (hint list order = priority) instead of row order, so a broad bare "GPU"
+  last-resort hint can never let GPU memory temperature or SOC power win
+  over "GPU Core".
+- **R-A8** (`lib.rs` + `overlay_panel.rs`): update_overlay_settings holds
+  OVERLAY_OPERATION for its whole teardown/rebuild; OVERLAY_ACTIVE start gate
+  is a swap (no check-then-act double-create).
+- **R-A12** (`overlay_panel.rs`): WM_QUIT breaks the entire message pump
+  (labeled loop) instead of spinning the outer overlay loop after quit.
+- **R-C5** (`lib.rs` poller + `hardware_service.rs`): three consecutive poll
+  failures broadcast an all-null overlay snapshot (new empty_overlay_value),
+  so overlays show "--" while the service is down instead of freezing on the
+  last snapshot.
+- **R-C11** (`backend.rs`): monitor_stop prefers taskkill /PID /T rooted at
+  the watcher from watcher-state; the by-image-name sweep is fallback only.
+  Verified live: tree kill leaves zero FrameScope/PresentMon processes after
+  a real BF6 capture.
+- **status.json evidence** (`MonitorSession.cs` + `.Status.cs` +
+  `HardwareServiceClient.cs`): the recorder exposes RowsWritten/LastError and
+  the capture end merges HardwareSampleRows/HardwareSampleLastError into
+  status.json - a silently dead recorder is now diagnosable.
+- **H3 tail** (`ReportGenerator.cs`): report metadata now carries
+  OverlayMergedRows and FramesFromHardwareSamples, making silent zero merges
+  visible in the artifact.
+- **Frontend**: HardwarePage poll gained generation-based stale-response
+  protection (same shape as OverlayPanelPage); TargetsPage surfaces
+  "process list unavailable" and fixes option keys; ReportsPage shows a
+  simulated badge; browser-mode reports capped at 50; target ids append a
+  counter; monitorBusy() shared helper replaces three drifted copies.
+- **Group 1 (earlier commit)**: format_unix_local via chrono Local (was 8h
+  behind), parse_run_timestamp DST earliest(), pipe response-id validation,
+  reused 1MB read buffer, provider stderr PID suffix, safe strip_exe_suffix,
+  FPS_STARTED 5s retry throttle, minimal stderr logger in both Rust binaries.
+- Deliberately skipped: openTask volatile (closure local - not expressible;
+  audit judged practical risk nil), WinEventHook removal (dead but harmless;
+  removal touches the ETW file for zero behavior change), shell_open /
+  taskkill-by-image / pipeline ACL / backend_root signature (local threat
+  model hardening - need a user call), dual-writer retirement (decided
+  Option A, see above).
+
+Final test state: cargo 19/19 + 5/5, vitest 14/14, C# 27/27. Live: CS2 full
+report (16765 frames) captured with the game already running (R-C1 scenario
+- no error misreport), BF6 capture + tree-kill stop with zero leftover
+processes, anti-cheat FPS fallback report verified end to end (125.7 FPS).
