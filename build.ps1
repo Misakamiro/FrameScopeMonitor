@@ -1,6 +1,15 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# M17: a running FrameScope chain locks the very DLLs/exes this script
+# rewrites in place, which used to fail the build halfway through and leave a
+# stale, mixed output set. Same stop list as Deploy-PreviewBackend.ps1.
+foreach ($stopName in @('framescope-ui-preview', 'FrameScopeMonitor', 'FrameScopeHardwareService',
+        'FrameScopeHardwareProvider', 'FrameScopeProcessSampler', 'FrameScopeSystemSampler',
+        'PresentMon-2.4.1-x64')) {
+    Get-Process -Name $stopName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+}
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
@@ -614,7 +623,12 @@ try {
         throw
     }
     if (Test-Path -LiteralPath $distBackup) {
-        Remove-Item -LiteralPath $distBackup -Recurse -Force
+        try {
+            Remove-Item -LiteralPath $distBackup -Recurse -Force
+        }
+        catch {
+            Write-Host "warning: dist backup could not be removed (file in use?): $($_.Exception.Message)"
+        }
     }
 
     "Build complete: $(Join-Path $dist 'FrameScopeMonitor-Setup.exe')"
