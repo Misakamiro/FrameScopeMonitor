@@ -54,67 +54,7 @@ static SELF_PID: OnceLock<u32> = OnceLock::new();
 #[cfg(target_os = "windows")]
 mod win32_fg {
     use super::*;
-    use std::ptr;
-    use windows_sys::Win32::Foundation::*;
-    use windows_sys::Win32::UI::Accessibility::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
-
-    static HOOK_HANDLE: Mutex<usize> = Mutex::new(0);
-
-    /// 前台窗口切换回调 — 仅存储 PID，不做耗时操作
-    unsafe extern "system" fn on_foreground_changed(
-        _hook: HWINEVENTHOOK,
-        _event: u32,
-        hwnd: HWND,
-        _id_object: i32,
-        _id_child: i32,
-        _id_event_thread: u32,
-        _dw_event_time: u32,
-    ) {
-        if !FPS_ACTIVE.load(Ordering::SeqCst) {
-            return;
-        }
-        // 排除自身 overlay 窗口
-        let overlay = OVERLAY_HWND.load(Ordering::Relaxed) as usize;
-        if overlay != 0 && hwnd as usize == overlay {
-            return;
-        }
-
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid != 0 {
-            CURRENT_FG_PID.store(pid, Ordering::Relaxed);
-        }
-    }
-
-    /// 注册前台窗口切换事件钩子
-    pub unsafe fn register_hook() -> bool {
-        let hook = SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            ptr::null_mut(),
-            Some(on_foreground_changed),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-        if !hook.is_null() {
-            *HOOK_HANDLE.lock().unwrap() = hook as usize;
-            true
-        } else {
-            log::warn!("FPS监控: 前台窗口 Hook 注册失败");
-            false
-        }
-    }
-
-    /// 注销前台窗口切换事件钩子
-    pub unsafe fn unregister_hook() {
-        let mut lock = HOOK_HANDLE.lock().unwrap();
-        if *lock != 0 {
-            UnhookWinEvent(*lock as *mut _);
-            *lock = 0;
-        }
-    }
 
     /// 初始化时获取当前前台窗口 PID
     pub fn init_foreground_process() {
@@ -1045,9 +985,10 @@ pub fn start_fps_monitor() {
     #[cfg(target_os = "windows")]
     {
         win32_fg::init_foreground_process();
-        unsafe {
-            win32_fg::register_hook();
-        }
+        // The SetWinEventHook registration was removed: the hook was raised
+        // on a thread without a message pump, so its callback never fired and
+        // the 500ms GetForegroundWindow poll below was always the real
+        // mechanism.
     }
 
     // 启动 ETW 采集线程
@@ -1072,11 +1013,6 @@ pub fn stop_fps_monitor() {
     // 停止 ETW 会话并等待采集线程退出（确保无残留会话）
     #[cfg(target_os = "windows")]
     etw::stop_and_join();
-
-    #[cfg(target_os = "windows")]
-    unsafe {
-        win32_fg::unregister_hook();
-    }
 
     SMOOTHED_FPS.store(0, Ordering::Relaxed);
     ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);

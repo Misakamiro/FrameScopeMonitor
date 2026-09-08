@@ -82,6 +82,12 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     window.set_ignore_cursor_events(true).map_err(|e| e.to_string())
 }
 fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
+    // The GDI window proc updates CURRENT_SETTINGS on WM_EXITSIZEMOVE but
+    // only flags it (POSITION_CHANGED); persist on the next stop so a dragged
+    // position survives restarts instead of being dropped.
+    if overlay_panel::take_position_changed() {
+        let _ = save_native_settings(app);
+    }
     overlay_panel::stop_overlay()?;
     if let Some(window) = app.get_webview_window("vertical-overlay") { window.close().map_err(|e| e.to_string())?; }
     Ok(())
@@ -375,23 +381,20 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             if !path.to_ascii_lowercase().ends_with(".html") && !path.to_ascii_lowercase().ends_with(".json") {
                 return Err("Export must be HTML or JSON".into());
             }
-            // Real backend mode: the host assembles the snapshot itself instead
-            // of trusting fixture content from the frontend.
-            let content = match args["content"].as_str() {
-                Some(content) => content.to_string(),
-                None => {
-                    let overlay = hardware_service::call("get_overlay_data", json!({}))?;
-                    let hardware = hardware_service::call("get_static_hardware", json!({}))
-                        .ok()
-                        .and_then(|response| response["hardware"].clone().as_object().cloned());
-                    serde_json::to_string_pretty(&json!({
-                        "brand": "FrameScope",
-                        "generatedAt": chrono::Utc::now().to_rfc3339(),
-                        "overlay": overlay,
-                        "hardware": hardware,
-                    })).map_err(|e| e.to_string())?
-                }
-            };
+            // R-A9: the host ALWAYS assembles the snapshot itself - a
+            // compromised webview must not be able to plant arbitrary file
+            // content through the content channel. (The path itself comes
+            // from the user's save dialog in the frontend.)
+            let overlay = hardware_service::call("get_overlay_data", json!({}))?;
+            let hardware = hardware_service::call("get_static_hardware", json!({}))
+                .ok()
+                .and_then(|response| response["hardware"].clone().as_object().cloned());
+            let content = serde_json::to_string_pretty(&json!({
+                "brand": "FrameScope",
+                "generatedAt": chrono::Utc::now().to_rfc3339(),
+                "overlay": overlay,
+                "hardware": hardware,
+            })).map_err(|e| e.to_string())?;
             std::fs::write(path, content).map_err(|e| e.to_string())?;
             return Ok(json!(path));
         }

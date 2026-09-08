@@ -10,6 +10,12 @@ static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OVERLAY_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 static DRAG_MODE: AtomicBool = AtomicBool::new(false);
 static POSITION_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Takes (clears) the drag-moved flag; true means CURRENT_SETTINGS now holds
+/// a window position that has never been persisted.
+pub fn take_position_changed() -> bool {
+    POSITION_CHANGED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
 static OVERLAY_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
 
 fn get_net_offset_ms() -> Option<i64> {
