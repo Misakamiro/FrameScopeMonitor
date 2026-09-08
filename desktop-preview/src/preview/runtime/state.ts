@@ -69,6 +69,8 @@ function finishReport(next: PreviewState) {
     samples: next.monitor.samples, simulated: true,
   };
   next.reports.unshift(report);
+  // Keep browser mode bounded: each report drags its samples along.
+  if (next.reports.length > 50) next.reports.length = 50;
   next.monitor.phase = "completed";
   next.monitor.reportId = report.id;
 }
@@ -186,6 +188,11 @@ export async function refreshDesktopReports(): Promise<void> {
   } catch (error) { console.error("reports_list failed", error); }
 }
 
+let targetIdCounter = 0;
+function nextTargetId(): string {
+  targetIdCounter += 1;
+  return `target-${Date.now()}-${targetIdCounter}`;
+}
 let targetsSyncRetryTimer: ReturnType<typeof setTimeout> | undefined;
 async function syncTargetsFromBackend(): Promise<void> {
   try {
@@ -246,7 +253,10 @@ export function startPreviewRuntime(): () => void {
     }
   };
 }
-const busy = () => ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);
+export function monitorBusy(): boolean {
+  return ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);
+}
+const busy = monitorBusy;
 export async function previewAction<K extends PreviewAction>(action: K, payload?: PreviewActionPayloads[K]): Promise<void> {
   const p = payload as any;
   if (action === "preview.reset") { mutatePreview(next => Object.assign(next, initial())); return; }
@@ -271,7 +281,7 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
       if (state.targets.some(t => t.id !== existing?.id && t.executable.toLowerCase() === executable.toLowerCase())) throw new Error("进程名已存在");
       mutatePreview(next => {
         if (existing) Object.assign(next.targets.find(t => t.id === existing.id)!, p, { name, executable });
-        else next.targets.push({ id: `target-${Date.now()}`, name, executable, enabled: p.enabled ?? true });
+        else next.targets.push({ id: nextTargetId(), name, executable, enabled: p.enabled ?? true });
       });
       persistTargetsToBackend();
     } else if (action === "target.remove") mutatePreview(next => {

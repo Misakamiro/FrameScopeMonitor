@@ -54,7 +54,7 @@ export default function ReportsPage() {
       {reports.map(item => <LiquidGlassCard key={item.id} p={5} borderRadius="xl">
         <HStack justify="space-between" spacing={4}>
           <Box flex={1} minW={0}><HStack mb={2}><Text fontWeight="bold" noOfLines={1}>{item.targetName}</Text>
-            <Badge colorScheme={colors[item.kind]}>{labels[item.kind]}</Badge></HStack>
+            <Badge colorScheme={colors[item.kind]}>{labels[item.kind]}</Badge>{item.simulated ? <Badge colorScheme="purple">模拟</Badge> : null}</HStack>
             <Text fontSize="sm" opacity={.7}>{new Date(item.createdAt).toLocaleString("zh-CN")} · {item.durationSeconds} 秒 · {formatMetric(item.averageFps, " FPS")}</Text></Box>
           {item.operation && item.operation !== "ready" && <Spinner size="sm" />}
           <Button size="sm" variant="outline" onClick={() => { setSelected(item.id); setOpenError(""); }}>查看详情</Button>
@@ -64,7 +64,7 @@ export default function ReportsPage() {
     </VStack>
     <PreviewDialog title="报告详情" isOpen={!!report} onClose={() => setSelected(null)}>
       {report && <VStack spacing={4} align="stretch">
-        <HStack><Text fontWeight="bold">{report.targetName}</Text><Badge colorScheme={colors[report.kind]}>{labels[report.kind]}</Badge></HStack>
+        <HStack><Text fontWeight="bold">{report.targetName}</Text><Badge colorScheme={colors[report.kind]}>{labels[report.kind]}</Badge>{report.simulated ? <Badge colorScheme="purple">模拟</Badge> : null}</HStack>
         <SimpleGrid columns={2} spacing={4}>
           {[["平均 FPS", formatMetric(report.averageFps)], ["1% Low", formatMetric(report.low1Fps)],
             ["0.1% Low", formatMetric(report.low01Fps)], ["帧时间", formatMetric(report.frameTimeMs, " ms")]].map(([label, value]) =>

@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { usePreviewState, usePreviewAction, phaseLabels, ActionError } from "@/preview/pages/shared";
+import { monitorBusy } from "@/preview/runtime/state";
 import { useAppStartup } from "@/contexts/app-startup-context";
 import { useFloatingButtonStyle } from "@/hooks/use-floating-button-style";
 import type { HardwareInfo } from "@/lib/hardware";
@@ -138,7 +139,7 @@ export default function HomePage() {
   const { hardwareInfo } = useAppStartup();
   const { run, pending, error } = usePreviewAction();
   const navigate = useNavigate();
-  const busy = ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);
+  const busy = monitorBusy();
   const stopping = ["stopping", "generating"].includes(state.monitor.phase);
   const latestReport = state.reports[0];
   const floatBtn = useFloatingButtonStyle();
