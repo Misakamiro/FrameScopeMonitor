@@ -50,9 +50,23 @@ internal static partial class FrameScopeNativeMonitor
         StopFrameScopeBackgroundProcessesAndWait(3000);
     }
 
+    // Host exit path: also reap the resident hardware service + LHM provider,
+    // which live outside the watcher PID tree and would otherwise survive
+    // until manual cleanup. Never used by StopMonitor - the Tauri host shares
+    // that service and must keep it running across capture stop/start.
+    internal static void StopFrameScopeBackgroundProcesses(bool includeHardwareService)
+    {
+        StopFrameScopeBackgroundProcessesAndWait(3000, includeHardwareService);
+    }
+
     internal static int StopFrameScopeBackgroundProcessesAndWait(int waitMs)
     {
-        var pids = EnumerateFrameScopeBackgroundPids();
+        return StopFrameScopeBackgroundProcessesAndWait(waitMs, false);
+    }
+
+    internal static int StopFrameScopeBackgroundProcessesAndWait(int waitMs, bool includeHardwareService)
+    {
+        var pids = EnumerateFrameScopeBackgroundPids(includeHardwareService);
         if (pids.Count == 0) return 0;
 
         var processMap = ReadProcessMap();
@@ -77,6 +91,11 @@ internal static partial class FrameScopeNativeMonitor
     }
 
     private static HashSet<int> EnumerateFrameScopeBackgroundPids()
+    {
+        return EnumerateFrameScopeBackgroundPids(false);
+    }
+
+    private static HashSet<int> EnumerateFrameScopeBackgroundPids(bool includeHardwareService)
     {
         var result = new HashSet<int>();
         var rootLower = Path.GetFullPath(Root).TrimEnd(Path.DirectorySeparatorChar).ToLowerInvariant();
@@ -116,6 +135,15 @@ internal static partial class FrameScopeNativeMonitor
 
             if (name.StartsWith("PresentMon", StringComparison.OrdinalIgnoreCase) &&
                 exeLower.StartsWith(Path.Combine(rootLower, "tools"), StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(info.ProcessId);
+                continue;
+            }
+
+            if (includeHardwareService &&
+                (name.Equals("FrameScopeHardwareService.exe", StringComparison.OrdinalIgnoreCase) ||
+                 name.Equals("FrameScopeHardwareProvider.exe", StringComparison.OrdinalIgnoreCase)) &&
+                exeLower.StartsWith(rootLower, StringComparison.OrdinalIgnoreCase))
             {
                 result.Add(info.ProcessId);
             }

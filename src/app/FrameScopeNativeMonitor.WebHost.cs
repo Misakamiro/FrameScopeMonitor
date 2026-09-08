@@ -2065,7 +2065,7 @@ if(!window.__framescopeBridgeSmoke){
 
         if (activeMonitoring)
         {
-            try { FrameScopeNativeMonitor.StopFrameScopeBackgroundProcesses(); }
+            try { FrameScopeNativeMonitor.StopFrameScopeBackgroundProcesses(true); }
             catch (Exception ex) { Log("host:explicit-exit-stop-monitoring-error " + ex.Message); }
         }
 
