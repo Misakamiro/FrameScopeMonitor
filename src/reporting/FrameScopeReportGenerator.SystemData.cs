@@ -58,17 +58,33 @@ internal static partial class FrameScopeReportGenerator
         if (overlayRows.Count == 0) return 0;
 
         var merged = 0;
+        // Both lists are time-sorted (ReadSystem sorts, and the caller's rows
+        // are re-sorted here to be sure), so one forward cursor per list finds
+        // every nearest pair in O(N+M). The original O(N*M) sweep cost tens of
+        // seconds on day-long captures and ran into the generation timeout.
+        systemRows.Sort(delegate(SystemRow a, SystemRow b) { return a.Time.CompareTo(b.Time); });
+
+        var cursor = 0;
         foreach (SystemRow row in systemRows)
         {
+            // Overlay rows more than two seconds in the past can never be
+            // nearest for this or any later system row - drop them for good.
+            while (cursor < overlayRows.Count &&
+                   (row.Time - overlayRows[cursor].Time).TotalSeconds > 2.0)
+            {
+                cursor++;
+            }
+
             SystemRow nearest = null;
             var nearestDelta = Double.MaxValue;
-            foreach (SystemRow candidate in overlayRows)
+            for (var i = cursor; i < overlayRows.Count; i++)
             {
-                var delta = Math.Abs((candidate.Time - row.Time).TotalSeconds);
+                var delta = Math.Abs((overlayRows[i].Time - row.Time).TotalSeconds);
+                if (delta > 2.0 && overlayRows[i].Time > row.Time) break;
                 if (delta < nearestDelta)
                 {
                     nearestDelta = delta;
-                    nearest = candidate;
+                    nearest = overlayRows[i];
                 }
             }
             if (nearest == null || nearestDelta > 2.0) continue;
