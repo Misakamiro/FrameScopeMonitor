@@ -1,142 +1,101 @@
-# FrameScope UI 重建 · 交接文档
+# FrameScope · 交接文档
 
-> 交接日期：2026-09-07　|　交接人：ZCode（接替 Codex）　|　状态：**前端预览已验收；后端迁移 M0-M4 已完成（同日）**
-
----
-
-## 〇、2026-09-07 后端迁移完成更新（必读，覆盖下文过时描述）
-
-用户验收前端后，同日完成了后端迁移计划 M0-M4（12+ 笔提交，均在本地，未推 GitHub）：
-
-- **架构定型（用户拍板"硬件服务为核"）**：Tauri 宿主为薄客户端；`FrameScopeHardwareService.exe`（Rust，`src/hardware-service/`）为采样核心，常驻持有 `FrameScopeHardwareProvider.exe --serve`（C#，LHM 0.9.6 常驻拉取模式）；宿主经命名管道 `FrameScopeHardwareService` 调用（`desktop-preview/src-tauri/src/hardware_service.rs`）。
-- **M0**：硬件链落位 + build.ps1 纳编（cargo --locked + csc）+ THIRD-PARTY-NOTICES。
-- **M1**：常驻采样核心（8s 超时/30s 冷却/5 次放弃/fail-closed、1Hz 节流缓存、字段级 OR 合并、`get_overlay_data` 对齐前端 OverlayHardwareData、全量 WMI 静态 HardwareInfo、ICMP ping、NexBox `game_fps.rs` 整文件移植为 ETW 实时 FPS）。坑：老 csc 4.0.30319 只支持 C#5；CREATE_NO_WINDOW 下 .NET Console 编码设置会崩（用 raw UTF-8 流）；windows-sys 0.59 的 OpenTraceW 门控在 `Win32_System_Time`。
-- **M2**：宿主接桥——`preview_native` 实现全部硬件数据命令（fail-closed），宿主 1Hz poller 取代前端 fixture 推送（GDI 悬浮条吃 `sanitize_for_gdi` 整数副本、事件保留全精度），前端 core.ts 桌面端转发/浏览器保留 fixture。
-- **M3**：`backend.rs` 复刻 v1.2.2 C# bridge 语义（config PascalCase 契约/targets/monitor_start-stop-status/reports_list+open+regenerate/processes_refresh），前端目标页/报告页/主页切真实采集管线。端到端实测：UI 加目标→watcher→worker→PresentMon+双 sampler→报告自动生成→列表→打开。
-- **M4**：`requireAdministrator` manifest（**覆盖 app_manifest 必须保留 Tauri 默认 Common-Controls dependency，且不可加自身 assemblyIdentity，否则 SxS 失败/挂死**）+ PerMonitorV2；`pawnio.rs`（check/install/uninstall，安装包未分发则 fail-closed）；桌面端隐藏预览场景卡片。
-- **黑屏事件与修复**：PawnIO 安装按钮曾导致整窗黑屏——真因是 install 命令把内层 `Result` 序列化成 `{"Ok":...}` 发给前端，弹窗把对象塞进 React child 抛异常且无 ErrorBoundary → 整树卸载。修复：正确解包 + 弹窗防御 + 新增 `RootErrorBoundary`（`src/components/RootErrorBoundary.tsx`，任何渲染异常显示重载卡片而非黑屏）。安装/卸载 PawnIO 前会先停采样服务避免驱动加载竞态。CDP 调试法（临时 `additionalBrowserArgs: "--remote-debugging-port=9333"` + `http://127.0.0.1:9333/json/list`）对查前端状态极其有效，用完记得还原。
-- **部署布局**：`tools/Deploy-PreviewBackend.ps1` 把后端链（HardwareService/Provider/Monitor/samplers/ReportGenerator/LHM DLL/tools\PresentMon）部署到预览 exe 同目录；config/history/state 都在 exe 旁（自包含）。验收机 shell 已是 High 提升级别，requireAdministrator exe 启动不弹 UAC；普通用户双击会弹 UAC（预期）。
-- **遗留（低优先级）**：报告时长曾显示 0 秒（时区 bug 已修 d7e38fc）；SMART 直读精化、NVML 双源 GPU 合并（LHM 值已覆盖同等数据）；DPI 缩放实测留给日常使用。watcher 是常驻进程，cmd.exe 等常见进程做目标会被反复捕获（设计使然，测试目标已停用）。
+> 交接日期：2026-09-08　|　交接人：ZCode　|　状态：**前端预览、后端迁移(M0-M4)、数据一致性改造、全项目审计与修复——全部完成并实机验证**
 
 ---
 
-## 一、项目背景与目标
+## 一、项目是什么
 
-FrameScope Monitor 是面向 Windows 游戏玩家的本地性能监控工具（FPS、CPU/GPU、温度、内存、磁盘、后台进程 → 交互式 HTML 报告）。
+FrameScope Monitor 是面向 Windows 游戏玩家的本地性能监控工具。当前形态：
 
-此前将 NexBox 界面整合进 FrameScope 的尝试失败（自制外壳、UI 卡顿、大量空实现），决定**全部重做**：
+- **UI**：Tauri 2 窗口 + NexBox 9.5.3 前端(React 19 + Chakra,复制后叠加 FrameScope 业务层)，经用户验收
+- **实时监控**：悬浮框(GDI 原生条 + 竖排 WebView 窗)与硬件页/传感器窗，数据来自常驻硬件采样链(LibreHardwareMonitor 0.9.6 + PawnIO + ETW FPS + ICMP ping),1Hz 更新,全部真实数据、fail-closed(缺失显示 "--",不伪造)
+- **采集记录**：用户选择监控目标启动后，watcher 自动发现游戏进程，拉起 worker + PresentMon(帧)+ ProcessSampler + SystemSampler,游戏退出后自动生成交互式 HTML 报告
+- **数据一致性**：报告的 GPU 序列来自与悬浮框同源的硬件快照(`hardware-samples.csv`),报告新增 CPU 温度/功耗/电压/ping 图表
 
-1. **本轮（已完成）**：直接照搬 NexBox 原版前端，做成带模拟数据的独立桌面预览，供用户确认界面与交互。
-2. **下一轮（未开始）**：用户验收前端后，规划后端迁移——把 NexBox 的硬件采样、游戏采样能力移植过来，让 FrameScope 实现硬件监控。**以已验收的前端为约束，让后端适配它，不再反过来改界面。**
+## 二、仓库与运行
 
-基线与原则（用户拍板，不可回退）：
+- 仓库:`C:\Users\misakamiro\Documents\FrameScopeMonitor-Rebuild`,分支 `codex/nexbox-frontend-preview`,**21+ 笔本地提交,GitHub 未推**(用户拍板仅本地)
+- 预览工程:`desktop-preview/`(NexBox 前端 + FrameScope 业务层 + Tauri 宿主)
+- 后端采样服务:`src/hardware-service/`(Rust)+ `src/app/FrameScopeHardwareProvider.cs`(C# LHM,`--serve` 常驻)
+- 采集链:`src/app|monitoring|reporting|core`(C#,watcher→worker→PresentMon/samplers→ReportGenerator)
+- 部署:`tools/Deploy-PreviewBackend.ps1` 把后端链部署到 `desktop-preview/src-tauri/target/release/`(预览 exe 旁,自包含;脚本会先停运行中的 FrameScope 进程)
+- 常规命令：前端 `npm run build` → `npx tauri build --no-bundle` → 部署脚本；C# 链 `build.ps1` 全量；硬件服务 `cargo build --release`
+- 测试:硬件服务 cargo test 19、宿主 5、前端 vitest 13(含 source-boundaries 命令表一致性测试)
 
-- FrameScope 基线：`2c48031`（GitHub `Misakamiro/FrameScopeMonitor` main）
-- NexBox 基线：`c800dc5`（`MuLiuSaMa/NexBox` 9.5.3），原版参考冻结在 `reference/nexbox`，**只读不改**
-- 直接复用 NexBox 源码，不自制外壳；每处差异必须记录（见 `docs/preview/IMPLEMENTATION.md` 的 Recorded deviations）
-- 移除音乐/商店/优化等非目标功能；硬件与游戏监控页面保留
-- 独立 HTML 图表报告不改版；旧整合工作树（`C:\Users\misakamiro\.config\superpowers\worktrees\FrameScopeMonitor\project-remediation`）与已安装版保留不动
+## 三、架构速览
 
----
-
-## 二、工作区与运行方式
-
-- 仓库：`C:\Users\misakamiro\Documents\FrameScopeMonitor-Rebuild`，分支 `codex/nexbox-frontend-preview`
-- 预览工程：`desktop-preview/`（NexBox 前端整体复制 + `src/preview/` 模拟层 + `src-tauri/` 宿主）
-- 产物：`desktop-preview/src-tauri/target/release/framescope-ui-preview.exe`（独立运行，不写正式配置，应用标识 `com.framescope.ui-preview`）
-
-```bash
-# Git Bash 下先补 PATH（机器无全局 Node，winget 装的 v24）
-export PATH="/c/Program Files/nodejs:$PATH"
-cd "C:/Users/misakamiro/Documents/FrameScopeMonitor-Rebuild/desktop-preview"
-
-npx tsc --noEmit          # 类型检查
-npx vitest run --exclude "src-framescope-baseline/**"   # 11 项测试
-npm run build             # 前端构建 → dist/
-npx tauri build --no-bundle   # 宿主构建（内嵌 dist，改前端后必须重跑）
+```
+前端 React(WebView2,纯视图)
+  │ invoke(core.ts:桌面→preview_native 宿主命令 / 浏览器→fixtures 模拟)
+Tauri 宿主(Rust)
+  ├─ hardware_service.rs  管道客户端(快慢路径,锁不跨 I/O)
+  ├─ backend.rs           采集管线契约(config/targets/monitor/reports)
+  ├─ overlay_panel.rs     GDI 悬浮窗(NexBox 移植)
+  └─ pawnio.rs            PawnIO 检测/安装
+FrameScopeHardwareService(Rust,命名管道多实例 accept,常驻)
+  └─ 常驻 FrameScopeHardwareProvider.exe --serve(C#,LHM,raw UTF-8 流)
+采集链(C#,watcher 常驻发现目标→worker→PresentMon+双 sampler→报告)
 ```
 
-**顺序陷阱**：`tauri build` 把 `dist/` 编译进 exe。改前端后必须先 `npm run build` 再 `tauri build`，否则 exe 里还是旧界面（cargo 缓存会让它 1 秒“成功”）。
+关键设计:**悬浮框显示的硬件快照 = 采集期间逐秒落盘的 hardware-samples.csv = 报告 GPU 数据源**(三处同源);FPS 双源保留(悬浮框 ETW 实时值 / 报告 PresentMon 逐帧,用户拍板)。
 
-- 纯浏览器调试：`npx vite preview --port 1440`（预览层有浏览器模式回退）
-- WebView2 调试：临时在 `tauri.conf.json`（主窗）或各 `WebviewWindowBuilder` 加 `additional_browser_args("--remote-debugging-port=9333")`，然后 `http://127.0.0.1:9333/json/list` + CDP。已写过的诊断脚本已删，思路记录在 IMPLEMENTATION.md
+## 四、架构铁律(违反即出事,全部有前科)
 
----
+1. **`csp` 必须为 null**——任何 style-src 限制经 Tauri nonce 化杀死 Emotion,UI 退化为无样式
+2. **Tauri 命令处理器内不能建窗**——WebView2 控制器初始化需要消息泵,死锁;长操作用 async 命令或 spawn_job
+3. **改前端必须 `npm run build` → `tauri build --no-bundle` → 部署**——dist 内嵌 exe,漏跑 = 旧界面;部署前跑 Deploy 脚本(会停运行中的进程,防半更新)
+4. **Git Bash 传 `/x` 开头参数会被改写**——csc 等路径参数用反斜杠
+5. **老 csc 4.0.30319 只支持 C#5**——禁 is-pattern/out-var/字符串插值/`using` 嵌套简写/`when` 过滤器;方法组 `StartNew` 有 Action/Func<T> 歧义
+6. **覆盖 Windows manifest 必须保留 Tauri 默认 Common-Controls dependency,且不可加自身 assemblyIdentity**——否则 SxS 失败/进程挂死 4.6MB
+7. **CREATE_NO_WINDOW 下 .NET 的 Console 编码设置器会崩**——provider 用 raw UTF-8 流
+8. **服务命名管道多实例 accept,裸指针 handle 进闭包过不了 Send 分析——用 usize 传地址**
+9. **mpsc worker 发回 `Result` 时,`recv()?` 剥的是信封,内层 Result 必须再解一次**——曾把 `{"Ok":...}` 发给前端炸 React(PawnIO 黑屏事件)
+10. **悬浮框数据缓存 carry-forward 有 5 秒 TTL**——修改缓存逻辑时不得移除,否则过期值永久冒充当前值
+11. **传感器匹配无"任意第一"兜底**(必须名称提示命中)——防机箱风扇冒充 CPU 风扇
+12. `windows-sys 0.59` feature 门控:OpenTraceW 在 `Win32_System_Time`、CreateFileW 在 `Win32_Security`、ReadFile 在 `Win32_System_IO`、GENERIC_READ 在 `Foundation`
+13. **watcher 是常驻进程**,采集完成后继续轮询新目标——常见进程(如 cmd.exe)做目标会被反复捕获
 
-## 三、本次会话完成的内容
+## 五、本次会话(2026-09-07/08)完成
 
-### 修复的三个致命/关键问题
+1. **M0-M4 后端迁移**(详见 git log 与 IMPLEMENTATION.md):硬件采样链落位、常驻采样核心、宿主接桥、采集报告链接管、管理员 manifest、PawnIO、CS2 真游戏端到端验证
+2. **数据一致性改造**:采集期间落盘悬浮框同源快照(hardware-samples.csv,16 列)、报告 GPU 数据消费同源 CSV、硬件服务多客户端
+3. **全项目审计**(docs/audit/2026-09-08-full-audit.md):三路并行深挖 + 人工核实,高危 8/中危 ~20/低危 ~25
+4. **审计修复**:全部高危与绝大多数中危已修(见 git log 28fb00d/3fcea46/8611ecc 等),含报告按钮可达性、GPU 合并列名、缓存 TTL、传感器匹配收紧、主线程阻塞、provider 优雅退出、部署原子性
 
-1. **CSP 导致整个界面不渲染**（只显示背景图）。`tauri.conf.json` 里自定义 CSP 会让 Tauri 追加 nonce，按规范 `'unsafe-inline'` 随之失效，Emotion/Chakra 全部动态样式被拦截。修复：`csp: null`，与 NexBox 上游一致。
-2. **命令处理器内建窗死锁主线程**。WebView2 控制器初始化需要消息泵，而命令正阻塞在泵里：窗口半初始化（白屏卡 about:blank / 无标题不可见）、invoke 永不返回。修复：所有建窗流程（传感器窗、报告样例窗、竖排窗、悬浮窗启停/切换/热键）经 `std::thread::spawn` 到工作线程，命令立即返回。
-3. **液态玻璃默认开启**。用户喜欢该效果（NexBox 官方特性，非旧项目残留）；`background-context.tsx` 默认 `true` + 首次启动持久化，边界测试锁定。
+## 六、已知遗留(低优先级,不阻塞)
 
-### 功能补齐与重设计
-
-- 主页重设计（用户验收）：主区 = 详细硬件配置卡片网格（复用 `LiquidGlassCard` + 硬件页行样式），右侧粘性次要栏 =「当前监控」+「最新报告」两卡，**顶部与处理器/显卡卡片行对齐**（缩进一个标题行高度 48px），高度锁定可视区。
-- 补齐交互式报告真实样例（`public/samples/charts/` 三件套，取自旧工作树 2026-09-02 真实生成物），`open_report_sample` 可用。
-- 可读性修复：亮壁纸 + 暗色主题下按钮/输入框看不清——统一采用 NexBox「半透明胶囊」方案（与全局搜索同思路）：硬件页顶栏按钮（`floatBtnStyle`）、悬浮框页顶栏按钮、主页「查看报告」、目标/报告页搜索框（`useFloatingFieldStyle`），共享 hook 在 `src/hooks/use-floating-button-style.ts` 与 `src/preview/pages/shared.tsx`。
-- 硬件页 GPU 统计卡标题溢出：标题行改占满卡片宽度，跑马灯可正确触发。
-- 背景交叉淡化层加 `translateZ(0)` 缓解竖向接缝（见“未决事项”）。
-
-### 实机验证通过（release 构建 + 桌面截图逐项核对）
-
-五个主页面（首页/硬件/目标/报告/悬浮框/设置）；四个独立窗口：传感器监控窗（14 个模拟传感器、分组、搜索、筛选）、竖排悬浮窗（透明置顶、彩色数值、缺 FPS 显示 `--` 不造假）、原生 GDI+ 悬浮条（CPU/GPU/RAM/PING）、报告样例窗（真实交互式报告）。模拟数据场景含正常/失败/空数据等，未知命令会报错（符合“禁止统一返回成功”约束）。
-
----
-
-## 四、架构铁律（新会话必读，违反即翻车）
-
-1. **`csp` 必须保持 `null`**。任何 style-src 限制都会经 Tauri nonce 化杀死 Emotion，UI 退化成无样式静态流。
-2. **不能在 Tauri 命令处理器内直接 `WebviewWindowBuilder::build()`**。一律 `std::thread::spawn` 到工作线程。
-3. **改前端必须 `npm run build` + `tauri build` 两连**，只跑后者会内嵌旧 dist。
-4. **sticky 元素的祖先链上不能有 `overflow-x: hidden`**（主页根容器踩过：会静默吞掉粘性定位）。
-5. **Git Bash 会把 `/x` 形式的命令行参数和环境变量值改写成 Windows 路径**。给 Node 脚本传路由等斜杠开头的值时，传不带前缀的值在脚本内补 `/`，或用 CDP 直接 evaluate。
-6. `liquidGlassEnabled` 默认 `true` 是用户明确决定，勿改回；`reference/nexbox` 只读。
-
----
-
-## 五、未决事项（按优先级）
-
-1. **代码未提交**。全部工作（`desktop-preview/`、`docs/preview/`、`.gitignore`）在 `codex/nexbox-frontend-preview` 分支上未 commit。用户已验收，**接手后第一件事应是提交**（建议拆分：上游复制、模拟层、宿主、主页重设计、可读性修复，或按用户意愿单提交）。
-2. **断层观察**：背景接缝做了合成层缓解，属间歇性问题，用户使用中若复发，下一步换掉背景轮播的交叉淡化实现（双图层改单图层淡入）。
-3. **逐文件来源清单 TODO**：计划要求“每文件差异注明业务替换/功能裁剪/适配”，目前只有 `IMPLEMENTATION.md` 的逐条偏差记录 + 边界测试，未做全量清单。
-4. **竖排悬浮窗默认尺寸偏小**（146×170，按 item_width 自适应），可在悬浮框设置里调，若用户要求可改默认值。
-5. 多 GPU 机器上主页首行是“处理器+显卡1”，第二块 GPU 卡会落到下方网格（可接受，必要时把首行固定为处理器+主显卡）。
-6. 深度验收项未做：Windows 100/125/150% 缩放布局、长时间运行的内存/句柄观察。
-
----
-
-## 六、下一阶段路线（后端迁移，**已于同日完成**，见第〇节）
-
-原计划四项全部落地：
-
-1. ~~NexBox 硬件采样链迁移~~ → 完成：FrameScope 硬件服务为核（用户拍板），NexBox 式常驻拉取 + ETW FPS 整文件移植。
-2. ~~采集报告链接管~~ → 完成：M3 `backend.rs` 对齐 watcher→worker→PresentMon/ProcessSampler/SystemSampler→ReportGenerator→三件套契约。
-3. ~~宿主架构决策~~ → 暂定 Tauri 宿主 + Rust 硬件服务 + C# 采集链协作（采样层独立于宿主，日后换宿主不重做采样）。
-4. ~~模拟层替换~~ → 完成：硬件/目标/采集/报告全真实；浏览器预览保留 fixture 作开发回退，场景卡片仅浏览器可见。
-
----
+- **DPI 缩放**：100/125/150% 实测留给日常使用(声明 PerMonitorV2 已做)
+- **SMART 直读精化、NVML 双源 GPU 合并**:LHM 值已覆盖同等数据,属锦上添花
+- **审计低危/加固项**:管道 ACL、`cmd /C start` 与 PowerShell 引号注入面收窄、backend_root 签名校验、get_overlay_metrics 大 CSV 缓存、log crate 初始化、报告 HTML 新增 CPU 温度/ping 图表展示(hardware-samples 数据已进 data.js 管线)、SystemSampler/PresentMon 双写退役决策
+- **watcher 常驻特性**:常见进程做目标会被反复捕获(设计使然);测试目标 cmd.exe 已停用,真游戏目标按需启用
+- 竖排悬浮窗"时间"项固定北京时间(NexBox 上游行为,国内产品语义下合理)
 
 ## 七、关键文件地图
 
 | 路径 | 职责 |
 |---|---|
-| `desktop-preview/src/preview/runtime/` | 模拟核心：命令拦截（core.ts）、状态机（state.ts）、fixtures、浏览器回退 |
-| `desktop-preview/src/preview/pages/` | FrameScope 业务页（目标/报告）+ 共享组件（shared.tsx 含 `useFloatingFieldStyle`） |
-| `desktop-preview/src/pages/HomePage.tsx` | 主页（硬件配置主区 + 粘性次要栏） |
-| `desktop-preview/src/pages/HardwarePage.tsx` | 硬件页（NexBox 原版 + 胶囊按钮 + 跑马灯修复） |
-| `desktop-preview/src-tauri/src/lib.rs` | 宿主命令分发（工作线程建窗模式） |
-| `desktop-preview/src-tauri/src/overlay_panel.rs` | 原生 GDI+ 悬浮窗（1638 行） |
-| `desktop-preview/tests/source-boundaries.test.ts` | 上游边界守护 + 已批准差异锁定 |
-| `docs/preview/IMPLEMENTATION.md` | 执行清单、逐条偏差记录、三会话修复日志 |
-| `reference/nexbox/` | NexBox 9.5.3 冻结参考（只读） |
+| `desktop-preview/src/preview/runtime/` | 前端核心:core.ts 命令分发、state.ts 状态机与后端对账、platform.ts 双模式 |
+| `desktop-preview/src-tauri/src/lib.rs` | 宿主命令路由(async)+ poller + 托盘热键 |
+| `desktop-preview/src-tauri/src/hardware_service.rs` | 硬件服务管道客户端 |
+| `desktop-preview/src-tauri/src/backend.rs` | 采集管线契约(targets/monitor/reports/processes) |
+| `desktop-preview/src-tauri/src/overlay_panel.rs` | GDI 悬浮窗(NexBox 移植) |
+| `desktop-preview/src-tauri/src/pawnio.rs` | PawnIO 检测/安装/卸载 |
+| `src/hardware-service/src/` | 采样服务(main 多实例 accept/lib 协议+缓存/provider 常驻管理/overlay 聚合/ping/game_fps ETW) |
+| `src/app/FrameScopeHardwareProvider.cs` | LHM 常驻 provider(--serve) |
+| `src/monitoring/FrameScopeHardwareServiceClient.cs` | worker 侧管道客户端 + 快照落盘器 |
+| `src/monitoring/FrameScopeSystemSampler.Gpu.cs` | GPU 采样(已改从硬件服务取,无 nvidia-smi) |
+| `src/reporting/FrameScopeReportGenerator.SystemData.cs` | 报告系统数据(含 hardware-samples 合并) |
+| `tools/Deploy-PreviewBackend.ps1` | 后端链部署(停进程→拷贝) |
+| `docs/audit/2026-09-08-full-audit.md` | 全项目审计报告 |
+| `docs/preview/IMPLEMENTATION.md` | 逐会话实施记录与偏差清单 |
+| `reference/nexbox/` | NexBox 冻结参考(只读) |
 
----
+## 八、给下一个会话的建议
 
-## 八、给下一个会话的操作建议
-
-1. 先 `git -C "C:/Users/misakamiro/Documents/FrameScopeMonitor-Rebuild" status` 核对未提交变更，与用户确认提交方式后提交。
-2. 任何界面改动走「npm run build → tauri build → 实机截图验证」闭环，不要只看构建通过。
-3. 动上游文件（`src/pages`、`src/components`）前先 diff `reference/nexbox`，差异一律记入 IMPLEMENTATION.md。
-4. 与用户沟通默认用中文；涉及取舍（视觉、范围）先问再做。
+1. 先 `git log --oneline -25` 与 `git status` 了解现状;工作树应干净
+2. 任何 UI 改动走「npm run build → tauri build --no-bundle → Deploy 脚本 → 实机截图」闭环
+3. 动 NexBox 上游文件(`src/pages`、`src/components`)前先 diff `reference/nexbox`,差异记入 IMPLEMENTATION.md
+4. 新增宿主命令时:Rust COMMANDS + 前端 backendInvoke(或 nativeCommands)三处同步——source-boundaries 一致性测试会拦截遗漏
+5. 真游戏全链路已验证(CS2):目标自动发现 → 30952 帧录制 → 报告自动生成(FPS 119.6);日常使用直接跑即可
+6. 与用户沟通默认中文;涉及取舍(视觉、范围)先问再做;提交仅本地,不推 GitHub
