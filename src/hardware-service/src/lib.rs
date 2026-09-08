@@ -185,7 +185,9 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
             serde_json::json!({ "status": "cleared" })
         }
         "restart_provider" => {
-            resident().provider.lock().unwrap().kill();
+            // force_reset also clears the suspended flag, so a manual restart
+            // recovers from consecutive-failure give-up.
+            resident().provider.lock().unwrap().force_reset();
             serde_json::json!({ "status": "restarting" })
         }
         "start" => {

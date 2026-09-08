@@ -194,13 +194,27 @@ impl ResidentProvider {
             .map_err(|error| format!("provider returned invalid JSON: {error}"))
     }
 
+    /// Kills the resident provider AND clears the failure budget, so a
+    /// manual restart (restart_provider) can recover from a suspended state.
+    pub fn force_reset(&mut self) {
+        self.kill();
+        self.suspended = false;
+        self.consecutive_failures = 0;
+    }
+
     /// Kills the resident provider; the next exchange respawns it.
     pub fn kill(&mut self) {
         if let Some(mut proc) = self.proc.take() {
-            let _ = proc.stdin.write_all(b"{\"cmd\":\"exit\"}\n");
-            let _ = proc.stdin.flush();
-            let _ = proc._child.kill();
-            let _ = proc._child.wait();
+            let graceful = (|| -> Option<()> {
+                proc.stdin.write_all(b"{\"cmd\":\"exit\"}
+").ok()?;
+                proc.stdin.flush().ok()?;
+                proc._child.wait().ok().map(|_| ())
+            })();
+            if graceful.is_none() {
+                let _ = proc._child.kill();
+                let _ = proc._child.wait();
+            }
         }
     }
 }

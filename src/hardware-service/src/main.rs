@@ -81,7 +81,9 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     const PIPE_READMODE_MESSAGE: Dword = 0x00000002;
     const PIPE_WAIT: Dword = 0x00000000;
     const PIPE_UNLIMITED_INSTANCES: Dword = 255;
+    const FILE_FLAG_FIRST_PIPE_INSTANCE: Dword = 0x0005_0000;
     const ERROR_PIPE_CONNECTED: i32 = 535;
+    const ERROR_ACCESS_DENIED: i32 = 5;
 
     extern "system" {
         fn CreateNamedPipeW(
@@ -137,7 +139,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
         let handle = unsafe {
             CreateNamedPipeW(
                 wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
                 PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                 PIPE_UNLIMITED_INSTANCES,
                 65536,
@@ -148,6 +150,12 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
         };
         if handle == INVALID_HANDLE_VALUE {
             let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
+                // Another service process already owns this pipe name - it is
+                // alive and serving, so treat this spawn as redundant and exit
+                // quietly instead of running a second provider chain.
+                return Ok(());
+            }
             // A stop request may have raced an accept failure; honor it.
             if global_stop.load(Ordering::SeqCst) {
                 break;
