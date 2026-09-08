@@ -6,7 +6,7 @@ pub mod provider;
 
 use provider::ResidentProvider;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -86,10 +86,24 @@ fn ping_sample() -> Option<u32> {
 // overlay request; without admin rights the session start fails and the
 // values stay null (fail-closed).
 static FPS_STARTED: AtomicBool = AtomicBool::new(false);
+static FPS_LAST_ATTEMPT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn fps_sample() -> (Option<f64>, Option<f64>, Option<f64>) {
-    if !FPS_STARTED.swap(true, Ordering::SeqCst) {
-        game_fps::start_fps_monitor();
+    // Retry a failed start on a 5s throttle instead of latching forever: the
+    // first attempt often runs before elevation, and FPS_ACTIVE only flips
+    // once the session is really up.
+    if !FPS_STARTED.load(Ordering::SeqCst) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if now.saturating_sub(FPS_LAST_ATTEMPT_MS.load(Ordering::SeqCst)) >= 5_000 {
+            FPS_LAST_ATTEMPT_MS.store(now, Ordering::SeqCst);
+            game_fps::start_fps_monitor();
+            if game_fps::fps_monitor_active() {
+                FPS_STARTED.store(true, Ordering::SeqCst);
+            }
+        }
     }
     (
         game_fps::get_cached_fps().map(f64::from),

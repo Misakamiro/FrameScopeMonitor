@@ -167,11 +167,16 @@ fn is_non_game_process(name: &str) -> bool {
 /// 去除 .exe 后缀（大小写不敏感）
 #[inline]
 fn strip_exe_suffix(s: &str) -> &str {
-    if s.len() >= 4 && s[s.len() - 4..].eq_ignore_ascii_case(".exe") {
-        &s[..s.len() - 4]
-    } else {
-        s
+    // Byte slicing on a non-char boundary would panic inside the ETW
+    // callback (panic across FFI = process abort), so slice via str::get.
+    if s.len() >= 4 {
+        if let (Some(head), Some(tail)) = (s.get(..s.len() - 4), s.get(s.len() - 4..)) {
+            if tail.eq_ignore_ascii_case(".exe") {
+                return head;
+            }
+        }
     }
+    s
 }
 
 /// 进程名匹配：支持带/不带 .exe 后缀，以及 java/javaw 互通
@@ -1020,6 +1025,10 @@ fn process_tracker_loop() {
 // ============ 公共 API（与旧方案完全兼容） ============
 
 /// 启动 FPS 监控
+pub fn fps_monitor_active() -> bool {
+    FPS_ACTIVE.load(Ordering::SeqCst)
+}
+
 pub fn start_fps_monitor() {
     if FPS_ACTIVE.load(Ordering::SeqCst) {
         return;

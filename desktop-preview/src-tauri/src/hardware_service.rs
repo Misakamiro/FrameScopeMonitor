@@ -74,6 +74,9 @@ unsafe impl Send for PipeHandle {}
 struct PipeClient {
     handle: PipeHandle,
     next_id: AtomicU64,
+    // Reused read buffer: a fresh 1 MB zero-initialized allocation per
+    // request was pure overhead at the 1 Hz poll rate.
+    buffer: Vec<u8>,
 }
 
 static CLIENT: Mutex<Option<PipeClient>> = Mutex::new(None);
@@ -199,6 +202,7 @@ fn open_pipe() -> Result<PipeClient, String> {
         Ok(PipeClient {
             handle: PipeHandle(handle),
             next_id: AtomicU64::new(1),
+            buffer: vec![0u8; 1_048_576],
         })
     }
 }
@@ -226,22 +230,31 @@ impl PipeClient {
                 return Err(format!("pipe write failed: {}", std::io::Error::last_os_error()));
             }
         }
-        let mut buffer = vec![0u8; 1_048_576];
         let mut read: u32 = 0;
         ensure_read_watchdog();
         INFLIGHT_HANDLE.store(handle as usize, Ordering::SeqCst);
         INFLIGHT_SINCE_MS.store(now_unix_ms(), Ordering::SeqCst);
         let read_ok = unsafe {
-            ReadFile(handle, buffer.as_mut_ptr(), buffer.len() as u32, &mut read, null_mut())
+            ReadFile(handle, self.buffer.as_mut_ptr(), self.buffer.len() as u32, &mut read, null_mut())
         };
         INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
         if read_ok == 0 || read == 0 {
             return Err(format!("pipe read failed: {}", std::io::Error::last_os_error()));
         }
-        let text = String::from_utf8_lossy(&buffer[..read as usize]);
+        let text = String::from_utf8_lossy(&self.buffer[..read as usize]);
         let clean = text.trim_matches('\0').trim_start_matches('\u{feff}').trim();
         let response: Value =
             serde_json::from_str(clean).map_err(|error| format!("service returned invalid JSON: {error}"))?;
+        // A stale or interleaved response means the pipe framing is broken -
+        // surface it as a transport error so the caller recycles the
+        // connection instead of pairing requests with wrong answers.
+        if response["id"].as_str() != Some(id.to_string().as_str()) {
+            return Err(format!(
+                "pipe protocol: response id {} does not match request {}",
+                response["id"],
+                id
+            ));
+        }
         if response["ok"] == true {
             Ok(response["result"].clone())
         } else {

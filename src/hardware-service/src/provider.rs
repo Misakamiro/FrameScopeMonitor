@@ -18,7 +18,13 @@ pub const RESTART_COOLDOWN: Duration = Duration::from_secs(30);
 pub const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 pub fn stderr_log_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("framescope-provider-stderr.log")
+    // PID suffix: concurrent service processes (host + worker spawns racing
+    // during the FIRST_PIPE_INSTANCE window) must not overwrite each other's
+    // only window into console-less startup failures.
+    std::env::temp_dir().join(format!(
+        "framescope-provider-stderr-{}.log",
+        std::process::id()
+    ))
 }
 
 pub struct ResidentProvider {

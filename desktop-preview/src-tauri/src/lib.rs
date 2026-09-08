@@ -409,6 +409,22 @@ fn system_locale() -> String {
     "zh-CN".into()
 }
 pub fn run() {
+    // Diagnostics (ETW/permission/pipe failures) used to vanish because no
+    // logger was installed; stderr is enough for a desktop app and costs
+    // nothing in release.
+    struct StderrLogger;
+    impl log::Log for StderrLogger {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+        fn log(&self, record: &log::Record) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+        fn flush(&self) {}
+    }
+    static LOGGER: StderrLogger = StderrLogger;
+    let _ = log::set_logger(&LOGGER).map(|_| log::set_max_level(log::LevelFilter::Info));
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())

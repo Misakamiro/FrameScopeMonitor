@@ -81,8 +81,13 @@ internal static class FrameScopeHardwareServiceClient
     /// Probes the pipe; when nobody is listening, starts the service from the
     /// application directory (a second instance of the service simply exits on
     /// its own when the pipe name is already taken).
+    private static DateTime lastSpawnAttemptUtc = DateTime.MinValue;
+
     public static void EnsureServiceRunning()
     {
+        // Throttle spawn attempts: when the service exe is broken/blocked the
+        // old code spawned a doomed process every second (per sampler tick).
+        if ((DateTime.UtcNow - lastSpawnAttemptUtc).TotalSeconds < 5) return;
         try
         {
             using (var probe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
@@ -105,6 +110,7 @@ internal static class FrameScopeHardwareServiceClient
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            lastSpawnAttemptUtc = DateTime.UtcNow;
             using (Process.Start(start)) { }
         }
         catch { }

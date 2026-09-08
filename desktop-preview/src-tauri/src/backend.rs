@@ -483,7 +483,9 @@ fn parse_run_timestamp(name: &str) -> Option<u64> {
     use chrono::TimeZone;
     chrono::Local
         .from_local_datetime(&naive)
-        .single()
+        // DST fall-back ambiguity: take the earlier instant instead of
+        // dropping the run entirely (which zeroed its duration).
+        .earliest()
         .map(|datetime| datetime.timestamp().max(0) as u64)
 }
 
@@ -729,21 +731,15 @@ fn build_report_entry(run_dir: &str, html: &str, seen: &mut Vec<String>) -> Opti
 }
 
 fn format_unix_local(seconds: u64) -> String {
-    let days = seconds / 86_400;
-    let rem = seconds % 86_400;
-    let (h, mi, s) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
-    let mut z = days as i64 + 719_468;
-    let era = z / 146_097;
-    z -= era * 146_097;
-    let doe = z;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}")
+    // The old hand-rolled conversion formatted the UTC instant as if it were
+    // local wall-clock time, putting fallback timestamps 8 hours behind.
+    match chrono::DateTime::from_timestamp(seconds as i64, 0) {
+        Some(utc) => utc
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        None => String::new(),
+    }
 }
 
 fn find_report(id: &str) -> Result<Value, String> {
