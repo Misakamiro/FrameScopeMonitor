@@ -300,3 +300,52 @@ with presentmon-etw-access-denied - expected boundary, not a defect. Whole
 monitoring chain ~1.1% CPU / ~340MB. Config changes made during testing:
 CMD Test target disabled, Battlefield 6 target enabled (also exercised
 targets_save).
+
+
+## Session 2026-09-09: fix batch 3 (service lifecycle, merge perf, config persistence, timeouts)
+
+- **M3** (`desktop-preview/src-tauri/src/hardware_service.rs`): spawned hardware
+  services now join a KILL_ON_JOB_CLOSE job owned by the host - a host killed
+  from Task Manager no longer leaves an orphan service+provider chain (the
+  provider follows its service via stdin EOF). Verified live: killing the host
+  used to leave the service running (it blocked a deploy during this session).
+- **M4** (`src/hardware-service/src/main.rs`): session threads capped at 16
+  (overloaded connects are shed with a short sleep); JoinHandles are dropped
+  (detach semantics) instead of accumulating in a Vec forever.
+- **R-B1** (`src/app/FrameScopeNativeMonitor.ProcessCleanup.cs` +
+  `WebHost.cs`): the explicit host-exit path now also reaps the resident
+  hardware service + LHM provider (they live outside the watcher PID tree).
+  StopMonitor intentionally does NOT kill them - the Tauri host shares the
+  service across capture stop/start.
+- **M9** (`src/reporting/FrameScopeReportGenerator.SystemData.cs`):
+  MergeHardwareOverlaySamples is now a two-pointer O(N+M) merge over the two
+  time-sorted lists instead of O(N*M) (which projected 40-90s for 24h
+  captures and a generation timeout). Nearest-within-2s semantics preserved
+  (ties resolve to the earlier overlay row, exactly as before).
+- **M6** (`backend.rs` + `lib.rs` + `platform.ts` + `state.ts`): new
+  `config_save` backend command; the settings page now persists on desktop.
+  Only fields the capture chain honors are mapped (TelemetrySampleIntervalMs,
+  PollIntervalMs, OpenReportOnComplete, verbose/diagnostic logs) into the
+  PascalCase contract; unknown fields stay untouched (M7 intact).
+  **Regression caught live and fixed in the same batch**: the first cut wrote
+  mapped ints as JSON floats ("1000.0"); C# JavaScriptSerializer refuses
+  float-for-Int32 and ConfigStore.Load silently fell back to the default
+  config - every user target vanished from the watcher's view mid-session
+  (Battlefield 6 stopped being captured). config_save now writes whole
+  numbers, and the runtime config shipped broken in this window was repaired.
+  Add a cross-language contract test for Rust-written configs before touching
+  the writer again.
+- **M17 (partial)** (`build.ps1`): the build now stops the FrameScope
+  process chain first (locked in-use files used to fail the build halfway),
+  and a locked dist backup cleanup degrades to a warning instead of failing
+  an already-successful build. Full staging-based atomic outputs remain a
+  larger refactor (see audit).
+- **H7 tail** (`hardware_service.rs`): pipe reads are tracked by a watchdog
+  that fires CancelIoEx after 12s (a cold LHM scan can legitimately take
+  ~10s), so a hung service can no longer pin the CLIENT lock forever; the
+  aborted read is treated as a transport failure and the connection recycles.
+- Live test: CS2 full pipeline (49624 frames, full report, auto-opened);
+  Battlefield 6 captured after the config regression was fixed, PresentMon
+  ETW blocked by Javelin as before, diagnostic report degradation confirmed
+  (presentmon-etw-access-denied, 175 system samples). Overhead measured
+  0.79% CPU / ~333MB for the whole monitoring chain.
