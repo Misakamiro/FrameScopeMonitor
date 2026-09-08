@@ -989,6 +989,13 @@ fn process_tracker_loop() {
 
                         if !is_game {
                             SMOOTHED_FPS.store(0, Ordering::Relaxed);
+                            // Leave no stale lows behind: the expiry path
+                            // above is gated on SMOOTHED_FPS != 0, so once we
+                            // zero it here those branches never run and the
+                            // overlay would keep the last session's 1%/0.1%
+                            // Low values indefinitely.
+                            ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
+                            ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
                         }
 
                         // 递增代次，通知 ETW 回调清空缓冲区

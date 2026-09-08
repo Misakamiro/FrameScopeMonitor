@@ -187,8 +187,17 @@ pub fn build_overlay_data(
         (Some(used), Some(total)) if total > 0.0 => Some((used / total * 100.0).clamp(0.0, 100.0)),
         _ => None,
     };
-    let ssd_temp = sensor_value(&rows, "Temperature", "storage", &[])
-        .or_else(|| sensor_value(&rows, "Temperature", "storage", &["Drive", "SSD"]));
+    // Unlike the fan/temperature hints above, storage has no misattribution
+    // risk - every storage "Temperature" sensor belongs to some drive - so
+    // strict name hints ("Drive"/"SSD") only served to miss most NVMe models.
+    // The overlay shows a single disk temp: report the hottest drive.
+    let ssd_temp = rows
+        .iter()
+        .filter(|row| {
+            contains(row.sensor_type, "Temperature") && contains(row.hardware_type, "storage")
+        })
+        .map(|row| row.value)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     OverlayData {
         fps: fps.0.map(|v| (v * 10.0).round() / 10.0),
