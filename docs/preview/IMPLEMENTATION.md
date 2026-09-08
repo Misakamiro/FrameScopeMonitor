@@ -379,3 +379,14 @@ no frames:
 Process note: build.ps1 csc failures were masked twice by shell output
 filters - always verify the deployed exe timestamp after building, never
 trust a filtered log line.
+
+
+## Decision (2026-09-09, user): dual-writer architecture stays as-is (Option A)
+
+FPS data keeps two purpose-built channels: PresentMon remains the
+authoritative per-frame source for reports (frame-level percentiles, hitch
+detection) whenever its trace is allowed, and the resident ETW FPS session
+stays the real-time overlay source plus the automatic fallback for
+anti-cheat-blocked runs (the etw-fps-sampled path shipped in 6aba278).
+Retiring PresentMon in favor of an in-house per-frame ETW writer remains a
+possible future project, not a current task.
