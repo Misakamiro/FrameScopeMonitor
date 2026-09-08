@@ -10,7 +10,7 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -18,6 +18,51 @@ pub const PIPE_NAME: &str = "FrameScopeHardwareService";
 const CONNECT_RETRY_MS: u64 = 300;
 const CONNECT_RETRIES: usize = 20;
 const SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
+
+// H7 tail: a hung service used to block the calling thread - and, under the
+// CLIENT lock, every other hardware caller - forever on ReadFile. Track the
+// in-flight read; a watchdog cancels it via CancelIoEx after a generous
+// budget (a cold LibreHardwareMonitor scan can legitimately take ~10s), so
+// the read errors out, the lock is released and the connection recycled.
+static INFLIGHT_HANDLE: AtomicUsize = AtomicUsize::new(0);
+static INFLIGHT_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+const READ_TIMEOUT_MS: u64 = 12_000;
+
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn ensure_read_watchdog() {
+    static START: std::sync::Once = std::sync::Once::new();
+    START.call_once(|| {
+        std::thread::Builder::new()
+            .name("framescope-pipe-watchdog".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_millis(200));
+                let handle = INFLIGHT_HANDLE.load(Ordering::SeqCst);
+                if handle == 0 {
+                    continue;
+                }
+                let since = INFLIGHT_SINCE_MS.load(Ordering::SeqCst);
+                if since == 0 || now_unix_ms().saturating_sub(since) <= READ_TIMEOUT_MS {
+                    continue;
+                }
+                // Cancels every thread's I/O on this handle; the blocked
+                // ReadFile returns ERROR_OPERATION_ABORTED and the caller
+                // treats it as a transport failure (recycle + reconnect).
+                unsafe {
+                    windows_sys::Win32::System::IO::CancelIoEx(
+                        handle as *mut core::ffi::c_void,
+                        null_mut(),
+                    );
+                }
+            })
+            .expect("spawn pipe watchdog");
+    });
+}
 
 type Handle = *mut core::ffi::c_void;
 
@@ -80,8 +125,47 @@ fn spawn_service(service: &std::path::Path, helper: &std::path::Path) -> Result<
     }
     // A spawn racing a healthy instance just exits with a pipe-name clash;
     // either way the connect loop below settles it.
-    let _ = command.spawn();
+    if let Ok(child) = command.spawn() {
+        #[cfg(windows)]
+        kill_child_when_host_dies(&child);
+    }
     Ok(())
+}
+
+// M3: a host killed from Task Manager (or a crash) must not leave an orphan
+// hardware service + LHM provider chain behind. The child joins a
+// KILL_ON_JOB_CLOSE job owned by this process, so the last job handle closing
+// (host exit) terminates it; the service in turn takes its provider down via
+// stdin EOF. Handles from earlier spawns intentionally stay open until host
+// exit - each job only owns its own (already dead or live) child.
+#[cfg(windows)]
+fn kill_child_when_host_dies(child: &std::process::Child) {
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use std::os::windows::io::AsRawHandle;
+
+    unsafe {
+        let job = CreateJobObjectW(null_mut(), null_mut());
+        if job.is_null() || job == -1isize as *mut core::ffi::c_void {
+            return;
+        }
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = core::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const core::ffi::c_void,
+            core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) == 0
+        {
+            return;
+        }
+        // Best effort: a failed assignment just keeps the old orphan behavior.
+        AssignProcessToJobObject(job, child.as_raw_handle());
+    }
 }
 
 fn open_pipe() -> Result<PipeClient, String> {
@@ -144,12 +228,15 @@ impl PipeClient {
         }
         let mut buffer = vec![0u8; 1_048_576];
         let mut read: u32 = 0;
-        unsafe {
-            if ReadFile(handle, buffer.as_mut_ptr(), buffer.len() as u32, &mut read, null_mut()) == 0
-                || read == 0
-            {
-                return Err(format!("pipe read failed: {}", std::io::Error::last_os_error()));
-            }
+        ensure_read_watchdog();
+        INFLIGHT_HANDLE.store(handle as usize, Ordering::SeqCst);
+        INFLIGHT_SINCE_MS.store(now_unix_ms(), Ordering::SeqCst);
+        let read_ok = unsafe {
+            ReadFile(handle, buffer.as_mut_ptr(), buffer.len() as u32, &mut read, null_mut())
+        };
+        INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
+        if read_ok == 0 || read == 0 {
+            return Err(format!("pipe read failed: {}", std::io::Error::last_os_error()));
         }
         let text = String::from_utf8_lossy(&buffer[..read as usize]);
         let clean = text.trim_matches('\0').trim_start_matches('\u{feff}').trim();
