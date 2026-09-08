@@ -104,6 +104,10 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, object> hardware = LoadHardware();
         Dictionary<string, string> metadata = LoadRunMetadata(runDir);
         Dictionary<string, object> captureDiagnostics = LoadCaptureDiagnostics(runDir);
+        // H3 tail: make the overlay merge visible in the report so a silent
+        // zero (column drift, missing file) is diagnosable from the artifact.
+        captureDiagnostics["OverlayMergedRows"] = overlayMergedRows;
+        captureDiagnostics["FramesFromHardwareSamples"] = framesFromHardwareSamples;
         FrameScopeSamplerEvidence processSampler = LoadSamplerEvidence(runDir, "ProcessSampler", "process-samples.csv", new[] { "Time", "ProcessName" });
         FrameScopeSamplerEvidence systemSampler = LoadSamplerEvidence(runDir, "SystemSampler", "system-samples.csv", new[] { "Time" });
         FrameScopeRunContract.AddStatusFields(captureDiagnostics, "ProcessSampler", processSampler);

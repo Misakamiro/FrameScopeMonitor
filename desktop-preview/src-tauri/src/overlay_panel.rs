@@ -1510,14 +1510,14 @@ pub fn set_drag_mode(enabled: bool) {
 pub fn start_overlay(settings: OverlaySettings) -> Result<OverlayResult, String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-    if OVERLAY_ACTIVE.load(Ordering::SeqCst) {
+    // swap, not load+store: the check-then-act let two concurrent starts
+    // both pass the gate and double-create the overlay window.
+    if OVERLAY_ACTIVE.swap(true, Ordering::SeqCst) {
         return Ok(OverlayResult {
             success: true,
             message: "悬浮框已处于启用状态".to_string(),
         });
     }
-
-    OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
 
     {
         let mut settings_lock = CURRENT_SETTINGS.lock().unwrap();
@@ -1541,10 +1541,13 @@ pub fn start_overlay(settings: OverlaySettings) -> Result<OverlayResult, String>
                     SetTimer(hwnd, 1, 500, None);
 
                     let mut msg: MSG = std::mem::zeroed();
-                    while OVERLAY_ACTIVE.load(Ordering::SeqCst) {
+                    // Labeled so WM_QUIT leaves the whole pump: breaking only
+                    // the inner PeekMessage loop used to spin the outer loop
+                    // every 50ms after a quit request.
+                    'pump: while OVERLAY_ACTIVE.load(Ordering::SeqCst) {
                         while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
                             if msg.message == WM_QUIT {
-                                break;
+                                break 'pump;
                             }
                             TranslateMessage(&msg);
                             DispatchMessageW(&msg);

@@ -145,9 +145,21 @@ internal sealed class FrameScopeHardwareSampleRecorder
     private Thread _thread;
     private volatile bool _stop;
 
+    /// <summary>
+    /// Rows actually appended this session. status.json carries it so a
+    /// silently-dead recorder is diagnosable from the run artifacts instead
+    /// of only showing up as missing report columns.
+    /// </summary>
+    public int RowsWritten { get; private set; }
+
+    /// <summary>Last recorder error text, if any (empty when healthy).</summary>
+    public string LastError { get; private set; }
+
     public FrameScopeHardwareSampleRecorder(string csvPath)
     {
         _csvPath = csvPath;
+        // No C# 6 auto-property initializers on the in-box compiler.
+        LastError = "";
     }
 
     public void Start()
@@ -176,7 +188,7 @@ internal sealed class FrameScopeHardwareSampleRecorder
             if (!string.IsNullOrEmpty(json))
             {
                 try { AppendRow(json); }
-                catch { }
+                catch (Exception ex) { LastError = ex.Message; }
             }
             // Roughly one second per row; the snapshot itself is throttled
             // server-side, so a small drift here is harmless.
@@ -209,7 +221,16 @@ internal sealed class FrameScopeHardwareSampleRecorder
             Text(data, "game_ping"),
             Text(data, "fps")
         };
-        File.AppendAllText(_csvPath, string.Join(",", values) + "\r\n", new UTF8Encoding(false));
+        try
+        {
+            File.AppendAllText(_csvPath, string.Join(",", values) + "\r\n", new UTF8Encoding(false));
+            RowsWritten++;
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            throw;
+        }
     }
 
     private static string Text(Dictionary<string, object> data, string key)

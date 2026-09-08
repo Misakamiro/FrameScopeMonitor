@@ -66,6 +66,22 @@ fn ensure_read_watchdog() {
 
 type Handle = *mut core::ffi::c_void;
 
+/// All-null overlay payload (fields matching the service's OverlayData
+/// contract) for the poller's "service unreachable" broadcast: without it
+/// the overlays freeze on the last snapshot instead of falling back to "--".
+pub fn empty_overlay_value() -> Value {
+    json!({
+        "fps": null, "fps_1low": null, "fps_01low": null,
+        "cpu_usage": null, "cpu_temp": null, "cpu_clock": null, "cpu_power": null,
+        "cpu_voltage": null, "cpu_fan_speed": null,
+        "gpu_temp": null, "gpu_usage": null, "gpu_fan_speed": null, "gpu_power": null,
+        "gpu_clock": null, "gpu_voltage": null, "gpu_memory_clock": null,
+        "memory_usage": null, "ssd_temp": null, "delta_password": null, "game_ping": null,
+        "gpu_vram_used": null, "gpu_vram_total": null, "net_time_offset_ms": null,
+        "gpu_sensors": [], "active_gpu_index": 0
+    })
+}
+
 // The pipe HANDLE is just an integer token owned by this process; the client
 // lives inside a static Mutex so access is already serialized across threads.
 struct PipeHandle(Handle);

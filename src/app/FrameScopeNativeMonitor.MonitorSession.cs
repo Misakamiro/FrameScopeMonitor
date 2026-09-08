@@ -462,6 +462,18 @@ internal static partial class FrameScopeNativeMonitor
                 }
                 captureLoopStopwatch.Stop();
                 hardwareRecorder.Stop();
+                // status.json evidence for the hardware sample stream: a zero
+                // row count with a healthy pipeline means the recorder died
+                // silently, which previously could only be guessed from the
+                // report's missing GPU overlay columns.
+                try
+                {
+                    FrameScopeNativeMonitor.WriteHardwareSampleEvidence(
+                        paths.StatusPath,
+                        hardwareRecorder.RowsWritten,
+                        hardwareRecorder.LastError);
+                }
+                catch { }
                 WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
                 {
                     return "monitor-capture-loop-ms=" + captureLoopStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +

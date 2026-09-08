@@ -74,6 +74,25 @@ internal static partial class FrameScopeNativeMonitor
         FrameScopeJsonFile.Write(paths.StatusPath, Json.Serialize(status));
     }
 
+    /// <summary>
+    /// Merges the hardware-samples recorder outcome into the run's
+    /// status.json after capture ends. Without this evidence a silently dead
+    /// recorder (zero rows) was indistinguishable from a healthy one.
+    /// </summary>
+    internal static void WriteHardwareSampleEvidence(string statusPath, int rowsWritten, string lastError)
+    {
+        if (!File.Exists(statusPath)) return;
+        try
+        {
+            var status = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(statusPath));
+            if (status == null) return;
+            status["HardwareSampleRows"] = rowsWritten;
+            status["HardwareSampleLastError"] = lastError ?? "";
+            FrameScopeJsonFile.Write(statusPath, Json.Serialize(status));
+        }
+        catch { }
+    }
+
     private static void WriteNativeMonitorSummary(MonitorSessionPaths paths, string targetProcess, string captureMode, int sampleIntervalMs, int processSampleIntervalMs, int slowSampleIntervalMs, int controlPollIntervalMs, string presentMonPath, int? presentMonExitCode, bool presentMonExitedEarly, bool presentMonForcedStop, string reportHtml, string presentMonCaptureMode, string presentMonCaptureTarget, string presentMonArguments, Dictionary<string, object> captureDiagnostics)
     {
         var reports = new Dictionary<string, object>

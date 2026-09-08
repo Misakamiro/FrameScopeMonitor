@@ -437,12 +437,16 @@ export default function HardwarePage() {
 
   const isMounted = useRef(true);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Stale-response guard: a slow 2s poll can still be in flight when the
+  // next one fires; only the newest generation may touch state.
+  const fetchGenerationRef = useRef(0);
 
   useEffect(() => {
     isMounted.current = true;
 
     const fetchSensorData = async () => {
       if (!isMounted.current) return;
+      const fetchId = ++fetchGenerationRef.current;
 
       try {
         // 从悬窗缓存读取实时数据（后台线程每1秒更新，无需等待 PowerShell）
@@ -455,7 +459,7 @@ export default function HardwarePage() {
           gpu_sensors: GpuSensorData[];
           active_gpu_index: number;
         }>("get_overlay_hardware_data");
-        if (!isMounted.current) return;
+        if (!isMounted.current || fetchId !== fetchGenerationRef.current) return;
 
         const cpuLoadVal = overlay.cpu_usage ?? null;
         const cpuTempVal = overlay.cpu_temp ?? null;
@@ -489,7 +493,7 @@ export default function HardwarePage() {
 
         // 内存和磁盘的详情（非百分比信息）仍需单独查询
         const memResult = await invoke<MemoryStatus>("get_memory_status");
-        if (!isMounted.current) return;
+        if (!isMounted.current || fetchId !== fetchGenerationRef.current) return;
         if (memResult) {
           setMemoryStatus(memResult);
           if (memPercent === null) {
@@ -498,7 +502,7 @@ export default function HardwarePage() {
         } else setMemoryStatus(null);
 
         const diskResult = await invoke<DiskInfo>("get_disk_status");
-        if (!isMounted.current) return;
+        if (!isMounted.current || fetchId !== fetchGenerationRef.current) return;
         setDiskStatus(diskResult ?? null);
         if (diskResult) {
           setDiskStatus(diskResult);

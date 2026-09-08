@@ -378,17 +378,45 @@ pub fn monitor_start(target_id: &str) -> Result<Value, String> {
 
 pub fn monitor_stop() -> Result<Value, String> {
     use sysinfo::System;
-    let mut system = System::new();
-    system.refresh_processes();
     let mut stopped = 0u32;
-    for (_pid, process) in system.processes() {
-        let name = process.name().to_string().to_ascii_lowercase();
-        let matches = name == "framescopemonitor.exe"
-            || name == "framescopeprocesssampler.exe"
-            || name == "framescopesystemsampler.exe"
-            || name.starts_with("presentmon");
-        if matches && process.kill() {
-            stopped += 1;
+    // R-C11: prefer a PID-tree kill rooted at the watcher recorded in
+    // watcher-state (watcher -> worker -> samplers -> PresentMon). Sweeping
+    // by image name would also kill same-named processes started outside
+    // this deployment, so it only runs as a fallback when the tree kill
+    // could not be issued.
+    let watcher_pid = std::fs::read_to_string(watcher_state_path()?)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|state| state.get("WatcherPid").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let mut tree_killed = false;
+    if watcher_pid > 0 {
+        #[cfg(windows)]
+        {
+            let mut command = std::process::Command::new("taskkill");
+            command.args(["/PID", &watcher_pid.to_string(), "/T", "/F"]);
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            if let Ok(output) = command.output() {
+                tree_killed = output.status.success();
+                if tree_killed {
+                    stopped += 1;
+                }
+            }
+        }
+    }
+    if !tree_killed {
+        let mut system = System::new();
+        system.refresh_processes();
+        for (_pid, process) in system.processes() {
+            let name = process.name().to_string().to_ascii_lowercase();
+            let matches = name == "framescopemonitor.exe"
+                || name == "framescopeprocesssampler.exe"
+                || name == "framescopesystemsampler.exe"
+                || name.starts_with("presentmon");
+            if matches && process.kill() {
+                stopped += 1;
+            }
         }
     }
     std::thread::sleep(Duration::from_millis(300));

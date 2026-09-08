@@ -286,6 +286,10 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             if settings.font_size < 8 || settings.font_size > 72 || settings.item_width < 30 || settings.item_width > 1000 {
                 return Err("Overlay size outside preview limits".into());
             }
+            // Hold the same operation lock every other start/stop path uses:
+            // update_settings tears the overlay down and rebuilds it, and an
+            // unserialized rebuild could double-create windows (R-A8).
+            let _operation_lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let was_active = active(&app);
             if settings.style == "vertical_panel" {
                 // The vertical panel is a webview that applies the new settings
@@ -457,20 +461,40 @@ pub fn run() {
             // overlay event stream, so both overlays show real data without
             // any frontend fixture push.
             let handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-                match hardware_service::call("get_overlay_data", json!({})) {
-                    Ok(data) => {
-                        // The GDI panel stores clocks/percent as integers; feed
-                        // it a rounded copy while the frontend event keeps the
-                        // full-precision service snapshot.
-                        match decode_fixture(hardware_service::sanitize_for_gdi(data.clone())) {
-                            Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
-                            Err(e) => eprintln!("hardware poller: decode failed: {e}"),
+            std::thread::spawn(move || {
+                let mut error_streak: u32 = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    match hardware_service::call("get_overlay_data", json!({})) {
+                        Ok(data) => {
+                            error_streak = 0;
+                            // The GDI panel stores clocks/percent as integers; feed
+                            // it a rounded copy while the frontend event keeps the
+                            // full-precision service snapshot.
+                            match decode_fixture(hardware_service::sanitize_for_gdi(data.clone())) {
+                                Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
+                                Err(e) => eprintln!("hardware poller: decode failed: {e}"),
+                            }
+                            let _ = handle.emit("vertical-overlay-data", data);
                         }
-                        let _ = handle.emit("vertical-overlay-data", data);
+                        Err(e) => {
+                            error_streak = error_streak.saturating_add(1);
+                            eprintln!("hardware poller: {e}");
+                            // R-C5: with the service unreachable, the overlays
+                            // would freeze on the last snapshot forever (the
+                            // host-side cousin of the stale-cache failure).
+                            // Broadcast an all-null snapshot so they show
+                            // "--" while down.
+                            if error_streak == 3 {
+                                let empty = hardware_service::empty_overlay_value();
+                                match decode_fixture(hardware_service::sanitize_for_gdi(empty.clone())) {
+                                    Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
+                                    Err(e2) => eprintln!("hardware poller: decode failed: {e2}"),
+                                }
+                                let _ = handle.emit("vertical-overlay-data", empty);
+                            }
+                        }
                     }
-                    Err(e) => eprintln!("hardware poller: {e}"),
                 }
             });
             Ok(())

@@ -114,14 +114,30 @@ fn find_sensor<'a>(
     // hints must all agree. Deliberately NO "first sensor of that type"
     // fallback — a loose fallback used to match chassis fans as the CPU fan
     // and GPU memory temperature as the GPU temperature.
-    rows.iter()
-        .find(|row| {
-            contains(row.sensor_type, sensor_type)
-                && (hardware_type.is_empty() || contains(row.hardware_type, hardware_type))
-                && names
-                    .iter()
-                    .any(|name| contains(&format!("{} {}", row.hardware, row.name), name))
-        })
+    //
+    // Hint order is priority: candidates matching an earlier hint win ("GPU
+    // Core" beats the bare "GPU" hint), so a broad last-resort hint can
+    // never let GPU memory temperature or SOC power masquerade as the core
+    // reading just because of row order (R-A5).
+    let mut best: Option<(usize, &'a SensorRow<'a>)> = None;
+    for row in rows {
+        if !contains(row.sensor_type, sensor_type) {
+            continue;
+        }
+        if !hardware_type.is_empty() && !contains(row.hardware_type, hardware_type) {
+            continue;
+        }
+        let combined = format!("{} {}", row.hardware, row.name);
+        for (priority, name) in names.iter().enumerate() {
+            if contains(&combined, name) {
+                if best.map_or(true, |(best_priority, _)| priority < best_priority) {
+                    best = Some((priority, row));
+                }
+                break;
+            }
+        }
+    }
+    best.map(|(_, row)| row)
 }
 
 fn sensor_value(

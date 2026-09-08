@@ -12,7 +12,7 @@ export function overlayFixture(state: PreviewState): OverlayHardwareData {
     name: "NVIDIA GeForce RTX 4070 SUPER", hardware_type: "GpuNvidia",
     temperature: missing ? null : 62 + wave, usage: 72 + wave,
     fan_speed: missing ? null : 1420 + wave * 10, power: missing ? null : 168 + wave,
-    clock: 2475, memory_clock: 10501, vram_used: 6144, vram_total: 12288,
+    clock: 2475, memory_clock: 10501, vram_used: 6.0, vram_total: 12.0,
     voltage: missing ? null : 1.05,
   };
   const gpuSensors = empty ? [] : [gpu];
