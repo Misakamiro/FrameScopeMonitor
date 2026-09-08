@@ -228,3 +228,75 @@ Standalone FrameScope UI Preview. Real window behavior; hardware data now
 served by the real FrameScopeHardwareService chain (M0–M2). Business flows
 around targets/capture/reports remain simulated until M3. Existing HTML report
 layout stays unchanged.
+
+## Session 2026-09-08 (evening): round-2 audit, live test pass, and two fix batches
+
+Round-2 audit report: `docs/audit/2026-09-08-full-audit-round2.md` (three-way
+code re-review of the five fix commits plus a full live test pass: page
+walkthrough, 1Hz capture verification, chart pipeline, performance, CS2 and
+Battlefield 6 end-to-end). This session entry also back-fills the gap noted in
+the audit: the audit itself and the five fix commits (28fb00d..a9f36e4) had no
+IMPLEMENTATION entries - their detail lives in git log and the audit reports.
+
+### Fix batch 1 (e76d079, found live)
+- `src/hardware-service/src/main.rs`: 5fb6492 wrote
+  FILE_FLAG_FIRST_PIPE_INSTANCE as 0x0005_0000 (real value 0x0008_0000); the
+  undefined bit made CreateNamedPipeW fail with ERROR_INVALID_PARAMETER on
+  every start, so the built service exited within seconds - caught live, not
+  by cargo test (19/19 still green) or the static audit. The flag is now
+  asserted only on the first accept-loop creation (MSDN: later instances must
+  not set it - the old loop would have self-terminated with a misleading
+  ACCESS_DENIED after the first client), and the redundant-spawn exit drains
+  accepted sessions first.
+- `src/hardware-service/src/provider.rs`: kill() bounded the graceful-exit
+  wait to 3s (try_wait polling) before falling back to kill - the unbounded
+  `Child::wait` could hold the provider mutex forever on a hung provider.
+
+### Fix batch 2 (e92b7c9)
+- `desktop-preview/src/preview/runtime/state.ts`: tick() no longer runs the
+  browser fixture capture machine on desktop (a single missed reconciliation
+  let it finish a simulated run and inject a simulated report into the real
+  list - reproduced live during the Battlefield 6 test). targets_get sync now
+  lifts its one-shot latch only on success, retries every 5s, and
+  persistTargetsToBackend refuses to save before the first successful sync
+  (H8). completedRuns baseline is also captured on the capturing transition
+  (R-C1: starting a capture with the game already running misreported every
+  successful run as an error).
+
+### Fix batch 3 (this commit)
+- `src/monitoring/FrameScopeSystemSampler.Gpu.cs` (R-B2): nvidia-smi
+  StandardOutput.ReadLine ran synchronously before WaitForExit - a hung driver
+  stalled the sampler loop forever. Read now runs on a pool thread with a
+  2.5s bounded wait (same shape as the hardware-service client); killing the
+  process releases the stranded read.
+- `src/hardware-service/src/overlay.rs` (R-A4): storage temperature no longer
+  uses name hints (the empty-hint call was dead code and "Drive"/"SSD" hints
+  missed most NVMe models); storage temperature sensors are unambiguous, so
+  the overlay reports the hottest drive.
+- `src/hardware-service/src/game_fps.rs` (R-A6): switching away from a game
+  clears 1%/0.1% Low alongside FPS - the expiry path is gated on
+  SMOOTHED_FPS != 0 and never ran after the switch-away zeroed it.
+- Delta Force password row (M5/R-C2/R-C3, three stacked breaks):
+  `desktop-preview/src-tauri/src/delta_password.rs` (new) ports the upstream
+  NexBox password fetch (primary JSON API + plain-text fallback, 60s cache)
+  and lib.rs exposes `get_delta_passwords` through preview_native + COMMANDS;
+  core.ts routes it (browser preview returns an empty list).
+  `core.ts` update_overlay_settings no longer filters display items down to
+  the preview default list (that deleted the native-only rows on first save)
+  - it now appends missing defaults and passes delta_password_maps through.
+  defaultOverlay and OverlayPanelPage carry the full 22-item set.
+- **NexBox upstream file diff note (rule 3)**:
+  `desktop-preview/src/pages/OverlayPanelPage.tsx` DEFAULT_DISPLAY_ITEMS was
+  missing the upstream `{ id: "delta_password", label: "三角洲密码" }` entry;
+  restored verbatim from `reference/nexbox/src/pages/OverlayPanelPage.tsx`.
+  No other upstream page files touched this session.
+
+### Live verification
+cargo test 19/19, vitest 13/13 (source-boundaries command-table parity covers
+the new command). CS2 full pipeline (25466 frames, full report), Battlefield 6
+(EA Javelin): hardware/OSD/resident-ETW FPS work, PresentMon's ETW trace is
+blocked by the anti-cheat and the pipeline degrades to a diagnostic report
+with presentmon-etw-access-denied - expected boundary, not a defect. Whole
+monitoring chain ~1.1% CPU / ~340MB. Config changes made during testing:
+CMD Test target disabled, Battlefield 6 target enabled (also exercised
+targets_save).
