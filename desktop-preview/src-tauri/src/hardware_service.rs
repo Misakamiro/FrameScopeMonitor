@@ -15,6 +15,20 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const PIPE_NAME: &str = "FrameScopeHardwareService";
+
+// R-A7: while the PawnIO installer/uninstaller tears the driver down, the
+// 1 Hz poller must not query (or re-spawn) the sampling service. The pause
+// flag is owned here so both the poller and the PawnIO flows share one gate.
+static POLLER_PAUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_poller_paused(paused: bool) {
+    POLLER_PAUSED.store(paused, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn poller_paused() -> bool {
+    POLLER_PAUSED.load(std::sync::atomic::Ordering::SeqCst)
+}
 const CONNECT_RETRY_MS: u64 = 300;
 const CONNECT_RETRIES: usize = 20;
 const SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
@@ -246,18 +260,37 @@ impl PipeClient {
                 return Err(format!("pipe write failed: {}", std::io::Error::last_os_error()));
             }
         }
+        const ERROR_MORE_DATA: i32 = 234;
+        let mut received: Vec<u8> = Vec::with_capacity(65_536);
         let mut read: u32 = 0;
         ensure_read_watchdog();
         INFLIGHT_HANDLE.store(handle as usize, Ordering::SeqCst);
         INFLIGHT_SINCE_MS.store(now_unix_ms(), Ordering::SeqCst);
-        let read_ok = unsafe {
-            ReadFile(handle, self.buffer.as_mut_ptr(), self.buffer.len() as u32, &mut read, null_mut())
+        let read_result = loop {
+            let ok = unsafe {
+                ReadFile(handle, self.buffer.as_mut_ptr(), self.buffer.len() as u32, &mut read, null_mut())
+            };
+            if ok == 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(ERROR_MORE_DATA) && read > 0 {
+                    received.extend_from_slice(&self.buffer[..read as usize]);
+                    continue;
+                }
+                INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
+                break Err(error);
+            }
+            received.extend_from_slice(&self.buffer[..read as usize]);
+            INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
+            break Ok(());
         };
-        INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
-        if read_ok == 0 || read == 0 {
-            return Err(format!("pipe read failed: {}", std::io::Error::last_os_error()));
+        if read_result.is_err() || received.is_empty() {
+            let error = read_result
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "empty reply".into());
+            return Err(format!("pipe read failed: {error}"));
         }
-        let text = String::from_utf8_lossy(&self.buffer[..read as usize]);
+        let text = String::from_utf8_lossy(&received);
         let clean = text.trim_matches('\0').trim_start_matches('\u{feff}').trim();
         let response: Value =
             serde_json::from_str(clean).map_err(|error| format!("service returned invalid JSON: {error}"))?;

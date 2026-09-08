@@ -162,6 +162,20 @@ internal sealed class FrameScopeHardwareSampleRecorder
         LastError = "";
     }
 
+    // R-B8: the session error path cannot reach the local recorder variable,
+    // so keep a static reference for StopActive().
+    private static FrameScopeHardwareSampleRecorder activeRecorder;
+
+    public static void StopActive()
+    {
+        var recorder = activeRecorder;
+        if (recorder != null)
+        {
+            try { recorder.Stop(); }
+            catch { }
+        }
+    }
+
     public void Start()
     {
         try
@@ -169,6 +183,7 @@ internal sealed class FrameScopeHardwareSampleRecorder
             File.WriteAllText(_csvPath, string.Join(",", Header) + "\r\n", new UTF8Encoding(false));
         }
         catch { return; }
+        activeRecorder = this;
         _thread = new Thread(RecordLoop) { IsBackground = true, Name = "framescope-hardware-recorder" };
         _thread.Start();
     }
@@ -178,6 +193,7 @@ internal sealed class FrameScopeHardwareSampleRecorder
         _stop = true;
         // One exchange can take ~6s worst case (spawn probe + connect + read timeouts).
         if (_thread != null) _thread.Join(8000);
+        if (activeRecorder == this) activeRecorder = null;
     }
 
     private void RecordLoop()

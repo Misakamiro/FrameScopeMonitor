@@ -218,7 +218,12 @@ public static class FrameScopeConfigStore
     {
         if (target == null) return;
         target.SampleIntervalMs = telemetrySampleIntervalMs;
-        target.ProcessSamplingMode = ProcessSamplingModeNormal;
+        // R-B6: keep a configured high-precision mode instead of silently
+        // overwriting it - the "high-precision" option was unreachable because
+        // every normalize pass forced "normal" back.
+        target.ProcessSamplingMode = string.IsNullOrWhiteSpace(target.ProcessSamplingMode)
+            ? ProcessSamplingModeNormal
+            : NormalizeProcessSamplingMode(target.ProcessSamplingMode, telemetrySampleIntervalMs);
         target.ProcessSampleIntervalMs = telemetrySampleIntervalMs;
         target.SlowSampleIntervalMs = telemetrySampleIntervalMs;
     }

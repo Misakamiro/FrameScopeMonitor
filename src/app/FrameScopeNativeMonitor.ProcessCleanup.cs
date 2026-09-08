@@ -19,8 +19,15 @@ internal static partial class FrameScopeNativeMonitor
             if (!state.ContainsKey("WatcherPid")) return false;
             pid = Convert.ToInt32(state["WatcherPid"]);
             if (pid <= 0) return false;
-            using (Process.GetProcessById(pid))
+            using (var process = Process.GetProcessById(pid))
             {
+                // R-B7: a recycled PID of some other process would make the
+                // watcher look alive forever; at least require our image.
+                if (!string.Equals(process.ProcessName, "FrameScopeMonitor", StringComparison.OrdinalIgnoreCase))
+                {
+                    pid = 0;
+                    return false;
+                }
             }
             return true;
         }

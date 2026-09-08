@@ -565,7 +565,28 @@ fn base64_url(input: &[u8]) -> String {
 
 /// Extracts frameStats from a report's `framescope-interactive-data.js`
 /// (`window.FRAMESCOPE_DATA = { ... }`): first `{` to last `}` is the JSON.
+fn frame_stats_cache() -> std::sync::MutexGuard<'static, std::collections::HashMap<std::path::PathBuf, (std::time::SystemTime, Value)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, (std::time::SystemTime, Value)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn frame_stats(data_js: &Path) -> Option<Value> {
+    let mtime = std::fs::metadata(data_js).ok()?.modified().ok()?;
+    {
+        let mut cache = frame_stats_cache();
+        if let Some((cached_mtime, cached_value)) = cache.get(data_js) {
+            if *cached_mtime == mtime {
+                return Some(cached_value.clone());
+            }
+        }
+    }
+    let parsed = frame_stats_uncached(data_js)?;
+    frame_stats_cache().insert(data_js.to_path_buf(), (mtime, parsed.clone()));
+    Some(parsed)
+}
+
+fn frame_stats_uncached(data_js: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(data_js).ok()?;
     let start = text.find('{')?;
     let end = text.rfind('}')?;

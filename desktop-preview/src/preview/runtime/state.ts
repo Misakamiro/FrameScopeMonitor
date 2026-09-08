@@ -341,12 +341,16 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
     if (!report) throw new Error("报告不存在");
     if (action === "report.remove") { mutatePreview(next => { next.reports = next.reports.filter(r => r.id !== p.id); }); return; }
     if (action === "report.regenerate") {
-      mutatePreview(next => { next.reports.find(r => r.id === p.id)!.operation = "regenerating"; });
+      const current = state.reports.find(r => r.id === p.id);
+      if (!current) throw new Error("报告不存在");
+      mutatePreview(next => { const item = next.reports.find(r => r.id === p.id); if (item) item.operation = "regenerating"; });
       if (isDesktop()) {
         try {
           await backendInvoke("report_regenerate", { id: p.id });
           await refreshDesktopReports();
-          mutatePreview(next => { next.reports.find(r => r.id === p.id)!.operation = "ready"; });
+          // refreshDesktopReports replaces the whole list - the report may
+          // legitimately be gone (or re-created) after it.
+          mutatePreview(next => { const item = next.reports.find(r => r.id === p.id); if (item) item.operation = "ready"; });
         } catch (error) {
           mutatePreview(next => {
             const item = next.reports.find(r => r.id === p.id);

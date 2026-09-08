@@ -438,3 +438,45 @@ Final test state: cargo 19/19 + 5/5, vitest 14/14, C# 27/27. Live: CS2 full
 report (16765 frames) captured with the game already running (R-C1 scenario
 - no error misreport), BF6 capture + tree-kill stop with zero leftover
 processes, anti-cheat FPS fallback report verified end to end (125.7 FPS).
+
+
+## Session 2026-09-09 (late II): remaining pure-tech low-risk batch
+
+- **R-A7** (`pawnio.rs` + `lib.rs` + `hardware_service.rs`): PawnIO
+  install/uninstall now raises a shared poller-pause flag for the whole
+  elevated-installer wait, so the 1 Hz poller cannot resurrect the sampling
+  service the setup just killed; stop_sampling_service kills by PID scoped to
+  the deployment directory (sysinfo exe path check) instead of a global
+  taskkill /IM sweep.
+- **H6 tail** (`lib.rs`): report_regenerate waits with recv_timeout(150s) -
+  the generator itself enforces 120s - so a stuck worker cannot pin the async
+  worker forever.
+- **M2** (`hardware_service.rs`): message-mode reads drain ERROR_MORE_DATA
+  (234) into a growing buffer instead of failing the whole connection.
+- **R-A10** (`backend.rs`): frame_stats cached by (path, mtime) - reports_list
+  no longer re-reads every multi-MB data.js for four numbers.
+- **R-B3** (`Watcher.cs`): workers dying within 5s of start trigger a 5s
+  backoff after three consecutive fast failures (no more respawn-per-second
+  storms).
+- **R-B4** (`FrameScopeNativeMonitor.cs`): Quote() doubles trailing
+  backslashes so a trailing-backslash config value cannot split the argument.
+- **R-B5** (`FrameScopeSetupNative.cs` + `FrameScopeUninstaller.cs`): install
+  and uninstall now also stop the hardware service + provider (file locks and
+  leftovers).
+- **R-B6** (`ConfigStore.cs`): NormalizeTarget keeps a configured
+  high-precision ProcessSamplingMode instead of silently forcing "normal"
+  (the option had become unreachable).
+- **R-B7** (`ProcessCleanup.cs`): IsWatcherRunning requires the PID to be a
+  FrameScopeMonitor image, not just any recycled PID.
+- **R-B8** (`MonitorSession.cs` + `HardwareServiceClient.cs`): the session
+  error path stops the hardware recorder explicitly (static StopActive());
+  recorder rows/last-error are captured too.
+- **R-C6** (`OverlayPanelPage.tsx`): removed the never-rendered
+  hardwareData state and its 1 Hz poll (wasted IPC).
+- **R-C10** (`state.ts`): report.regenerate no longer uses non-null
+  assertions across a list refresh boundary.
+- **M18 tail** (`TargetsPage.tsx`): the process dropdown consumes
+  displayText (process name + window title) instead of bare names.
+- Live verification: BF6 capture shows HardwareSampleRows counting in
+  status.json mid-capture, tree-kill stop leaves zero processes, all suites
+  green (cargo 19/19 + 5/5, vitest 14/14, C# 27/27).

@@ -108,7 +108,16 @@ internal static class FrameScopeSetupNative
                 Log(logPath, "webview2-runtime-missing normal-package");
             }
             Update("正在停止旧的 FrameScope Monitor 进程...", 2);
-            foreach (var proc in Process.GetProcessesByName("FrameScopeMonitor"))
+            // R-B5: the resident hardware service + provider also lock files
+            // the install replaces - leaving them alive half-broke upgrades.
+            string[] staleNames =
+            {
+                "FrameScopeMonitor", "FrameScopeHardwareService", "FrameScopeHardwareProvider",
+                "FrameScopeProcessSampler", "FrameScopeSystemSampler", "FrameScopeReportGenerator",
+                "PresentMon-2.4.1-x64"
+            };
+            foreach (var staleName in staleNames)
+            foreach (var proc in Process.GetProcessesByName(staleName))
             {
                 try { proc.Kill(); proc.WaitForExit(3000); }
                 catch { }

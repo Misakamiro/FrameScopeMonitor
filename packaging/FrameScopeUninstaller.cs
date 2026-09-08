@@ -135,6 +135,8 @@ internal static class FrameScopeUninstaller
             "FrameScopeReportGenerator",
             "FrameScopeProcessSampler",
             "FrameScopeSystemSampler",
+            "FrameScopeHardwareService",
+            "FrameScopeHardwareProvider",
             "PresentMon-2.4.1-x64"
         };
 

@@ -27,10 +27,12 @@ export default function TargetsPage() {
   useEffect(() => {
     if (!isDesktop()) return;
     let cancelled = false;
-    backendInvoke<{ processes: Array<{ processName: string }> }>("processes_refresh", { query: "" })
+    backendInvoke<{ processes: Array<{ processName: string; displayText?: string }> }>("processes_refresh", { query: "" })
       .then(payload => {
         if (cancelled) return;
-        const names = (payload.processes ?? []).map(p => p.processName).filter(Boolean);
+        const names = (payload.processes ?? [])
+          .map(p => p.displayText ? p.processName + " — " + p.displayText : p.processName)
+          .filter(Boolean);
         if (names.length) setProcesses(names);
         else setProcessesUnavailable(true);
       })

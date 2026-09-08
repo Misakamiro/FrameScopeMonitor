@@ -404,7 +404,9 @@ internal static partial class FrameScopeNativeMonitor
                             { "PresentMonCaptureMode", presentMonCaptureMode },
                             { "PresentMonCaptureTarget", presentMonCaptureTarget },
                             { "PresentMonSessionName", presentMonSessionName },
-                            { "PresentMonArgs", presentMonArguments }
+                            { "PresentMonArgs", presentMonArguments },
+                            { "HardwareSampleRows", hardwareRecorder.RowsWritten },
+                            { "HardwareSampleLastError", hardwareRecorder.LastError ?? "" }
                         };
                         AddDictionary(capturingStatus, BuildNativeMonitorSamplerDiagnostics(processSamplerState, systemSamplerState));
                         AddDictionary(capturingStatus, presentMonPreflight);
@@ -510,6 +512,9 @@ internal static partial class FrameScopeNativeMonitor
                     {
                         presentMonForcedStop = true;
                         StopMonitorChild(presentMon, 0, true);
+            // R-B8: the recorder runs on a background thread - stop it here
+            // too, instead of relying on process exit.
+            FrameScopeHardwareSampleRecorder.StopActive();
                     }
                 }
                 else if (presentMon != null)

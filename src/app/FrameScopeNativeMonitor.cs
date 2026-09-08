@@ -202,6 +202,11 @@ internal static partial class FrameScopeNativeMonitor
 
     private static string Quote(string value)
     {
-        return "\"" + value.Replace("\"", "\\\"") + "\"";
+        // Trailing backslashes before the closing quote would be parsed as
+        // literal backslashes + an escaped quote and split the argument.
+        var escaped = value.Replace("\"", "\\\"");
+        var trailing = escaped.Length - escaped.TrimEnd('\\').Length;
+        escaped = escaped.Substring(0, escaped.Length - trailing) + new string('\\', trailing * 2);
+        return "\"" + escaped + "\"";
     }
 }

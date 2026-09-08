@@ -465,6 +465,11 @@ pub fn run() {
                 let mut error_streak: u32 = 0;
                 loop {
                     std::thread::sleep(std::time::Duration::from_millis(1000));
+                    // R-A7: PawnIO setup kills and re-creates the sampling
+                    // service; stay completely hands-off until it finishes.
+                    if hardware_service::poller_paused() {
+                        continue;
+                    }
                     match hardware_service::call("get_overlay_data", json!({})) {
                         Ok(data) => {
                             error_streak = 0;

@@ -75,10 +75,17 @@ internal static partial class FrameScopeNativeMonitor
                 lastRetentionCleanup = DateTime.Now;
             }
 
+            // R-B3: a worker dying on startup would be re-spawned every poll
+            // tick; back off after three rapid failures.
+            var rapidWorkerFailures = 0;
             foreach (var key in activeMonitors.Keys.ToArray())
             {
                 var item = activeMonitors[key];
                 if (!MonitorHasExited(item)) continue;
+                if ((DateTime.Now - item.StartedAt).TotalSeconds < 5)
+                {
+                    rapidWorkerFailures++;
+                }
 
                 var run = !string.IsNullOrWhiteSpace(item.RunDir) && Directory.Exists(item.RunDir)
                     ? new DirectoryInfo(item.RunDir)
@@ -127,6 +134,11 @@ internal static partial class FrameScopeNativeMonitor
                 DisposeProcess(item.Process);
                 activeMonitors.Remove(key);
                 completedRuns++;
+            }
+            if (rapidWorkerFailures >= 3)
+            {
+                WriteFrameScopeLog("watcher-backoff rapid-worker-restarts=" + rapidWorkerFailures);
+                System.Threading.Thread.Sleep(5000);
             }
 
             foreach (var target in config.Targets.Where(t => t != null && t.Enabled && !string.IsNullOrWhiteSpace(t.ProcessName)))

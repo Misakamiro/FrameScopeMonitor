@@ -288,30 +288,7 @@ export default function OverlayPanelPage() {
   const adaptiveTitle = useAdaptiveTextColor();
   const floatBtn = useFloatingButtonStyle();
 
-  const [hardwareData, setHardwareData] = useState<HardwareData>({
-    fps: null,
-    fps_1low: null,
-    fps_01low: null,
-    cpu_usage: null,
-    cpu_temp: null,
-    cpu_clock: null,
-    cpu_voltage: null,
-  cpu_power: null,
-  cpu_fan_speed: null,
-  gpu_temp: null,
-    gpu_usage: null,
-    gpu_fan_speed: null,
-    gpu_power: null,
-    gpu_clock: null,
-    gpu_voltage: null,
-    gpu_memory_clock: null,
-    memory_usage: null,
-    ssd_temp: null,
-    delta_password: null,
-    game_ping: null,
-    gpu_vram_used: null,
-    gpu_vram_total: null,
-  });
+
   const [isEnabled, setIsEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isDragMode, setIsDragMode] = useState(false);
@@ -346,7 +323,6 @@ export default function OverlayPanelPage() {
 
   useEffect(() => {
     loadStatus();
-    loadHardwareData(0);
     invoke<boolean>("is_nvidia_gpu").then(setIsNvidia).catch(() => setIsNvidia(false));
   }, []);
 
@@ -364,12 +340,6 @@ export default function OverlayPanelPage() {
     };
   }, []);
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      hardwareRequestIdRef.current += 1;
-      loadHardwareData(hardwareRequestIdRef.current);
-    }, 1000);    return () => clearInterval(interval);
-  }, []);
 
   const loadStatus = async () => {
     try {
@@ -380,42 +350,7 @@ export default function OverlayPanelPage() {
     }
   };
 
-  const hardwareRequestIdRef = useRef(0);
-  const loadHardwareData = async (requestId: number) => {
-    try {
-      const data = await invoke<HardwareData>("get_overlay_hardware_data");
-      // Replace wholesale: null means the value is genuinely unavailable
-      // right now, so it must reach the UI as "--" instead of freezing on
-      // the last nonzero reading.
-      if (requestId < hardwareRequestIdRef.current) return; // stale response
-      setHardwareData({
-        fps: data.fps ?? null,
-        fps_1low: data.fps_1low ?? null,
-        fps_01low: data.fps_01low ?? null,
-        cpu_usage: data.cpu_usage ?? null,
-        cpu_temp: data.cpu_temp ?? null,
-        cpu_clock: data.cpu_clock ?? null,
-        cpu_voltage: data.cpu_voltage ?? null,
-        cpu_power: data.cpu_power ?? null,
-        cpu_fan_speed: data.cpu_fan_speed ?? null,
-        gpu_temp: data.gpu_temp ?? null,
-        gpu_usage: data.gpu_usage ?? null,
-        gpu_fan_speed: data.gpu_fan_speed ?? null,
-        gpu_power: data.gpu_power ?? null,
-        gpu_clock: data.gpu_clock ?? null,
-        gpu_voltage: data.gpu_voltage ?? null,
-        gpu_memory_clock: data.gpu_memory_clock ?? null,
-        memory_usage: data.memory_usage ?? null,
-        ssd_temp: data.ssd_temp ?? null,
-        delta_password: data.delta_password ?? null,
-        game_ping: data.game_ping ?? null,
-        gpu_vram_used: data.gpu_vram_used ?? null,
-        gpu_vram_total: data.gpu_vram_total ?? null,
-      });
-    } catch (error) {
-      console.error("Failed to load hardware data:", error);
-    }
-  };
+
 
   const startOverlay = async () => {
     setIsLoading(true);
