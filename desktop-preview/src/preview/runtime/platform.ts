@@ -22,6 +22,7 @@ export async function nativeOperation<T>(command: string, args: Record<string, u
 const backendOnlyCommands = new Set([
   "targets_save", "processes_refresh", "monitor_start", "monitor_stop",
   "reports_list", "report_open", "report_open_directory", "report_regenerate",
+  "config_save",
 ]);
 
 /** Backend-only commands: desktop forwards, browser previews reject. */

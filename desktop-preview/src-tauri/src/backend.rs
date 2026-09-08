@@ -150,6 +150,36 @@ pub fn targets_save(targets: &[Value]) -> Result<Value, String> {
     targets_payload("saved")
 }
 
+/// M6: persists the preview settings page. Only fields the capture chain
+/// actually honors are mapped into the PascalCase config contract - the page
+/// pretends to save more, but silently ignoring those here beats lying in the
+/// file. Unknown/unmapped keys never touch the config (M7 stays intact).
+pub fn config_save(update: &Value) -> Result<Value, String> {
+    let (path, mut config) = load_config()?;
+    // The C# side reads these with JavaScriptSerializer into Int32 fields,
+    // and a float literal ("1000.0") makes the whole-config deserialize
+    // throw - which ConfigStore.Load swallows into the default config,
+    // losing every user target. Always write whole numbers.
+    let mut map_number = |key: &str, target: &str| {
+        if let Some(value) = update.get(key).and_then(Value::as_f64) {
+            config[target] = json!(value.round() as i64);
+        }
+    };
+    map_number("sampleIntervalMs", "TelemetrySampleIntervalMs");
+    map_number("pollIntervalMs", "PollIntervalMs");
+    if let Some(value) = update.get("autoOpenReport").and_then(Value::as_bool) {
+        config["OpenReportOnComplete"] = json!(value);
+    }
+    if let Some(value) = update.get("detailedLogging").and_then(Value::as_bool) {
+        config["EnableVerboseLogs"] = json!(value);
+    }
+    if let Some(value) = update.get("diagnosticLogging").and_then(Value::as_bool) {
+        config["EnablePerformanceDiagnosticsLogs"] = json!(value);
+    }
+    write_json_atomic(&path, &config)?;
+    Ok(json!({ "status": "saved" }))
+}
+
 fn normalize_process_name(value: &str) -> String {
     let parts: Vec<String> = value
         .split(';')

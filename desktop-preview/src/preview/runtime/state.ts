@@ -311,7 +311,20 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
       || !Number.isFinite(cfg.sampleIntervalMs) || cfg.sampleIntervalMs < 500 || cfg.sampleIntervalMs > 5000
       || !Number.isFinite(cfg.pollIntervalMs) || cfg.pollIntervalMs < 250 || cfg.pollIntervalMs > 10000
       || !cfg.outputDirectory?.trim()) throw new Error("配置值超出允许范围");
-    mutatePreview(next => { next.config = cfg; }); return;
+    mutatePreview(next => { next.config = cfg; });
+    if (isDesktop()) {
+      // M6: the settings page used to be a lie on desktop - local state only.
+      // Persist the fields the capture chain honors; captureDurationSeconds
+      // and outputDirectory have no backend counterpart and stay preview-local.
+      void backendInvoke("config_save", { config: {
+        sampleIntervalMs: cfg.sampleIntervalMs,
+        pollIntervalMs: cfg.pollIntervalMs,
+        autoOpenReport: cfg.autoOpenReport,
+        detailedLogging: cfg.detailedLogging,
+        diagnosticLogging: cfg.diagnosticLogging,
+      } }).catch(error => console.error("config_save failed", error));
+    }
+    return;
   }
   if (action.startsWith("report.")) {
     const report = state.reports.find(r => r.id === p?.id);
