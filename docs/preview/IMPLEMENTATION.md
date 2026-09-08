@@ -480,3 +480,26 @@ processes, anti-cheat FPS fallback report verified end to end (125.7 FPS).
 - Live verification: BF6 capture shows HardwareSampleRows counting in
   status.json mid-capture, tree-kill stop leaves zero processes, all suites
   green (cargo 19/19 + 5/5, vitest 14/14, C# 27/27).
+
+
+## Session 2026-09-09 (final II): last three self-serviceable items
+
+- **R-A9** (`lib.rs`): export_hardware_report always assembles the snapshot
+  host-side; the frontend `content` passthrough is removed (a compromised
+  webview could plant arbitrary file content through it). The save path
+  itself comes from the user's save dialog and stays user-chosen.
+- **WinEventHook dead code** (`game_fps.rs`): SetWinEventHook registration,
+  teardown and callback removed - the hook ran on a thread without a message
+  pump and its callback never fired; the 500ms GetForegroundWindow poll was
+  always the working mechanism. win32_fg keeps init_foreground_process.
+- **GDI drag position persist** (`overlay_panel.rs` + `lib.rs`):
+  WM_EXITSIZEMOVE already wrote the dragged position into CURRENT_SETTINGS
+  and flagged POSITION_CHANGED, but the flag was never consumed -
+  stop_windows now persists native settings when the flag is set, so a
+  dragged overlay position survives restarts. End-to-end drag verification
+  needs one manual drag by the user (synthetic mouse drag did not raise
+  WM_EXITSIZEMOVE reliably in this environment).
+
+Final state: all round-2 audit items that can be fixed without a product
+decision are done. Remaining user-call items: local threat-model hardening
+choices, dual-writer retirement (decided: Option A), DPI spot checks.
