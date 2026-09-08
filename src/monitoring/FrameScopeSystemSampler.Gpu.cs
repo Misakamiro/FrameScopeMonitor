@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 
 internal static partial class FrameScopeSystemSampler
 {
@@ -24,7 +25,20 @@ internal static partial class FrameScopeSystemSampler
             using (Process process = Process.Start(psi))
             {
                 if (process == null) return null;
-                string line = process.StandardOutput.ReadLine();
+                // ReadLine blocks until a line arrives; a hung driver (TDR)
+                // would stall the whole sampler loop forever. Read on a pool
+                // thread and bound the wait, mirroring the hardware-service
+                // client. A killed process closes the pipe, releasing the
+                // stranded read.
+                Task<string> readTask = Task.Factory.StartNew(
+                    delegate { return process.StandardOutput.ReadLine(); });
+                if (!readTask.Wait(2500))
+                {
+                    try { process.Kill(); }
+                    catch { }
+                    return null;
+                }
+                string line = readTask.Result;
                 if (!process.WaitForExit(2500))
                 {
                     try { process.Kill(); }
