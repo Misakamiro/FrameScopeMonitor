@@ -69,13 +69,29 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "update_overlay_settings": {
       const settings = args.settings as OverlaySettings;
       if (!settings || !Array.isArray(settings.display_items) || !Number.isFinite(settings.opacity) || settings.opacity < 0 || settings.opacity > 255) throw new Error("无效悬浮窗设置");
-      const supported = new Set(defaultOverlay.display_items.map(item => item.id));
-      const normalized = { ...settings, display_items: settings.display_items.filter(item => supported.has(item.id)), delta_password_maps: [] };
+      // Keep the caller's items and ordering, and append anything from the
+      // default set it does not know about (older saved states predate the
+      // native-only game ping / delta password rows). Filtering DOWN to the
+      // preview default list used to make the first save silently delete
+      // those two rows from the native overlay. The password map selection
+      // belongs to the map dialog - pass it through untouched.
+      const known = new Set(settings.display_items.map(item => item.id));
+      const missing = defaultOverlay.display_items.filter(item => !known.has(item.id));
+      const normalized = {
+        ...settings,
+        display_items: [...settings.display_items, ...missing],
+        delta_password_maps: settings.delta_password_maps ?? getPreviewState().overlay.settings.delta_password_maps ?? [],
+      };
       mutatePreview(next => { next.overlay.settings = normalized; });
       await emitPreviewEvent("vertical-overlay-settings", normalized);
       if (isDesktop()) await nativeOperation("update_overlay_settings", { settings: normalized });
       result = { success: true, message: "预览设置已保存" }; break;
     }
+    case "get_delta_passwords":
+      // Community API for Delta Force password doors; desktop fetches via the
+      // host (60s cache), browser previews show an empty list.
+      if (realBackend) { result = await nativeOperation(command); break; }
+      result = []; break;
     case "get_overlay_hotkey": result = state.hotkey; break;
     case "set_overlay_hotkey": {
       const shortcut = String(args.shortcut ?? "");

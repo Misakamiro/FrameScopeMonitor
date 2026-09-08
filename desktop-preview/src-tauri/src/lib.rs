@@ -2,6 +2,7 @@
 mod tests;
 mod backend;
 mod hardware_service;
+mod delta_password;
 mod overlay_panel;
 mod pawnio;
 use serde_json::{json, Value};
@@ -28,6 +29,8 @@ const COMMANDS: &[&str] = &[
     // PawnIO driver detection / install / uninstall.
     "check_pawnio_status", "install_pawnio_driver", "uninstall_pawnio_driver",
     "restart_monitor_process",
+    // Delta Force password doors (community API, 60s cache).
+    "get_delta_passwords",
 ];
 fn ensure_allowed(command: &str) -> Result<(), String> {
     if COMMANDS.contains(&command) { Ok(()) } else { Err(format!("Unsupported preview command: {command}")) }
@@ -267,6 +270,10 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }),
         "get_overlay_panel_status" => return Ok(json!(active(&app))),
         "get_overlay_current_settings" => return serde_json::to_value(overlay_panel::get_or_init_settings()).map_err(|e| e.to_string()),
+        "get_delta_passwords" => {
+            let items = delta_password::get_delta_passwords().await?;
+            return serde_json::to_value(items).map_err(|e| e.to_string());
+        }
         "update_overlay_settings" => {
             let settings: overlay_panel::OverlaySettings = serde_json::from_value(args["settings"].clone()).map_err(|e| e.to_string())?;
             if settings.font_size < 8 || settings.font_size > 72 || settings.item_width < 30 || settings.item_width > 1000 {

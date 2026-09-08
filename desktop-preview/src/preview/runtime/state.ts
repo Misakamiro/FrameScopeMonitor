@@ -11,7 +11,8 @@ export const defaultOverlay: OverlaySettings = {
     ["gpu_clock", "GPU频率"], ["gpu_power", "GPU功耗"], ["gpu_vram", "GPU显存占用"],
     ["gpu_memory_clock", "GPU显存频率"], ["gpu_voltage", "GPU电压"], ["gpu_fan_speed", "GPU风扇转速"],
     ["memory_usage", "内存占用"], ["ssd_temp", "硬盘温度"], ["time", "时间"],
-  ].map(([id, label]) => ({ id, label, enabled: ["fps", "cpu_usage", "gpu_usage", "gpu_temp", "memory_usage"].includes(id) })),
+    ["game_ping", "游戏延迟"], ["delta_password", "三角洲密码"],
+  ].map(([id, label]) => ({ id, label, enabled: ["fps", "cpu_usage", "gpu_usage", "gpu_temp", "memory_usage", "game_ping"].includes(id) })),
   custom_items: [], opacity: 200, style: "default", font: "Microsoft YaHei", font_size: 13,
   item_width: 130, font_color: "#ffffff",
 };

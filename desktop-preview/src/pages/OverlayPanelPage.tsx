@@ -126,6 +126,7 @@ const DEFAULT_DISPLAY_ITEMS: DisplayItems = [
   { id: "memory_usage", label: "内存占用", enabled: true },
   { id: "ssd_temp", label: "硬盘温度", enabled: false },
   { id: "game_ping", label: "游戏延迟", enabled: false },
+  { id: "delta_password", label: "三角洲密码", enabled: false },
 ];
 
 const DEFAULT_SETTINGS: OverlaySettings = {
