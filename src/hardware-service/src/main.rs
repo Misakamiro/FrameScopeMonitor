@@ -69,7 +69,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     type Handle = *mut std::ffi::c_void;
@@ -133,7 +133,12 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     // provider through the process-wide RESIDENT state; each connection gets
     // its own session thread. The process only exits on a global stop request.
     let global_stop = Arc::new(AtomicBool::new(false));
-    let mut session_handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    // M4: bound concurrent session threads - a misbehaving client that
+    // reconnects in a tight loop used to grow JoinHandles without limit.
+    // Handles are detached (the thread cleans up its own pipe); the process
+    // exits on stop regardless of live sessions.
+    const MAX_SESSIONS: usize = 16;
+    let active_sessions = Arc::new(AtomicUsize::new(0));
     // FIRST_PIPE_INSTANCE must be asserted only on the very first instance:
     // later accept-loop recreations run while the previous instance is still
     // being served by its session thread, and asserting "first" there fails
@@ -164,11 +169,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
             if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
                 // Another service process already owns this pipe name - it is
                 // alive and serving, so treat this spawn as redundant and exit
-                // quietly instead of running a second provider chain. Drain any
-                // sessions this process did accept before bowing out.
-                for join in session_handles.drain(..) {
-                    let _ = join.join();
-                }
+                // quietly instead of running a second provider chain.
                 return Ok(());
             }
             // A stop request may have raced an accept failure; honor it.
@@ -199,9 +200,25 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
             }
             break;
         }
+        if active_sessions.load(Ordering::SeqCst) >= MAX_SESSIONS {
+            // Overloaded: shed this connection instead of spawning another
+            // session thread. A short sleep keeps a reconnect storm from
+            // spinning the accept loop hot.
+            unsafe {
+                DisconnectNamedPipe(handle);
+                CloseHandle(handle);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if global_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            continue;
+        }
 
         let stop_flag = Arc::clone(&global_stop);
         let helper = helper.clone();
+        let session_count = Arc::clone(&active_sessions);
+        active_sessions.fetch_add(1, Ordering::SeqCst);
         // Pass the handle as usize: raw pointers make the session closure
         // non-Send even inside the Send wrapper, for capture-analysis reasons.
         let pipe_addr = handle as usize;
@@ -217,10 +234,16 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
                     DisconnectNamedPipe(handle);
                     CloseHandle(handle);
                 }
+                session_count.fetch_sub(1, Ordering::SeqCst);
             });
         match session {
-            Ok(join) => session_handles.push(join),
+            // Dropping the JoinHandle detaches the thread; parking every
+            // handle in a list leaked one native thread handle per connection
+            // for the process lifetime. The thread disposes of its own pipe
+            // and counter.
+            Ok(join) => drop(join),
             Err(error) => {
+                active_sessions.fetch_sub(1, Ordering::SeqCst);
                 unsafe {
                     DisconnectNamedPipe(handle);
                     CloseHandle(handle);
@@ -234,9 +257,6 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
         }
     }
 
-    for join in session_handles {
-        let _ = join.join();
-    }
     Ok(())
 }
 
