@@ -74,10 +74,6 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     let mut builder = WebviewWindowBuilder::new(app, "vertical-overlay", WebviewUrl::App("vertical-overlay".into()))
         .title("FrameScope UI Preview - Overlay").inner_size(240.0, 420.0)
         .decorations(false).transparent(true).always_on_top(true).skip_taskbar(true).resizable(false)
-        // TEMP CDP-test scaffolding: must match the main window args or WebView2
-        // refuses the second environment (ERROR_INVALID_STATE). Removed together
-        // with the tauri.conf.json debug port after the test round.
-        .additional_browser_args("--remote-debugging-port=9333")
         ;
     if let (Some(x), Some(y)) = (settings.vertical_position_x, settings.vertical_position_y) {
         builder = builder.position(x as f64, y as f64);

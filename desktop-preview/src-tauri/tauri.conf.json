@@ -9,28 +9,43 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{
-      "label": "main",
-      "title": "FrameScope",
-      "width": 1230,
-      "height": 771,
-      "minWidth": 1140,
-      "minHeight": 715,
-      "decorations": false,
-      "resizable": true,
-      "center": true
-    }],
+    "windows": [
+      {
+        "label": "main",
+        "title": "FrameScope",
+        "width": 1230,
+        "height": 771,
+        "minWidth": 1140,
+        "minHeight": 715,
+        "decorations": false,
+        "resizable": true,
+        "center": true
+      }
+    ],
     "security": {
-      "assetProtocol": { "enable": true, "scope": ["$HOME/**"] },
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$HOME/**"
+        ]
+      },
       "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "license": "GPL-3.0",
     "licenseFile": "installer/license.txt",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.png"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
     "resources": {
       "resources/backend/*": "./",
       "resources/backend/tools/*": "tools/",
@@ -42,7 +57,9 @@
         "installerIcon": "icons/icon.ico",
         "headerImage": "installer/header.bmp",
         "sidebarImage": "installer/sidebar.bmp",
-        "languages": ["SimpChinese"],
+        "languages": [
+          "SimpChinese"
+        ],
         "displayLanguageSelector": false
       }
     }
