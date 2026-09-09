@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-09　|　交接人:ZCode　|　状态:**两轮审计全部条目 + 三轮低危加固 + 反作弊 FPS 兜底 + DPI 三档实测——全部完成并实机验证,46 笔会话提交(累计 139 含历史),工作树干净,未 push**
+> 交接日期:2026-09-10　|　交接人:ZCode　|　状态:**Round 3 完成——用户反馈 8 项(下拉样式/设置页失效/开机动画/图标/托盘/安装包/OSD分核/审计测试)全部修复并实机验证,FrameScope 1.0.0 自包含 NSIS 安装包产出,57 笔会话提交(累计 150 含历史),工作树干净,未 push**
 
 ---
 
@@ -22,7 +22,7 @@ FrameScope Monitor 是面向 Windows 游戏玩家的本地性能监控工具。�
 - 采集链:`src/app|monitoring|reporting|core`(C#)+ `packaging/`(安装/卸载)
 - 部署:`tools/Deploy-PreviewBackend.ps1`(先停 FrameScope 进程链再拷贝)
 - 常规命令:前端 `npm run build` → `npx tauri build --no-bundle` → 部署脚本;C# 链 `build.ps1`(构建前自动停 FrameScope 进程);硬件服务 `cargo build --release`
-- 测试:cargo 19/19(服务)+ 5/5(宿主)、vitest 14/14(含 source-boundaries 命令表/列名一致性)、C# 27/27
+- 测试:cargo 20/20(服务)+ 5/5(宿主)、vitest 14/14(含 source-boundaries 命令表/列名一致性)、C# 28/28
 
 ## 三、架构速览
 
@@ -63,8 +63,24 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 18. **反作弊(如 BF6/Javelin)会拒绝 PresentMon 的按次 ETW trace,但常驻 ETW FPS 会话不受影响**——报告自动降级 Fps 合成(etw-fps-sampled),这是边界不是 bug
 19. **windows-sys 0.59 feature 门控**:OpenTraceW 在 `Win32_System_Time`、CreateFileW 在 `Win32_Security`、ReadFile 在 `Win32_System_IO`、CancelIoEx 在 `Win32_System_IO`、ConvertStringSecurityDescriptorToSecurityDescriptorW 在 `Win32_Security_Authorization`、JOBOBJECT 结构在 `Win32_System_Threading`
 20. **本机 UI 自动化**:合成鼠标点击受前台锁定干扰不可靠,用 CDP(临时给 tauri.conf.json 加 `additionalBrowserArgs: "--remote-debugging-port=9333"`,**用完必须移除并重建**)+ `__TAURI_INTERNALS__.invoke` 直调宿主命令
+21. **WebView2 同一 user-data 目录所有窗口的 additionalBrowserArgs 必须完全一致**——主窗带 --remote-debugging-port 而动态建窗不带时,第二个 WebView2 环境创建直接失败(ERROR_INVALID_STATE 0x8007139F),竖排窗/传感器窗全部开不出来。
+22. **Tauri CloseRequested 里 hide() 托盘化必须同时 api.prevent_close()**——否则 handler 返回后默认关闭继续执行,窗口销毁→全应用退出(实机抓到的回归)。
+23. **强杀进程树会泄漏 ETW 内核会话**——残留 "NT Kernel Logger" 占住槽位后 PresentMon 静默零事件(Started recording 但零字节 CSV);用 logman query -ets 排查、logman stop "NT Kernel Logger" -ets 清理。另:CS2 新版启动停在静态模式选择对话框(不点击不渲染→零 present),自动化测试必须点过它;PM 2.x 只在优雅停止时落盘 CSV。
+24. **tauri bundle 用 mainBinaryName 改名产物**——target/release 里仍是 crate bin 名(framescope-ui-preview.exe),安装包里才是 FrameScope.exe;校验脚本要查对文件。设置页/关闭行为桌面端唯一事实源是 framescope-config.json(config_read/config_save 双向),前端 localStorage 只是浏览器回退。
 
-## 五、本轮(2026-09-08/09)完成
+## 五、Round 3(2026-09-10)完成——用户反馈批次
+
+1. **下拉控件统一**(378ec3c):可达页面 4 处原生 Select 全部换成玻璃 CustomSelect
+2. **设置页真实化**(f53a968):config_read 回读+同步闩锁、保存 await+真实报错、draft 脏保护、桌面隐藏仅预览项、**目标扫描间隔真实生效**(C# 钳位 250-10000)
+3. **品牌重做**(9ef0691):开机动画换成 FrameScope 自有简版(删逐字节照抄的 NexBox WebGL 三件套),全套图标(exe/托盘/标题栏/favicon)换 FrameScope 制式
+4. **托盘真实可用**(883e71f):CloseRequested 按 CloseWindowBehavior 三态分发(ask 弹窗/minimize-to-tray 仅隐藏不停服务链/exit 退出)、托盘左键恢复、设置页关闭行为写真实配置
+5. **OSD 分核心频率/电压**(0006428+024cbdf):竖排窗逐核显示;**AMD 电压用主板实测 Vcore**(LHM 的 Zen4 VID 用 SVI2 缩放偏小,与游戏加加实机对比 1.01-1.03V vs 1.023V 对齐;采集链早有同结论黑名单),Intel 保留真 per-core VID
+6. **OSD 透明度真实穿透**(9c9e46f):清除 overlay 页文档背景,滑块控真实透明
+7. **NSIS 安装包**(f28a3a2):FrameScope 1.0.0 自包含(后端链+PresentMon+字体+许可),品牌安装界面(欢迎图/头图/中文/许可页),tools/Package-Installer.ps1 全流程;静默装/卸+交互安装双验证,卸载零残留
+8. **实机 QA**(见 IMPLEMENTATION.md Session 2026-09-10):页面走查截图、设置同步端到端、托盘三态、CS2 full 报告(118.6 FPS/12344 帧/379 硬件采样)、BF6 跳过(EA 账号错误仍挡,兜底链路上轮已验)
+9. 附带修复:悬浮窗设置持久化恢复(try_load_persisted_settings 从未被调用)、GDI 窗口标题去 NexBox 残留、安装器 GPL 许可随附
+
+## 五·历史、本轮(2026-09-08/09)完成
 
 1. **Round 2 复审**(`docs/audit/2026-09-08-full-audit-round2.md`):三路深挖 + 全量实机测试;抓到 5fb6492 引入的高危回归(R-A1/R-A3,FIRST_PIPE_INSTANCE 值错 + 循环内断言,服务 100% 起不来——静态审计与 cargo test 均漏判,实机抓获)、H8 未修、R-C12 桌面模拟机注入假报告
 2. **高危全修**:H1-H8(含回归 R-A1/A2/A3)、R-C1/C12、M6 回归(JSON 浮点)、管道读看门狗、管道 DACL、证据位置
@@ -74,6 +90,9 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 6. **双写退役已拍板方案 A**(PresentMon 逐帧主力 + ETW 兜底,不退役)——记录在 IMPLEMENTATION.md
 
 ## 六、已知遗留(全部需要用户拍板或人工参与,无未决 bug)
+
+0. **BF6 实测待用户**:EA 账号错误 0:85008S 仍挡主菜单(用户侧问题);反作弊兜底链路上轮已验,本 round 未重跑
+0.1 **GDI 拖动落盘端到端确认**:仍需用户真实拖动一次(上轮遗留)
 
 1. **本地加固取舍**:backend_root 签名校验(唯一剩余代码加固项);shell_open 已改 explorer 直开、taskkill 已限部署目录、管道已加 DACL
 2. **WinEventHook 已移除**(本轮完成,保留 500ms GetForegroundWindow 轮询)
@@ -103,7 +122,11 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 | `src/app/FrameScopeNativeMonitor.MonitorSession*.cs` | 采集会话(done 后证据合并) |
 | `src/app/FrameScopeNativeMonitor.Watcher.cs` | watcher(worker 退避) |
 | `src/app/FrameScopeNativeMonitor.ProcessCleanup.cs` | 进程清理(退出含服务链) |
-| `tools/Deploy-PreviewBackend.ps1` | 部署(停进程链→拷贝) |
+| `tools/Deploy-PreviewBackend.ps1` | 开发部署(停进程链→拷贝) |
+| `tools/Package-Installer.ps1` | NSIS 安装包全流程(构建→staging→bundle→时间戳核验) |
+| `tools/New-InstallerBitmaps.ps1` | 生成安装界面品牌位图 |
+| `desktop-preview/src-tauri/installer/` | 安装向导位图与许可文本 |
+| `desktop-preview/src/lib/close-behavior.ts` | 关闭行为单一事实源助手(桌面写 config) |
 | `docs/audit/2026-09-08-full-audit.md` / `-round2.md` | 两轮审计报告(round2 含修复验证表与实机测试) |
 | `docs/preview/IMPLEMENTATION.md` | 逐会话实施记录(本轮全部批次有条目) |
 
