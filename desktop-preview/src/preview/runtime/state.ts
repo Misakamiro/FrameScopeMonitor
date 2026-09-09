@@ -188,6 +188,35 @@ export async function refreshDesktopReports(): Promise<void> {
   } catch (error) { console.error("reports_list failed", error); }
 }
 
+let configSynced = false;
+let configSyncRetryTimer: ReturnType<typeof setTimeout> | undefined;
+async function syncConfigFromBackend(): Promise<void> {
+  try {
+    const payload = await backendInvoke<{ config: { sampleIntervalMs?: number; pollIntervalMs?: number;
+      autoOpenReport?: boolean; detailedLogging?: boolean; diagnosticLogging?: boolean } }>("config_read");
+    configSynced = true;
+    const cfg = payload.config ?? {};
+    mutatePreview(next => {
+      // Only the backend-owned keys; captureDurationSeconds/outputDirectory
+      // have no desktop counterpart and stay preview-local. The file wins:
+      // the settings page used to initialize from hardcoded defaults and
+      // never saw what was actually saved.
+      if (Number.isFinite(cfg.sampleIntervalMs) && (cfg.sampleIntervalMs ?? 0) > 0) next.config.sampleIntervalMs = cfg.sampleIntervalMs!;
+      if (Number.isFinite(cfg.pollIntervalMs) && (cfg.pollIntervalMs ?? 0) > 0) next.config.pollIntervalMs = cfg.pollIntervalMs!;
+      if (typeof cfg.autoOpenReport === "boolean") next.config.autoOpenReport = cfg.autoOpenReport;
+      if (typeof cfg.detailedLogging === "boolean") next.config.detailedLogging = cfg.detailedLogging;
+      if (typeof cfg.diagnosticLogging === "boolean") next.config.diagnosticLogging = cfg.diagnosticLogging;
+    });
+  } catch (error) {
+    console.error("config_read failed", error);
+    if (!configSynced) {
+      // Same contract as targets: only a successful read lifts the guard,
+      // and the retry keeps going until the backend becomes readable.
+      configSyncRetryTimer = setTimeout(() => { void syncConfigFromBackend(); }, 5000);
+    }
+  }
+}
+
 let targetIdCounter = 0;
 function nextTargetId(): string {
   targetIdCounter += 1;
@@ -239,6 +268,7 @@ export function startPreviewRuntime(): () => void {
     // syncTargetsFromBackend sets targetsSynced itself once it succeeds and
     // retries until then — never mark it here.
     void syncTargetsFromBackend();
+    void syncConfigFromBackend();
     void refreshDesktopReports();
   }
   let closed = false;
@@ -249,6 +279,7 @@ export function startPreviewRuntime(): () => void {
     if (users <= 0) {
       if (timer) clearInterval(timer); timer = undefined;
       if (targetsSyncRetryTimer) { clearTimeout(targetsSyncRetryTimer); targetsSyncRetryTimer = undefined; }
+      if (configSyncRetryTimer) { clearTimeout(configSyncRetryTimer); configSyncRetryTimer = undefined; }
       bus?.close(); bus = undefined;
     }
   };
@@ -317,23 +348,29 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
   if (action === "monitor.reset") { if (busy()) throw new Error("请先停止监控"); mutatePreview(next => { next.monitor = initial().monitor; }); return; }
   if (action === "config.update") {
     const cfg = { ...state.config, ...p };
-    if (!Number.isFinite(cfg.captureDurationSeconds) || cfg.captureDurationSeconds < 1 || cfg.captureDurationSeconds > 3600
-      || !Number.isFinite(cfg.sampleIntervalMs) || cfg.sampleIntervalMs < 500 || cfg.sampleIntervalMs > 5000
-      || !Number.isFinite(cfg.pollIntervalMs) || cfg.pollIntervalMs < 250 || cfg.pollIntervalMs > 10000
-      || !cfg.outputDirectory?.trim()) throw new Error("配置值超出允许范围");
-    mutatePreview(next => { next.config = cfg; });
+    if ([cfg.sampleIntervalMs, cfg.pollIntervalMs, cfg.captureDurationSeconds].some(value => !Number.isFinite(value))) {
+      throw new Error("请输入有效的数字");
+    }
+    if (cfg.captureDurationSeconds < 1 || cfg.captureDurationSeconds > 3600
+      || cfg.sampleIntervalMs < 500 || cfg.sampleIntervalMs > 5000
+      || cfg.pollIntervalMs < 250 || cfg.pollIntervalMs > 10000
+      || !cfg.outputDirectory?.trim()) {
+      throw new Error("配置值超出允许范围（采样间隔 500-5000，扫描间隔 250-10000，采集时长 1-3600 秒）");
+    }
     if (isDesktop()) {
-      // M6: the settings page used to be a lie on desktop - local state only.
-      // Persist the fields the capture chain honors; captureDurationSeconds
-      // and outputDirectory have no backend counterpart and stay preview-local.
-      void backendInvoke("config_save", { config: {
+      // Await the real write: only a persisted config counts as "saved", and
+      // a failed save must surface in the UI instead of a fake success toast.
+      // captureDurationSeconds/outputDirectory stay preview-local (no backend
+      // counterpart; the real chain owns session length and data root).
+      await backendInvoke("config_save", { config: {
         sampleIntervalMs: cfg.sampleIntervalMs,
         pollIntervalMs: cfg.pollIntervalMs,
         autoOpenReport: cfg.autoOpenReport,
         detailedLogging: cfg.detailedLogging,
         diagnosticLogging: cfg.diagnosticLogging,
-      } }).catch(error => console.error("config_save failed", error));
+      } });
     }
+    mutatePreview(next => { next.config = cfg; });
     return;
   }
   if (action.startsWith("report.")) {

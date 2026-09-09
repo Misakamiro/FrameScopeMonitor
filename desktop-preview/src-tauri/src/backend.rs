@@ -180,6 +180,40 @@ pub fn config_save(update: &Value) -> Result<Value, String> {
     Ok(json!({ "status": "saved" }))
 }
 
+/// Frontend-facing settings read. The settings page used to initialize from
+/// hardcoded preview defaults and never saw the real file, so values saved on
+/// desktop looked lost after a restart. Maps the backend-owned keys back to
+/// the camelCase preview contract; missing/invalid values fall back to the
+/// same defaults config_save writes (fail-closed, same spirit as the C#
+/// loader, which silently falls back on a broken file).
+pub fn config_read() -> Result<Value, String> {
+    let (_, config) = load_config()?;
+    let whole_number = |key: &str, min: i64, max: i64, fallback: i64| -> i64 {
+        config
+            .get(key)
+            .and_then(Value::as_f64)
+            .map(|value| value.round() as i64)
+            .filter(|value| *value > 0)
+            .map(|value| value.clamp(min, max))
+            .unwrap_or(fallback)
+    };
+    let boolean = |key: &str, fallback: bool| config.get(key).and_then(Value::as_bool).unwrap_or(fallback);
+    Ok(json!({
+        "status": "loaded",
+        "config": {
+            "sampleIntervalMs": whole_number("TelemetrySampleIntervalMs", 500, 5000, 1000),
+            "pollIntervalMs": whole_number("PollIntervalMs", 250, 10000, 1000),
+            "autoOpenReport": boolean("OpenReportOnComplete", true),
+            "detailedLogging": boolean("EnableVerboseLogs", false),
+            "diagnosticLogging": boolean("EnablePerformanceDiagnosticsLogs", false),
+            "closeWindowBehavior": config
+                .get("CloseWindowBehavior")
+                .and_then(Value::as_str)
+                .unwrap_or("minimize-to-tray")
+        }
+    }))
+}
+
 fn normalize_process_name(value: &str) -> String {
     let parts: Vec<String> = value
         .split(';')

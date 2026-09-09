@@ -5,25 +5,43 @@ import { CustomSelect } from "@/components/special/custom-select";
 import { usePreviewState, usePreviewAction, ActionError } from "../pages/shared";
 import { isDesktop } from "../runtime/platform";
 import type { PreviewScenario } from "../runtime";
+type NumberConfigKey = "sampleIntervalMs" | "pollIntervalMs" | "captureDurationSeconds";
 export function FrameScopeSettings() {
   const state = usePreviewState();
+  const desktop = isDesktop();
   const [draft, setDraft] = useState(state.config);
+  const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
   const { run, pending, error } = usePreviewAction();
-  useEffect(() => { setDraft(state.config); }, [state.config]);
+  // State rewrites whenever anything syncs (monitor ticks, backend
+  // reconciliation) and each rewrite clones state.config. Re-syncing the
+  // draft unconditionally used to wipe in-progress edits mid-keystroke;
+  // only mirror the live config while the user hasn't touched the form.
+  useEffect(() => { if (!dirty) setDraft(state.config); }, [state.config, dirty]);
+  const numberFields: Array<[NumberConfigKey, string, number, number]> = desktop
+    ? [["sampleIntervalMs", "全局采样间隔（毫秒）", 500, 5000], ["pollIntervalMs", "目标扫描间隔（毫秒）", 250, 10000]]
+    : [["sampleIntervalMs", "全局采样间隔（毫秒）", 500, 5000], ["pollIntervalMs", "目标扫描间隔（毫秒）", 250, 10000], ["captureDurationSeconds", "模拟采集时长（秒）", 1, 3600]];
+  const update = (patch: Partial<typeof draft>) => { setDraft({ ...draft, ...patch }); setDirty(true); setSaved(false); };
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const ok = await run("config.update", draft);
+    setSaved(ok);
+    if (ok) setDirty(false);
+  };
   return <Box>
     <Heading size="lg" mb={6}>FrameScope</Heading>
     <VStack spacing={5} align="stretch">
       <LiquidGlassCard p={6} borderRadius="xl">
-        <VStack as="form" spacing={5} align="stretch" onSubmit={async e => { e.preventDefault(); setSaved(await run("config.update", draft)); }}>
+        <VStack as="form" spacing={5} align="stretch" onSubmit={save}>
           <Text fontSize="lg" fontWeight="bold">采样与报告</Text>
-          {([["sampleIntervalMs", "全局采样间隔（毫秒）", 500, 5000], ["pollIntervalMs", "目标扫描间隔（毫秒）", 250, 10000], ["captureDurationSeconds", "模拟采集时长（秒）", 1, 3600]] as const).map(([key, label, min, max]) =>
-            <FormControl key={key}><FormLabel fontSize="sm">{label}</FormLabel><NumberInput value={draft[key]} min={min} max={max} onChange={(_, value) => { setDraft({ ...draft, [key]: value }); setSaved(false); }}>
+          {desktop && <Text fontSize="sm" opacity={.7}>保存到 FrameScope 配置文件：扫描间隔即时生效；采样间隔对之后启动的采集会话生效。</Text>}
+          {numberFields.map(([key, label, min, max]) =>
+            <FormControl key={key}><FormLabel fontSize="sm">{label}</FormLabel><NumberInput value={draft[key]} min={min} max={max} onChange={(_, value) => update({ [key]: value })}>
               <NumberInputField /><NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper></NumberInput></FormControl>)}
-          <FormControl><FormLabel fontSize="sm">预览数据目录</FormLabel><Input value={draft.outputDirectory} onChange={e => { setDraft({ ...draft, outputDirectory: e.target.value }); setSaved(false); }} /></FormControl>
+          {!desktop && <FormControl><FormLabel fontSize="sm">预览数据目录</FormLabel><Input value={draft.outputDirectory} onChange={e => update({ outputDirectory: e.target.value })} /></FormControl>}
           {([["autoOpenReport", "完成后自动打开报告"], ["detailedLogging", "详细日志"], ["diagnosticLogging", "性能诊断日志"]] as const).map(([key, label]) =>
-            <HStack key={key} justify="space-between"><Text fontSize="sm">{label}</Text><Switch aria-label={label} colorScheme="teal" isChecked={draft[key]} onChange={e => { setDraft({ ...draft, [key]: e.target.checked }); setSaved(false); }} /></HStack>)}
-          <ActionError message={error} /><HStack justify="flex-end"><Button variant="ghost" onClick={() => { setDraft(state.config); setSaved(false); }}>取消修改</Button><Button type="submit" colorScheme="teal" isLoading={pending}>保存</Button></HStack>
+            <HStack key={key} justify="space-between"><Text fontSize="sm">{label}</Text><Switch aria-label={label} colorScheme="teal" isChecked={draft[key]} onChange={e => update({ [key]: e.target.checked })} /></HStack>)}
+          <ActionError message={error} /><HStack justify="flex-end"><Button variant="ghost" onClick={() => { setDraft(state.config); setDirty(false); setSaved(false); }}>取消修改</Button><Button type="submit" colorScheme="teal" isLoading={pending}>保存</Button></HStack>
           {saved && <Text role="status" fontSize="sm" color="teal.500">设置已保存</Text>}
         </VStack>
       </LiquidGlassCard>

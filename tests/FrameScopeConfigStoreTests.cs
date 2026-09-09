@@ -17,7 +17,8 @@ public static class FrameScopeConfigStoreTests
             CreateDefaultConfigUsesOneGlobalTelemetrySampleInterval();
             CreateDefaultTargetsUseNormalProcessSamplingProfile();
             NormalizeKeepsSlowSamplerAtLeastAsSlowAsFrameSampler();
-            NormalizePinsLegacyPollIntervalToInternalValue();
+            NormalizeHonorsInRangePollInterval();
+            NormalizeClampsPollIntervalToBounds();
             NormalizeMigratesLegacyHighPrecisionProcessSamplingToGlobalInterval();
             NormalizeUsesGlobalTelemetrySampleIntervalForFrameScopeOwnedSamplers();
             NormalizeClampsGlobalTelemetrySampleInterval();
@@ -145,7 +146,7 @@ public static class FrameScopeConfigStoreTests
         AssertEqual(1000, config.Targets[0].SlowSampleIntervalMs, "slow sampler follows missing-global default");
     }
 
-    private static void NormalizePinsLegacyPollIntervalToInternalValue()
+    private static void NormalizeHonorsInRangePollInterval()
     {
         FrameScopeConfig config = new FrameScopeConfig
         {
@@ -156,7 +157,22 @@ public static class FrameScopeConfigStoreTests
         FrameScopeConfigStore.Normalize(config);
 
         AssertEqual(1000, FrameScopeConfigStore.InternalPollIntervalMs, "internal watcher poll interval");
-        AssertEqual(FrameScopeConfigStore.InternalPollIntervalMs, config.PollIntervalMs, "legacy poll interval should be normalized to internal value");
+        AssertEqual(333, config.PollIntervalMs, "in-range poll interval should be honored as a real setting");
+    }
+
+    private static void NormalizeClampsPollIntervalToBounds()
+    {
+        FrameScopeConfig low = new FrameScopeConfig { PollIntervalMs = 100, Targets = new List<FrameScopeTarget>() };
+        FrameScopeConfig zero = new FrameScopeConfig { PollIntervalMs = 0, Targets = new List<FrameScopeTarget>() };
+        FrameScopeConfig high = new FrameScopeConfig { PollIntervalMs = 50000, Targets = new List<FrameScopeTarget>() };
+
+        FrameScopeConfigStore.Normalize(low);
+        FrameScopeConfigStore.Normalize(zero);
+        FrameScopeConfigStore.Normalize(high);
+
+        AssertEqual(FrameScopeConfigStore.PollIntervalMinMs, low.PollIntervalMs, "poll interval below the minimum should clamp to the minimum");
+        AssertEqual(FrameScopeConfigStore.InternalPollIntervalMs, zero.PollIntervalMs, "unset poll interval should fall back to the internal default");
+        AssertEqual(FrameScopeConfigStore.PollIntervalMaxMs, high.PollIntervalMs, "poll interval above the maximum should clamp to the maximum");
     }
 
     private static void NormalizeMigratesLegacyHighPrecisionProcessSamplingToGlobalInterval()
@@ -228,7 +244,7 @@ public static class FrameScopeConfigStoreTests
 
         FrameScopeConfigStore.Normalize(config);
 
-        AssertEqual(FrameScopeConfigStore.InternalPollIntervalMs, config.PollIntervalMs, "poll interval should be compatibility-only");
+        AssertEqual(FrameScopeConfigStore.PollIntervalMinMs, config.PollIntervalMs, "poll interval of 100 should clamp to the configured minimum");
         AssertEqual(1500, config.TelemetrySampleIntervalMs, "global telemetry interval should be preserved");
         AssertEqual(1500, config.Targets[0].SampleIntervalMs, "legacy target sample interval should be normalized to global telemetry interval");
         AssertEqual(1500, config.Targets[0].ProcessSampleIntervalMs, "process sampler interval should follow global telemetry interval");
@@ -357,7 +373,7 @@ public static class FrameScopeConfigStoreTests
                 }
             });
 
-        AssertEqual(FrameScopeConfigStore.InternalPollIntervalMs, merged.PollIntervalMs, "poll interval should be internal compatibility value");
+        AssertEqual(2222, merged.PollIntervalMs, "in-range poll interval should be preserved");
         AssertEqual(@"C:\NewDataRoot", merged.DataRoot, "editable data root should be used");
         AssertEqual(false, merged.OpenReportOnComplete, "editable global auto-open should be used");
         AssertEqual(true, merged.EnableVerboseLogs, "verbose setting should be preserved");
@@ -487,7 +503,7 @@ public static class FrameScopeConfigStoreTests
             FrameScopeConfigStore.Save(path, config);
             FrameScopeConfig loaded = FrameScopeConfigStore.Load(path);
 
-            AssertEqual(FrameScopeConfigStore.InternalPollIntervalMs, loaded.PollIntervalMs, "saved poll interval");
+            AssertEqual(333, loaded.PollIntervalMs, "saved poll interval should round-trip");
             AssertEqual(1000, loaded.TelemetrySampleIntervalMs, "missing global telemetry interval default");
             AssertEqual(1000, loaded.Targets[0].ProcessSampleIntervalMs, "saved process interval normalization");
             AssertEqual(1000, loaded.Targets[0].SlowSampleIntervalMs, "saved slow interval normalization");
@@ -512,7 +528,7 @@ public static class FrameScopeConfigStoreTests
 
             FrameScopeConfig loaded = FrameScopeConfigStore.Load(path);
 
-            AssertEqual(FrameScopeConfigStore.InternalPollIntervalMs, loaded.PollIntervalMs, "legacy poll interval should load as internal value");
+            AssertEqual(333, loaded.PollIntervalMs, "legacy in-range poll interval should be preserved");
             AssertEqual(1000, loaded.TelemetrySampleIntervalMs, "legacy missing global telemetry interval should default");
             AssertEqual(1000, loaded.Targets[0].SampleIntervalMs, "legacy target sample interval should migrate to global default");
             AssertEqual(1000, loaded.Targets[0].ProcessSampleIntervalMs, "legacy process sampler interval should migrate to global default");

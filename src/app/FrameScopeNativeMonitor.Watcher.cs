@@ -191,6 +191,11 @@ internal static partial class FrameScopeNativeMonitor
 
             pollStarted.Stop();
             long watcherPollMs = pollStarted.ElapsedMilliseconds;
+            // The poll interval is a real user setting now (clamped by
+            // ConfigStore.Normalize); the old hardcoded internal constant
+            // made the "目标扫描间隔" setting a decoration.
+            int pollIntervalMs = config.PollIntervalMs;
+            if (pollIntervalMs <= 0) pollIntervalMs = FrameScopeConfigStore.InternalPollIntervalMs;
             string watcherPollState = "active=" + activeMonitors.Count.ToString(CultureInfo.InvariantCulture) +
                 "|completed=" + completedRuns.ToString(CultureInfo.InvariantCulture) +
                 "|slow=" + (watcherPollMs >= 100 ? "1" : "0");
@@ -202,11 +207,11 @@ internal static partial class FrameScopeNativeMonitor
                 delegate
                 {
                     return "watcher-poll-ms=" + watcherPollMs.ToString(CultureInfo.InvariantCulture) +
-                        " interval=" + FrameScopeConfigStore.InternalPollIntervalMs.ToString(CultureInfo.InvariantCulture) +
+                        " interval=" + pollIntervalMs.ToString(CultureInfo.InvariantCulture) +
                         " active=" + activeMonitors.Count.ToString(CultureInfo.InvariantCulture) +
                         " completed=" + completedRuns.ToString(CultureInfo.InvariantCulture);
                 });
-            System.Threading.Thread.Sleep(FrameScopeConfigStore.InternalPollIntervalMs);
+            System.Threading.Thread.Sleep(pollIntervalMs);
         }
     }
 

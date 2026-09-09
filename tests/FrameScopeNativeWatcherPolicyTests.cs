@@ -9,7 +9,7 @@ public static class FrameScopeNativeWatcherPolicyTests
     {
         try
         {
-            WatcherLoopUsesFixedInternalPollInterval();
+            WatcherLoopUsesConfiguredPollInterval();
             WatcherStartArgumentsKeepSamplerIntervalsSeparateFromPollInterval();
             WorkerProcessRoleIsVisibleInSources();
             WatcherPublishesRunningStateBeforeRecoveryAndBlocksDuplicateStarts();
@@ -23,15 +23,15 @@ public static class FrameScopeNativeWatcherPolicyTests
         }
     }
 
-    private static void WatcherLoopUsesFixedInternalPollInterval()
+    private static void WatcherLoopUsesConfiguredPollInterval()
     {
-        AssertEqual(1000, FrameScopeConfigStore.InternalPollIntervalMs, "internal watcher poll interval");
+        AssertEqual(1000, FrameScopeConfigStore.InternalPollIntervalMs, "internal watcher poll interval default");
 
         string source = ReadWatcherSource();
-        AssertContains(source, "Thread.Sleep(FrameScopeConfigStore.InternalPollIntervalMs)", "watcher sleep should use internal fixed poll interval");
-        AssertContains(source, "FrameScopeConfigStore.InternalPollIntervalMs.ToString(CultureInfo.InvariantCulture)", "watcher performance log should report fixed internal poll interval");
-        AssertDoesNotContain(source, "config.PollIntervalMs > 0 ? config.PollIntervalMs", "watcher should not derive sleep from config PollIntervalMs");
-        AssertDoesNotContain(source, "Thread.Sleep(config.PollIntervalMs", "watcher should not sleep from config PollIntervalMs");
+        AssertContains(source, "int pollIntervalMs = config.PollIntervalMs;", "watcher should read the configured poll interval");
+        AssertContains(source, "Thread.Sleep(pollIntervalMs)", "watcher sleep should use the configured poll interval");
+        AssertContains(source, "pollIntervalMs.ToString(CultureInfo.InvariantCulture)", "watcher performance log should report the effective poll interval");
+        AssertDoesNotContain(source, "Thread.Sleep(FrameScopeConfigStore.InternalPollIntervalMs)", "watcher must not sleep on the hardcoded internal constant");
     }
 
     private static void WatcherStartArgumentsKeepSamplerIntervalsSeparateFromPollInterval()

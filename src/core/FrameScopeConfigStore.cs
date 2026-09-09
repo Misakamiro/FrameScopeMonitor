@@ -8,6 +8,8 @@ public static class FrameScopeConfigStore
 {
     public const string NativeMonitorMode = "native-csharp";
     public const int InternalPollIntervalMs = 1000;
+    public const int PollIntervalMinMs = 250;
+    public const int PollIntervalMaxMs = 10000;
     public const int DefaultTelemetrySampleIntervalMs = 1000;
     public const int TelemetrySampleIntervalMinMs = 500;
     public const int TelemetrySampleIntervalMaxMs = 5000;
@@ -105,7 +107,11 @@ public static class FrameScopeConfigStore
         {
             config.MonitorScript = NativeMonitorMode;
         }
-        config.PollIntervalMs = InternalPollIntervalMs;
+        // The poll interval is a real user setting (settings page): honor an
+        // in-range value instead of forcing the internal default back.
+        if (config.PollIntervalMs <= 0) config.PollIntervalMs = InternalPollIntervalMs;
+        if (config.PollIntervalMs < PollIntervalMinMs) config.PollIntervalMs = PollIntervalMinMs;
+        if (config.PollIntervalMs > PollIntervalMaxMs) config.PollIntervalMs = PollIntervalMaxMs;
         config.TelemetrySampleIntervalMs = NormalizeTelemetrySampleInterval(config.TelemetrySampleIntervalMs);
         if (config.LogRetentionDays <= 0) config.LogRetentionDays = 14;
         if (config.LogRetentionDays > 365) config.LogRetentionDays = 365;
@@ -157,7 +163,7 @@ public static class FrameScopeConfigStore
 
         FrameScopeConfig merged = new FrameScopeConfig
         {
-            PollIntervalMs = InternalPollIntervalMs,
+            PollIntervalMs = existing.PollIntervalMs > 0 ? existing.PollIntervalMs : InternalPollIntervalMs,
             TelemetrySampleIntervalMs = existing.TelemetrySampleIntervalMs,
             DataRoot = (dataRoot ?? "").Trim(),
             OpenReportOnComplete = openReportOnComplete,

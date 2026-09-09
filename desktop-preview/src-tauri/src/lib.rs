@@ -23,7 +23,7 @@ const COMMANDS: &[&str] = &[
     "clear_hardware_data", "get_system_locale", "get_system_username",
     // Real capture pipeline (FrameScopeMonitor.exe chain, same file contracts
     // as the C# WebView2 bridge).
-    "targets_get", "targets_save", "processes_refresh", "config_save",
+    "targets_get", "targets_save", "processes_refresh", "config_save", "config_read",
     "monitor_start", "monitor_stop", "monitor_status",
     "reports_list", "report_open", "report_open_directory", "report_regenerate",
     // PawnIO driver detection / install / uninstall.
@@ -287,6 +287,7 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                 .ok_or("config_save requires a config object")?;
             return backend::config_save(&update);
         }
+        "config_read" => return backend::config_read(),
         "update_overlay_settings" => {
             let settings: overlay_panel::OverlaySettings = serde_json::from_value(args["settings"].clone()).map_err(|e| e.to_string())?;
             if settings.font_size < 8 || settings.font_size > 72 || settings.item_width < 30 || settings.item_width > 1000 {
