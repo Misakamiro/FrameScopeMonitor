@@ -503,3 +503,18 @@ processes, anti-cheat FPS fallback report verified end to end (125.7 FPS).
 Final state: all round-2 audit items that can be fixed without a product
 decision are done. Remaining user-call items: local threat-model hardening
 choices, dual-writer retirement (decided: Option A), DPI spot checks.
+
+
+## Session 2026-09-09 (final III): evidence call placement fix
+
+Live verification caught it: the WriteHardwareSampleEvidence call sat after
+captureLoopStopwatch.Stop() but BEFORE the finalizing/done status passes -
+both rewrite status.json wholesale, so on every healthy completion the
+HardwareSampleRows/HardwareSampleLastError fields were wiped (verified: a
+done-status run showed None). Moved the merge to after the done write;
+live-verified (75 rows, empty LastError persisted on a launcher-only
+capture). Tree-kill stops still leave the status at capturing by design
+(worker force-killed), which the watcher recovery flow handles.
+
+Final regression round (temporary CDP, removed after): CS2 full report
+34298 frames with M2/ID-validation/watchdog changes live - no regressions.
