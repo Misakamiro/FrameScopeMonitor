@@ -343,6 +343,14 @@ export default function VerticalOverlayPage() {
     invoke("vertical_overlay_ready");
   }, []);
 
+  // 窗口本身是 transparent(true)，但 Chakra 全局主题会把 body 涂成不透明
+  // 暗色——面板的 rgba 透明度叠在它上面就永远透不出桌面。把文档背景清成
+  // 透明，透明度滑块才控的是真实穿透。
+  useEffect(() => {
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+  }, []);
+
   // 每秒刷新（驱动时间显示）
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), 1000);
