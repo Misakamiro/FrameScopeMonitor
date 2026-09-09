@@ -510,7 +510,7 @@ mod win32 {
             return Err("无法获取模块句柄".to_string());
         }
 
-        let class_name = windows_sys::core::w!("NexBoxOverlayPanel");
+        let class_name = windows_sys::core::w!("FrameScopeOverlayPanel");
 
         let wnd_class = WNDCLASSW {
             style: CS_HREDRAW | CS_VREDRAW,
@@ -558,7 +558,7 @@ mod win32 {
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
             class_name,
-            windows_sys::core::w!("NexBox Overlay Panel"),
+            windows_sys::core::w!("FrameScope Overlay"),
             WS_POPUP,
             x,
             y,

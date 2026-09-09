@@ -154,26 +154,35 @@ fn sensor_value(
     find_sensor(rows, sensor_type, hardware_type, names).map(|row| row.value)
 }
 
-/// "Core #3" -> 2. Strict full-match so "Core" averages or "Core #1 Max"
-/// load rows never leak into the per-core clock/voltage series.
-fn core_index(name: &str) -> Option<usize> {
+/// "Core #3" -> 2; "Core #3 VID" -> 2 when `allow_vid_suffix` (AMD Zen
+/// exposes per-core VIDs under that exact name). Strict otherwise: only a
+/// single optional "vid" suffix is allowed, so "Core #2 Max" style rows
+/// never leak into the per-core clock/voltage series.
+fn core_index(name: &str, allow_vid_suffix: bool) -> Option<usize> {
     let lowered = name.trim().to_ascii_lowercase();
     let rest = lowered.strip_prefix("core #")?;
-    rest.trim().parse::<usize>().ok().and_then(|n| n.checked_sub(1))
+    let mut parts = rest.split_whitespace();
+    let index = parts.next()?.parse::<usize>().ok()?;
+    match parts.next() {
+        None => Some(index),
+        Some(suffix) if allow_vid_suffix && suffix == "vid" => Some(index),
+        Some(_) => None,
+    }
+    .and_then(|n| n.checked_sub(1))
 }
 
 /// Collects a per-core CPU series in core order; holes stay null. Capped at
 /// 64 slots so a nonsense sensor name cannot balloon the payload.
-fn collect_core_series(rows: &[SensorRow<'_>], sensor_type: &str) -> Vec<Option<f64>> {
+fn collect_core_series(rows: &[SensorRow<'_>], sensor_type: &str, allow_vid: bool) -> Vec<Option<f64>> {
     const MAX_CORES: usize = 64;
     let mut indexed: Vec<(usize, f64)> = rows
         .iter()
         .filter(|row| {
             contains(row.sensor_type, sensor_type)
                 && contains(row.hardware_type, "cpu")
-                && core_index(row.name).is_some_and(|index| index < MAX_CORES)
+                && core_index(row.name, allow_vid).is_some_and(|index| index < MAX_CORES)
         })
-        .map(|row| (core_index(row.name).unwrap_or(0), row.value))
+        .map(|row| (core_index(row.name, allow_vid).unwrap_or(0), row.value))
         .collect();
     if indexed.is_empty() {
         return Vec::new();
@@ -253,13 +262,38 @@ pub fn build_overlay_data(
         .map(|row| row.value)
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut cpu_core_clocks = collect_core_series(&rows, "Clock");
+    // Actual core-rail voltage as measured by the board's SuperIO sensor.
+    // LibreHardwareMonitor's per-core AMD "VID" sensors are scaled with the
+    // old SVI2 formula while Zen4 uses SVI3, so they read systematically low
+    // (~0.6V vs ~1.0V real) — the board measurement is the trustworthy one.
+    let board_vcore = sensor_value(&rows, "Voltage", "superio", &["Vcore"])
+        .or_else(|| sensor_value(&rows, "Voltage", "", &["CPU Vcore"]));
+
+    let mut cpu_core_clocks = collect_core_series(&rows, "Clock", false);
     for value in cpu_core_clocks.iter_mut() {
         *value = value.map(|v| v.round());
     }
-    let mut cpu_core_voltages = collect_core_series(&rows, "Voltage");
+    let mut cpu_core_voltages = collect_core_series(&rows, "Voltage", true);
     for value in cpu_core_voltages.iter_mut() {
         *value = r2(*value);
+    }
+    // AMD exposes a single shared VDDCR voltage domain, so the honest
+    // per-core voltage is the measured rail (same value on every core) —
+    // the scaled per-core VID request is not. Intel keeps true per-core VIDs.
+    let is_amd = rows
+        .iter()
+        .any(|row| contains(row.hardware_type, "cpu") && contains(row.hardware, "amd"));
+    if is_amd {
+        if let Some(vcore) = r2(board_vcore) {
+            if cpu_core_voltages.is_empty() {
+                let cores = cpu_core_clocks.len();
+                cpu_core_voltages = vec![Some(vcore); cores];
+            } else {
+                for value in cpu_core_voltages.iter_mut() {
+                    *value = Some(vcore);
+                }
+            }
+        }
     }
 
     OverlayData {
@@ -270,7 +304,11 @@ pub fn build_overlay_data(
         cpu_temp: r1(dynamic_value(snapshot, "cpuTemperature")),
         cpu_clock: dynamic_value(snapshot, "cpuFrequency").map(|v| v.round()),
         cpu_power: r2(dynamic_value(snapshot, "cpuPower")),
-        cpu_voltage: r2(sensor_value(&rows, "Voltage", "cpu", &["Vcore", "VBcore", "CPU Vcore"])),
+        cpu_voltage: r2(
+            // Prefer the board's measured rail over any LHM VID-derived value
+            // (AMD Zen4 VID scaling reads low, see the per-core note above).
+            board_vcore.or_else(|| sensor_value(&rows, "Voltage", "cpu", &["Vcore", "VBcore", "CPU Vcore"])),
+        ),
         cpu_fan_speed: sensor_value(&rows, "Fan", "", &["CPU"]).map(|v| v.round()),
         gpu_temp: active.and_then(|gpu| gpu.temperature),
         gpu_usage: active.and_then(|gpu| gpu.usage),
@@ -378,7 +416,8 @@ mod tests {
                 {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #2 Max", "sensorType": "Clock", "value": 5000.0},
                 {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core (Vcore)", "sensorType": "Voltage", "value": 1.24},
                 {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1", "sensorType": "Voltage", "value": 1.236},
-                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #2", "sensorType": "Voltage", "value": 1.242},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #2 VID", "sensorType": "Voltage", "value": 0.5875},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #3 Max", "sensorType": "Voltage", "value": 9.99},
                 {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Core", "sensorType": "Load", "value": 97.0},
                 {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Core", "sensorType": "Temperature", "value": 71.0},
                 {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Memory Used", "sensorType": "SmallData", "value": 8192.0},
@@ -395,7 +434,9 @@ mod tests {
         assert_eq!(data.cpu_temp, Some(61.5));
         assert_eq!(data.cpu_voltage, Some(1.24));
         assert_eq!(data.cpu_core_clocks, vec![Some(4826.0), Some(4870.0), Some(4910.0)]);
-        assert_eq!(data.cpu_core_voltages, vec![Some(1.24), Some(1.24)]);
+        // "Core #1" (Intel style) and "Core #2 VID" (AMD style) both land in
+        // the series; "Core #3 Max" is rejected, so there is no third slot.
+        assert_eq!(data.cpu_core_voltages, vec![Some(1.24), Some(0.59)]);
         assert_eq!(data.memory_usage, Some(40.0));
         assert_eq!(data.ssd_temp, Some(44.0));
         assert_eq!(data.gpu_sensors.len(), 1);
@@ -433,6 +474,25 @@ mod tests {
         assert_eq!(merged.cpu_temp, Some(61.5));
         assert_eq!(merged.game_ping, Some(12));
         assert_eq!(merged.gpu_sensors.len(), 0);
+    }
+
+    #[test]
+    fn amd_per_core_voltage_prefers_measured_rail() {
+        // Real-world layout: ITE SuperIO Vcore sense + LHM per-core VIDs.
+        // The board measurement (matches GamePP's CPU voltage) must win over
+        // the low-reading SVI2-scaled VID series.
+        let snapshot = json!({
+            "availability": "available",
+            "dynamic": {},
+            "sensors": [
+                {"hardware": "ITE IT8689E", "hardwareType": "SuperIO", "name": "Vcore", "sensorType": "Voltage", "value": 1.02},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1", "sensorType": "Clock", "value": 4950.0},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1 VID", "sensorType": "Voltage", "value": 0.575}
+            ]
+        });
+        let data = build_overlay_data(&snapshot, (None, None, None), None, 0);
+        assert_eq!(data.cpu_voltage, Some(1.02));
+        assert_eq!(data.cpu_core_voltages, vec![Some(1.02)]);
     }
 
     #[test]

@@ -74,6 +74,10 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     let mut builder = WebviewWindowBuilder::new(app, "vertical-overlay", WebviewUrl::App("vertical-overlay".into()))
         .title("FrameScope UI Preview - Overlay").inner_size(240.0, 420.0)
         .decorations(false).transparent(true).always_on_top(true).skip_taskbar(true).resizable(false)
+        // TEMP CDP-test scaffolding: must match the main window args or WebView2
+        // refuses the second environment (ERROR_INVALID_STATE). Removed together
+        // with the tauri.conf.json debug port after the test round.
+        .additional_browser_args("--remote-debugging-port=9333")
         ;
     if let (Some(x), Some(y)) = (settings.vertical_position_x, settings.vertical_position_y) {
         builder = builder.position(x as f64, y as f64);
@@ -450,6 +454,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![preview_native])
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
+            // Restore persisted overlay settings (style/items/positions) BEFORE
+            // anything can start the panel: this was defined but never called,
+            // so every launch reset the overlay to the GDI default style even
+            // though the settings file said vertical_panel.
+            overlay_panel::try_load_persisted_settings(app.handle());
             let show = MenuItem::with_id(app, "show", "打开 FrameScope", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 FrameScope", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -542,7 +551,13 @@ pub fn run() {
                     match backend::close_window_behavior().as_str() {
                         // Tray-style close: the hardware chain and the OSD
                         // overlays keep running, only the window hides.
-                        "minimize-to-tray" => { let _ = window.hide(); }
+                        // prevent_close is REQUIRED — without it the default
+                        // close still proceeds after hide() and a hidden-
+                        // then-destroyed window takes the whole app down.
+                        "minimize-to-tray" => {
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
                         // Hand the question to the UI's close-confirm dialog.
                         "ask" => {
                             api.prevent_close();
