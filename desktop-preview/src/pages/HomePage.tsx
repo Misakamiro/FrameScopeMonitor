@@ -34,8 +34,8 @@ function HardwareSection({ icon: Icon, iconColor, title, rows }: {
           <Text fontSize="md" fontWeight="bold">{title}</Text>
         </HStack>
         <VStack align="stretch" spacing={1.5} width="full">
-          {rows.map((row, index) => (
-            <HStack key={index} justify="space-between" width="full" spacing={3}>
+          {rows.map((row) => (
+            <HStack key={row.name} justify="space-between" width="full" spacing={3}>
               <Text fontSize="sm" opacity={0.72} noOfLines={1} flexShrink={0} maxW="35%">{row.name}</Text>
               <Text fontSize="sm" isTruncated textAlign="right" flex={1} title={row.value}>{row.value}</Text>
             </HStack>
@@ -158,8 +158,8 @@ export default function HomePage() {
         </HStack>
         {hardwareInfo ? (
           <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={4}>
-            {buildHardwareSections(hardwareInfo).map((section, index) => (
-              <HardwareSection key={index} {...section} />
+            {buildHardwareSections(hardwareInfo).map((section) => (
+              <HardwareSection key={section.title} {...section} />
             ))}
           </SimpleGrid>
         ) : (

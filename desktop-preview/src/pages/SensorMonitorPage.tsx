@@ -777,7 +777,7 @@ export default function SensorMonitorPage() {
         ) : (
           <VStack spacing={3.5} align="stretch" maxW="960px" mx="auto">
             {groups.map((group, i) => {
-              const groupKey = `${group.hardwareType}-${group.hardware}-${i}`;
+              const groupKey = `${group.hardwareType}-${group.hardware}`;
               return (
                 <SensorGroupCard
                   key={groupKey}

@@ -38,9 +38,17 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let active = true;
     let scenario = getPreviewState().scenario;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
       void invoke<HardwareInfo>("get_hardware").then(data => { if (active) setHardwareInfo(data); })
-        .catch(() => { if (active) setHardwareInfo(null); }).finally(() => { if (active) setReady(true); });
+        .catch(() => {
+          if (!active) return;
+          setHardwareInfo(null);
+          // Retry instead of pinning the page on "loading" forever - the
+          // backend may simply not be up yet.
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => { if (active) refresh(); }, 8000);
+        }).finally(() => { if (active) setReady(true); });
     };
     refresh();
     const unsubscribe = subscribePreviewState(state => {

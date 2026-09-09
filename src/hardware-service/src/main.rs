@@ -87,6 +87,9 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
     type Handle = *mut std::ffi::c_void;
     type Dword = u32;
     type Bool = i32;
@@ -99,6 +102,37 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     const FILE_FLAG_FIRST_PIPE_INSTANCE: Dword = 0x0008_0000;
     const ERROR_PIPE_CONNECTED: i32 = 535;
     const ERROR_ACCESS_DENIED: i32 = 5;
+
+    // Pipeline ACL: the default DACL let any same-user (non-elevated)
+    // process send control commands (stop / clear_cache / set_sampling_
+    // interval). Every legitimate client runs elevated (requireAdministrator
+    // manifest), so scope the DACL to SYSTEM / Administrators /
+    // Creator-Owner. The descriptor is process-lifetime allocated on purpose
+    // (one per pipe instance, a few hundred bytes).
+    fn pipe_security_attributes() -> Option<SECURITY_ATTRIBUTES> {
+        let sddl: Vec<u16> = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;CO)"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let mut descriptor: *mut core::ffi::c_void = null_mut();
+            let mut descriptor_size: u32 = 0;
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1, // SDDL_REVISION_1
+                &mut descriptor,
+                &mut descriptor_size,
+            ) == 0
+            {
+                return None;
+            }
+            Some(SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: 0,
+            })
+        }
+    }
 
     extern "system" {
         fn CreateNamedPipeW(
@@ -167,6 +201,13 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
         } else {
             PIPE_ACCESS_DUPLEX
         };
+        // DACL-scoped security attributes (see pipe_security_attributes);
+        // falls back to the default DACL if the SDDL conversion fails.
+        let mut security = pipe_security_attributes();
+        let security_ptr = match security.as_mut() {
+            Some(attributes) => attributes as *mut SECURITY_ATTRIBUTES as *mut core::ffi::c_void,
+            None => null_mut(),
+        };
         let handle = unsafe {
             CreateNamedPipeW(
                 wide.as_ptr(),
@@ -176,7 +217,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
                 65536,
                 65536,
                 0,
-                null_mut(),
+                security_ptr,
             )
         };
         if handle == INVALID_HANDLE_VALUE {
