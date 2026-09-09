@@ -1,0 +1,19 @@
+FrameScope 1.0.0 - 本地游戏性能监控
+====================================
+
+FrameScope 是一款本地运行的 Windows 游戏性能监控工具：采集硬件传感器、
+帧率与进程采样数据，生成本地 HTML 报告。所有数据仅保存在本机，
+不会上传到任何服务器。
+
+开源许可与致谢
+--------------
+本软件的界面基于 NexBox 9.5.3（MuLiuSaMa/NexBox，GPL-3.0）修改，
+依照 GNU 通用公共许可证第 3.0 版（GPL-3.0）分发；NexBox 原作者及
+贡献者的版权保留在随附的 LICENSE 与 LICENSE.EXTRA 文件中。
+
+第三方组件：
+  - LibreHardwareMonitorLib（MPL-2.0）：硬件传感器访问
+  - Intel PresentMon（MIT）：基于 ETW 的逐帧采集
+  - PawnIO：用户态驱动接口
+
+继续安装即表示你已知悉上述开源许可条款。

@@ -66,3 +66,6 @@ src/hardware-service/target/
 
 # Local runtime logs
 host-stderr.log
+
+# Generated installer staging (Package-Installer.ps1)
+desktop-preview/src-tauri/resources/

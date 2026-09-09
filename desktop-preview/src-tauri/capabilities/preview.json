@@ -1,7 +1,7 @@
 {
   "identifier": "preview-windows",
   "description": "Only preview-owned windows and local event transport.",
-  "windows": ["main", "sensor-monitor", "vertical-overlay"],
+  "windows": ["main", "sensor-monitor", "vertical-overlay", "report-sample"],
   "permissions": [
     "core:event:default",
     "core:window:allow-maximize",

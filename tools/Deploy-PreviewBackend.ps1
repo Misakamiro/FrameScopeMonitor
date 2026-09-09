@@ -8,13 +8,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $target = Join-Path $RepoRoot 'desktop-preview\src-tauri\target\release'
-if (-not (Test-Path -LiteralPath (Join-Path $target 'framescope-ui-preview.exe') -PathType Leaf)) {
-    throw "Preview executable not found - run 'npx tauri build --no-bundle' first: $target"
+# Dev builds keep the crate bin name; only the NSIS bundle renames it to
+# FrameScope.exe. Accept the crate name here (either may exist mid-migration).
+if (-not (Test-Path -LiteralPath (Join-Path $target 'framescope-ui-preview.exe') -PathType Leaf) -and
+    -not (Test-Path -LiteralPath (Join-Path $target 'FrameScope.exe') -PathType Leaf)) {
+    throw "Host executable not found - run 'npx tauri build --no-bundle' first: $target"
 }
 
 # Stop any running FrameScope processes first - Copy-Item -Force fails on
 # in-use executables, which would leave a half-updated deployment.
-foreach ($name in @('framescope-ui-preview', 'FrameScopeMonitor', 'FrameScopeHardwareService',
+foreach ($name in @('FrameScope', 'framescope-ui-preview', 'FrameScopeMonitor', 'FrameScopeHardwareService',
         'FrameScopeHardwareProvider', 'FrameScopeProcessSampler', 'FrameScopeSystemSampler',
         'PresentMon-2.4.1-x64')) {
     Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
