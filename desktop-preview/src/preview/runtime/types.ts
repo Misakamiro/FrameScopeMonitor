@@ -129,6 +129,8 @@ export interface OverlayHardwareData {
   gpu_vram_used: number | null;
   gpu_vram_total: number | null;
   net_time_offset_ms: number | null;
+  cpu_core_clocks: Array<number | null>;
+  cpu_core_voltages: Array<number | null>;
   gpu_sensors: GpuSensorData[];
   active_gpu_index: number;
 }

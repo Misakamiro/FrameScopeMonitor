@@ -192,6 +192,11 @@ pub struct OverlayHardwareData {
     ssd_temp: Option<f64>,
     /// 网络标准时间偏移量（毫秒）：net_time = 本地时间 + 该偏移。None 表示尚未同步成功
     pub net_time_offset_ms: Option<i64>,
+    /// 分核心 CPU 频率（MHz）。GDI 单行形态不渲染它，但字段必须存在——
+    /// deny_unknown_fields 会拒绝服务快照里的未知键，缺了整个解码就炸。
+    pub cpu_core_clocks: Vec<Option<f64>>,
+    /// 分核心 CPU 电压（V）
+    pub cpu_core_voltages: Vec<Option<f64>>,
     /// 所有 GPU 的传感器数据（支持多 GPU 切换）
     pub gpu_sensors: Vec<GpuSensorData>,
     /// 当前选中的 GPU 索引
@@ -224,6 +229,8 @@ impl Default for OverlayHardwareData {
             cpu_power: None,
             ssd_temp: None,
             net_time_offset_ms: None,
+            cpu_core_clocks: Vec::new(),
+            cpu_core_voltages: Vec::new(),
             gpu_sensors: Vec::new(),
             active_gpu_index: 0,
         }

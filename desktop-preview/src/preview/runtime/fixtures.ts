@@ -49,6 +49,13 @@ export function overlayFixture(state: PreviewState): OverlayHardwareData {
     gpu_vram_used: active?.vram_used ?? null,
     gpu_vram_total: active?.vram_total ?? null,
     net_time_offset_ms: null,
+    // 8 核模拟序列：空数据/缺传感器场景整组退化为 null（UI 显示 "--"）
+    cpu_core_clocks: empty || missing
+      ? [null, null, null, null, null, null, null, null]
+      : [4782, 4915, 4874, 4938 + wave * 10, 4850, 4960, 4821, 4899].map(v => v + (v > 4900 ? wave * 10 : 0)),
+    cpu_core_voltages: empty || missing
+      ? [null, null, null, null, null, null, null, null]
+      : [1.22, 1.24, 1.21, 1.25, 1.23, 1.26, 1.2, 1.24],
     gpu_sensors: gpuSensors,
     active_gpu_index: active ? state.activeGpuIndex : 0,
   };

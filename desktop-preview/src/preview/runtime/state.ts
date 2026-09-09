@@ -7,6 +7,7 @@ export const defaultOverlay: OverlaySettings = {
   display_items: [
     ["fps", "FPS"], ["fps_1low", "1% Low"], ["fps_01low", "0.1% Low"], ["cpu_usage", "CPU占用"],
     ["cpu_temp", "CPU温度"], ["cpu_clock", "CPU频率"], ["cpu_voltage", "CPU电压"], ["cpu_power", "CPU功耗"],
+    ["cpu_core_clocks", "CPU分核频率"], ["cpu_core_voltages", "CPU分核电压"],
     ["cpu_fan_speed", "CPU风扇转速"], ["gpu_usage", "GPU占用"], ["gpu_temp", "GPU温度"],
     ["gpu_clock", "GPU频率"], ["gpu_power", "GPU功耗"], ["gpu_vram", "GPU显存占用"],
     ["gpu_memory_clock", "GPU显存频率"], ["gpu_voltage", "GPU电压"], ["gpu_fan_speed", "GPU风扇转速"],

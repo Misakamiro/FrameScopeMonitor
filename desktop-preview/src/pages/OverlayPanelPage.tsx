@@ -115,6 +115,8 @@ const DEFAULT_DISPLAY_ITEMS: DisplayItems = [
   { id: "cpu_clock", label: "CPU频率", enabled: false },
   { id: "cpu_voltage", label: "CPU电压", enabled: false },
   { id: "cpu_power", label: "CPU功耗", enabled: false },
+  { id: "cpu_core_clocks", label: "CPU分核频率", enabled: false },
+  { id: "cpu_core_voltages", label: "CPU分核电压", enabled: false },
   { id: "gpu_temp", label: "GPU温度", enabled: true },
   { id: "gpu_usage", label: "GPU占用", enabled: true },
   { id: "gpu_fan_speed", label: "GPU风扇转速", enabled: false },

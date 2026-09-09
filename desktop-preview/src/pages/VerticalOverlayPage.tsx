@@ -85,6 +85,8 @@ interface HardwareData {
   gpu_vram_used: number | null;
   gpu_vram_total: number | null;
   net_time_offset_ms: number | null;
+  cpu_core_clocks?: Array<number | null>;
+  cpu_core_voltages?: Array<number | null>;
 }
 
 // ===== 图标映射 =====
@@ -99,6 +101,8 @@ const ITEM_ICONS: Record<string, LucideIcon> = {
   cpu_clock: Cpu,
   cpu_voltage: Zap,
   cpu_power: Activity,
+  cpu_core_clocks: Cpu,
+  cpu_core_voltages: Zap,
   cpu_fan_speed: Fan,
   gpu_temp: Thermometer,
   gpu_usage: Monitor,
@@ -127,6 +131,8 @@ const DEFAULT_DISPLAY_ITEMS: DisplayItemConfig[] = [
   { id: "cpu_clock", label: "CPU频率", enabled: false },
   { id: "cpu_voltage", label: "CPU电压", enabled: false },
   { id: "cpu_power", label: "CPU功耗", enabled: false },
+  { id: "cpu_core_clocks", label: "CPU分核频率", enabled: false },
+  { id: "cpu_core_voltages", label: "CPU分核电压", enabled: false },
   { id: "gpu_temp", label: "GPU温度", enabled: true },
   { id: "gpu_usage", label: "GPU占用", enabled: true },
   { id: "gpu_fan_speed", label: "GPU风扇转速", enabled: false },
@@ -208,6 +214,28 @@ function getItemValue(item: DisplayItemConfig, data: HardwareData | null): strin
     default:
       return "--";
   }
+}
+
+/** 分核心序列（频率/电压）的逐核取值；传感器不可用时返回 null（显示 "--"） */
+function getCoreSeries(item: DisplayItemConfig, data: HardwareData | null): Array<{ label: string; value: string }> | null {
+  if (!data) return null;
+  if (item.id === "cpu_core_clocks") {
+    const series = data.cpu_core_clocks;
+    if (!series || !series.some(v => v != null)) return null;
+    return series.map((value, index) => ({
+      label: `核心${index + 1}`,
+      value: value != null ? `${Math.round(value)}MHz` : "--",
+    }));
+  }
+  if (item.id === "cpu_core_voltages") {
+    const series = data.cpu_core_voltages;
+    if (!series || !series.some(v => v != null)) return null;
+    return series.map((value, index) => ({
+      label: `核心${index + 1}`,
+      value: value != null ? `${value.toFixed(2)}V` : "--",
+    }));
+  }
+  return null;
 }
 
 /** 格式化毫秒时间戳为 HH:MM:SS（北京时间 UTC+8） */
@@ -451,6 +479,40 @@ export default function VerticalOverlayPage() {
         const rawValue = getItemValue(item, hardwareData);
         const IconComp = ITEM_ICONS[item.id] ?? Gauge;
         const valueColor = getValueColor(rawValue, settings.font_color);
+
+        // 分核心序列（频率/电压）：表头 + 每核一行；平台没暴露传感器时整组退化为 "--"
+        if (item.id === "cpu_core_clocks" || item.id === "cpu_core_voltages") {
+          const rows = getCoreSeries(item, hardwareData) ?? [];
+          return (
+            <div key={item.id} style={{ padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: rows.length > 0 ? "4px" : 0 }}>
+                <IconComp size={14} style={{ flexShrink: 0, color: settings.font_color }} />
+                <span style={{ flex: 1, whiteSpace: "nowrap", color: settings.font_color, fontWeight: 500 }}>
+                  {item.label}
+                </span>
+                {rows.length === 0 && (
+                  <span style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap", color: valueColor }}>
+                    --
+                  </span>
+                )}
+              </div>
+              {rows.length > 0 && (
+                <div style={{ paddingLeft: "22px", display: "flex", flexDirection: "column", gap: "2px" }}>
+                  {rows.map((row) => (
+                    <div key={row.label} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}>
+                      <span style={{ color: "rgba(255,255,255,0.5)", flex: 1, whiteSpace: "nowrap" }}>
+                        {row.label}
+                      </span>
+                      <span style={{ fontWeight: 600, whiteSpace: "nowrap", color: settings.font_color }}>
+                        {row.value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        }
 
         // 三角洲密码单独处理：每张地图竖着排列
         if (item.id === "delta_password" && rawValue !== "--") {

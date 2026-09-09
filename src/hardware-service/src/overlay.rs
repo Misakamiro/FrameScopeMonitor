@@ -46,6 +46,11 @@ pub struct OverlayData {
     pub gpu_vram_used: Option<f64>,
     pub gpu_vram_total: Option<f64>,
     pub net_time_offset_ms: Option<f64>,
+    /// Per-core CPU clocks (MHz, index = core number - 1). LibreHardwareMonitor
+    /// names them "Core #N"; cores the platform does not expose stay null.
+    pub cpu_core_clocks: Vec<Option<f64>>,
+    /// Per-core CPU voltages (V, "Core #N" VIDs where the platform has them).
+    pub cpu_core_voltages: Vec<Option<f64>>,
     pub gpu_sensors: Vec<GpuSensorData>,
     pub active_gpu_index: usize,
 }
@@ -149,6 +154,39 @@ fn sensor_value(
     find_sensor(rows, sensor_type, hardware_type, names).map(|row| row.value)
 }
 
+/// "Core #3" -> 2. Strict full-match so "Core" averages or "Core #1 Max"
+/// load rows never leak into the per-core clock/voltage series.
+fn core_index(name: &str) -> Option<usize> {
+    let lowered = name.trim().to_ascii_lowercase();
+    let rest = lowered.strip_prefix("core #")?;
+    rest.trim().parse::<usize>().ok().and_then(|n| n.checked_sub(1))
+}
+
+/// Collects a per-core CPU series in core order; holes stay null. Capped at
+/// 64 slots so a nonsense sensor name cannot balloon the payload.
+fn collect_core_series(rows: &[SensorRow<'_>], sensor_type: &str) -> Vec<Option<f64>> {
+    const MAX_CORES: usize = 64;
+    let mut indexed: Vec<(usize, f64)> = rows
+        .iter()
+        .filter(|row| {
+            contains(row.sensor_type, sensor_type)
+                && contains(row.hardware_type, "cpu")
+                && core_index(row.name).is_some_and(|index| index < MAX_CORES)
+        })
+        .map(|row| (core_index(row.name).unwrap_or(0), row.value))
+        .collect();
+    if indexed.is_empty() {
+        return Vec::new();
+    }
+    indexed.sort_by_key(|(index, _)| *index);
+    let len = indexed[indexed.len() - 1].0 + 1;
+    let mut series = vec![None; len];
+    for (index, value) in indexed {
+        series[index] = Some(value);
+    }
+    series
+}
+
 pub fn build_overlay_data(
     snapshot: &Value,
     fps: (Option<f64>, Option<f64>, Option<f64>),
@@ -215,6 +253,15 @@ pub fn build_overlay_data(
         .map(|row| row.value)
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
+    let mut cpu_core_clocks = collect_core_series(&rows, "Clock");
+    for value in cpu_core_clocks.iter_mut() {
+        *value = value.map(|v| v.round());
+    }
+    let mut cpu_core_voltages = collect_core_series(&rows, "Voltage");
+    for value in cpu_core_voltages.iter_mut() {
+        *value = r2(*value);
+    }
+
     OverlayData {
         fps: fps.0.map(|v| (v * 10.0).round() / 10.0),
         fps_1low: fps.1.map(|v| (v * 10.0).round() / 10.0),
@@ -239,6 +286,8 @@ pub fn build_overlay_data(
         gpu_vram_used: active.and_then(|gpu| gpu.vram_used),
         gpu_vram_total: active.and_then(|gpu| gpu.vram_total),
         net_time_offset_ms: None,
+        cpu_core_clocks,
+        cpu_core_voltages,
         gpu_sensors,
         active_gpu_index,
     }
@@ -277,6 +326,21 @@ pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
     carry_forward!(new.gpu_vram_used, old.gpu_vram_used);
     carry_forward!(new.gpu_vram_total, old.gpu_vram_total);
     carry_forward!(new.net_time_offset_ms, old.net_time_offset_ms);
+    // Per-core series: a whole series disappearing inherits the old one
+    // (service hiccup), and per-element carry-forward covers platforms that
+    // only expose part of the cores on a degraded read.
+    if new.cpu_core_clocks.is_empty() {
+        new.cpu_core_clocks = old.cpu_core_clocks.clone();
+    }
+    if new.cpu_core_voltages.is_empty() {
+        new.cpu_core_voltages = old.cpu_core_voltages.clone();
+    }
+    for (value, old_value) in new.cpu_core_clocks.iter_mut().zip(old.cpu_core_clocks.iter()) {
+        carry_forward!(*value, old_value);
+    }
+    for (value, old_value) in new.cpu_core_voltages.iter_mut().zip(old.cpu_core_voltages.iter()) {
+        carry_forward!(*value, old_value);
+    }
     for (gpu, old_gpu) in new.gpu_sensors.iter_mut().zip(old.gpu_sensors.iter()) {
         carry_forward!(gpu.temperature, old_gpu.temperature);
         carry_forward!(gpu.usage, old_gpu.usage);
@@ -308,7 +372,13 @@ mod tests {
             },
             "sensors": [
                 {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1", "sensorType": "Load", "value": 40.0},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1", "sensorType": "Clock", "value": 4825.5},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #2", "sensorType": "Clock", "value": 4870.0},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #3", "sensorType": "Clock", "value": 4910.25},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #2 Max", "sensorType": "Clock", "value": 5000.0},
                 {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core (Vcore)", "sensorType": "Voltage", "value": 1.24},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #1", "sensorType": "Voltage", "value": 1.236},
+                {"hardware": "AMD Ryzen 7 7800X3D", "hardwareType": "Cpu", "name": "Core #2", "sensorType": "Voltage", "value": 1.242},
                 {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Core", "sensorType": "Load", "value": 97.0},
                 {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Core", "sensorType": "Temperature", "value": 71.0},
                 {"hardware": "NVIDIA GeForce RTX 3080", "hardwareType": "Gpu", "name": "GPU Memory Used", "sensorType": "SmallData", "value": 8192.0},
@@ -324,6 +394,8 @@ mod tests {
         assert_eq!(data.cpu_usage, Some(42.0));
         assert_eq!(data.cpu_temp, Some(61.5));
         assert_eq!(data.cpu_voltage, Some(1.24));
+        assert_eq!(data.cpu_core_clocks, vec![Some(4826.0), Some(4870.0), Some(4910.0)]);
+        assert_eq!(data.cpu_core_voltages, vec![Some(1.24), Some(1.24)]);
         assert_eq!(data.memory_usage, Some(40.0));
         assert_eq!(data.ssd_temp, Some(44.0));
         assert_eq!(data.gpu_sensors.len(), 1);
@@ -372,6 +444,7 @@ mod tests {
             "cpu_power", "cpu_fan_speed", "gpu_temp", "gpu_usage", "gpu_fan_speed", "gpu_power",
             "gpu_clock", "gpu_voltage", "gpu_memory_clock", "memory_usage", "ssd_temp",
             "delta_password", "game_ping", "gpu_vram_used", "gpu_vram_total", "net_time_offset_ms",
+            "cpu_core_clocks", "cpu_core_voltages",
             "gpu_sensors", "active_gpu_index",
         ] {
             assert!(json.get(key).is_some(), "missing field {key}");
