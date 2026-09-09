@@ -16,7 +16,9 @@ export function TitleBar() {
   const minimizeHoverBg = useColorModeValue("gray.100", "gray.700");
   const closeHoverBg = useColorModeValue("red.50", "red.900");
   const bgColor = useColorModeValue("whiteAlpha.800", "blackAlpha.800");
-  const logoSrc = useColorModeValue("/logo/NexBoxW.png", "/logo/NexBoxB.png");
+  // One FrameScope mark for both color modes (the icon's dark rounded tile
+  // reads fine on light and dark title bars alike).
+  const logoSrc = "/logo/framescope.png";
 
   const [showCloseDialog, setShowCloseDialog] = useState(false);
   const [searchBarVisible, setSearchBarVisible] = useState(true);

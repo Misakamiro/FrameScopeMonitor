@@ -453,8 +453,11 @@ pub fn run() {
             let show = MenuItem::with_id(app, "show", "打开预览", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出预览", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
-            let icon = tauri::image::Image::new_owned(vec![45, 155, 150, 255].repeat(16 * 16), 16, 16);
-            tauri::tray::TrayIconBuilder::new().icon(icon).tooltip("FrameScope UI Preview").menu(&menu)
+            // Real FrameScope icon instead of the old 16x16 solid-color square.
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                .map_err(|e| e.to_string())?
+                .to_owned();
+            tauri::tray::TrayIconBuilder::new().icon(icon).tooltip("FrameScope").menu(&menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => { if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); } }
                     "quit" => { let _ = stop_windows(app); app.exit(0); }
