@@ -65,7 +65,16 @@ if (Test-Path -LiteralPath $font) {
 } else {
     Write-Warning "MiSansVF.ttf not found at $font - the GDI overlay will fall back to a system font"
 }
-Write-Host ("Staged {0} backend files + PresentMon + font" -f $files.Count)
+# GPL compliance: the license texts ride along with the distributed binary.
+foreach ($lic in @('LICENSE', 'LICENSE.EXTRA')) {
+    $licPath = Join-Path $previewDir $lic
+    if (Test-Path -LiteralPath $licPath -PathType Leaf) {
+        Copy-Item -LiteralPath $licPath -Destination (Join-Path $backendDir $lic) -Force
+    } else {
+        Write-Warning "License file missing: $licPath"
+    }
+}
+Write-Host ("Staged {0} backend files + PresentMon + font + licenses" -f $files.Count)
 
 Write-Host '== [4/6] Building the frontend (npm run build) =='
 Push-Location $previewDir

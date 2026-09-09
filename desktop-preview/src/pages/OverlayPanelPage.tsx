@@ -786,7 +786,11 @@ export default function OverlayPanelPage() {
                 {t("overlayPanel.hardwareMonitor") || "硬件监控"} (拖拽排序)
               </Text>
               <DraggableDisplayItems
-                items={settings.display_items}
+                items={settings.style === "vertical_panel"
+                  ? settings.display_items
+                  : // 分核心序列只有竖排窗能渲染；GDI 单行形态下隐藏开关，
+                    // 避免误开启后原生条为未知项预留空白宽度
+                    settings.display_items.filter((item) => item.id !== "cpu_core_clocks" && item.id !== "cpu_core_voltages")}
                 onReorder={reorderDisplayItems}
                 onToggle={updateDisplayItem}
                 disabledItems={[]}
