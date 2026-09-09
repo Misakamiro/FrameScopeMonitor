@@ -957,8 +957,8 @@ export default function OverlayPanelPage() {
               </Box>
               <SliderControl
                 label={t("overlayPanel.opacity") || "透明度"}
-                value={Math.max(1, Math.round(settings.opacity / 255 * 100))}
-                min={1}
+                value={Math.round(settings.opacity / 255 * 100)}
+                min={0}
                 max={100}
                 onChange={(val) => updateSetting("opacity", Math.round(val / 100 * 255))}
                 suffix="%"

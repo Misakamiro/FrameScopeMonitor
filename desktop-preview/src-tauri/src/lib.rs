@@ -83,7 +83,28 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
         builder = builder.position(x as f64, y as f64);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
-    window.set_ignore_cursor_events(true).map_err(|e| e.to_string())
+    window.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
+    keep_click_through_transparent(&window);
+    Ok(())
+}
+
+/// tao implements set_ignore_cursor_events(true) as
+/// WS_EX_LAYERED|WS_EX_TRANSPARENT, and the LAYERED style switches DWM to the
+/// layered-composition path which paints a frosted backdrop over the
+/// per-pixel-transparent webview - the opacity slider then appears dead.
+/// WS_EX_TRANSPARENT alone keeps the input pass-through, so drop LAYERED
+/// after every ignore_cursor_events(true).
+#[cfg(windows)]
+fn keep_click_through_transparent(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
+            SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as i32));
+        }
+    }
 }
 fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
     // The GDI window proc updates CURRENT_SETTINGS on WM_EXITSIZEMOVE but
@@ -337,6 +358,10 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             overlay_panel::set_drag_mode(enabled);
             if let Some(window) = app.get_webview_window("vertical-overlay") {
                 window.set_ignore_cursor_events(!enabled).map_err(|e| e.to_string())?;
+                #[cfg(windows)]
+                if !enabled {
+                    keep_click_through_transparent(&window);
+                }
                 app.emit("vertical-overlay-drag-mode", enabled).map_err(|e| e.to_string())?;
             }
         }

@@ -216,26 +216,29 @@ function getItemValue(item: DisplayItemConfig, data: HardwareData | null): strin
   }
 }
 
-/** 分核心序列（频率/电压）的逐核取值；传感器不可用时返回 null（显示 "--"） */
-function getCoreSeries(item: DisplayItemConfig, data: HardwareData | null): Array<{ label: string; value: string }> | null {
+/** 分核心合并行：频率+电压同时启用时每核一行“4.95GHz  1.02V”。
+ *  返回 null 表示传感器侧没有任何可用数据（整组退化 "--"）。 */
+function buildCoreSeries(data: HardwareData | null, showClocks: boolean, showVolts: boolean): Array<{ label: string; value: string }> | null {
   if (!data) return null;
-  if (item.id === "cpu_core_clocks") {
-    const series = data.cpu_core_clocks;
-    if (!series || !series.some(v => v != null)) return null;
-    return series.map((value, index) => ({
-      label: `核心${index + 1}`,
-      value: value != null ? `${Math.round(value)}MHz` : "--",
-    }));
-  }
-  if (item.id === "cpu_core_voltages") {
-    const series = data.cpu_core_voltages;
-    if (!series || !series.some(v => v != null)) return null;
-    return series.map((value, index) => ({
-      label: `核心${index + 1}`,
-      value: value != null ? `${value.toFixed(2)}V` : "--",
-    }));
-  }
-  return null;
+  const clocks = data.cpu_core_clocks;
+  const volts = data.cpu_core_voltages;
+  const len = Math.max(clocks?.length ?? 0, volts?.length ?? 0);
+  if (len === 0) return null;
+  const clockUsable = showClocks && (clocks ?? []).some(v => v != null);
+  const voltUsable = showVolts && (volts ?? []).some(v => v != null);
+  if (!clockUsable && !voltUsable) return null;
+  return Array.from({ length: len }, (_, i) => {
+    const parts: string[] = [];
+    if (clockUsable) {
+      const c = clocks![i];
+      parts.push(c != null ? `${c >= 1000 ? (c / 1000).toFixed(2) + "GHz" : Math.round(c) + "MHz"}` : "--");
+    }
+    if (voltUsable) {
+      const v = volts![i];
+      parts.push(v != null ? `${v.toFixed(2)}V` : "--");
+    }
+    return { label: `核心${i + 1}`, value: parts.join("  ") };
+  });
 }
 
 /** 格式化毫秒时间戳为 HH:MM:SS（北京时间 UTC+8） */
@@ -433,6 +436,11 @@ export default function VerticalOverlayPage() {
   // 计算启用的项
   const enabledItems = settings.display_items.filter((i) => i.enabled);
   const enabledCustomItems = settings.custom_items.filter((i) => i.enabled);
+  // 分核合并行：频率+电压同时启用时合并渲染（挂在频率项下）
+  const clocksItem = enabledItems.find(i => i.id === "cpu_core_clocks");
+  const voltsItem = enabledItems.find(i => i.id === "cpu_core_voltages");
+  const coreHeaderId = clocksItem ? "cpu_core_clocks" : voltsItem ? "cpu_core_voltages" : null;
+  const coreRows = coreHeaderId ? buildCoreSeries(hardwareData, !!clocksItem, !!voltsItem) : null;
 
   // 计算背景不透明度
   const bgOpacity = settings.opacity / 255;
@@ -453,6 +461,8 @@ export default function VerticalOverlayPage() {
         color: "#ffffff",
         userSelect: "none",
         WebkitUserSelect: "none",
+        // 背景拉到 0% 时只剩文字，描边保证亮色背景下仍可读
+        textShadow: "0 1px 3px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9)",
         border: "none",
         overflow: "hidden",
       }}
@@ -488,15 +498,21 @@ export default function VerticalOverlayPage() {
         const IconComp = ITEM_ICONS[item.id] ?? Gauge;
         const valueColor = getValueColor(rawValue, settings.font_color);
 
-        // 分核心序列（频率/电压）：表头 + 每核一行；平台没暴露传感器时整组退化为 "--"
+        // 分核心：频率+电压合并为每核一行（两开关同开时只渲染一次，
+        // 挂在频率项下）；平台没暴露传感器时整组退化为 "--"。
+        // 字号继承面板主字号（不再是固定 12px 小字），文字带描边保证
+        // 背景全透时仍可读。
         if (item.id === "cpu_core_clocks" || item.id === "cpu_core_voltages") {
-          const rows = getCoreSeries(item, hardwareData) ?? [];
+          if (item.id !== coreHeaderId) return null;
+          const rows = coreRows ?? [];
+          const HeaderIcon = ITEM_ICONS[coreHeaderId ?? ""] ?? Gauge;
+          const headerLabel = coreHeaderId === "cpu_core_clocks" ? "CPU分核频率" : "CPU分核电压";
           return (
             <div key={item.id} style={{ padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: rows.length > 0 ? "4px" : 0 }}>
-                <IconComp size={14} style={{ flexShrink: 0, color: settings.font_color }} />
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: rows.length > 0 ? "5px" : 0 }}>
+                <HeaderIcon size={14} style={{ flexShrink: 0, color: settings.font_color }} />
                 <span style={{ flex: 1, whiteSpace: "nowrap", color: settings.font_color, fontWeight: 500 }}>
-                  {item.label}
+                  {headerLabel}
                 </span>
                 {rows.length === 0 && (
                   <span style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap", color: valueColor }}>
@@ -505,10 +521,10 @@ export default function VerticalOverlayPage() {
                 )}
               </div>
               {rows.length > 0 && (
-                <div style={{ paddingLeft: "22px", display: "flex", flexDirection: "column", gap: "2px" }}>
+                <div style={{ paddingLeft: "22px", display: "flex", flexDirection: "column", gap: "3px" }}>
                   {rows.map((row) => (
-                    <div key={row.label} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}>
-                      <span style={{ color: "rgba(255,255,255,0.5)", flex: 1, whiteSpace: "nowrap" }}>
+                    <div key={row.label} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <span style={{ color: "rgba(255,255,255,0.78)", flex: 1, whiteSpace: "nowrap" }}>
                         {row.label}
                       </span>
                       <span style={{ fontWeight: 600, whiteSpace: "nowrap", color: settings.font_color }}>
