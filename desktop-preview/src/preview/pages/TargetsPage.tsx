@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import {
   Box, Heading, Text, HStack, VStack, Input, InputGroup, InputLeftElement,
-  Button, IconButton, Switch, FormControl, FormLabel, Select, Badge, Tooltip,
+  Button, IconButton, Switch, FormControl, FormLabel, Badge, Tooltip,
 } from "@chakra-ui/react";
 import { Search, Plus, Pencil, Trash2 } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
+import { CustomSelect } from "@/components/special/custom-select";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, useFloatingFieldStyle } from "./shared";
 import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
@@ -78,10 +79,10 @@ export default function TargetsPage() {
       <VStack as="form" spacing={4} align="stretch" onSubmit={e => { e.preventDefault(); void save(); }}>
         <FormControl isRequired><FormLabel>游戏名称</FormLabel><Input autoFocus value={editing?.name ?? ""} onChange={e => setEditing({ ...editing, name: e.target.value })} /></FormControl>
         <FormControl isRequired><FormLabel>进程名</FormLabel><Input placeholder="game.exe" value={editing?.executable ?? ""} onChange={e => setEditing({ ...editing, executable: e.target.value })} /></FormControl>
-        <FormControl><FormLabel>预览进程列表</FormLabel><Select placeholder={processesUnavailable ? "进程列表不可用" : "选择进程"} isDisabled={processesUnavailable} value="" onChange={e => setEditing({ ...editing, executable: e.target.value })}>
-          {processesUnavailable
-            ? <option value="">窗口枚举失败，请手动输入进程名</option>
-            : processes.map((process, index) => <option key={process + "#" + index}>{process}</option>)}</Select></FormControl>
+        <FormControl><FormLabel>预览进程列表</FormLabel><CustomSelect width="100%" ariaLabel="选择进程"
+          placeholder={processesUnavailable ? "进程列表不可用" : "选择进程"} disabled={processesUnavailable} value=""
+          onChange={executable => setEditing({ ...editing, executable })}
+          options={processesUnavailable ? [] : processes.map((process, index) => ({ value: String(index), label: process }))} /></FormControl>
         <HStack justify="space-between"><Text>启用目标</Text><Switch aria-label="启用目标" colorScheme="teal" isChecked={editing?.enabled ?? true} onChange={e => setEditing({ ...editing, enabled: e.target.checked })} /></HStack>
         <ActionError message={error} /><HStack justify="flex-end"><Button variant="ghost" onClick={close}>取消</Button><Button type="submit" colorScheme="teal" isLoading={pending}>保存</Button></HStack>
       </VStack>

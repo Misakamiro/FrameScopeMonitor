@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Box, Heading, Text, HStack, VStack, Input, Select, Button, Badge, SimpleGrid, Spinner } from "@chakra-ui/react";
+import { Box, Heading, Text, HStack, VStack, Input, Button, Badge, SimpleGrid, Spinner } from "@chakra-ui/react";
 import { ExternalLink, RefreshCw, FileSearch, FolderOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
+import { CustomSelect } from "@/components/special/custom-select";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, formatMetric, useFloatingFieldStyle } from "./shared";
 import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
@@ -47,8 +48,8 @@ export default function ReportsPage() {
     <Heading size="lg" mb={6} color={color.text} textShadow={color.shadow}>报告</Heading>
     <HStack spacing={3} mb={5}>
       <Input aria-label="搜索报告" placeholder="搜索游戏报告" value={query} onChange={e => setQuery(e.target.value)} maxW="360px" sx={field.sx} />
-      <Select aria-label="报告类型" value={kind} onChange={e => setKind(e.target.value)} w="160px" sx={field.sx}><option value="all">全部类型</option>
-        {Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</Select>
+      <CustomSelect ariaLabel="报告类型" width="160px" value={kind} onChange={setKind}
+        options={[{ value: "all", label: "全部类型" }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]} />
     </HStack>
     <VStack spacing={3} align="stretch">
       {reports.map(item => <LiquidGlassCard key={item.id} p={5} borderRadius="xl">

@@ -1,4 +1,5 @@
-import { Box, Text, Flex, HStack, VStack, Button, Badge, Select, Progress, SimpleGrid } from "@chakra-ui/react";
+import { Box, Text, Flex, HStack, VStack, Button, Badge, Progress, SimpleGrid } from "@chakra-ui/react";
+import { CustomSelect } from "@/components/special/custom-select";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { useNavigate } from "react-router-dom";
 import {
@@ -179,11 +180,10 @@ export default function HomePage() {
                 <Box flex={1} />
                 <Badge colorScheme={state.monitor.phase === "error" ? "red" : busy ? "green" : "gray"}>{phaseLabels[state.monitor.phase]}</Badge>
               </HStack>
-              <Select aria-label="当前监控目标" size="sm" value={state.selectedTargetId ?? ""} isDisabled={busy}
-                onChange={event => void run("target.select", { id: event.target.value })}>
-                <option value="" disabled>选择目标</option>
-                {state.targets.map(target => <option key={target.id} value={target.id}>{target.name}{!target.enabled ? "（未启用）" : ""}</option>)}
-              </Select>
+              <CustomSelect ariaLabel="当前监控目标" width="100%" placeholder="选择目标" disabled={busy}
+                value={state.selectedTargetId ?? ""}
+                onChange={value => void run("target.select", { id: value })}
+                options={state.targets.map(target => ({ value: target.id, label: target.name, badge: target.enabled ? undefined : "未启用", badgeColorScheme: "gray" }))} />
               <HStack spacing={2}>
                 <Button leftIcon={<Play size={14} />} colorScheme="teal" size="sm" isDisabled={busy || !state.selectedTargetId}
                   isLoading={pending} onClick={() => void run("monitor.start")}>启动监控</Button>

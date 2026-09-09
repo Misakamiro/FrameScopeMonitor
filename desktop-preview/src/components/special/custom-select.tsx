@@ -9,6 +9,7 @@ interface SelectOption {
   value: string;
   label: string;
   badge?: string;
+  badgeColorScheme?: string;
 }
 
 interface CustomSelectProps {
@@ -18,15 +19,19 @@ interface CustomSelectProps {
   width?: string;
   placeholder?: string;
   direction?: "up" | "down";
+  ariaLabel?: string;
+  disabled?: boolean;
 }
 
-export function CustomSelect({ 
-  value, 
-  onChange, 
-  options, 
+export function CustomSelect({
+  value,
+  onChange,
+  options,
   width = "140px",
   placeholder,
-  direction = "down"
+  direction = "down",
+  ariaLabel,
+  disabled = false
 }: CustomSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [dropdownPos, setDropdownPos] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
@@ -143,8 +148,13 @@ export function CustomSelect({
         <LiquidGlassCard
           px={3}
           py={1.5}
-          cursor="pointer"
-          onClick={toggleSelect}
+          cursor={disabled ? "not-allowed" : "pointer"}
+          opacity={disabled ? 0.55 : 1}
+          onClick={disabled ? undefined : toggleSelect}
+          role="button"
+          aria-label={ariaLabel}
+          aria-expanded={isOpen}
+          aria-disabled={disabled}
         >
           <HStack justify="space-between">
             <Text fontSize="sm" color={textColor} noOfLines={1} minW={0}>
@@ -216,7 +226,7 @@ export function CustomSelect({
                     {option.badge && (
                       <Badge
                         fontSize="0.55rem"
-                        colorScheme="purple"
+                        colorScheme={option.badgeColorScheme ?? "purple"}
                         variant="subtle"
                         px={1.5}
                         py={0.5}

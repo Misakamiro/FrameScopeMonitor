@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Box, Heading, Text, VStack, HStack, Input, NumberInput, NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, Switch, Button, Select, FormControl, FormLabel } from "@chakra-ui/react";
+import { Box, Heading, Text, VStack, HStack, Input, NumberInput, NumberInputField, NumberInputStepper, NumberIncrementStepper, NumberDecrementStepper, Switch, Button, FormControl, FormLabel } from "@chakra-ui/react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
+import { CustomSelect } from "@/components/special/custom-select";
 import { usePreviewState, usePreviewAction, ActionError } from "../pages/shared";
 import { isDesktop } from "../runtime/platform";
 import type { PreviewScenario } from "../runtime";
@@ -29,9 +30,15 @@ export function FrameScopeSettings() {
       {/* Fixture scenarios only make sense for the browser preview; on
           desktop every value comes from the real backend. */}
       {!isDesktop() && <LiquidGlassCard p={6} borderRadius="xl">
-        <FormControl><FormLabel>预览数据场景</FormLabel><Select aria-label="预览数据场景" value={state.scenario} onChange={e => void run("scenario.set", e.target.value as PreviewScenario)}>
-          <option value="normal">正常硬件</option><option value="multi-gpu">多 GPU</option><option value="missing-sensors">部分传感器缺失</option><option value="empty">空数据</option><option value="failure">采样失败</option>
-        </Select></FormControl>
+        <FormControl><FormLabel>预览数据场景</FormLabel><CustomSelect ariaLabel="预览数据场景" width="100%" value={state.scenario}
+          onChange={value => void run("scenario.set", value as PreviewScenario)}
+          options={[
+            { value: "normal", label: "正常硬件" },
+            { value: "multi-gpu", label: "多 GPU" },
+            { value: "missing-sensors", label: "部分传感器缺失" },
+            { value: "empty", label: "空数据" },
+            { value: "failure", label: "采样失败" },
+          ]} /></FormControl>
         <Text mt={3} fontSize="sm" opacity={.7}>仅模拟数据，不启动硬件或游戏采集。</Text>
       </LiquidGlassCard>}
     </VStack>
