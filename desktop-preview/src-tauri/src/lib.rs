@@ -74,6 +74,10 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     let mut builder = WebviewWindowBuilder::new(app, "vertical-overlay", WebviewUrl::App("vertical-overlay".into()))
         .title("FrameScope UI Preview - Overlay").inner_size(240.0, 420.0)
         .decorations(false).transparent(true).always_on_top(true).skip_taskbar(true).resizable(false)
+        // Windows: undecorated windows default to a DWM shadow, and that shadow
+        // forces an opaque compositor backdrop - the transparency slider never
+        // reaches the screen without shadow(false) (NexBox upstream does the same).
+        .shadow(false)
         ;
     if let (Some(x), Some(y)) = (settings.vertical_position_x, settings.vertical_position_y) {
         builder = builder.position(x as f64, y as f64);

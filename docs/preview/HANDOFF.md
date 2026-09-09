@@ -65,6 +65,7 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 20. **本机 UI 自动化**:合成鼠标点击受前台锁定干扰不可靠,用 CDP(临时给 tauri.conf.json 加 `additionalBrowserArgs: "--remote-debugging-port=9333"`,**用完必须移除并重建**)+ `__TAURI_INTERNALS__.invoke` 直调宿主命令
 21. **WebView2 同一 user-data 目录所有窗口的 additionalBrowserArgs 必须完全一致**——主窗带 --remote-debugging-port 而动态建窗不带时,第二个 WebView2 环境创建直接失败(ERROR_INVALID_STATE 0x8007139F),竖排窗/传感器窗全部开不出来。
 22. **Tauri CloseRequested 里 hide() 托盘化必须同时 api.prevent_close()**——否则 handler 返回后默认关闭继续执行,窗口销毁→全应用退出(实机抓到的回归)。
+22.1 **无边框窗口的透明度被 DWM 阴影吃掉**——Windows 上 undecorated 窗口默认带阴影,阴影会强制整面不透明合成背景,DOM 层再透明也到不了屏幕;竖排悬浮窗必须 .shadow(false)(上游同样如此)。另:用户滑块接近 100% 时面板本来就近乎不透明,判断透明是否生效要把窗口挪到亮色窗口上对比,黑壁纸上看不出来。
 23. **强杀进程树会泄漏 ETW 内核会话**——残留 "NT Kernel Logger" 占住槽位后 PresentMon 静默零事件(Started recording 但零字节 CSV);用 logman query -ets 排查、logman stop "NT Kernel Logger" -ets 清理。另:CS2 新版启动停在静态模式选择对话框(不点击不渲染→零 present),自动化测试必须点过它;PM 2.x 只在优雅停止时落盘 CSV。
 24. **tauri bundle 用 mainBinaryName 改名产物**——target/release 里仍是 crate bin 名(framescope-ui-preview.exe),安装包里才是 FrameScope.exe;校验脚本要查对文件。设置页/关闭行为桌面端唯一事实源是 framescope-config.json(config_read/config_save 双向),前端 localStorage 只是浏览器回退。
 

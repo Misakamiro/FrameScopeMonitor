@@ -601,3 +601,25 @@ New iron rules learned this session:
   (logman query -ets / logman stop "NT Kernel Logger" -ets).
 - tauri bundle renames the binary via mainBinaryName; the crate bin name
   stays in target/release - verification scripts must check the right file.
+
+
+## Session 2026-09-10 addendum: the REAL OSD transparency root cause
+
+The 9c9e46f fix (clearing the document background) was necessary but not
+sufficient - the user correctly called out that the panel still looked
+opaque. Controlled test with the overlay positioned over a bright window
+(the earlier dark-wallpaper screenshot was inconclusive) proved the window
+surface itself was opaque.
+
+Root cause: undecorated Tauri windows on Windows default to a DWM shadow,
+and that shadow forces an opaque compositor backdrop for the whole surface,
+so no amount of DOM-level alpha reaches the screen. open_vertical now sets
+.shadow(false) (same as the NexBox upstream builder). Verified: at 24%
+opacity over a bright card the background bleeds through and follows the
+content behind it; slider now drives real per-pixel transparency at every
+position. The user-facing slider value itself was also near 97% during
+testing, which reads as opaque even when transparency works.
+
+CDP scaffolding (main + overlay windows, identical args) was re-added for
+this diagnosis and removed again; final installer rebuilt and the desktop
+copy refreshed.
