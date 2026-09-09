@@ -518,3 +518,86 @@ capture). Tree-kill stops still leave the status at capturing by design
 
 Final regression round (temporary CDP, removed after): CS2 full report
 34298 frames with M2/ID-validation/watchdog changes live - no regressions.
+
+
+## Session 2026-09-10 (round 3): user-reported UI/branding batch + installer + live QA
+
+User-reported list drove 9 batches; every batch committed locally with the
+fix->selfcheck->test loop.
+
+1. `378ec3c` Reachable pages' native `<Select>` popups (dark navy Windows
+   listbox) replaced with the existing glass CustomSelect; added
+   ariaLabel/disabled props + per-option badge color for the disabled mark.
+2. `f53a968` Settings page made real: new `config_read` host command (three-
+   way command-table sync), desktop config sync with the targets-style retry
+   latch, awaited saves with truthful errors, dirty-flag so background state
+   clones stop wiping in-progress edits, preview-only fields hidden on
+   desktop; C# PollIntervalMs became a real clamped setting (250-10000) that
+   the watcher sleeps on (28/28 C# tests incl. rewritten legacy assertions).
+3. `9ef0691` Splash replaced (byte-identical NexBox WebGL splash gone; new
+   FrameScope icon+wordmark splash, pure CSS) and the whole icon set
+   switched to the generated FrameScope marks (exe/tray/titlebar/favicon).
+4. `883e71f` Tray/close behavior: host CloseRequested now honors
+   CloseWindowBehavior (minimize-to-tray hides without stopping the hardware
+   chain, ask hands to the UI dialog via main-close-requested, exit quits);
+   tray left-click restores the window; close behavior is single-sourced in
+   framescope-config.json with "ask" added to the C# NormalizeChoice set.
+5. `0006428` Vertical OSD gains per-core CPU frequency & voltage display
+   items; service aggregates "Core #N" clocks/VIDs with strict parsing.
+6. `f28a3a2` NSIS installer: FrameScope 1.0.0 (productName+mainBinaryName),
+   branded welcome/header bitmaps, Chinese wizard, license texts shipped,
+   backend chain (6 exes + runtime DLLs + PresentMon + MiSans) bundled via
+   resources; tools/Package-Installer.ps1 drives the whole pipeline.
+7. `2eea60f` Round-3 audit: GDI-style settings hide the per-core toggles
+   (unknown ids reserve blank width on the native bar); installer ships
+   LICENSE/LICENSE.EXTRA; boundaries documented.
+8. `024cbdf` User-reported inaccurate VID, confirmed against GamePP live
+   (theirs 1.02V, ours 0.59V): LHM scales AMD Zen4 per-core VID with the old
+   SVI2 step. AMD per-core voltage now reports the board SuperIO Vcore
+   measurement (single VDDCR domain - same value per core is physically
+   correct); aggregate cpu_voltage prefers the measured rail; Intel keeps
+   true per-core VIDs (20/20 service tests). The C# capture chain had
+   already blacklisted the same AMD VID source - the OSD is now aligned with
+   that decision. Live A/B: ours 1.01-1.03V vs GamePP 1.023-1.044V.
+   Also fixed in this batch: try_load_persisted_settings existed but was
+   never called (overlay style reset to GDI on every launch); GDI window
+   class/title renamed from "NexBox Overlay Panel" to FrameScope Overlay.
+9. `9c9e46f` User-reported OSD opacity fake: the SPA theme paints the
+   document body opaque, so the panel rgba sat on a solid backdrop; the
+   overlay page now clears the document background and the slider drives
+   real per-pixel see-through (verified at 40% with wallpaper bleeding
+   through).
+
+Live QA round (temporary CDP on main+overlay windows, both removed after):
+- CloseRequested regression caught and fixed: minimize-to-tray hid the
+  window but skipped prevent_close, so the default close destroyed the
+  window and exited the app; now verified alive-after-close + restore.
+- Page-by-page screenshots clean; settings save -> config file -> UI
+  read-back verified end to end (1500 round-trip).
+- Vertical overlay verified with real per-core values (8x 4950MHz; voltage
+  shows the measured rail) and real transparency.
+- CS2 full-chain: auto-discovery -> PresentMon capture -> full report
+  (avg 118.6, 1%Low 62.1, 12344 frames, 379 hardware samples). Three
+  zero-frame runs before it were environmental, not regressions: CS2 now
+  stops at a static game-mode dialog until clicked (no presents), so
+  automation must click through it; PresentMon also only materializes the
+  CSV on graceful stop. A leaked duplicate "NT Kernel Logger" ETW session
+  from force-killed trees was cleared with logman (PM needs the kernel
+  logger slot).
+- BF6 retest skipped: EA account error 0:85008S still blocks the main menu
+  (user-side); the anti-cheat fallback (etw-fps-sampled) was verified last
+  round and its report path is unchanged.
+- Installer verified interactively: branded welcome, license page, running-
+  app detection, install completion, silent uninstall with zero residue.
+
+New iron rules learned this session:
+- WebView2 in one app data folder requires IDENTICAL additionalBrowserArgs
+  on every window; a debug-port arg on the main window makes dynamically
+  created windows fail with ERROR_INVALID_STATE (0x8007139F).
+- Tauri CloseRequested: hide()-only tray behavior MUST also prevent_close,
+  or the default close proceeds after the handler and exits the app.
+- Force-killed process trees leak ETW kernel sessions; PresentMon silently
+  captures zero events while a stale "NT Kernel Logger" occupies the slot
+  (logman query -ets / logman stop "NT Kernel Logger" -ets).
+- tauri bundle renames the binary via mainBinaryName; the crate bin name
+  stays in target/release - verification scripts must check the right file.
