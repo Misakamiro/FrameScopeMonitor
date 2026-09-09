@@ -43,6 +43,7 @@ import { CustomSelect } from "@/components/special/custom-select";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSearchParams } from "react-router-dom";
+import { loadCloseBehavior, persistCloseBehavior, type CloseBehavior } from "@/lib/close-behavior";
 import {
   DndContext,
   closestCenter,
@@ -156,7 +157,8 @@ function GeneralSettings() {
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
 
   const [closeBehavior, setCloseBehavior] = useState<string>(() => {
-    return localStorage.getItem("nexbox_close_behavior") === "minimize" ? "minimize" : "close";
+    const stored = localStorage.getItem("nexbox_close_behavior");
+    return stored === "minimize" || stored === "ask" ? stored : "close";
   });
   const [sidebarShowLabel, setSidebarShowLabel] = useState(false);
   const [navVisibility, setNavVisibility] = useState<Record<string, boolean>>({});
@@ -231,11 +233,10 @@ function GeneralSettings() {
     async function loadSettings() {
       const read = async <T,>(key: string, fallback: T): Promise<T> =>
         (await store.get<T>(key)) ?? fallback;
-      const [labels, position, transition, close, order, visibility] = await Promise.all([
+      const [labels, position, transition, order, visibility] = await Promise.all([
         read("nexbox_sidebar_show_label", localStorage.getItem("nexbox_sidebar_show_label") === "true"),
         read("nexbox_nav_position", localStorage.getItem("nexbox_nav_position") || "left"),
         read("nexbox_page_transition", localStorage.getItem("nexbox_page_transition") || "fade"),
-        read("nexbox_close_behavior", localStorage.getItem("nexbox_close_behavior") || "close"),
         read("nexbox_nav_order", localStorage.getItem("nexbox_nav_order")),
         Promise.all(DEFAULT_NAV_ORDER.map(async (path) => {
           const key = `nexbox_nav_visible_${path.replace(/\//g, "").replace(/-/g, "_")}`;
@@ -246,7 +247,9 @@ function GeneralSettings() {
       setSidebarShowLabel(labels);
       setNavPosition(position === "top" ? "top" : "left");
       setPageTransitionMode(transition === "slide" || transition === "off" ? transition : "fade");
-      setCloseBehavior(close === "minimize" ? "minimize" : "close");
+      // Desktop: the real config decides (same value the host enforces for
+      // Alt+F4); the storage read above is only the browser fallback.
+      setCloseBehavior(await loadCloseBehavior());
       setNavOrder(normalizeNavOrder(order));
       setNavVisibility(Object.fromEntries(visibility));
     }
@@ -258,8 +261,9 @@ function GeneralSettings() {
 
   const handleCloseBehaviorChange = (value: string) => {
     setCloseBehavior(value);
-    saveSetting("nexbox_close_behavior", value);
-    window.dispatchEvent(new CustomEvent("close-behavior-changed"));
+    // Persists storage + the desktop config mirror, then notifies the
+    // title bar via CLOSE_BEHAVIOR_EVENT.
+    void persistCloseBehavior(value as CloseBehavior);
   };
 
   const handleSidebarShowLabelChange = (value: string) => {
@@ -443,6 +447,7 @@ function GeneralSettings() {
               value={closeBehavior}
               onChange={handleCloseBehaviorChange}
               options={[
+                { value: "ask", label: t("settings.generalSettings.askEveryTime") },
                 { value: "close", label: t("settings.generalSettings.closeDirectly") },
                 { value: "minimize", label: t("settings.generalSettings.minimizeToTray") },
               ]}

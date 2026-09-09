@@ -176,8 +176,24 @@ pub fn config_save(update: &Value) -> Result<Value, String> {
     if let Some(value) = update.get("diagnosticLogging").and_then(Value::as_bool) {
         config["EnablePerformanceDiagnosticsLogs"] = json!(value);
     }
+    if let Some(value) = update.get("closeWindowBehavior").and_then(Value::as_str) {
+        // Same vocabulary the C# NormalizeChoice allows; unknown values are
+        // ignored so a stale client cannot write garbage.
+        if matches!(value, "ask" | "minimize-to-tray" | "exit") {
+            config["CloseWindowBehavior"] = json!(value);
+        }
+    }
     write_json_atomic(&path, &config)?;
     Ok(json!({ "status": "saved" }))
+}
+
+/// Host-side close policy for the main window's CloseRequested. Fail-closed
+/// to "exit": a broken config must never leave the user unable to quit.
+pub fn close_window_behavior() -> String {
+    load_config()
+        .ok()
+        .and_then(|(_, config)| config.get("CloseWindowBehavior").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| "exit".into())
 }
 
 /// Frontend-facing settings read. The settings page used to initialize from

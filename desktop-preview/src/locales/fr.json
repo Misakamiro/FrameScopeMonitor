@@ -1467,6 +1467,7 @@
       "closeBehavior": "Comportement de fermeture",
       "closeBehaviorLabel": "Lors du clic sur fermer",
       "closeBehaviorDesc": "Choisir l'action lors du clic sur le bouton fermer",
+      "askEveryTime": "Demander à chaque fois",
       "closeDirectly": "Fermer directement",
       "minimizeToTray": "Minimiser dans la barre",
       "navPositionLabel": "Position de navigation",

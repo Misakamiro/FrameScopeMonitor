@@ -1898,6 +1898,7 @@
       "closeBehavior": "終了動作",
       "closeBehaviorLabel": "閉じるボタンを押した時",
       "closeBehaviorDesc": "閉じるボタンを押した時の動作を選択",
+      "askEveryTime": "毎回確認",
       "closeDirectly": "直接閉じる",
       "minimizeToTray": "トレイに最小化",
       "navPositionLabel": "ナビゲーション位置",

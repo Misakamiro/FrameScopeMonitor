@@ -1467,6 +1467,7 @@
       "closeBehavior": "Schließverhalten",
       "closeBehaviorLabel": "Beim Klicken auf Schließen",
       "closeBehaviorDesc": "Wählen Sie, was beim Klicken auf den Schließen-Button passiert",
+      "askEveryTime": "Jedes Mal fragen",
       "closeDirectly": "Direkt schließen",
       "minimizeToTray": "In Tray minimieren",
       "navPositionLabel": "Navigationsposition",

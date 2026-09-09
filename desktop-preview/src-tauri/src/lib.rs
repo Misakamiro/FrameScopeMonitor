@@ -450,16 +450,38 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![preview_native])
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
-            let show = MenuItem::with_id(app, "show", "打开预览", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出预览", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "打开 FrameScope", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出 FrameScope", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             // Real FrameScope icon instead of the old 16x16 solid-color square.
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .map_err(|e| e.to_string())?
                 .to_owned();
             tauri::tray::TrayIconBuilder::new().icon(icon).tooltip("FrameScope").menu(&menu)
+                .on_tray_icon_event(|tray, event| {
+                    // Left-click restores the main window (the old tray had no
+                    // click behavior at all, which made "minimize to tray"
+                    // feel like the app had vanished).
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => { if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.set_focus(); } }
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
                     "quit" => { let _ = stop_windows(app); app.exit(0); }
                     _ => {}
                 }).build(app)?;
@@ -512,9 +534,23 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                let _ = stop_windows(window.app_handle());
-                window.app_handle().exit(0);
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // The X button and Alt+F4/taskbar closes must behave the
+                    // same; the choice lives in framescope-config.json
+                    // (CloseWindowBehavior, mirrored from the UI setting).
+                    match backend::close_window_behavior().as_str() {
+                        // Tray-style close: the hardware chain and the OSD
+                        // overlays keep running, only the window hides.
+                        "minimize-to-tray" => { let _ = window.hide(); }
+                        // Hand the question to the UI's close-confirm dialog.
+                        "ask" => {
+                            api.prevent_close();
+                            let _ = window.app_handle().emit("main-close-requested", ());
+                        }
+                        _ => { let _ = stop_windows(window.app_handle()); window.app_handle().exit(0); }
+                    }
+                }
             }
         })
         .build(tauri::generate_context!()).expect("Unable to build isolated preview");

@@ -1916,6 +1916,7 @@
       "closeBehavior": "关闭行为",
       "closeBehaviorLabel": "点击关闭按钮时",
       "closeBehaviorDesc": "选择点击关闭按钮时的行为",
+      "askEveryTime": "每次询问",
       "closeDirectly": "直接关闭",
       "minimizeToTray": "最小化到托盘",
       "navPositionLabel": "导航栏位置",

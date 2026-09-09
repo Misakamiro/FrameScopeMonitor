@@ -3,11 +3,13 @@
 import { Box, Flex, HStack, IconButton, Image, useColorModeValue } from "@chakra-ui/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { LuMinus, LuSquare, LuCopy, LuX } from "react-icons/lu";
 import { useCallback, useState, useEffect, useRef } from "react";
 import { GlobalSearch } from "./global-search";
 import { CloseConfirmDialog } from "../CloseConfirmDialog";
 import { store } from "@/lib/store";
+import { CLOSE_BEHAVIOR_EVENT, loadCloseBehavior, persistCloseBehavior, type CloseBehavior } from "@/lib/close-behavior";
 
 export function TitleBar() {
   const iconColor = useColorModeValue("gray.600", "gray.400");
@@ -86,13 +88,32 @@ export function TitleBar() {
   // 存储 close_behavior 的引用，供 handleClose 使用
   const closeBehaviorRef = useRef<string>("ask");
   useEffect(() => {
-    (async () => {
-      let cb = await store.get<string>("nexbox_close_behavior");
-      if (!cb) {
-        cb = localStorage.getItem("nexbox_close_behavior") || "ask";
-      }
-      closeBehaviorRef.current = cb;
-    })();
+    let disposed = false;
+    // Desktop reads the real config (the host runs the same policy for
+    // Alt+F4); browser previews keep the storage key.
+    void loadCloseBehavior().then(behavior => { if (!disposed) closeBehaviorRef.current = behavior; });
+    return () => { disposed = true; };
+  }, []);
+
+  // Live updates from the settings dropdown and from the close dialog itself.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as CloseBehavior;
+      if (detail === "ask" || detail === "close" || detail === "minimize") closeBehaviorRef.current = detail;
+    };
+    window.addEventListener(CLOSE_BEHAVIOR_EVENT, handler);
+    return () => { window.removeEventListener(CLOSE_BEHAVIOR_EVENT, handler); };
+  }, []);
+
+  // Alt+F4 / taskbar close with the "ask" behavior: the host prevented the
+  // close and hands the question to this dialog.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen("main-close-requested", () => setShowCloseDialog(true))
+      .then(fn => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(console.error);
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   const handleMouseDown = useCallback(async (e: React.MouseEvent) => {
@@ -169,9 +190,7 @@ export function TitleBar() {
 
   const performMinimizeToTray = async (savePreference: boolean = false) => {
     if (savePreference) {
-      localStorage.setItem("nexbox_close_behavior", "minimize");
-      await store.set("nexbox_close_behavior", "minimize");
-      await store.save();
+      await persistCloseBehavior("minimize");
       closeBehaviorRef.current = "minimize";
     }
     try {
@@ -184,9 +203,7 @@ export function TitleBar() {
 
   const performClose = async (savePreference: boolean = false) => {
     if (savePreference) {
-      localStorage.setItem("nexbox_close_behavior", "close");
-      await store.set("nexbox_close_behavior", "close");
-      await store.save();
+      await persistCloseBehavior("close");
       closeBehaviorRef.current = "close";
     }
     try {

@@ -2047,6 +2047,7 @@
       "closeBehavior": "Close Behavior",
       "closeBehaviorLabel": "When clicking close button",
       "closeBehaviorDesc": "Choose what happens when clicking the close button",
+      "askEveryTime": "Ask Every Time",
       "closeDirectly": "Close Directly",
       "minimizeToTray": "Minimize to Tray",
       "navPositionLabel": "Navigation Position",

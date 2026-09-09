@@ -118,7 +118,9 @@ public static class FrameScopeConfigStore
         if (config.MaxLogDiskMb <= 0) config.MaxLogDiskMb = 100;
         if (config.MaxLogDiskMb > 2048) config.MaxLogDiskMb = 2048;
         config.ThemeMode = NormalizeChoice(config.ThemeMode, "system", "light", "dark", "system");
-        config.CloseWindowBehavior = NormalizeChoice(config.CloseWindowBehavior, "minimize-to-tray", "exit", "minimize-to-tray");
+        // "ask" is a UI-only-but-legitimate value: the frontend close-confirm
+        // dialog writes it and the Tauri host honors it on CloseRequested.
+        config.CloseWindowBehavior = NormalizeChoice(config.CloseWindowBehavior, "minimize-to-tray", "exit", "minimize-to-tray", "ask");
         NormalizeCpuTelemetry(config);
         foreach (FrameScopeTarget target in config.Targets)
         {
