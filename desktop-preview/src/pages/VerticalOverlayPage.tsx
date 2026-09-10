@@ -12,6 +12,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { isDesktop } from "@/preview/runtime/platform";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -450,7 +451,9 @@ export default function VerticalOverlayPage() {
       ref={containerRef}
       style={{
         width: `${settings.item_width || 220}px`,
-        background: `rgba(17, 17, 17, ${bgOpacity})`,
+        // 桌面模式：面板底色全透明（含 0%），背景明暗完全由窗口层
+        // （DWM blur-behind + 穿透样式）处理；浏览器预览用 rgba 模拟。
+        background: isDesktop() ? "transparent" : `rgba(17, 17, 17, ${bgOpacity})`,
         borderRadius: "12px",
         padding: "10px 12px",
         display: "flex",

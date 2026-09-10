@@ -1,4 +1,4 @@
-#[cfg(test)]
+﻿#[cfg(test)]
 mod tests;
 mod backend;
 mod hardware_service;
@@ -83,29 +83,66 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
         builder = builder.position(x as f64, y as f64);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
-    window.set_ignore_cursor_events(true).map_err(|e| e.to_string())?;
-    keep_click_through_transparent(&window);
+    overlay_set_hit_test_transparent(&window, true);
+    #[cfg(windows)]
+    overlay_apply_backdrop(&window, settings.opacity.min(255) as u8);
     Ok(())
 }
 
-/// tao implements set_ignore_cursor_events(true) as
-/// WS_EX_LAYERED|WS_EX_TRANSPARENT, and the LAYERED style switches DWM to the
+/// Click-through for the vertical overlay. tao's set_ignore_cursor_events
+/// uses WS_EX_LAYERED|WS_EX_TRANSPARENT, and LAYERED switches DWM to the
 /// layered-composition path which paints a frosted backdrop over the
-/// per-pixel-transparent webview - the opacity slider then appears dead.
-/// WS_EX_TRANSPARENT alone keeps the input pass-through, so drop LAYERED
-/// after every ignore_cursor_events(true).
+/// per-pixel-transparent webview (the slider then appears dead in normal
+/// mode while drag mode - which removes the styles - looks right). Manage
+/// the style ourselves: toggle only WS_EX_TRANSPARENT, never LAYERED.
 #[cfg(windows)]
-fn keep_click_through_transparent(window: &tauri::WebviewWindow) {
+fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED,
+        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
     };
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
             let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
-            SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as i32));
+            let mut next = ex & !(WS_EX_TRANSPARENT as i32);
+            if transparent {
+                next |= WS_EX_TRANSPARENT as i32;
+            }
+            SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, next);
         }
     }
 }
+
+/// Window-level backdrop for the vertical overlay: acrylic blur whose tint
+/// alpha tracks the opacity slider - 0 disables the backdrop entirely (text
+/// only), higher values deepen the frost, 255 is a near-solid dark plate.
+/// This gives the continuous "transparent -> frosted glass -> solid" ramp
+/// over real desktop content, which DOM-level rgba cannot do on top of a
+/// transparent window.
+#[cfg(windows)]
+fn overlay_apply_backdrop(window: &tauri::WebviewWindow, opacity: u8) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_COLORKEY,
+        WS_EX_LAYERED,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
+            if opacity == 0 {
+                // 0%: colorkey mode. The DOM paints the plate pure magenta
+                // (0xFF00FF) and the key makes those pixels fully invisible
+                // while text/icons stay - the only state where the plate can
+                // be 100% gone (DWM blur-behind always draws frost).
+                SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, ex | WS_EX_LAYERED as i32);
+                SetLayeredWindowAttributes(hwnd.0 as _, 0x00FF00FF, 0, LWA_COLORKEY);
+            } else {
+                // per-pixel path: DWM blur-behind (enabled at creation) gives
+                // the frosted glass; the DOM tint darkens it as opacity rises.
+                SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as i32));
+            }
+        }
+    }
+}
+
 fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
     // The GDI window proc updates CURRENT_SETTINGS on WM_EXITSIZEMOVE but
     // only flags it (POSITION_CHANGED); persist on the next stop so a dragged
@@ -332,6 +369,10 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                 let was_vertical = overlay_panel::get_or_init_settings().style == "vertical_panel";
                 overlay_panel::update_settings(settings.clone())?;
                 save_native_settings(&app)?;
+                #[cfg(windows)]
+                if let Some(window) = app.get_webview_window("vertical-overlay") {
+                    overlay_apply_backdrop(&window, settings.opacity.min(255) as u8);
+                }
                 if was_active && !was_vertical {
                     // Style switched GDI → vertical: retire the GDI panel and
                     // open the webview panel (open_vertical stops the GDI one).
@@ -357,17 +398,15 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             let enabled = args["enabled"].as_bool().ok_or("enabled must be boolean")?;
             overlay_panel::set_drag_mode(enabled);
             if let Some(window) = app.get_webview_window("vertical-overlay") {
-                window.set_ignore_cursor_events(!enabled).map_err(|e| e.to_string())?;
+                overlay_set_hit_test_transparent(&window, !enabled);
                 #[cfg(windows)]
-                if !enabled {
-                    keep_click_through_transparent(&window);
-                }
+                overlay_apply_backdrop(&window, overlay_panel::get_or_init_settings().opacity.min(255) as u8);
                 app.emit("vertical-overlay-drag-mode", enabled).map_err(|e| e.to_string())?;
             }
         }
         "set_vertical_overlay_click_through" => {
             if let Some(window) = app.get_webview_window("vertical-overlay") {
-                window.set_ignore_cursor_events(args["enabled"].as_bool().ok_or("enabled must be boolean")?).map_err(|e| e.to_string())?;
+                overlay_set_hit_test_transparent(&window, !args["enabled"].as_bool().ok_or("enabled must be boolean")?);
             }
         }
         "resize_vertical_overlay" => {

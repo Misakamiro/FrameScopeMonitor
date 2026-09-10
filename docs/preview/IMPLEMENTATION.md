@@ -659,3 +659,26 @@ Verified: full interactive install walk (welcome art -> license ->
 reinstall detect -> directory -> instfiles -> branded finish with
 checkboxes), silent install + auto-run, uninstall clean. Final installer
 and desktop copy refreshed with this build.
+
+## Session 2026-09-10 addendum III: the definitive transparency fix
+
+User re-test disproved the LAYERED-race theory: even with keep_click_through
+applied, normal mode stayed opaque while drag mode looked right. Root cause
+confirmed by style-matrix experiment: ANY set_ignore_cursor_events call
+replays tao's full WindowFlags ex-style (LAYERED included) asynchronously on
+the window thread, racing any post-call style patch - flaky by design.
+
+Fix: stop calling set_ignore_cursor_events for the vertical overlay
+entirely. overlay_set_hit_test_transparent toggles ONLY WS_EX_TRANSPARENT
+via SetWindowLongW on the calling thread - LAYERED is never introduced, so
+the DWM blur-behind (tao's empty-region call at creation) keeps providing
+per-pixel alpha, and nothing replays styles afterwards.
+
+0% semantics (user-defined): hide the background plate entirely, keep the
+text (dark text-shadow keeps it readable). The colorkey (LWA_COLORKEY)
+attempt was abandoned: WebView2 is a separate child HWND and the parent's
+layered attributes never process its pixels.
+
+Verified live: 0% text-only float; 40% frost; drag on -> drag -> off keeps
+transparency and click-through (WindowFromPoint lands behind). Final clean
+build repackaged; desktop installer copy refreshed.
