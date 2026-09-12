@@ -1689,6 +1689,14 @@ pub fn update_settings(settings: OverlaySettings) -> Result<(), String> {
     Ok(())
 }
 
+/// Store new settings WITHOUT touching any running window. Companion to
+/// request_overlay_repaint: the hot path must persist the new values into
+/// CURRENT_SETTINGS *before* posting the repaint, or the wndproc redraws
+/// with the stale ones (measured: opacity slider did nothing).
+pub fn store_settings(settings: OverlaySettings) {
+    *CURRENT_SETTINGS.lock().unwrap() = Some(settings);
+}
+
 /// WM_APP message the overlay wndproc repaints on: lets the settings page
 /// hot-apply GDI style changes (opacity slider) without tearing the window
 /// down - the old update_settings rebuild path made the bar blink on every

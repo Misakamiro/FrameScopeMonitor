@@ -113,6 +113,8 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 
 **验证**:灵动岛实机启动渲染正常(顶部全宽真数据条)、开关双向同步、宽度不再跨双屏、托盘图标新旧对比清晰度提升明显;cargo 宿主 5/5、vitest 14/14。**已知边角**:①主窗 WebView2 页面滚动后鼠标 hit-test 与视觉错位(点击落在未滚动布局)——老毛病,与 overlay 无关,避开方式=不滚动直接操作或重启;②GDI 滑块热路径的 repaint 函数由 500ms timer 等价证明,滑块交互未走通是上述错位所致,用户日常可验;③draw 侧 ULW 尺寸超 clamp(见 1③)。
 
+**Round 5a 补修(2026-09-13 凌晨)**:①热路径初版漏了"把新设置写入 CURRENT_SETTINGS"(只发重绘消息+写文件),GDI 样式滑透明度纹丝不动——补 overlay_panel::store_settings 在 repaint post 之前调用;白底上像素级验证 255→17、128→144、20→247 严格线性(铁律 22.4 再证:黑壁纸永远别用来判透明)。②铁律 25:**MutexGuard 临时值作引用传参,被调方再锁同一 Mutex = 同线程死锁**——`f(&MUTEX.lock().clone())` 的 guard 活到语句尾,任何深层调用链上对 MUTEX 的 lock 都会挂死整个线程;修法=先 clone 到 owned 局部再传。
+
 ## 五·四、历史、本轮(2026-09-08/09)完成
 
 1. **Round 2 复审**(`docs/audit/2026-09-08-full-audit-round2.md`):三路深挖 + 全量实机测试;抓到 5fb6492 引入的高危回归(R-A1/R-A3,FIRST_PIPE_INSTANCE 值错 + 循环内断言,服务 100% 起不来——静态审计与 cargo test 均漏判,实机抓获)、H8 未修、R-C12 桌面模拟机注入假报告

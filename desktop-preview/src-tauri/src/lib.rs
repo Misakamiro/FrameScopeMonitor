@@ -441,12 +441,18 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                     }
                 };
                 if only_opacity && overlay_panel::is_overlay_active() {
+                    // Persist into the live settings FIRST - the repaint reads
+                    // CURRENT_SETTINGS, and this was the missed half of the hot
+                    // path (opacity slider appeared dead on GDI styles).
+                    overlay_panel::store_settings(settings.clone());
                     if overlay_panel::request_overlay_repaint() {
                         save_native_settings(&app)?;
                         app.emit("vertical-overlay-settings", settings).map_err(|e| e.to_string())?;
                         return Ok(Value::Null);
                     }
-                    // repaint post failed (window gone?) - fall through to rebuild
+                    // repaint post failed (window gone?) - fall through to rebuild;
+                    // store_settings already applied, update_settings below is a
+                    // harmless re-store plus a window rebuild.
                 }
                 stop_windows(&app)?;
                 overlay_panel::update_settings(settings.clone())?;
