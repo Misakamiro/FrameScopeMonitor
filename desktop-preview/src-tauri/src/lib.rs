@@ -331,15 +331,34 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         "open_vertical_overlay" => spawn_job(&app, |app| {
             if let Err(e) = open_vertical(app) { eprintln!("open_vertical_overlay: {e}"); }
         }),
-        "start_overlay_panel" => spawn_job(&app, |app| {
-            let _lock = OVERLAY_OPERATION.lock().unwrap();
-            if let Err(e) = start_selected(app) { eprintln!("start_overlay_panel: {e}"); }
-            let _ = app.emit("overlay-status-changed", true);
-        }),
+        "start_overlay_panel" => {
+            // The window-creating flow must run OFF the command thread (iron
+            // rule 2), but the frontend awaits this invoke and reads
+            // result.success to flip the toggle - the old fire-and-forget
+            // spawn_job always resolved to null, so the toggle never moved
+            // even though the panel came up. Bridge the worker's outcome back
+            // through a channel and wait for it.
+            let (tx, rx) = std::sync::mpsc::channel::<Value>();
+            let worker_app = app.clone();
+            std::thread::spawn(move || {
+                let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
+                let payload = match start_selected(&worker_app) {
+                    Ok(_) => json!({ "success": true, "message": "悬浮框已启动" }),
+                    Err(e) => json!({ "success": false, "message": e }),
+                };
+                let _ = worker_app.emit("overlay-status-changed", active(&worker_app));
+                let _ = tx.send(payload);
+            });
+            match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(payload) => return Ok(payload),
+                Err(_) => return Err("启动悬浮框超时".into()),
+            }
+        }
         "stop_overlay_panel" | "stop_vertical_overlay" => {
-            let _lock = OVERLAY_OPERATION.lock().unwrap();
+            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
             stop_windows(&app)?;
             app.emit("overlay-status-changed", false).map_err(|e| e.to_string())?;
+            return Ok(json!({ "success": true, "message": "悬浮框已关闭" }));
         }
         "toggle_overlay_panel" => spawn_job(&app, |app| {
             let _lock = OVERLAY_OPERATION.lock().unwrap();
@@ -404,6 +423,31 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                     });
                 }
             } else {
+                // Hot path: same GDI style, panel running, and the ONLY
+                // changed field is opacity - repaint in place instead of the
+                // stop+rebuild cycle that made the bar blink on every
+                // slider tick. Any other change (style metrics, items, fonts)
+                // still goes through the full rebuild below.
+                let old = overlay_panel::get_or_init_settings();
+                let same_style = old.style == settings.style;
+                let only_opacity = same_style && {
+                    let mut a = serde_json::to_value(&old).unwrap_or(Value::Null);
+                    let b = serde_json::to_value(&settings).unwrap_or(Value::Null);
+                    if let (Some(a), Some(b)) = (a.as_object_mut(), b.as_object()) {
+                        a.insert("opacity".into(), b.get("opacity").cloned().unwrap_or(Value::Null));
+                        a == b
+                    } else {
+                        false
+                    }
+                };
+                if only_opacity && overlay_panel::is_overlay_active() {
+                    if overlay_panel::request_overlay_repaint() {
+                        save_native_settings(&app)?;
+                        app.emit("vertical-overlay-settings", settings).map_err(|e| e.to_string())?;
+                        return Ok(Value::Null);
+                    }
+                    // repaint post failed (window gone?) - fall through to rebuild
+                }
                 stop_windows(&app)?;
                 overlay_panel::update_settings(settings.clone())?;
                 save_native_settings(&app)?;
@@ -552,9 +596,31 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "退出 FrameScope", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
             // Real FrameScope icon instead of the old 16x16 solid-color square.
-            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
-                .map_err(|e| e.to_string())?
-                .to_owned();
+            // The shell draws the tray at SM_CXSMICON (16-32px by DPI); feeding
+            // it the 256px app icon made the shell downscale 16x and the glyph
+            // turned to mush. Pre-rendered tray-{16,20,24,32,48}.png are
+            // HighQualityBicubic downscales of the 256px source - pick the
+            // closest to what the shell will actually draw.
+            let icon = {
+                #[cfg(windows)]
+                let tray_px = unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                        windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON,
+                    )
+                } as u32;
+                #[cfg(not(windows))]
+                let tray_px = 24u32;
+                let bytes: &[u8] = match tray_px {
+                    0..=17 => include_bytes!("../icons/tray-16.png"),
+                    18..=22 => include_bytes!("../icons/tray-20.png"),
+                    23..=27 => include_bytes!("../icons/tray-24.png"),
+                    28..=39 => include_bytes!("../icons/tray-32.png"),
+                    _ => include_bytes!("../icons/tray-48.png"),
+                };
+                tauri::image::Image::from_bytes(bytes)
+                    .map_err(|e| e.to_string())?
+                    .to_owned()
+            };
             tauri::tray::TrayIconBuilder::new().icon(icon).tooltip("FrameScope").menu(&menu)
                 .on_tray_icon_event(|tray, event| {
                     // Left-click restores the main window (the old tray had no

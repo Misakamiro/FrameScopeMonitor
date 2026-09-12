@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-11　|　交接人:ZCode　|　状态:**Round 4 完成——竖排 OSD 透明度三轮遗留问题全部修复并实机像素级验证(方案 C 复活:窗口层 NOREDIRECTIONBITMAP+DWMSBT_NONE+分层穿透对,底板归 DOM),详见"Round 4"章节;此前 2026-09-11 凌晨有一次失败会话(113152e/741cc61 混搭态,已由本 round 纠正,经过存档于 docs/preview/HANDOFF-SESSION-TRANSPARENCY-FIX.md)**
+> 交接日期:2026-09-13　|　交接人:ZCode　|　状态:**Round 5 完成——OSD 样式切换三连修(同线程锁重入死锁+开关无返回值+GDI 条跨屏 clamp;透明度热重绘不闪;托盘图标按 DPI 选档)全部实机验证,Round 4 竖排 OSD 透明度修复继续有效,工作树干净,未 push**
 
 ---
 
@@ -102,6 +102,18 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 - **最终二进制 UI 级复验(无 CDP)**:a11y 定位"开始拖动/退出拖动/恢复默认"按钮+真实鼠标点滑块——拖动模式进出穿透位正确、合成拖动位移+落盘 (250,210)、**拖动后动滑块位置不再丢(守卫实测:旧代码此处必丢)**、恢复默认回 (40,80)、退出拖动即恢复穿透(面板上没按过鼠标也能退)、用户透明度 97 已还原。回归:cargo 宿主 5/5、vitest 14/14;C#/服务 crate 未触碰。**待用户复验**:真实手感(拖动/视觉),特别是黑壁纸上的观感与多显示器场景。
 
 
+
+## 五·三、Round 5(2026-09-13)完成——OSD 样式切换三连修
+
+用户实测 Round 4 后报三个问题,全部修复并实机验证:
+
+1. **切样式卡死/OSD 不出现/开关失效**——三个症状一条根因链:①**同线程锁重入死锁**:start_overlay 用 `&CURRENT_HARDWARE_DATA.lock().clone()` 内联传参给 draw,MutexGuard 临时值活到整个调用语句结束,而 draw 内 build_display_items 的 **"time"(时间)分支经 get_net_offset_ms() 再锁同一 Mutex** → worker 永久卡死且**持有 OVERLAY_OPERATION 锁** → 之后一切 start/stop/toggle/热键全部挂起("开关失效");GDI 条窗口停留在 layered 全透明初态("OSD 不出现")。触发条件=时间项启用+GDI 样式,竖排(webview)不走该路径故长期潜伏。修复=data 先 clone 到 owned 局部再传。②**开关状态不同步**:start/stop_overlay_panel 是 spawn_job 即发即忘,invoke 永远返回 null,前端 `result.success` 抛 TypeError 走 catch,开关永不更新。修复=线程+channel 同步等结果(10s 超时),返回真实 {success,message}。③**GDI 条横跨双屏**:竖排配置(20+ 显示项)喂水平条时 calculate_window_width 算出 7865px。修复=创建时 clamp 到主屏逻辑宽;已知残留:draw 的 ULW 按内容实测尺寸重设窗口,可超出 clamp(两端溢出多为 padding,主屏内容完整)。
+2. **GDI 样式调透明度闪烁**——update_settings 每次滑块 tick 都 stop+重建窗口。修复三件:①update_settings 不再自动重启(调用方按新样式 start_selected,顺带消灭了 GDI↔竖排切换时"启动 GDI 又立刻杀掉"的绕圈重建);②handler 加 only-opacity 热路径:样式不变+仅 opacity 变+条在跑 → request_overlay_repaint()(WM_APP+7)原地重绘,不销毁窗口(实机验证 hwnd 不变);③repaint_overlay 抽出供 WM_TIMER/WM_APP 共用。
+3. **托盘图标不清晰**——TrayIcon 喂的是 256px icon.png,shell 缩到 SM_CXSMICON(16-32px 按 DPI)糊成一团。修复=预生成 tray-{16,20,24,32,48}.png(256px 源 HighQualityBicubic,icons/ 目录),运行时按 SM_CXSMICON 选最接近档(150% DPI=24px 实测命中)。
+
+**验证**:灵动岛实机启动渲染正常(顶部全宽真数据条)、开关双向同步、宽度不再跨双屏、托盘图标新旧对比清晰度提升明显;cargo 宿主 5/5、vitest 14/14。**已知边角**:①主窗 WebView2 页面滚动后鼠标 hit-test 与视觉错位(点击落在未滚动布局)——老毛病,与 overlay 无关,避开方式=不滚动直接操作或重启;②GDI 滑块热路径的 repaint 函数由 500ms timer 等价证明,滑块交互未走通是上述错位所致,用户日常可验;③draw 侧 ULW 尺寸超 clamp(见 1③)。
+
+## 五·四、历史、本轮(2026-09-08/09)完成
 
 1. **Round 2 复审**(`docs/audit/2026-09-08-full-audit-round2.md`):三路深挖 + 全量实机测试;抓到 5fb6492 引入的高危回归(R-A1/R-A3,FIRST_PIPE_INSTANCE 值错 + 循环内断言,服务 100% 起不来——静态审计与 cargo test 均漏判,实机抓获)、H8 未修、R-C12 桌面模拟机注入假报告
 2. **高危全修**:H1-H8(含回归 R-A1/A2/A3)、R-C1/C12、M6 回归(JSON 浮点)、管道读看门狗、管道 DACL、证据位置

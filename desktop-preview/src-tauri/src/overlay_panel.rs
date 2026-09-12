@@ -539,7 +539,16 @@ mod win32 {
         }
         let dpi_scale = dpi_x as f32 / 96.0;
 
-        let logical_width = calculate_window_width(settings);
+        let logical_width = {
+            // Horizontal styles lay every enabled item out in ONE row. A
+            // settings set configured for the vertical panel (20+ items) used
+            // to produce a window wider than the desktop (measured 7865px
+            // across two monitors) - clamp to the primary screen so the bar
+            // stays visible; items past the clamp simply draw off-edge until
+            // the user trims the item list.
+            let max_logical = ((GetSystemMetrics(SM_CXSCREEN) as f32 / dpi_scale) as i32 - 40).max(200);
+            calculate_window_width(settings).min(max_logical)
+        };
         let base_height = if settings.style == "dynamic_island" { 36 } else { 28 };
         let logical_height = base_height + (settings.font_size.saturating_sub(13) * 2) as i32;
         let physical_width = (logical_width as f32 * dpi_scale) as i32;
@@ -862,6 +871,7 @@ mod win32 {
 
         let hfont = create_compatible_font(dpi_scale, &settings.font, settings.font_size);
         if hfont.is_null() {
+            eprintln!("[osd-draw] create_compatible_font failed");
             return;
         }
 
@@ -1078,6 +1088,7 @@ mod win32 {
 
         let hfont = create_compatible_font(dpi_scale, &settings.font, settings.font_size);
         if hfont.is_null() {
+            eprintln!("[osd-island] create_compatible_font failed");
             return;
         }
 
@@ -1387,7 +1398,7 @@ mod win32 {
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
 
-        UpdateLayeredWindow(
+        let ulw_ret = UpdateLayeredWindow(
             hwnd,
             ptr::null_mut(),
             &ppt_dst,
@@ -1398,11 +1409,27 @@ mod win32 {
             &blend,
             ULW_ALPHA,
         );
+        if ulw_ret == 0 {
+            eprintln!("[osd-island] UpdateLayeredWindow failed err={} size={}x{}", GetLastError(), psize.cx, psize.cy);
+        }
 
         SelectObject(mem_dc, old_bmp);
         DeleteObject(hbitmap as HGDIOBJ);
         DeleteDC(mem_dc);
         DeleteObject(hfont as _);
+    }
+
+    /// One full redraw from the current settings + hardware snapshot. Shared
+    /// by the 500ms timer and the WM_APP hot-repaint path.
+    unsafe fn repaint_overlay(hwnd: HWND) {
+        let data = super::collect_hardware_data();
+        *super::CURRENT_HARDWARE_DATA.lock().unwrap() = Some(data.clone());
+        let settings = super::get_or_init_settings();
+        if settings.style == "dynamic_island" {
+            draw_overlay_content_dynamic_island(hwnd, &settings, &data);
+        } else {
+            draw_overlay_content(hwnd, &settings, &data);
+        }
     }
 
     pub unsafe extern "system" fn window_proc(
@@ -1433,14 +1460,13 @@ mod win32 {
             WM_TIMER => {
                 // 定时器 0.5s 刷新
                 SetTimer(hwnd, 1, 500, None);
-                let data = super::collect_hardware_data();
-                *super::CURRENT_HARDWARE_DATA.lock().unwrap() = Some(data.clone());
-                let settings = super::get_or_init_settings();
-                if settings.style == "dynamic_island" {
-                    draw_overlay_content_dynamic_island(hwnd, &settings, &data);
-                } else {
-                    draw_overlay_content(hwnd, &settings, &data);
-                }
+                repaint_overlay(hwnd);
+                0
+            }
+            msg if msg == super::OVERLAY_WM_REPAINT => {
+                // Hot settings apply (opacity slider on GDI styles): redraw
+                // with the just-stored settings, no window teardown.
+                repaint_overlay(hwnd);
                 0
             }
             WM_NCHITTEST => {
@@ -1545,10 +1571,19 @@ pub fn start_overlay(settings: OverlaySettings) -> Result<OverlayResult, String>
                     OVERLAY_HANDLE.store(hwnd, Ordering::SeqCst);
                     let _ = ready_tx.send(Ok(()));
 
+                    // OWN the data before drawing: the inline
+                    // `CURRENT_HARDWARE_DATA.lock().clone()` used to keep the
+                    // MutexGuard alive until the END of the draw call, and
+                    // build_display_items' "time" branch re-locks the same
+                    // mutex via get_net_offset_ms() - a same-thread
+                    // non-reentrant deadlock that froze the whole overlay
+                    // operation lock whenever the GDI styles started with the
+                    // clock item enabled.
+                    let data_snapshot = CURRENT_HARDWARE_DATA.lock().unwrap().clone().unwrap_or_default();
                     if settings.style == "dynamic_island" {
-                        win32::draw_overlay_content_dynamic_island(hwnd, &settings, &CURRENT_HARDWARE_DATA.lock().unwrap().clone().unwrap_or_default());
+                        win32::draw_overlay_content_dynamic_island(hwnd, &settings, &data_snapshot);
                     } else {
-                        win32::draw_overlay_content(hwnd, &settings, &CURRENT_HARDWARE_DATA.lock().unwrap().clone().unwrap_or_default());
+                        win32::draw_overlay_content(hwnd, &settings, &data_snapshot);
                     }
 
                     SetTimer(hwnd, 1, 500, None);
@@ -1641,11 +1676,39 @@ pub fn is_overlay_active() -> bool {
 }
 
 pub fn update_settings(settings: OverlaySettings) -> Result<(), String> {
+    // Stop a running GDI panel, store the new settings, and STOP there.
+    // Restarting is the caller's job (start_selected knows the NEW style):
+    // this function used to auto-relaunch the GDI window, which the vertical
+    // switch path then immediately stopped again (GDI->vertical flashed a
+    // full teardown+rebuild) and which made every opacity-slider tick on a
+    // GDI style destroy+recreate the window (visible flicker).
     let active = is_overlay_active();
     if active { stop_overlay()?; }
-    *CURRENT_SETTINGS.lock().unwrap() = Some(settings.clone());
-    if active { start_overlay(settings)?; }
+    *CURRENT_SETTINGS.lock().unwrap() = Some(settings);
+    let _ = active;
     Ok(())
+}
+
+/// WM_APP message the overlay wndproc repaints on: lets the settings page
+/// hot-apply GDI style changes (opacity slider) without tearing the window
+/// down - the old update_settings rebuild path made the bar blink on every
+/// slider tick.
+pub const OVERLAY_WM_REPAINT: u32 = 0x8000 + 7; // WM_APP + 7
+
+pub fn request_overlay_repaint() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+        let hwnd = OVERLAY_HANDLE.load(std::sync::atomic::Ordering::SeqCst);
+        if hwnd.is_null() {
+            return false;
+        }
+        unsafe { PostMessageW(hwnd, OVERLAY_WM_REPAINT, 0, 0) != 0 }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
 }
 
 pub fn publish_hardware_data(data: OverlayHardwareData) {
