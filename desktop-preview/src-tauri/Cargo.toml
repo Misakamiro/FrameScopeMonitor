@@ -32,6 +32,7 @@ sysinfo = "0.30"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_GdiPlus",
   "Win32_Security",
@@ -44,3 +45,9 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_LibraryLoader"
 ] }
+
+# PATCH(framescope): vendored tao - transparent windows use WS_EX_NOREDIRECTIONBITMAP
+# instead of the legacy blur-behind that paints a permanent frost on Win11 24H2.
+# See vendor/tao/src/platform_impl/windows/window.rs "PATCH(framescope)".
+[patch.crates-io]
+tao = { path = "vendor/tao" }

@@ -12,7 +12,6 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { isDesktop } from "@/preview/runtime/platform";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -451,9 +450,10 @@ export default function VerticalOverlayPage() {
       ref={containerRef}
       style={{
         width: `${settings.item_width || 220}px`,
-        // 桌面模式：面板底色全透明（含 0%），背景明暗完全由窗口层
-        // （DWM blur-behind + 穿透样式）处理；浏览器预览用 rgba 模拟。
-        background: isDesktop() ? "transparent" : `rgba(17, 17, 17, ${bgOpacity})`,
+        // 底板只由这行 DOM 控制：透明窗口逐像素透出桌面，0% = alpha 0
+        // （只剩文字），100% = alpha 1（实心黑板）。窗口层不做任何
+        // LAYERED/LWA/blur-behind 处理（那会画毛砂底或连文字一起变淡）。
+        background: `rgba(17, 17, 17, ${bgOpacity})`,
         borderRadius: "12px",
         padding: "10px 12px",
         display: "flex",
@@ -464,8 +464,9 @@ export default function VerticalOverlayPage() {
         color: "#ffffff",
         userSelect: "none",
         WebkitUserSelect: "none",
-        // 背景拉到 0% 时只剩文字，描边保证亮色背景下仍可读
-        textShadow: "0 1px 3px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 0.9)",
+        // 背景拉到 0% 时只剩文字，多层描边保证亮色背景下仍可读
+        textShadow:
+          "0 1px 3px rgba(0, 0, 0, 0.9), 0 0 5px rgba(0, 0, 0, 0.6), 0 0 1.5px rgba(0, 0, 0, 1)",
         border: "none",
         overflow: "hidden",
       }}

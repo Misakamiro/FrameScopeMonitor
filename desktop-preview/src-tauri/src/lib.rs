@@ -62,7 +62,6 @@ fn open_sensor(app: &tauri::AppHandle) -> Result<(), String> {
     WebviewWindowBuilder::new(app, "sensor-monitor", WebviewUrl::App("sensor-monitor".into()))
         .title("FrameScope UI Preview - Sensors").inner_size(1000.0, 720.0)
         .min_inner_size(760.0, 480.0).resizable(true).always_on_top(true)
-        
         .build().map(|_| ()).map_err(|e| e.to_string())
 }
 fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
@@ -85,63 +84,74 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     let window = builder.build().map_err(|e| e.to_string())?;
     overlay_set_hit_test_transparent(&window, true);
     #[cfg(windows)]
-    overlay_apply_backdrop(&window, settings.opacity.min(255) as u8);
+    apply_vertical_backdrop_kill(&window);
     Ok(())
 }
 
-/// Click-through for the vertical overlay. tao's set_ignore_cursor_events
-/// uses WS_EX_LAYERED|WS_EX_TRANSPARENT, and LAYERED switches DWM to the
-/// layered-composition path which paints a frosted backdrop over the
-/// per-pixel-transparent webview (the slider then appears dead in normal
-/// mode while drag mode - which removes the styles - looks right). Manage
-/// the style ourselves: toggle only WS_EX_TRANSPARENT, never LAYERED.
+/// The tao patch (vendor/tao) gives this window WS_EX_NOREDIRECTIONBITMAP for
+/// clean per-pixel alpha. Without the attribute below, DWM still composes a
+/// default system backdrop UNDER such a window: a uniform ~11% black veil
+/// (measured 227/255 over white with DOM alpha 0; opaque pixels stay exact).
+/// DWMSBT_NONE removes it - plate pixels then match the DOM rgba() math
+/// exactly (0% -> 255, 50% -> 136, 100% -> 17 over a white backdrop).
+#[cfg(windows)]
+fn apply_vertical_backdrop_kill(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE};
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let dwmsbt_none: u32 = 1;
+            let _ = DwmSetWindowAttribute(
+                hwnd.0 as _,
+                DWMWA_SYSTEMBACKDROP_TYPE as u32,
+                &dwmsbt_none as *const u32 as *const core::ffi::c_void,
+                4,
+            );
+        }
+    }
+}
+
+/// Click-through for the vertical overlay. Two facts drive this design:
+/// 1. WS_EX_TRANSPARENT alone (non-layered) does NOT skip mouse input - the
+///    WebView2 child HWND still receives clicks (measured; matches Wails
+///    wailsapp/wails#5812). True pass-through needs the layered pair:
+///    WS_EX_LAYERED|WS_EX_TRANSPARENT + SetLayeredWindowAttributes(LWA_ALPHA,255).
+/// 2. LAYERED used to paint a frosted base over the per-pixel webview (the
+///    old frosted-sand bug), but that was the blur-behind-era rendering
+///    stack. With WS_EX_NOREDIRECTIONBITMAP (the vendored-tao patch) the
+///    layered pair composes cleanly - pixel samples are unchanged.
+/// Interactive (drag) mode strips both bits so the panel takes input.
 #[cfg(windows)]
 fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
+        GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_ALPHA,
+        WS_EX_LAYERED, WS_EX_TRANSPARENT,
     };
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
             let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
-            let mut next = ex & !(WS_EX_TRANSPARENT as i32);
-            if transparent {
-                next |= WS_EX_TRANSPARENT as i32;
-            }
+            let next = if transparent {
+                // alpha 255 = no visual fade, pass-through only
+                SetLayeredWindowAttributes(hwnd.0 as _, 0, 255, LWA_ALPHA);
+                ex | WS_EX_LAYERED as i32 | WS_EX_TRANSPARENT as i32
+            } else {
+                ex & !(WS_EX_LAYERED as i32) & !(WS_EX_TRANSPARENT as i32)
+            };
             SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, next);
         }
     }
 }
 
-/// Window-level backdrop for the vertical overlay: acrylic blur whose tint
-/// alpha tracks the opacity slider - 0 disables the backdrop entirely (text
-/// only), higher values deepen the frost, 255 is a near-solid dark plate.
-/// This gives the continuous "transparent -> frosted glass -> solid" ramp
-/// over real desktop content, which DOM-level rgba cannot do on top of a
-/// transparent window.
-#[cfg(windows)]
-fn overlay_apply_backdrop(window: &tauri::WebviewWindow, opacity: u8) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_COLORKEY,
-        WS_EX_LAYERED,
-    };
-    if let Ok(hwnd) = window.hwnd() {
-        unsafe {
-            let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
-            if opacity == 0 {
-                // 0%: colorkey mode. The DOM paints the plate pure magenta
-                // (0xFF00FF) and the key makes those pixels fully invisible
-                // while text/icons stay - the only state where the plate can
-                // be 100% gone (DWM blur-behind always draws frost).
-                SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, ex | WS_EX_LAYERED as i32);
-                SetLayeredWindowAttributes(hwnd.0 as _, 0x00FF00FF, 0, LWA_COLORKEY);
-            } else {
-                // per-pixel path: DWM blur-behind (enabled at creation) gives
-                // the frosted glass; the DOM tint darkens it as opacity rises.
-                SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, ex & !(WS_EX_LAYERED as i32));
-            }
-        }
-    }
-}
+/// Window-layer effects (SetLayeredWindowAttributes colorkey/alpha, DWM
+/// blur-behind) are intentionally NOT used for the vertical overlay:
+/// - LWA_COLORKEY cannot key the WebView2's pixels (separate child HWND),
+///   but adding WS_EX_LAYERED for it switches DWM to the layered-composition
+///   path, which paints a permanent frosted base over the per-pixel-alpha
+///   webview - the "0% still frosted" regression.
+/// - LWA_ALPHA fades the whole window including the text.
+/// - DWM blur-behind draws frost even at zero tint on Win11 24H2.
+/// The plate therefore lives entirely in the DOM: the page paints
+/// rgba(17,17,17,opacity/255) and the transparent window lets it through
+/// per-pixel. Only WS_EX_TRANSPARENT is ever toggled on the HWND.
 
 fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
     // The GDI window proc updates CURRENT_SETTINGS on WM_EXITSIZEMOVE but
@@ -355,6 +365,19 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             if settings.font_size < 8 || settings.font_size > 72 || settings.item_width < 30 || settings.item_width > 1000 {
                 return Err("Overlay size outside preview limits".into());
             }
+            // Dragged window positions live in this store, not in the settings
+            // page's React state (which snapshots them at page load). A page
+            // saved before a drag still carries null positions here - never
+            // let those clobber the live ones (measured loss: drag -> move the
+            // opacity slider -> position silently reset).
+            let mut settings = settings;
+            {
+                let current = overlay_panel::get_or_init_settings();
+                if settings.vertical_position_x.is_none() { settings.vertical_position_x = current.vertical_position_x; }
+                if settings.vertical_position_y.is_none() { settings.vertical_position_y = current.vertical_position_y; }
+                if settings.position_x.is_none() { settings.position_x = current.position_x; }
+                if settings.position_y.is_none() { settings.position_y = current.position_y; }
+            }
             // Hold the same operation lock every other start/stop path uses:
             // update_settings tears the overlay down and rebuilds it, and an
             // unserialized rebuild could double-create windows (R-A8).
@@ -369,10 +392,9 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                 let was_vertical = overlay_panel::get_or_init_settings().style == "vertical_panel";
                 overlay_panel::update_settings(settings.clone())?;
                 save_native_settings(&app)?;
-                #[cfg(windows)]
-                if let Some(window) = app.get_webview_window("vertical-overlay") {
-                    overlay_apply_backdrop(&window, settings.opacity.min(255) as u8);
-                }
+                // Plate opacity is pure DOM: the vertical webview applies the
+                // new settings live from the emitted event; the HWND never
+                // needs restyling (see window-layer note above).
                 if was_active && !was_vertical {
                     // Style switched GDI → vertical: retire the GDI panel and
                     // open the webview panel (open_vertical stops the GDI one).
@@ -399,14 +421,17 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             overlay_panel::set_drag_mode(enabled);
             if let Some(window) = app.get_webview_window("vertical-overlay") {
                 overlay_set_hit_test_transparent(&window, !enabled);
-                #[cfg(windows)]
-                overlay_apply_backdrop(&window, overlay_panel::get_or_init_settings().opacity.min(255) as u8);
                 app.emit("vertical-overlay-drag-mode", enabled).map_err(|e| e.to_string())?;
             }
         }
         "set_vertical_overlay_click_through" => {
+            // Contract (matching the 05606fe/tao-era semantics the frontend is
+            // written against): enabled = click-through ON. Dragging sends
+            // enabled:false to take input, the panel's mouseup sends
+            // enabled:true to give it back. (e1aedfd inverted this and drag
+            // mode enabled the pass-through instead.)
             if let Some(window) = app.get_webview_window("vertical-overlay") {
-                overlay_set_hit_test_transparent(&window, !args["enabled"].as_bool().ok_or("enabled must be boolean")?);
+                overlay_set_hit_test_transparent(&window, args["enabled"].as_bool().ok_or("enabled must be boolean")?);
             }
         }
         "resize_vertical_overlay" => {

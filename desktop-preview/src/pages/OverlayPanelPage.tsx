@@ -440,6 +440,9 @@ export default function OverlayPanelPage() {
           });
         } else {
           setIsDragMode(false);
+          // 退出拖动必须显式恢复穿透：若用户进入拖动后没在面板上按过鼠标，
+          // 面板自身的 mouseup 恢复逻辑不会触发，面板会一直拦截桌面点击。
+          await invoke("set_vertical_overlay_click_through", { enabled: true }).catch(() => {});
           toast({
             title: t("overlayPanel.positionSaved") || "位置已保存",
             status: "success",

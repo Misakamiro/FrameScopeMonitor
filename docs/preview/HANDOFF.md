@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-10　|　交接人:ZCode　|　状态:**Round 3 完成——用户反馈 8 项(下拉样式/设置页失效/开机动画/图标/托盘/安装包/OSD分核/审计测试)全部修复并实机验证,FrameScope 1.0.0 自包含 NSIS 安装包产出,57 笔会话提交(累计 150 含历史),工作树干净,未 push**
+> 交接日期:2026-09-11　|　交接人:ZCode　|　状态:**Round 4 完成——竖排 OSD 透明度三轮遗留问题全部修复并实机像素级验证(方案 C 复活:窗口层 NOREDIRECTIONBITMAP+DWMSBT_NONE+分层穿透对,底板归 DOM),详见"Round 4"章节;此前 2026-09-11 凌晨有一次失败会话(113152e/741cc61 混搭态,已由本 round 纠正,经过存档于 docs/preview/HANDOFF-SESSION-TRANSPARENCY-FIX.md)**
 
 ---
 
@@ -66,7 +66,13 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 21. **WebView2 同一 user-data 目录所有窗口的 additionalBrowserArgs 必须完全一致**——主窗带 --remote-debugging-port 而动态建窗不带时,第二个 WebView2 环境创建直接失败(ERROR_INVALID_STATE 0x8007139F),竖排窗/传感器窗全部开不出来。
 22. **Tauri CloseRequested 里 hide() 托盘化必须同时 api.prevent_close()**——否则 handler 返回后默认关闭继续执行,窗口销毁→全应用退出(实机抓到的回归)。
 22.1 **无边框窗口的透明度被 DWM 阴影吃掉**——Windows 上 undecorated 窗口默认带阴影,阴影会强制整面不透明合成背景,DOM 层再透明也到不了屏幕;竖排悬浮窗必须 .shadow(false)(上游同样如此)。另:用户滑块接近 100% 时面板本来就近乎不透明,判断透明是否生效要把窗口挪到亮色窗口上对比,黑壁纸上看不出来。
-22.2 **鼠标穿透标志会杀透明**：tao 的 set_ignore_cursor_events(true) = WS_EX_LAYERED|WS_EX_TRANSPARENT,LAYERED 会把 DWM 切到分层合成路径,在逐像素透明 webview 上盖一层灰色毛砂底(透明度滑块看起来失效);修法=每次 ignore(true) 后用 SetWindowLongW 剥掉 LAYERED 只留 TRANSPARENT(见 lib.rs keep_click_through_transparent),拖动模式切换后要重复剥。
+22.2 **竖排 OSD 透明度的最终架构(Round 4 定稿,实机像素级验证)**——四层缺一不可:
+- **底板归 DOM**:`rgba(17,17,17,opacity/255)`,0%=纯文字+描边、100%=实心黑板;窗口层不做任何 LAYERED_ALPHA/LWA/COLORKEY/blur-behind(LWA_ALPHA 连文字一起淡,COLORKEY 键不中 WebView2 子 HWND)。
+- **tao 的 transparent 实现必须替换**:上游 tao 用 DwmEnableBlurBehindWindow 空区域技巧,Win11 24H2 上画常驻 ~18% 黑涂层(0% 也灰)。vendor/tao(PATCH(framescope) 标记)改为 WS_EX_NOREDIRECTIONBITMAP 干净路径,FS_TAO_LEGACY_BLUR=1 可回退;Cargo.toml [patch.crates-io] 指向 vendor。
+- **NRB 窗口还要关系统背板**:DWM 会给 NRB 窗口叠默认 SystemBackdrop,再画 ~11% 黑纱——open_vertical 后必须 DwmSetWindowAttribute(DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_NONE)(lib.rs apply_vertical_backdrop_kill)。两项关掉后 DOM rgba 与屏幕像素严格线性(255/195/136/77/17 实测)。
+- **穿透=分层对**:单独 WS_EX_TRANSPARENT 挡不住 WebView2 子 HWND 收输入(实测,同 Wails#5812);真穿透=WS_EX_LAYERED|WS_EX_TRANSPARENT+SetLayeredWindowAttributes(LWA_ALPHA,255)(alpha 255 无视觉影响,NRB 新栈上 LAYERED 不再画毛砂);交互=两个位全剥。overlay_set_hit_test_transparent(transparent=true 即穿透开启,拖动传 false)——**参数方向曾被 e1aedfd 反转导致拖动失效**。
+22.3 **滑块语义**:0%=背景全透文字保留(带描边),100%=实心黑板;前端 OverlayPanelPage 滑块 0-100 → 0-255 线性映射本就正确,历代"范围窄/方向反/文字变淡"全部是窗口层涂层所致,不是滑块的问题。update_overlay_settings 会用 React state 整包回写,Rust 侧对 null 位置字段做"不覆盖已存值"守卫(拖动后动滑块不再丢位置)。
+22.4 **判断透明是否生效必须在亮色内容上做像素采样**(inside vs outside),黑壁纸肉眼不可判;历史几轮"时好时坏"多为涂层/竞态+深色壁纸误判叠加。
 23. **强杀进程树会泄漏 ETW 内核会话**——残留 "NT Kernel Logger" 占住槽位后 PresentMon 静默零事件(Started recording 但零字节 CSV);用 logman query -ets 排查、logman stop "NT Kernel Logger" -ets 清理。另:CS2 新版启动停在静态模式选择对话框(不点击不渲染→零 present),自动化测试必须点过它;PM 2.x 只在优雅停止时落盘 CSV。
 24. **tauri bundle 用 mainBinaryName 改名产物**——target/release 里仍是 crate bin 名(framescope-ui-preview.exe),安装包里才是 FrameScope.exe;校验脚本要查对文件。设置页/关闭行为桌面端唯一事实源是 framescope-config.json(config_read/config_save 双向),前端 localStorage 只是浏览器回退。
 
@@ -82,7 +88,20 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 8. **实机 QA**(见 IMPLEMENTATION.md Session 2026-09-10):页面走查截图、设置同步端到端、托盘三态、CS2 full 报告(118.6 FPS/12344 帧/379 硬件采样)、BF6 跳过(EA 账号错误仍挡,兜底链路上轮已验)
 9. 附带修复:悬浮窗设置持久化恢复(try_load_persisted_settings 从未被调用)、GDI 窗口标题去 NexBox 残留、安装器 GPL 许可随附
 
-## 五·历史、本轮(2026-09-08/09)完成
+## 五·二、Round 4(2026-09-11)完成——竖排 OSD 透明度总决算
+
+**背景**:方案 C(05606fe 剥 LAYERED + e1aedfd 自管穿透)三代修复均被用户否决,2026-09-11 凌晨一次失败会话(误删 backdrop→OSD 全不显示→741cc61 混搭态 Rust(e1aedfd)/前端(a0af3dc) 语义错配)留下"OSD 显示功能全部异常"的交接。本轮定位:741cc61 的"全坏"主要是错配假象,且用户反馈的三大症状(文字变淡/梯度窄方向反/拖动失效)各有确切根因。
+
+**根因 → 修复对照**(用户三症状):
+1. **文字随透明度变淡**——e1aedfd 把桌面端 DOM 底板改成恒全透明指望一个从未实现的 blur-behind,白字直接浮在桌面上;且历代窗口层涂层(LAYERED 毛砂/blur-behind 空区域 ~18% 黑涂层/NRB 默认 SystemBackdrop ~11% 黑纱)叠加。修复=底板归 DOM 全跨度 rgba+窗口层彻底清净(vendored tao NRB + DWMSBT_NONE),文字 opacity 恒 1。实机:0-255% 五档板色 255/195/136/77/17 严格线性,文字恒 255,255,255。
+2. **梯度窄/方向反/100% 不实心**——同一根因:涂层把动态范围压扁。修复后 DOM rgba 数学即屏幕像素,100%=实心黑板(17,17,17)。
+3. **拖动失效**——e1aedfd 把 set_vertical_overlay_click_through 的契约写反(enabled=穿透 ON,Rust 却取反),拖动模式反而开启穿透;且单独 WS_EX_TRANSPARENT 挡不住 WebView2 子 HWND 收输入(同 Wails#5812)。修复=契约正向+穿透改分层对(LAYERED|TRANSPARENT+LWA_ALPHA 255)。实机:穿透时原生点击不进 DOM(计数 0),拖动模式点击进 DOM(计数 1)、down/move/up 位移 (302,400) 落盘、退出恢复穿透。
+- **附带修复**:①拖完位置在文件里变 null——update_overlay_settings 用 React state 整包回写会覆盖拖动落盘,Rust 侧加 null 不覆盖守卫;②退出拖动模式未在面板上按过鼠标时穿透不恢复(OverlayPanelPage 补 invoke)。
+- **失败会话提交处置**:113152e/741cc61 打书签 keep/failed-session,2badfcf(第6轮方案D)打书签 keep/plan-d-2badfcf,a0af3dc(blur-behind 版)打书签 keep/osd-experiments;工作分支重置到 e1aedfd 后前进,全部废弃方案不再混用。
+- **验证方法**:临时 CDP(三窗口一致)+ Node 内置 WebSocket 直驱 preview_native;屏幕采样用 GDI+ CopyFromScreen(白底全屏窗上采板内/文字/板外三点);整套临时代码(alpha_fix_test 实验命令/CDP 参数)已全部移除并重建。最终产物:target/release/FrameScope.exe + bundle/nsis 安装包(用户实际启动路径=target/release,已核实进程 Path)。
+- **最终二进制 UI 级复验(无 CDP)**:a11y 定位"开始拖动/退出拖动/恢复默认"按钮+真实鼠标点滑块——拖动模式进出穿透位正确、合成拖动位移+落盘 (250,210)、**拖动后动滑块位置不再丢(守卫实测:旧代码此处必丢)**、恢复默认回 (40,80)、退出拖动即恢复穿透(面板上没按过鼠标也能退)、用户透明度 97 已还原。回归:cargo 宿主 5/5、vitest 14/14;C#/服务 crate 未触碰。**待用户复验**:真实手感(拖动/视觉),特别是黑壁纸上的观感与多显示器场景。
+
+
 
 1. **Round 2 复审**(`docs/audit/2026-09-08-full-audit-round2.md`):三路深挖 + 全量实机测试;抓到 5fb6492 引入的高危回归(R-A1/R-A3,FIRST_PIPE_INSTANCE 值错 + 循环内断言,服务 100% 起不来——静态审计与 cargo test 均漏判,实机抓获)、H8 未修、R-C12 桌面模拟机注入假报告
 2. **高危全修**:H1-H8(含回归 R-A1/A2/A3)、R-C1/C12、M6 回归(JSON 浮点)、管道读看门狗、管道 DACL、证据位置
@@ -94,13 +113,13 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 ## 六、已知遗留(全部需要用户拍板或人工参与,无未决 bug)
 
 0. **BF6 实测待用户**:EA 账号错误 0:85008S 仍挡主菜单(用户侧问题);反作弊兜底链路上轮已验,本 round 未重跑
-0.1 **GDI 拖动落盘端到端确认**:仍需用户真实拖动一次(上轮遗留)
+0.1 **GDI 拖动落盘端到端确认**:仍需用户真实拖动一次(上轮遗留;**竖排 webview 悬浮框的拖动已在 Round 4 端到端验证通过**,见五·二)
 
 1. **本地加固取舍**:backend_root 签名校验(唯一剩余代码加固项);shell_open 已改 explorer 直开、taskkill 已限部署目录、管道已加 DACL
 2. **WinEventHook 已移除**(本轮完成,保留 500ms GetForegroundWindow 轮询)
 3. **双写退役**:已拍板方案 A,归档
 4. **DPI 缩放**:三档已自动化实测通过,日常可再留意
-5. **拖动位置落盘**:端到端需用户真实拖动悬浮框一次确认(合成鼠标不触发 WM_EXITSIZEMOVE)
+5. **OSD 透明度手感复验**:Round 4 已像素级+UI 级验证,用户日常使用时再确认黑壁纸/多显示器观感即可(不再是未决 bug)
 6. round1 低危中明确不做:状态总线 schema 校验、reports `?id=` 失配提示、Run-Frontend.ps1 工具链、disk_status 语义统一(需产品决策)
 
 ## 七、关键文件地图
