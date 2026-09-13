@@ -53,6 +53,9 @@ pub struct OverlayData {
     pub cpu_core_voltages: Vec<Option<f64>>,
     pub gpu_sensors: Vec<GpuSensorData>,
     pub active_gpu_index: usize,
+    /// 目标进程最近呈现模式（问题 6 方案 E，ETW 事件 ID 推断）：
+    /// "composited" / "independent-flip" / "legacy-exclusive"；None = 无活跃信号
+    pub present_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -328,6 +331,7 @@ pub fn build_overlay_data(
         cpu_core_voltages,
         gpu_sensors,
         active_gpu_index,
+        present_mode: crate::game_fps::get_cached_present_mode().map(str::to_string),
     }
 }
 

@@ -201,6 +201,10 @@ pub struct OverlayHardwareData {
     pub gpu_sensors: Vec<GpuSensorData>,
     /// 当前选中的 GPU 索引
     pub active_gpu_index: usize,
+    /// 目标进程呈现模式（"composited"/"independent-flip"/"legacy-exclusive"）。
+    /// GDI 单行形态不渲染它，但字段必须存在——deny_unknown_fields 会拒绝
+    /// 服务快照里的未知键，缺了整个解码就炸。
+    pub present_mode: Option<String>,
 }
 
 impl Default for OverlayHardwareData {
@@ -233,6 +237,7 @@ impl Default for OverlayHardwareData {
             cpu_core_voltages: Vec::new(),
             gpu_sensors: Vec::new(),
             active_gpu_index: 0,
+            present_mode: None,
         }
     }
 }
@@ -500,6 +505,24 @@ mod win32 {
         width + 32 + sep_count * 16
     }
 
+    /// 指定屏幕坐标点所在显示器的像素宽度（MonitorFromPoint + GetMonitorInfoW）。
+    /// 取不到时返回 None，调用方回退主屏宽度（SM_CXSCREEN）。
+    unsafe fn monitor_width_at(x: f32, y: f32) -> Option<i32> {
+        let hmon = MonitorFromPoint(
+            POINT { x: x as i32, y: y as i32 },
+            MONITOR_DEFAULTTONEAREST,
+        );
+        if hmon.is_null() {
+            return None;
+        }
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(hmon, &mut info) == 0 {
+            return None;
+        }
+        Some(info.rcMonitor.right - info.rcMonitor.left)
+    }
+
     pub unsafe fn create_overlay_window(
         settings: &super::OverlaySettings,
     ) -> Result<HWND, String> {
@@ -539,6 +562,14 @@ mod win32 {
         }
         let dpi_scale = dpi_x as f32 / 96.0;
 
+        // 多显示器修正：保存位置落在副屏时，宽度钳制按该位置所在显示器的矩形
+        // 计算（SM_CXSCREEN 只反映主屏，OSD 在副屏时钳制与居中都会错位）。
+        let monitor_width_px = settings
+            .position_x
+            .zip(settings.position_y)
+            .and_then(|(px, py)| monitor_width_at(px as f32, py as f32))
+            .unwrap_or_else(|| GetSystemMetrics(SM_CXSCREEN));
+
         let logical_width = {
             // Horizontal styles lay every enabled item out in ONE row. A
             // settings set configured for the vertical panel (20+ items) used
@@ -546,7 +577,7 @@ mod win32 {
             // across two monitors) - clamp to the primary screen so the bar
             // stays visible; items past the clamp simply draw off-edge until
             // the user trims the item list.
-            let max_logical = ((GetSystemMetrics(SM_CXSCREEN) as f32 / dpi_scale) as i32 - 40).max(200);
+            let max_logical = ((monitor_width_px as f32 / dpi_scale) as i32 - 40).max(200);
             calculate_window_width(settings).min(max_logical)
         };
         let base_height = if settings.style == "dynamic_island" { 36 } else { 28 };
@@ -565,7 +596,9 @@ mod win32 {
         };
 
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+            // WS_EX_NOACTIVATE：OSD 永不抢焦点（配合 WS_EX_TRANSPARENT），游戏中
+            // 点击/切窗不会把焦点从游戏偷走
+            WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
             class_name,
             windows_sys::core::w!("FrameScope Overlay"),
             WS_POPUP,
@@ -1458,8 +1491,23 @@ mod win32 {
                 0
             }
             WM_TIMER => {
-                // 定时器 0.5s 刷新
-                SetTimer(hwnd, 1, 500, None);
+                // 定时器 250ms 刷新（读数 4Hz，人眼足够；GDI 重绘是 CPU 大头，
+                // 不跟宿主 10Hz 轮询跑）
+                SetTimer(hwnd, 1, 250, None);
+                // 问题 6 方案 A：周期性重申 TOPMOST。窗口创建时的 WS_EX_TOPMOST
+                // 在游戏抢占前台/SetFullscreenState 后可能被永久压到下层——flip
+                // model（独立翻转）下 DWM 仍在链路中，TOPMOST 本该有效；「Z 序
+                // 从不重申」是独占全屏下 OSD 不显示的主因。SWP_NOACTIVATE 保证
+                // 不从游戏手里抢焦点。
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
                 repaint_overlay(hwnd);
                 0
             }
@@ -1586,7 +1634,7 @@ pub fn start_overlay(settings: OverlaySettings) -> Result<OverlayResult, String>
                         win32::draw_overlay_content(hwnd, &settings, &data_snapshot);
                     }
 
-                    SetTimer(hwnd, 1, 500, None);
+                    SetTimer(hwnd, 1, 250, None);
 
                     let mut msg: MSG = std::mem::zeroed();
                     // Labeled so WM_QUIT leaves the whole pump: breaking only

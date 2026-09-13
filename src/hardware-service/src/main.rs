@@ -18,6 +18,20 @@ static LOGGER: StderrLogger = StderrLogger;
 fn main() {
     let _ = log::set_logger(&LOGGER).map(|_| log::set_max_level(log::LevelFilter::Info));
     let args: Vec<String> = std::env::args().collect();
+    // 诊断子命令：--etw-diag [秒] —— 抓取 N 秒 present 事件，按 pid 打事件 ID
+    // 分布与帧间隔中位数（定位「事件到底发没发」，移植自 tubatools DxTraceDiag）
+    if let Some(pair) = args.windows(2).find(|pair| pair[0] == "--etw-diag") {
+        #[cfg(windows)]
+        {
+            let seconds = pair[1].parse::<u64>().unwrap_or(12);
+            std::process::exit(framescope_hardware_service::game_fps::run_etw_diag(seconds));
+        }
+        #[cfg(not(windows))]
+        {
+            eprintln!("etw-diag is only available on Windows");
+            std::process::exit(3);
+        }
+    }
     if let Some(pipe_name) = args
         .windows(2)
         .find(|pair| pair[0] == "--pipe-name")

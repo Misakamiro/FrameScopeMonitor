@@ -93,7 +93,8 @@ pub fn empty_overlay_value() -> Value {
         "memory_usage": null, "ssd_temp": null, "delta_password": null, "game_ping": null,
         "gpu_vram_used": null, "gpu_vram_total": null, "net_time_offset_ms": null,
         "cpu_core_clocks": [], "cpu_core_voltages": [],
-        "gpu_sensors": [], "active_gpu_index": 0
+        "gpu_sensors": [], "active_gpu_index": 0,
+        "present_mode": null
     })
 }
 

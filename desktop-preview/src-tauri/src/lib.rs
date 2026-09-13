@@ -666,14 +666,16 @@ pub fn run() {
                     _ => {}
                 }).build(app)?;
             // Resident hardware poller (NexBox start_hardware_poller pattern):
-            // 1 Hz service reads feed the GDI overlay cache and the vertical
+            // 10 Hz service reads feed the GDI overlay cache and the vertical
             // overlay event stream, so both overlays show real data without
-            // any frontend fixture push.
+            // any frontend fixture push. 10Hz matches the service-side
+            // throttle (instant FPS window is ~200ms at 300FPS); the GDI
+            // panel itself repaints on its own slower timer.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut error_streak: u32 = 0;
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    std::thread::sleep(std::time::Duration::from_millis(100));
                     // R-A7: PawnIO setup kills and re-creates the sampling
                     // service; stay completely hands-off until it finishes.
                     if hardware_service::poller_paused() {
@@ -706,6 +708,34 @@ pub fn run() {
                                     Err(e2) => eprintln!("hardware poller: decode failed: {e2}"),
                                 }
                                 let _ = handle.emit("vertical-overlay-data", empty);
+                            }
+                        }
+                    }
+                }
+            });
+            // 问题 6 方案 A（竖排 WebView OSD）：周期性重申 TOPMOST。创建时的
+            // always_on_top 在游戏抢占前台后可能被永久压到下层；flip model（独立
+            // 翻转）下 DWM 仍在链路中，TOPMOST 本该有效。SWP_NOACTIVATE 不抢焦点。
+            let topmost_handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if let Some(window) = topmost_handle.get_webview_window("vertical-overlay") {
+                    if window.is_visible().unwrap_or(false) {
+                        #[cfg(windows)]
+                        if let Ok(hwnd) = window.hwnd() {
+                            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+                            };
+                            unsafe {
+                                SetWindowPos(
+                                    hwnd.0 as _,
+                                    HWND_TOPMOST,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                                );
                             }
                         }
                     }

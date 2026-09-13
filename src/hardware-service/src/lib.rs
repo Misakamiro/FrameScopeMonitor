@@ -12,7 +12,9 @@ use std::time::{Duration, Instant};
 
 const MIN_INTERVAL_MS: u64 = 250;
 const MAX_INTERVAL_MS: u64 = 5000;
-const DEFAULT_THROTTLE_MS: u64 = 1000;
+// 100ms（10Hz）：瞬时 FPS 窗口在 300FPS 下仅 ~200ms，1Hz 节流会让 OSD 读数
+// 最多糊 1 秒（采集链重写后的配套调整；ETW 事件本身仍是事件驱动零轮询）。
+const DEFAULT_THROTTLE_MS: u64 = 100;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -261,7 +263,8 @@ fn capture_snapshot(state: &ServiceState, method: &str) -> serde_json::Value {
 /// keep serving its last value forever. Stale/failing paths return nulls
 /// (fail-closed), never synthetic numbers.
 fn overlay_data_response(state: &ServiceState) -> serde_json::Value {
-    const OVERLAY_FRESH: Duration = Duration::from_secs(5);
+    // 1s（对齐 tubatools 的 2s 无帧归零）：5s 的 carry-forward 会让停帧后读数糊 5 秒
+    const OVERLAY_FRESH: Duration = Duration::from_secs(1);
     let res = resident();
     let data = match read_snapshot(state) {
         Ok(payload) => {
