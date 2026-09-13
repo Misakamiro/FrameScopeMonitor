@@ -4,8 +4,14 @@
 # stage the backend chain into src-tauri/resources -> npm run build ->
 # tauri build (NSIS bundle) -> verify fresh timestamps (a stale exe means
 # vite succeeded but the link failed with exit 0 - the known silent trap).
+#
+# -StageOnly: run steps 1-3 only (stop + build.ps1 + stage resources) and
+# exit before the frontend/NSIS build. The native installer pipeline
+# (desktop-preview/installer/build-installer.ps1) reuses this to prepare the
+# payload without building the NSIS bundle.
 param(
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [switch]$StageOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +81,11 @@ foreach ($lic in @('LICENSE', 'LICENSE.EXTRA')) {
     }
 }
 Write-Host ("Staged {0} backend files + PresentMon + font + licenses" -f $files.Count)
+
+if ($StageOnly) {
+    Write-Host 'StageOnly: stopping before the frontend/NSIS build (resources are ready for packaging)'
+    exit 0
+}
 
 Write-Host '== [4/6] Building the frontend (npm run build) =='
 Push-Location $previewDir
