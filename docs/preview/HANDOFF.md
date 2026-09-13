@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-13　|　交接人:ZCode　|　状态:**Round 5 完成——OSD 样式切换三连修(同线程锁重入死锁+开关无返回值+GDI 条跨屏 clamp;透明度热重绘不闪;托盘图标按 DPI 选档)全部实机验证,Round 4 竖排 OSD 透明度修复继续有效,工作树干净,未 push**
+> 交接日期:2026-09-13　|　交接人:ZCode　|　状态:**Round 6 P1/P2 完成——自研 Tauri 安装器(单 exe 双模式/单页向导/主 UI 同风格/静默 /S)实机全绿,NSIS 链路并存保留,P3 打磨待做;Round 5(样式切换三连修+热路径补修)、Round 4(竖排 OSD 透明度)继续有效,工作树干净,未 push**
 
 ---
 
@@ -115,7 +115,19 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 
 **Round 5a 补修(2026-09-13 凌晨)**:①热路径初版漏了"把新设置写入 CURRENT_SETTINGS"(只发重绘消息+写文件),GDI 样式滑透明度纹丝不动——补 overlay_panel::store_settings 在 repaint post 之前调用;白底上像素级验证 255→17、128→144、20→247 严格线性(铁律 22.4 再证:黑壁纸永远别用来判透明)。②铁律 25:**MutexGuard 临时值作引用传参,被调方再锁同一 Mutex = 同线程死锁**——`f(&MUTEX.lock().clone())` 的 guard 活到语句尾,任何深层调用链上对 MUTEX 的 lock 都会挂死整个线程;修法=先 clone 到 owned 局部再传。
 
-## 五·四、历史、本轮(2026-09-08/09)完成
+## 五·四、Round 6(2026-09-13)——自研 Tauri 安装器（进行中→P1/P2 完成）
+
+用户不满意 NSIS 贴图界面,拍板走全自研 Tauri 安装器（用户选型:双模式单 exe+单页式向导+保留 /S 静默、路径选择、卸载删数据、开机自启）。**新建 `desktop-preview/installer/` 独立 Tauri app**,骨架抄 `reference/nexbox/installer/`(payload.zip include_bytes 内嵌+winreg+mslnk):
+
+- **单页安装 UI**:MiSans+#98DDD0+深色玻璃卡+壁纸轮播(10s),路径/勾选(桌面快捷方式/开机自启)/进度条(逐文件 install-progress 事件)/完成态(立即体验);已装检测→升级覆盖+卸载入口;卸载皮肤(红色调+删数据勾选)。
+- **双模式**:ARP UninstallString 指向安装目录内 `FrameScope Installer.exe --uninstall`(install 时必须 place_uninstaller 复制自身——初版漏了导致控制面板卸载悬空);卸载自删用 nexbox 的隐藏 PowerShell 等待退出法。
+- **静默**:`/S` 装(/[D=路径] 解析齐)+`--uninstall /S` 卸,main.rs 在 webview 启动前分发。
+- **注册表**:HKLM Uninstall\FrameScope;NSIS 旧版迁移=按 DisplayName 匹配清 ghost 键+删 uninstall.exe。
+- **构建**:`installer/build-installer.ps1`(-SkipPayload 可跳过 staging)→Package-Installer.ps1 **新增 -StageOnly 参数**→pack-payload.ps1(60MB payload.zip,gitignore 严禁入库)→vite→cargo→`bundle/installer/FrameScope_<ver>_x64-setup.exe`(79.4MB,NSIS 版 60.5MB 并存保留)。**ps1 含中文必须 UTF-8 BOM**(二次踩实,pack/build 两个脚本都中招)。
+- **实机全绿**:交互安装(文件+ARP+卸载器副本)、卸载皮肤往返、静默 /S 装卸、零残留(含自删)、完成态(window.close 修复——装完别关窗,让用户看到完成页)。
+- **P3 待做**:进度/视觉打磨(SVG 折射玻璃/动画)、体积优化(79MB vs NSIS 60MB,可换 zstd)、集成进流水线默认产物、D= 路径实测、升级覆盖实测(装新版覆盖旧版)。
+
+## 五·五、历史、本轮(2026-09-08/09)完成
 
 1. **Round 2 复审**(`docs/audit/2026-09-08-full-audit-round2.md`):三路深挖 + 全量实机测试;抓到 5fb6492 引入的高危回归(R-A1/R-A3,FIRST_PIPE_INSTANCE 值错 + 循环内断言,服务 100% 起不来——静态审计与 cargo test 均漏判,实机抓获)、H8 未修、R-C12 桌面模拟机注入假报告
 2. **高危全修**:H1-H8(含回归 R-A1/A2/A3)、R-C1/C12、M6 回归(JSON 浮点)、管道读看门狗、管道 DACL、证据位置
