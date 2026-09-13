@@ -12,7 +12,9 @@ export default defineConfig(async () => ({
     }),
   ],
   test: {
-    exclude: ["node_modules", "src-framescope-baseline/**"],
+    // Overrides vitest's default excludes, so skip every node_modules tree
+    // (installer/ has its own) - a bare "node_modules" only matched the root.
+    exclude: ["**/node_modules/**", "dist/**", "src-framescope-baseline/**"],
   },
   resolve: {
     alias: [

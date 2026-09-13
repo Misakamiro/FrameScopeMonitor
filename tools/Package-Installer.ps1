@@ -80,7 +80,31 @@ foreach ($lic in @('LICENSE', 'LICENSE.EXTRA')) {
         Write-Warning "License file missing: $licPath"
     }
 }
-Write-Host ("Staged {0} backend files + PresentMon + font + licenses" -f $files.Count)
+# PawnIO driver setup: the app resolves dependencies\PawnIO\PawnIO_setup.exe
+# beside the deployed exe; without staging it here neither installer ships it.
+# Third-party exes are not committed - prefer the packaging copy, fall back to
+# the vendored reference tree.
+$pawnIOSources = @(
+    (Join-Path $RepoRoot 'packaging\PawnIO_setup.exe'),
+    (Join-Path $RepoRoot 'reference\nexbox\src-tauri\resources\binaries\PawnIO_setup.exe')
+)
+$pawnIOSetup = $pawnIOSources |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+if ($pawnIOSetup) {
+    $dependenciesDir = Join-Path $resourcesDir 'dependencies\PawnIO'
+    New-Item -ItemType Directory -Path $dependenciesDir -Force | Out-Null
+    Copy-Item -LiteralPath $pawnIOSetup -Destination (Join-Path $dependenciesDir 'PawnIO_setup.exe') -Force
+    Write-Host "Staged PawnIO driver setup from $pawnIOSetup"
+} else {
+    Write-Warning 'PawnIO_setup.exe not found (packaging\ or reference\nexbox\...) - temperature driver install will be unavailable'
+}
+# Capture self-diagnosis script ships in tools\ for installed users.
+$captureDiagnostics = Join-Path $RepoRoot 'tools\diagnostics\diagnose-pubg-capture.ps1'
+if (Test-Path -LiteralPath $captureDiagnostics -PathType Leaf) {
+    Copy-Item -LiteralPath $captureDiagnostics -Destination (Join-Path $toolsDir 'diagnose-pubg-capture.ps1') -Force
+}
+Write-Host ("Staged {0} backend files + PresentMon + font + licenses + PawnIO" -f $files.Count)
 
 if ($StageOnly) {
     Write-Host 'StageOnly: stopping before the frontend/NSIS build (resources are ready for packaging)'

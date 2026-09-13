@@ -549,6 +549,34 @@ try {
     Copy-Item -LiteralPath $appIcon -Destination $payloadIconDir -Force
     Copy-Item -LiteralPath $appIconPng -Destination $payloadIconDir -Force
 
+    # PawnIO driver setup must ride with the payload: the app resolves it at
+    # <install root>\dependencies\PawnIO\PawnIO_setup.exe (pawnio.rs), and a
+    # missing file makes the temperature-driver button fail on every install.
+    # Third-party exes are not committed (*.exe is gitignored under packaging/),
+    # so resolve from the local packaging copy or the vendored reference tree.
+    $pawnIOSources = @(
+        (Join-Path $root 'packaging\PawnIO_setup.exe'),
+        (Join-Path $root 'reference\nexbox\src-tauri\resources\binaries\PawnIO_setup.exe')
+    )
+    $pawnIOSetup = $pawnIOSources |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+    if ($pawnIOSetup) {
+        $pawnIODir = Join-Path $payloadRoot 'dependencies\PawnIO'
+        New-Item -ItemType Directory -Path $pawnIODir -Force | Out-Null
+        Copy-Item -LiteralPath $pawnIOSetup -Destination (Join-Path $pawnIODir 'PawnIO_setup.exe') -Force
+        Write-Host "PawnIO driver setup packaged from $pawnIOSetup"
+    } else {
+        Write-Warning 'PawnIO_setup.exe not found (packaging\ or reference\nexbox\...) - temperature driver install will be unavailable'
+    }
+
+    # Ship the capture self-diagnosis script so installed users can run it
+    # against a failed session (tools\diagnose-pubg-capture.ps1).
+    $captureDiagnostics = Join-Path $root 'tools\diagnostics\diagnose-pubg-capture.ps1'
+    if (Test-Path -LiteralPath $captureDiagnostics -PathType Leaf) {
+        Copy-Item -LiteralPath $captureDiagnostics -Destination (Join-Path $payloadTools 'diagnose-pubg-capture.ps1') -Force
+    }
+
     $buildId = [guid]::NewGuid().ToString('N')
     $payloadRootUri = [Uri]([IO.Path]::GetFullPath($payloadRoot).TrimEnd('\') + '\')
     $payloadEntries = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File | ForEach-Object {

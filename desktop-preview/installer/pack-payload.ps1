@@ -37,6 +37,12 @@ try {
     if (Test-Path (Join-Path $staging 'fonts\*')) {
         Copy-Item (Join-Path $staging 'fonts\*') (Join-Path $stage 'Fonts') -Recurse -Force
     }
+    # dependencies\ (PawnIO driver setup) keeps its nested layout beside the
+    # exe: pawnio.rs resolves dependencies\PawnIO\PawnIO_setup.exe from the
+    # backend root.
+    if (Test-Path (Join-Path $staging 'dependencies')) {
+        Copy-Item (Join-Path $staging 'dependencies') (Join-Path $stage 'dependencies') -Recurse -Force
+    }
 
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $outZip -CompressionLevel Optimal
 } finally {

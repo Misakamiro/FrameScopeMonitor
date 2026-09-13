@@ -2,8 +2,8 @@
 //! semantics). Detection reads the uninstall registry key; install expects
 //! the official `PawnIO_setup.exe` to sit in `dependencies\PawnIO\` next to
 //! the deployed executables and runs it elevated via PowerShell. The setup
-//! package is NOT redistributed in the current build — install/uninstall
-//! fail with a clear message until it is deployed.
+//! package is staged from `packaging\PawnIO_setup.exe` by build.ps1 and
+//! Package-Installer.ps1 into both installer payloads.
 
 use serde_json::{json, Value};
 
@@ -82,7 +82,7 @@ pub fn install() -> Result<Value, String> {
     let package = setup_package().ok_or_else(|| {
         "PawnIO 安装包未随当前构建分发：请将官方 PawnIO_setup.exe 放置到程序目录 dependencies\\PawnIO\\ 后重试".to_string()
     })?;
-    run_elevated(&package, &["/install", "/silent"])?;
+    run_elevated(&package, &["-install", "-silent"])?;
     let (installed, version) = read_registry();
     if !installed {
         return Err("PawnIO 安装程序已运行，但注册表中未检测到安装记录".into());
@@ -100,7 +100,7 @@ pub fn uninstall() -> Result<Value, String> {
     let package = setup_package().ok_or_else(|| {
         "PawnIO 安装包未随当前构建分发：无法定位卸载程序".to_string()
     })?;
-    run_elevated(&package, &["/uninstall", "/silent"])?;
+    run_elevated(&package, &["-uninstall", "-silent"])?;
     Ok(json!({"result": "success"}))
 }
 

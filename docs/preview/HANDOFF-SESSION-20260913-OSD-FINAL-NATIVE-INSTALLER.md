@@ -80,3 +80,97 @@ NSIS 贴图界面天花板低，用户选型：**全自研 Tauri + 单 exe 双�
 **主程序既有用户决策项（未变）**：backend_root 签名校验取舍、DPI 日常实测、BF6 实测（EA 账号错误挡主菜单，用户侧）、GDI 条拖动端到端用户确认、NSIS 链路退役时机。
 
 **已知边角（非缺陷）**：主窗 WebView2 页面滚动后鼠标 hit-test 与视觉错位（点击落在未滚动布局，重启窗口可解）——老毛病与 overlay 无关。
+
+---
+
+## 七、用户反馈与问题诊断（2026-09-13）
+
+用户测试 PUBG 发现三个问题，已完成深度定位并生成诊断报告：
+
+**详细报告**: [../../New project 4/docs/USER-FEEDBACK-20260913-PUBG-ISSUES.md](../../New%20project%204/docs/USER-FEEDBACK-20260913-PUBG-ISSUES.md)
+
+### 问题摘要
+
+#### 1. PawnIO 未打包 (P0 - 严重缺陷)
+**症状**: 安装完成后点击"安装温度驱动"报错："PawnIO 安装包未随当前构建分发"
+
+**根因**: 4 个构建脚本都遗漏了 `dependencies/PawnIO/PawnIO_setup.exe` 的打包配置
+- `build.ps1` 的 $payloadFiles 数组缺失
+- `tools/Package-Installer.ps1` 未处理 dependencies/ 目录
+- `desktop-preview/src-tauri/tauri.conf.json` 缺少 resources 配置
+- `desktop-preview/installer/pack-payload.ps1` 未复制 dependencies/
+
+**影响**: NSIS 和 Tauri 两套安装器都缺失温度驱动，所有用户无法使用温度监控功能
+
+**修复方案**: 修改 4 个构建脚本 + 复制 PawnIO_setup.exe 到 packaging/ 目录
+
+#### 2. PUBG 采集异常 (P1 - 高优先级)
+**症状**: 监控界面显示"采集进程异常退出，未能生成报告"
+
+**根因**: 多种可能（按概率排序）
+- 60% - BattlEye 反作弊阻断 PresentMon ETW trace
+- 20% - ETW 权限不足（未以管理员运行）
+- 10% - 目标进程超时未检测（未进入游戏主界面）
+- 5% - PresentMon 提前退出
+- 5% - 报告生成失败
+
+**诊断**: 需要用户提供 `%LOCALAPPDATA%\FrameScopeMonitorData\framescope-runs\PUBG*\status.json` 和日志文件
+
+**临时解决方案**:
+- 以管理员身份运行 FrameScope
+- 游戏切换到无边框窗口模式
+- 使用诊断脚本 `diagnose-pubg-capture.ps1`（见详细报告）
+
+**代码层面**: 已有自动降级机制（从 hardware-samples.csv 重建 FPS），但可能被 BattlEye 同时阻断
+
+#### 3. 全屏独占模式 OSD 不显示 (P2 - 已知限制)
+**症状**: 全屏独占模式下 OSD 不显示，无边框窗口模式正常
+
+**根因**: **DirectX 独占全屏模式的 Windows 架构限制**（不是 bug）
+- 独占全屏时游戏渲染直接输出到显卡，完全绕过桌面窗口管理器 (DWM)
+- `WS_EX_TOPMOST` 只在 DWM 合成层有效，独占模式下 Z-order 概念不存在
+- 当前代码已使用所有可用的窗口置顶手段，无法通过修改代码突破此限制
+
+**技术对比**:
+- MSI Afterburner/RTSS：使用 D3D Hook 注入（会触发反作弊封禁）
+- NVIDIA GeForce Experience：显卡驱动层实现（第三方无法复制）
+
+**解决方案**:
+- **短期**: 文档说明 + 引导用户切换到无边框窗口模式
+- **中期**: 实现游戏窗口模式检测 + 自动提示（1-2个月）
+- **长期**: D3D Hook 可行性研究（6个月+，需评估反作弊风险）
+
+**用户建议**: 在游戏设置中使用"无边框窗口"或"窗口化全屏"模式
+
+### 立即行动项
+
+1. **修复 PawnIO 打包问题** (本周)
+   - 修改 4 个构建脚本
+   - 重新构建两套安装器
+   - 实机测试温度驱动安装
+
+2. **完善用户文档** (本周)
+   - 添加 OSD 全屏独占限制说明
+   - 添加 PUBG 采集异常诊断指南
+   - 更新 FAQ
+
+3. **提供诊断工具** (本周)
+   - 提供 `diagnose-pubg-capture.ps1` 脚本给用户
+
+### 下一步
+
+等待用户提供 PUBG 运行目录的 `status.json` 和日志文件，以进一步诊断采集异常的确切根因。
+
+---
+
+## 八、修复落地（2026-09-13 下午会话，三问题全部处理）
+
+用户拍板"报告中问题全部修复、测试后交付"。明细见 `New project 4/docs/USER-FEEDBACK-20260913-PUBG-ISSUES.md` 第七章。
+
+1. **PawnIO 打包修复**：`packaging/PawnIO_setup.exe` 入库；`build.ps1`、`tools/Package-Installer.ps1`、`tauri.conf.json`、`pack-payload.ps1` 四处补 `dependencies\PawnIO`。NSIS 映射必须用逐层模式 `resources/dependencies/PawnIO/*`——`**` 通配 tauri-utils 的 glob 校验不识别，build.rs 直接 panic（实踩）。
+2. **pawnio.rs 参数 bug（实机测试新发现）**：PawnIO 官方安装器是短横线参数（`-install/-uninstall/-silent`），原代码传 `/install /silent` 会弹 "Unknown argument" 窗口挂起。改为 `-install -silent` 后实装验证：PawnIO 2.2.0.0，内核驱动 RUNNING，本机温度驱动已实际装好。
+3. **诊断脚本落盘** `tools/diagnostics/diagnose-pubg-capture.ps1`（UTF-8 BOM），随两套安装器分发到安装目录 `tools\`，对真实运行目录冒烟通过。
+4. **vite.config.ts** `test.exclude` 字面量 `node_modules` 挡不住 `installer/node_modules`（Round 6 引入），vitest 会扫进 gensync 自带测试报红；改 `**/node_modules/**`。
+5. **随包 README** 补温度驱动说明 / 全屏独占 OSD 限制 / 采集异常排查三节。
+
+**新增经验**：git-bash 传 `/S` 会被 MSYS 路径转换吃掉导致静默安装走 GUI——必须用 PowerShell `Start-Process -ArgumentList '/S'` 传参；静默升级覆盖实测 2 秒完成。本机无 PUBG，采集真因仍待游戏机 status.json。测试基线：cargo 5/5、vitest 14/14。

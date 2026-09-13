@@ -49,6 +49,7 @@
     "resources": {
       "resources/backend/*": "./",
       "resources/backend/tools/*": "tools/",
+      "resources/dependencies/PawnIO/*": "dependencies/PawnIO/",
       "resources/fonts/*": "Fonts/"
     },
     "windows": {
