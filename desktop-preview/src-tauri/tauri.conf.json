@@ -19,7 +19,8 @@
         "minHeight": 715,
         "decorations": false,
         "resizable": true,
-        "center": true
+        "center": true,
+        "additionalBrowserArgs": "--remote-debugging-port=9333"
       }
     ],
     "security": {
