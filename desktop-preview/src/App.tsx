@@ -40,7 +40,10 @@ export default function App() {
         <Box display={location.pathname === "/" ? "block" : "none"}>
           <AnimatedPage><HomePage /></AnimatedPage>
         </Box>
-        {mode === "off" ? pages : <AnimatePresence mode="wait" initial={false}>{pages}</AnimatePresence>}
+        {/* popLayout: 退出的页面绝对定位原地淡出、新页面立即挂载在下层淡入 ——
+            页面是玻璃透明设计（壁纸透出），mode="wait" 的"先淡出完再淡入"会让
+            合成不透明度在中间归零、露出裸壁纸形成闪烁；popLayout 交叉淡化无空窗。 */}
+        {mode === "off" ? pages : <AnimatePresence mode="popLayout" initial={false}>{pages}</AnimatePresence>}
       </MainLayout>
       <DynamicIslandHost />
     </>
