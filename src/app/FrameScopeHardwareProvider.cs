@@ -307,6 +307,19 @@ internal static class FrameScopeHardwareProvider
         return "Unknown";
     }
 
+    // Heuristic for indirect/virtual display adapters (GameViewer, Duet,
+    // spacedesk, mirroring drivers, ...): they enumerate through the same
+    // Win32_VideoController table but must not headline the GPU list.
+    private static bool LooksLikeVirtualGpu(Dictionary<string, object> gpu)
+    {
+        if (gpu == null) return false;
+        string name = (gpu.ContainsKey("name") ? gpu["name"] as string : null) ?? "";
+        string lower = name.ToLowerInvariant();
+        return lower.Contains("virtual") || lower.Contains("indirect") || lower.Contains("remote")
+            || lower.Contains("mirroring") || lower.Contains("vmware") || lower.Contains("parallels")
+            || lower.Contains("displaylink") || lower.Contains("spacedesk");
+    }
+
     private static string[] WmiStringArray(System.Management.ManagementObject o, string p)
     {
         try
@@ -419,6 +432,12 @@ internal static class FrameScopeHardwareProvider
             }
         }
         catch (Exception ex) { errors.Add("Win32_VideoController failed: " + RootMessage(ex)); }
+
+        // WMI returns virtual display adapters (GameViewer/indirect screens)
+        // before the physical GPU on some machines, which made the hero card
+        // present a virtual device as the main graphics card (audit F-3).
+        // Stable sort: physical adapters first, virtual ones last.
+        gpus = gpus.OrderBy(g => LooksLikeVirtualGpu(g as Dictionary<string, object>)).ToList();
 
         try
         {

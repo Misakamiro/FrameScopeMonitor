@@ -718,7 +718,16 @@ internal static partial class FrameScopeReportGenerator
                 foreach (ManagementObject obj in searcher.Get())
                 {
                     string name = Convert.ToString(obj["Name"]);
-                    if (!string.IsNullOrEmpty(name) && name.IndexOf("Microsoft", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                    if (string.IsNullOrEmpty(name)) continue;
+                    // Skip Microsoft basic adapters AND virtual/indirect display
+                    // adapters (GameViewer etc.) - the headline GPU must be the
+                    // physical card (audit F-3).
+                    string lowerName = name.ToLowerInvariant();
+                    bool virtualAdapter = lowerName.Contains("virtual") || lowerName.Contains("indirect")
+                        || lowerName.Contains("remote") || lowerName.Contains("mirroring")
+                        || lowerName.Contains("vmware") || lowerName.Contains("parallels")
+                        || lowerName.Contains("displaylink") || lowerName.Contains("spacedesk");
+                    if (name.IndexOf("Microsoft", StringComparison.OrdinalIgnoreCase) >= 0 || virtualAdapter) continue;
                     h["GpuName"] = name;
                     h["GpuDriver"] = Convert.ToString(obj["DriverVersion"]);
                     break;

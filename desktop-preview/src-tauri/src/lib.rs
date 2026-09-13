@@ -577,6 +577,16 @@ pub fn run() {
     let _ = log::set_logger(&LOGGER).map(|_| log::set_max_level(log::LevelFilter::Info));
 
     let app = tauri::Builder::default()
+        // Must register before other plugins (single-instance docs): a second
+        // launch forwards here and dies, so the tray-hidden window comes back
+        // to the foreground instead of spawning a twin process (audit F-1).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())

@@ -450,6 +450,15 @@ fn perform_uninstall(install_dir: &Path, delete_data: bool) -> Result<(), String
                 }
             }
         }
+        // Monitor data root (framescope-runs, diagnostic-reports, ...): the
+        // whole directory goes away. Deleting only framescope-runs left
+        // diagnostic reports behind (audit F-2, 297 files measured).
+        if let Some(local) = dirs::data_local_dir() {
+            let p = local.join("FrameScopeMonitorData");
+            if p.exists() {
+                let _ = fs::remove_dir_all(&p);
+            }
+        }
     }
 
     schedule_self_cleanup(&self_exe, install_dir);
