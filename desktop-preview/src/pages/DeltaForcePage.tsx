@@ -244,20 +244,7 @@ function PasswordCard() {
     </VStack>
   );
 
-  if (liquidGlassEnabled) {
-    return <LiquidGlassCard p={5}>{content}</LiquidGlassCard>;
-  }
-  return (
-    <Box
-      bg={useColorModeValue("white", "#111111")}
-      borderRadius="xl"
-      p={5}
-      border="1px solid"
-      borderColor={useColorModeValue("gray.200", "#333333")}
-    >
-      {content}
-    </Box>
-  );
+  return <LiquidGlassCard p={5}>{content}</LiquidGlassCard>;
 }
 
 // ── MoreGunCodesCard ──
@@ -641,21 +628,13 @@ const LoadoutCard = memo(function LoadoutCard({
     </VStack>
   );
 
-  if (liquidGlassEnabled) {
-    return <LiquidGlassCard p={4}>{code}</LiquidGlassCard>;
-  }
   return (
-    <Box
-      bg={cardBg}
-      borderRadius="xl"
+    <LiquidGlassCard
       p={4}
-      border="1px solid"
-      borderColor={borderColor}
-      _hover={{ bg: cardHoverBg }}
-      transition="background-color 0.15s"
+      {...(liquidGlassEnabled ? {} : { _hover: { bg: cardHoverBg }, transition: "background-color 0.15s" })}
     >
       {code}
-    </Box>
+    </LiquidGlassCard>
   );
 });
 
@@ -1230,19 +1209,7 @@ const GunLoadoutBrowser = memo(function GunLoadoutBrowser() {
     </>
   );
 
-  const codesWrapper = liquidGlassEnabled ? (
-    <LiquidGlassCard p={5}>{weaponCodesContent}</LiquidGlassCard>
-  ) : (
-    <Box
-      bg={useColorModeValue("white", "#111111")}
-      borderRadius="xl"
-      p={5}
-      border="1px solid"
-      borderColor={useColorModeValue("gray.200", "#333333")}
-    >
-      {weaponCodesContent}
-    </Box>
-  );
+  const codesWrapper = <LiquidGlassCard p={5}>{weaponCodesContent}</LiquidGlassCard>;
 
   return codesWrapper;
 });

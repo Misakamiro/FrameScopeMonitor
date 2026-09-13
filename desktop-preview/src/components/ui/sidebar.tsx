@@ -744,9 +744,9 @@ export function Sidebar() {
           transition="opacity 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
         />
       )}
-      <Box position="relative" zIndex={1}>
+      <ChakraBox position="relative" zIndex={1}>
         {sidebarContent}
-      </Box>
+      </ChakraBox>
     </ChakraBox>
   );
 }

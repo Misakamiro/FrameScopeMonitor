@@ -49,6 +49,7 @@ import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useBackground } from "@/contexts/background-context";
 import { useNavigate } from "react-router-dom";
 import { useThemeColor } from "@/contexts/theme-color-context";
+import { useGlassSurfaceStyle } from "@/hooks/use-glass-surface-style";
 
 interface GameOptimizeConfig {
   id: string;
@@ -472,6 +473,7 @@ function GameCard({
   onOptimizeAll: (id: string) => void;
   busy: { priority: boolean; affinity: boolean; ifeo: boolean; ifeoRestore: boolean; all: boolean };
 }) {
+  const glass = useGlassSurfaceStyle();
   const { t } = useTranslation();
   const { liquidGlassEnabled } = useBackground();
   const textColor = useColorModeValue("gray.800", "#ffffff");
@@ -745,13 +747,14 @@ function GameCard({
     return <LiquidGlassCard p={4}>{content}</LiquidGlassCard>;
   }
   return (
-    <Box p={4} borderRadius="xl" bg={rowBg} border="1px solid" borderColor={borderColor}>
+    <Box p={4} borderRadius="xl" {...glass}>
       {content}
     </Box>
   );
 }
 
 export default function GameProcessOptimizePage() {
+  const glass = useGlassSurfaceStyle();
   const { t } = useTranslation();
   const toast = useDynamicIsland("gamepad");
   const navigate = useNavigate();
@@ -1045,7 +1048,7 @@ export default function GameProcessOptimizePage() {
       return <LiquidGlassCard p={4} _hover={{ transform: "translateY(-2px)" }} transition="transform 0.2s">{content}</LiquidGlassCard>;
     }
     return (
-      <Box p={4} borderRadius="xl" bg={cardBg} border="1px solid" borderColor={borderColorVal} _hover={{ transform: "translateY(-2px)" }} transition="transform 0.2s">
+      <Box p={4} borderRadius="xl" {...glass} _hover={{ transform: "translateY(-2px)" }} transition="transform 0.2s">
         {content}
       </Box>
     );

@@ -190,10 +190,21 @@ export default function HomePage() {
                 <Button leftIcon={<Square size={14} />} size="sm" isDisabled={!busy || stopping} onClick={() => void run("monitor.stop")}>停止</Button>
                 <Button variant="ghost" size="sm" onClick={() => navigate("/targets")}>管理目标</Button>
               </HStack>
-              {busy && <Progress size="xs" colorScheme="teal" isIndeterminate={stopping} value={state.monitor.elapsedSeconds / state.config.captureDurationSeconds * 100} />}
+              {busy && (
+                <Progress
+                  size="xs"
+                  colorScheme="teal"
+                  // 进度条语义 = 报告合成进度：仅 generating 相位显示真实百分比
+                  // （C# report-progress.json 转发值）；其余 busy 阶段保持空进度
+                  // 条且不跑动（启动监控阶段的假进度/读秒已按需求移除）。
+                  value={state.monitor.phase === "generating" ? state.monitor.reportPercent ?? 0 : 0}
+                />
+              )}
               <HStack fontSize="sm" spacing={2} opacity={0.85}>
-                <Text>{state.monitor.elapsedSeconds} 秒</Text>
-                <Text opacity={0.6}>·</Text>
+                {state.monitor.phase === "generating" && state.monitor.reportEtaSeconds != null && (
+                  <Text>预计还需 {state.monitor.reportEtaSeconds} 秒</Text>
+                )}
+                {state.monitor.phase === "generating" && state.monitor.reportEtaSeconds != null && <Text opacity={0.6}>·</Text>}
                 <Text>{phaseLabels[state.monitor.phase]}</Text>
               </HStack>
               <ActionError message={error || state.monitor.error || ""} />

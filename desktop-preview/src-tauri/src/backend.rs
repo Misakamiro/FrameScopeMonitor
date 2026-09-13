@@ -487,10 +487,79 @@ fn watcher_running() -> bool {
     system.process(sysinfo::Pid::from_u32(pid as u32)).is_some()
 }
 
+/// 读取一个 runDir 的活跃报告进度（问题 4）。字段由 C#
+/// `FrameScopeReportProgress.CreateFields` 落盘到 `report-progress.json`。
+/// 仅接受「活跃中」的进度（0 ≤ percent < 100 且 10 分钟内更新过，对齐 C#
+/// ActiveProgressFreshness）；完成（=100）与失败不转发 —— UI 的 completed/error
+/// 边缘由既有的 CompletedRuns 逻辑负责。
+fn read_active_report_progress(run_dir: &Path) -> Option<(i64, i64, String)> {
+    let path = run_dir.join("report-progress.json");
+    let text = std::fs::read_to_string(&path).ok()?;
+    let value = serde_json::from_str::<Value>(&text).ok()?;
+    let percent = value.get("ReportProgressPercent").and_then(Value::as_i64)?;
+    if !(0..100).contains(&percent) {
+        return None;
+    }
+    let eta = value
+        .get("ReportProgressEtaSeconds")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let message = value
+        .get("ReportProgressPhase")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    // 新鲜度：优先解析 UpdatedAt（本地 ISO），失败回退文件 mtime
+    let updated = value
+        .get("ReportProgressUpdatedAt")
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp())
+        .or_else(|| {
+            let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+            mtime.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+        });
+    match updated {
+        Some(updated) if now_unix() - updated <= 600 => Some((percent, eta, message)),
+        _ => None,
+    }
+}
+
+/// 扫数据根目录下最新一份活跃报告进度：`<dataRoot>/<Target>/<run>/report-progress.json`
+/// （两级手动展开的精简版，等价 C# `FindLatestEffectiveStatus`；采集结束后
+/// watcher 的 ActiveMonitors 条目已清空，只能靠扫盘找回正在生成的 run）。
+fn find_latest_report_progress(data_root: &Path) -> Option<(i64, i64, String)> {
+    let mut best: Option<(std::time::SystemTime, (i64, i64, String))> = None;
+    for target in std::fs::read_dir(data_root).ok()?.flatten() {
+        let target_path = target.path();
+        if !target_path.is_dir() {
+            continue;
+        }
+        for run in std::fs::read_dir(&target_path).ok()?.flatten() {
+            let run_path = run.path();
+            if !run_path.is_dir() || !run_path.join("report-progress.json").is_file() {
+                continue;
+            }
+            if let Some(progress) = read_active_report_progress(&run_path) {
+                let mtime = run
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                    best = Some((mtime, progress));
+                }
+            }
+        }
+    }
+    best.map(|(_, progress)| progress)
+}
+
 /// Watcher/monitor phase for the home page, mapped onto the frontend
 /// PreviewState machine: nothing -> idle; watcher without monitors ->
 /// waiting; active monitors -> capturing (elapsed from the run-directory
-/// timestamp).
+/// timestamp); a fresh report-progress.json -> generating (the real C#
+/// report pipeline progress with an ETA, not a time-driven estimate).
 pub fn monitor_status() -> Result<Value, String> {
     let state_path = watcher_state_path()?;
     let Ok(state) = std::fs::read_to_string(&state_path) else {
@@ -535,6 +604,19 @@ pub fn monitor_status() -> Result<Value, String> {
             "elapsedSeconds": elapsed,
             "completedRuns": completed_runs
         }));
+    }
+    // 报告合成进度转发（问题 4）：C# 侧真实进度信号早已存在，此前被整条掐断。
+    // 采集结束后 watcher 的 ActiveMonitors 已清空，扫数据根目录找回正在生成的 run。
+    if let Ok(data_root) = resolved_data_root() {
+        if let Some((percent, eta, message)) = find_latest_report_progress(&data_root) {
+            return Ok(json!({
+                "running": true, "phase": "generating",
+                "reportPercent": percent,
+                "reportEtaSeconds": eta,
+                "reportMessage": message,
+                "completedRuns": completed_runs
+            }));
+        }
     }
     Ok(json!({"running": true, "phase": "waiting", "completedRuns": completed_runs}))
 }

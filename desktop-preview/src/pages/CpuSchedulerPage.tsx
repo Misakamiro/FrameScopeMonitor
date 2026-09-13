@@ -942,15 +942,10 @@ export default function CpuSchedulerPage() {
 
   return (
     <Box pt={8}>
-      {liquidGlassEnabled ? (
-        <LiquidGlassCard w="full" boxShadow="2xl" overflow="hidden" position="relative" p={6}>
-          {content}
-        </LiquidGlassCard>
-      ) : (
-        <Box bg={cardBg} borderColor={cardBorder} borderWidth="1px" borderRadius="2xl" w="full" boxShadow="2xl" overflow="hidden" position="relative" p={6}>
-          {content}
-        </Box>
-      )}
+      {/* 统一只渲染 LiquidGlassCard：玻璃关闭态由组件内部回落，不再维护不认玻璃模式的裸 Box 分支 */}
+      <LiquidGlassCard w="full" boxShadow="2xl" overflow="hidden" position="relative" p={6}>
+        {content}
+      </LiquidGlassCard>
     </Box>
   );
 }

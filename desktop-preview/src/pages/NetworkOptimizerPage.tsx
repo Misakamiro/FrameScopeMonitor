@@ -26,6 +26,7 @@ import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { useBackground } from "@/contexts/background-context";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import {
+import { useGlassSurfaceStyle } from "@/hooks/use-glass-surface-style";
   dnsPresets,
   networkOptimizerItems,
   type DnsPreset,
@@ -315,6 +316,8 @@ const DnsCard = memo(function DnsCard({
 });
 
 export default function NetworkOptimizerPage() {
+  // 问题 3 收敛：裸 Box 卡片统一走玻璃模式样式 hook
+  const glass = useGlassSurfaceStyle();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { liquidGlassEnabled } = useBackground();
@@ -1030,7 +1033,7 @@ export default function NetworkOptimizerPage() {
             return <LiquidGlassCard w="full" p={4}>{ipCardContent}</LiquidGlassCard>;
           }
           return (
-            <Box w="full" bg={cardBg} borderRadius="xl" border="1px solid" borderColor={cardBorder} p={4}>
+            <Box w="full" {...glass} borderRadius="xl" p={4}>
               {ipCardContent}
             </Box>
           );
@@ -1101,7 +1104,7 @@ export default function NetworkOptimizerPage() {
             return <LiquidGlassCard w="full" p={4} mb={3}>{dnsContent}</LiquidGlassCard>;
           }
           return (
-            <Box w="full" bg={cardBg} borderRadius="xl" border="1px solid" borderColor={cardBorder} p={4} mb={3}>
+            <Box w="full" {...glass} borderRadius="xl" p={4} mb={3}>
               {dnsContent}
             </Box>
           );
@@ -1174,7 +1177,7 @@ export default function NetworkOptimizerPage() {
             return <LiquidGlassCard w="full" p={4}>{customDnsContent}</LiquidGlassCard>;
           }
           return (
-            <Box w="full" bg={cardBg} borderRadius="xl" border="1px solid" borderColor={cardBorder} p={4}>
+            <Box w="full" {...glass} borderRadius="xl" p={4}>
               {customDnsContent}
             </Box>
           );
@@ -1211,7 +1214,7 @@ export default function NetworkOptimizerPage() {
             return <LiquidGlassCard w="full" p={4} mt={3}>{clearDnsContent}</LiquidGlassCard>;
           }
           return (
-            <Box w="full" bg={cardBg} borderRadius="xl" border="1px solid" borderColor={cardBorder} p={4} mt={3}>
+            <Box w="full" {...glass} borderRadius="xl" p={4} mt={3}>
               {clearDnsContent}
             </Box>
           );
@@ -1320,7 +1323,7 @@ export default function NetworkOptimizerPage() {
             return <LiquidGlassCard w="full" p={4}>{resetContent}</LiquidGlassCard>;
           }
           return (
-            <Box w="full" bg={cardBg} borderRadius="xl" border="1px solid" borderColor={cardBorder} p={4}>
+            <Box w="full" {...glass} borderRadius="xl" p={4}>
               {resetContent}
             </Box>
           );
@@ -1357,7 +1360,7 @@ export default function NetworkOptimizerPage() {
             return <LiquidGlassCard w="full" p={4} mt={3}>{fixDhcpContent}</LiquidGlassCard>;
           }
           return (
-            <Box w="full" bg={cardBg} borderRadius="xl" border="1px solid" borderColor={cardBorder} p={4} mt={3}>
+            <Box w="full" {...glass} borderRadius="xl" p={4} mt={3}>
               {fixDhcpContent}
             </Box>
           );

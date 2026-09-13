@@ -53,6 +53,10 @@ export interface PreviewState {
     reportId: string | null;
     error: string | null;
     samples: PreviewReport["samples"];
+    /** 报告合成进度（generating 相位时来自 C# report-progress.json 的真实百分比） */
+    reportPercent: number | null;
+    /** 预计还剩几秒完成报告合成 */
+    reportEtaSeconds: number | null;
   };
   activeGpuIndex: number;
   overlay: { enabled: boolean; dragMode: boolean; settings: OverlaySettings };

@@ -19,8 +19,15 @@ export function LiquidGlassCard({
   className,
   isDashed = false,
   forceGlass = false,
-  ...props
+  ...allProps
 }: LiquidGlassCardProps) {
+  // 问题 3 修复：调用方传入的 bg/borderColor/backdropFilter 多为针对普通模式
+  // 硬编码的样式（如 borderColor="white"），若展开在 cardStyles 之后会覆盖组件
+  // 按玻璃模式算好的值——real 模式下就变成「一圈不透明白边 + 透明背景」，看起来
+  // 像玻璃没生效。外观类属性一律以组件计算值为准（当前无调用方合法使用它们）；
+  // 布局类属性（p/flex/minH/…）仍由调用方覆盖。
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { bg: _bg, borderColor: _borderColor, backdropFilter: _backdropFilter, WebkitBackdropFilter: _webkitBackdropFilter, ...props } = allProps as Record<string, unknown>;
   const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode } = useBackground();
   const glassOn = forceGlass || liquidGlassEnabled;
   const { svgSupported } = useLiquidGlassRefraction(glassOn && liquidGlassMode === "real");

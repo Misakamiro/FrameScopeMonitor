@@ -32,7 +32,7 @@ function initial(): PreviewState {
     config: { captureDurationSeconds: 20, sampleIntervalMs: 1000, pollIntervalMs: 1000,
       autoStart: false, autoOpenReport: false, detailedLogging: false, diagnosticLogging: false,
       outputDirectory: "PreviewData/reports", theme: "system" },
-    monitor: { phase: "idle", targetId: null, elapsedSeconds: 0, startedAt: null, reportId: null, error: null, samples: [] },
+    monitor: { phase: "idle", targetId: null, elapsedSeconds: 0, startedAt: null, reportId: null, error: null, samples: [], reportPercent: null, reportEtaSeconds: null },
     activeGpuIndex: 0, overlay: { enabled: false, dragMode: false, settings: structuredClone(defaultOverlay) },
     hotkey: "Shift+F10", hotkeysEnabled: true, overlayHotkeyEnabled: true,
   };
@@ -128,7 +128,7 @@ async function syncDesktopMonitor(): Promise<void> {
   if (desktopSyncBusy) return;
   desktopSyncBusy = true;
   try {
-    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; targetName?: string; completedRuns?: number }>("monitor_status");
+    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; targetName?: string; completedRuns?: number; reportPercent?: number; reportEtaSeconds?: number }>("monitor_status");
     mutatePreview(next => {
       const monitor = next.monitor;
       // The backend watcher is the source of truth for capture state; local
@@ -157,6 +157,16 @@ async function syncDesktopMonitor(): Promise<void> {
             monitor.targetId = match.id;
             if (next.selectedTargetId !== match.id) next.selectedTargetId = match.id;
           }
+        }
+      } else if (status.phase === "generating") {
+        // 报告合成中：进度与 ETA 来自后端转发的 C# report-progress.json 真值。
+        // 必须排在 waiting 之前 —— 生成期间 watcher 已无 ActiveMonitors，原始
+        // 状态会落到 waiting。
+        monitor.phase = "generating";
+        monitor.reportPercent = typeof status.reportPercent === "number" ? status.reportPercent : null;
+        monitor.reportEtaSeconds = typeof status.reportEtaSeconds === "number" ? status.reportEtaSeconds : null;
+        if (completedRunsBaseline == null && typeof status.completedRuns === "number") {
+          completedRunsBaseline = status.completedRuns;
         }
       } else if (status.phase === "waiting") {
         if (monitor.phase !== "waiting") {

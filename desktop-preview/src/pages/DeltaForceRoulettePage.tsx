@@ -103,20 +103,10 @@ function ResultCard({
     </VStack>
   );
 
-  if (liquidGlassEnabled) {
-    return <LiquidGlassCard p={4}>{contentInner}</LiquidGlassCard>;
-  }
   return (
-    <Box
-      bg={cardBg}
-      borderRadius="xl"
-      p={4}
-      border="1px solid"
-      borderColor={borderColor}
-      color={textColor}
-    >
+    <LiquidGlassCard p={4} color={textColor}>
       {contentInner}
-    </Box>
+    </LiquidGlassCard>
   );
 }
 

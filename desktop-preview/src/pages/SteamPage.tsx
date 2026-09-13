@@ -62,6 +62,7 @@ import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useBackground } from "@/contexts/background-context";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import steamIcon from "@/assets/tools/Steam.png";
+import { useGlassSurfaceStyle } from "@/hooks/use-glass-surface-style";
 
 // ======================== 类型定义 ========================
 
@@ -789,7 +790,7 @@ function LibraryCard({ lib, gameCount, gameSize }: { lib: SteamLibrary; gameCoun
   }
 
   return (
-    <Box bg={cardBg} border="1px solid" borderColor={borderColor} borderRadius="xl" p={4}>
+    <Box {...glass} borderRadius="xl" p={4}>
       {inner}
     </Box>
   );

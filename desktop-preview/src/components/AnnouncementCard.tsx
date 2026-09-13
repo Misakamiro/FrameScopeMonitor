@@ -200,27 +200,18 @@ export function AnnouncementCard() {
 
   return (
     <>
-      {liquidGlassEnabled ? (
-        <LiquidGlassCard py={2} px={3} w="90px" onClick={handleOpenModal}>
-          {cardContent}
-        </LiquidGlassCard>
-      ) : (
-        <Box
-          bg={cardBg}
-          borderRadius="xl"
-          border="1px solid"
-          borderColor={borderColor}
-          py={2}
-          px={3}
-          w="90px"
-          onClick={handleOpenModal}
-          cursor="pointer"
-          _hover={{ borderColor: countColor }}
-          transition="border-color 0.2s"
-        >
-          {cardContent}
-        </Box>
-      )}
+      {/* 玻璃关闭态由 LiquidGlassCard 内部回落（问题 3 收敛） */}
+      <LiquidGlassCard
+        py={2}
+        px={3}
+        w="90px"
+        onClick={handleOpenModal}
+        cursor="pointer"
+        _hover={{ borderColor: countColor }}
+        transition="border-color 0.2s"
+      >
+        {cardContent}
+      </LiquidGlassCard>
       {modalContent}
     </>
   );

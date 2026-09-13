@@ -17,7 +17,6 @@ import {
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 import { useAppStartup } from "@/contexts/app-startup-context";
-import { useBackground } from "@/contexts/background-context";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import HardwareDetailModal, { type SpecItem } from "@/components/HardwareDetailModal";
 import type { CpuInfo, GpuInfo, MemoryInfo, MotherboardInfo, DiskDetailInfo, SoundCardInfo, NetworkCardInfo, MonitorInfo } from "@/lib/hardware";
@@ -203,10 +202,8 @@ function StatCard({
   color,
   sparklineData,
   icon: IconComponent,
-  cardBg,
   textColor,
   subTextColor,
-  liquidGlassEnabled,
 }: {
   title?: string;
   titleContent?: React.ReactNode;
@@ -215,10 +212,8 @@ function StatCard({
   color: string;
   sparklineData: number[];
   icon: React.ElementType;
-  cardBg: string;
   textColor: string;
   subTextColor: string;
-  liquidGlassEnabled: boolean;
 }) {
   const cardContent = (
     <Box position="relative" overflow="hidden" p={5} height="140px">
@@ -249,30 +244,12 @@ function StatCard({
     </Box>
   );
 
-  if (liquidGlassEnabled) {
-    return (
-      <LiquidGlassCard
-        borderRadius="xl"
-        overflow="hidden"
-        position="relative"
-        borderColor="white"
-      >
-        {cardContent}
-      </LiquidGlassCard>
-    );
-  }
-
+  // 统一只渲染 LiquidGlassCard：玻璃关闭态由组件内部回落 defaultBg（与原裸
+  // Box 的 cardBg 同值），不再维护一份不认玻璃模式的硬编码分支。
   return (
-    <Box
-      bg={cardBg}
-      borderRadius="xl"
-      border="1px solid"
-      borderColor="white"
-      overflow="hidden"
-      position="relative"
-    >
+    <LiquidGlassCard borderRadius="xl" overflow="hidden" position="relative">
       {cardContent}
-    </Box>
+    </LiquidGlassCard>
   );
 }
 
@@ -281,20 +258,16 @@ function DetailCard({
   icon: IconComponent,
   info,
   type,
-  cardBg,
   textColor,
   subTextColor,
-  liquidGlassEnabled,
   onClick,
 }: {
   title: string;
   icon: React.ElementType;
   info: DisplayInfo[];
   type: string;
-  cardBg: string;
   textColor: string;
   subTextColor: string;
-  liquidGlassEnabled: boolean;
   onClick?: () => void;
 }) {
   const iconColor =
@@ -336,29 +309,9 @@ function DetailCard({
     </Box>
   );
 
-  if (liquidGlassEnabled) {
-    return (
-      <LiquidGlassCard
-        borderRadius="xl"
-        overflow="hidden"
-        position="relative"
-        borderColor="white"
-        cursor={onClick ? "pointer" : undefined}
-        onClick={onClick}
-        _hover={onClick ? { opacity: 0.9 } : undefined}
-        transition="opacity 0.15s"
-      >
-        {cardContent}
-      </LiquidGlassCard>
-    );
-  }
-
   return (
-    <Box
-      bg={cardBg}
+    <LiquidGlassCard
       borderRadius="xl"
-      border="1px solid"
-      borderColor="white"
       overflow="hidden"
       position="relative"
       cursor={onClick ? "pointer" : undefined}
@@ -367,7 +320,7 @@ function DetailCard({
       transition="opacity 0.15s"
     >
       {cardContent}
-    </Box>
+    </LiquidGlassCard>
   );
 }
 
@@ -375,7 +328,6 @@ export default function HardwarePage() {
   const toast = useDynamicIsland("cpu");
   const { hardwareInfo } = useAppStartup();
   const { t } = useTranslation();
-  const { liquidGlassEnabled } = useBackground();
   const adaptiveTitle = useAdaptiveTextColor();
   const { exportReport, isExporting } = useHardwareReportExport();
   const { isOpen: isPawnioModalOpen, onOpen: onPawnioModalOpen, onClose: onPawnioModalClose } = useDisclosure();
@@ -902,10 +854,8 @@ export default function HardwarePage() {
             color="#3b82f6"
             sparklineData={cpuSparkline}
             icon={Cpu}
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
           />
           <StatCard
             titleContent={gpuSensors.length >= 1 ? (
@@ -951,10 +901,8 @@ export default function HardwarePage() {
             color="#22c55e"
             sparklineData={gpuSparkline}
             icon={Monitor}
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
           />
           <StatCard
             title={t("hardware.ram")}
@@ -963,10 +911,8 @@ export default function HardwarePage() {
             color="#06b6d4"
             sparklineData={memSparkline}
             icon={Ram}
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
           />
           <StatCard
             title={t("hardware.storage")}
@@ -975,10 +921,8 @@ export default function HardwarePage() {
             color="#a855f7"
             sparklineData={storageSparkline}
             icon={Database}
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
           />
         </Grid>
 
@@ -995,10 +939,8 @@ export default function HardwarePage() {
             icon={Cpu}
             info={cpuDisplayInfo}
             type="cpu"
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
             onClick={hardwareInfo ? () => handleOpenDetail(t("hardware.processor"), Cpu, "cpu", buildCpuSpecs(hardwareInfo.cpu)) : undefined}
           />
           {gpuDisplayInfos.map((gpuInfo, i) => (
@@ -1008,10 +950,8 @@ export default function HardwarePage() {
               icon={Monitor}
               info={gpuInfo}
               type="gpu"
-              cardBg={cardBg}
               textColor={textColor}
               subTextColor={subTextColor}
-              liquidGlassEnabled={liquidGlassEnabled}
               onClick={hardwareInfo && hardwareInfo.gpu[i] ? () => handleOpenDetail(t("hardware.gpu"), Monitor, "gpu", buildGpuSpecs(hardwareInfo.gpu[i], i)) : undefined}
             />
           ))}
@@ -1020,10 +960,8 @@ export default function HardwarePage() {
             icon={Ram}
             info={memoryDisplayInfo}
             type="memory"
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
             onClick={hardwareInfo ? () => handleOpenDetail(t("hardware.ram"), Ram, "memory", buildMemorySpecs(hardwareInfo.memory)) : undefined}
           />
           <DetailCard
@@ -1031,10 +969,8 @@ export default function HardwarePage() {
             icon={CircuitBoard}
             info={motherboardDisplayInfo}
             type="motherboard"
-            cardBg={cardBg}
             textColor={textColor}
             subTextColor={subTextColor}
-            liquidGlassEnabled={liquidGlassEnabled}
             onClick={hardwareInfo ? () => handleOpenDetail(t("hardware.motherboard"), CircuitBoard, "motherboard", buildMotherboardSpecs(hardwareInfo.motherboard)) : undefined}
           />
           {storageDisplayInfo.length > 0 && (
@@ -1043,10 +979,8 @@ export default function HardwarePage() {
               icon={HardDrive}
               info={storageDisplayInfo}
               type="storage"
-              cardBg={cardBg}
               textColor={textColor}
               subTextColor={subTextColor}
-              liquidGlassEnabled={liquidGlassEnabled}
               onClick={hardwareInfo ? () => handleOpenDetail(t("hardware.storage"), HardDrive, "storage", buildStorageSpecs(hardwareInfo.disk)) : undefined}
             />
           )}
@@ -1057,10 +991,8 @@ export default function HardwarePage() {
               icon={Volume2}
               info={info}
               type="sound"
-              cardBg={cardBg}
               textColor={textColor}
               subTextColor={subTextColor}
-              liquidGlassEnabled={liquidGlassEnabled}
               onClick={hardwareInfo && hardwareInfo.sound_card ? () => handleOpenDetail(t("hardware.soundCard"), Volume2, "sound", buildSoundCardSpecs(hardwareInfo.sound_card)) : undefined}
             />
           ))}
@@ -1071,10 +1003,8 @@ export default function HardwarePage() {
               icon={Wifi}
               info={info}
               type="network"
-              cardBg={cardBg}
               textColor={textColor}
               subTextColor={subTextColor}
-              liquidGlassEnabled={liquidGlassEnabled}
               onClick={hardwareInfo && hardwareInfo.network_card ? () => handleOpenDetail(t("hardware.networkCard"), Wifi, "network", buildNetworkCardSpecs(hardwareInfo.network_card)) : undefined}
             />
           ))}
@@ -1085,10 +1015,8 @@ export default function HardwarePage() {
               icon={Monitor}
               info={info}
               type="monitor"
-              cardBg={cardBg}
               textColor={textColor}
               subTextColor={subTextColor}
-              liquidGlassEnabled={liquidGlassEnabled}
               onClick={hardwareInfo && hardwareInfo.monitor ? () => handleOpenDetail(t("hardware.monitor") || "显示器", Monitor, "monitor", buildMonitorSpecs(hardwareInfo.monitor)) : undefined}
             />
           ))}

@@ -22,6 +22,7 @@ import { useBackground } from "@/contexts/background-context";
 import { useNavigate } from "react-router-dom";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
+import { useGlassSurfaceStyle } from "@/hooks/use-glass-surface-style";
 
 interface AcGroup {
   key: string;
@@ -154,6 +155,8 @@ function ActionItem({
 }
 
 export default function AntiCheatOptimizePage() {
+  // 问题 3 收敛：裸 Box 卡片统一走玻璃模式样式 hook
+  const glass = useGlassSurfaceStyle();
   const { t } = useTranslation();
   const toast = useDynamicIsland("shield");
   const navigate = useNavigate();
@@ -382,7 +385,7 @@ export default function AntiCheatOptimizePage() {
             return liquidGlassEnabled ? (
               <LiquidGlassCard key={g.key} p={5}>{content}</LiquidGlassCard>
             ) : (
-              <Box key={g.key} bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
+              <Box key={g.key} {...glass} borderRadius="xl" p={5}>
                 {content}
               </Box>
             );
