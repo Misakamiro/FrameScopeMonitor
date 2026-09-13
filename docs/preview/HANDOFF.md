@@ -125,6 +125,7 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 - **注册表**:HKLM Uninstall\FrameScope;NSIS 旧版迁移=按 DisplayName 匹配清 ghost 键+删 uninstall.exe。
 - **构建**:`installer/build-installer.ps1`(-SkipPayload 可跳过 staging)→Package-Installer.ps1 **新增 -StageOnly 参数**→pack-payload.ps1(60MB payload.zip,gitignore 严禁入库)→vite→cargo→`bundle/installer/FrameScope_<ver>_x64-setup.exe`(79.4MB,NSIS 版 60.5MB 并存保留)。**ps1 含中文必须 UTF-8 BOM**(二次踩实,pack/build 两个脚本都中招)。
 - **实机全绿**:交互安装(文件+ARP+卸载器副本)、卸载皮肤往返、静默 /S 装卸、零残留(含自删)、完成态(window.close 修复——装完别关窗,让用户看到完成页)。
+- **⚠️ payload 布局修复(91579d4,用户实测"硬件信息加载失败"抓获)**:pack-payload.ps1 初版把 backend/ 目录原样塞进 payload,装完后硬件链在 `<dir>\backend\` 而主程序按 **exe 同级目录**解析后端→全挂。**铁律 26:payload/资源布局必须对齐 NSIS 映射(resources/backend/* 平铺到安装根,tools/、Fonts/ 同级)**;两条安装路径解包前删残留的旧 backend/ 目录。**另一个坑:include_bytes! 是构建时嵌入——先 pack 后 cargo build 的顺序错了就装出旧载荷**(build.rs rerun-if-changed 只在再编译时生效);改 payload 必须重跑 cargo build 再分发。排版修正(e7d0353):Shell footer 插槽修 GPL 小字出窗、卸载页 OptionArea 选项区解重叠。
 - **P3 待做**:进度/视觉打磨(SVG 折射玻璃/动画)、体积优化(79MB vs NSIS 60MB,可换 zstd)、集成进流水线默认产物、D= 路径实测、升级覆盖实测(装新版覆盖旧版)。
 
 ## 五·五、历史、本轮(2026-09-08/09)完成
