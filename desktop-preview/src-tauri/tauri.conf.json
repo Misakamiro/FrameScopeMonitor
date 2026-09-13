@@ -19,8 +19,7 @@
         "minHeight": 715,
         "decorations": false,
         "resizable": true,
-        "center": true,
-        "additionalBrowserArgs": "--remote-debugging-port=9333"
+        "center": true
       }
     ],
     "security": {
@@ -30,7 +29,7 @@
           "$HOME/**"
         ]
       },
-      "csp": "script-src 'self' 'unsafe-inline'"
+      "csp": null
     }
   },
   "bundle": {
