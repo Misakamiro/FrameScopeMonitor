@@ -127,8 +127,8 @@ export default function App() {
   if (mode === "uninstall") {
     return (
       <Shell>
-        <Card>
-          <Logo />
+        <Card width={480}>
+          <Logo size={56} />
           <Title>卸载 FrameScope</Title>
           <Sub>
             将从电脑中移除 FrameScope 及其监控组件
@@ -138,23 +138,21 @@ export default function App() {
             <DoneBlock text="卸载完成" />
           ) : phase === "error" ? (
             <ErrorBlock error={error} onBack={() => setPhase("idle")} />
+          ) : phase === "working" ? (
+            <ProgressArea pct={pct} name={progress.name} />
           ) : (
             <>
-              {phase === "working" ? (
-                <ProgressArea pct={pct} name={progress.name} />
-              ) : (
-                <>
-                  <Check checked={deleteData} onChange={setDeleteData}>
-                    同时删除配置与历史报告数据
-                  </Check>
-                  <ButtonRow>
-                    <PrimaryButton onClick={runUninstall} danger>
-                      卸载
-                    </PrimaryButton>
-                    <GhostButton onClick={closeApp}>取消</GhostButton>
-                  </ButtonRow>
-                </>
-              )}
+              <OptionArea>
+                <Check checked={deleteData} onChange={setDeleteData}>
+                  同时删除配置与历史报告数据
+                </Check>
+              </OptionArea>
+              <ButtonRow style={{ marginTop: 22 }}>
+                <PrimaryButton onClick={runUninstall} danger>
+                  卸载
+                </PrimaryButton>
+                <GhostButton onClick={closeApp}>取消</GhostButton>
+              </ButtonRow>
             </>
           )}
         </Card>
@@ -164,7 +162,7 @@ export default function App() {
 
   // === Install skin ===
   return (
-    <Shell>
+    <Shell footer={<FooterNote>安装即代表同意 GPL-3.0 开源许可</FooterNote>}>
       <Card>
         <Logo />
         <Title>
@@ -202,14 +200,16 @@ export default function App() {
               <PathInput value={targetDir} onChange={(e) => setTargetDir(e.target.value)} spellCheck={false} />
               <BrowseButton onClick={browse}>浏览</BrowseButton>
             </PathRow>
-            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-              <Check checked={desktopShortcut} onChange={setDesktopShortcut}>
-                创建桌面快捷方式
-              </Check>
-              <Check checked={autostart} onChange={setAutostart}>
-                开机自动启动
-              </Check>
-            </div>
+            <OptionArea>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <Check checked={desktopShortcut} onChange={setDesktopShortcut}>
+                  创建桌面快捷方式
+                </Check>
+                <Check checked={autostart} onChange={setAutostart}>
+                  开机自动启动
+                </Check>
+              </div>
+            </OptionArea>
             <ButtonRow style={{ marginTop: 18 }}>
               <PrimaryButton onClick={runInstall}>
                 {existing ? "升级覆盖" : "立即安装"}
@@ -228,13 +228,12 @@ export default function App() {
           </>
         )}
       </Card>
-      <FooterNote>安装即代表同意 GPL-3.0 开源许可</FooterNote>
     </Shell>
   );
 
   // === Layout helpers ===
 
-  function Shell({ children }: { children: React.ReactNode }) {
+  function Shell({ children, footer }: { children: React.ReactNode; footer?: React.ReactNode }) {
     return (
       <div style={{ width: "100%", height: "100%", position: "relative", display: "flex", flexDirection: "column" }}>
         <WallpaperLayer index={wallpaper} />
@@ -247,10 +246,12 @@ export default function App() {
             justifyContent: "center",
             position: "relative",
             zIndex: 2,
+            padding: "0 32px",
           }}
         >
           {children}
         </div>
+        {footer}
       </div>
     );
   }
@@ -337,12 +338,12 @@ export default function App() {
     );
   }
 
-  function Card({ children }: { children: React.ReactNode }) {
+  function Card({ children, width }: { children: React.ReactNode; width?: number }) {
     return (
       <div
         style={{
-          width: 520,
-          maxWidth: "88%",
+          width: width ?? 520,
+          maxWidth: "100%",
           borderRadius: 18,
           background: GLASS_BG,
           border: `1px solid ${GLASS_BORDER}`,
@@ -362,13 +363,32 @@ export default function App() {
     );
   }
 
-  function Logo() {
+  function Logo({ size }: { size?: number }) {
+    const s = size ?? 64;
     return (
       <img
         src="/icon.png"
         alt=""
-        style={{ width: 64, height: 64, borderRadius: 15, marginBottom: 14, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
+        style={{ width: s, height: s, borderRadius: Math.round(s * 0.23), marginBottom: 14, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
       />
+    );
+  }
+
+  function OptionArea({ children }: { children: React.ReactNode }) {
+    return (
+      <div
+        style={{
+          width: "100%",
+          marginTop: 22,
+          padding: "13px 16px",
+          borderRadius: 11,
+          background: "rgba(255,255,255,0.06)",
+          border: "1px solid rgba(255,255,255,0.1)",
+          textAlign: "left",
+        }}
+      >
+        {children}
+      </div>
     );
   }
 
@@ -697,9 +717,10 @@ export default function App() {
           position: "relative",
           zIndex: 2,
           textAlign: "center",
-          paddingBottom: 16,
+          paddingBottom: 14,
+          flexShrink: 0,
           fontSize: 11.5,
-          color: "rgba(238,242,245,0.35)",
+          color: "rgba(238,242,245,0.4)",
         }}
       >
         {children}
