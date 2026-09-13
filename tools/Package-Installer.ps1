@@ -46,7 +46,8 @@ $files = @(
     'FrameScopeMonitor.exe',
     'FrameScopeProcessSampler.exe',
     'FrameScopeSystemSampler.exe',
-    'FrameScopeReportGenerator.exe'
+    'FrameScopeReportGenerator.exe',
+    'PRIVACY.md'
 )
 $lock = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'dependencies.lock.json') | ConvertFrom-Json
 foreach ($property in $lock.runtimeFiles.PSObject.Properties) {

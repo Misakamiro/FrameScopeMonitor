@@ -1,9 +1,11 @@
 //! PawnIO driver detection / install / uninstall (NexBox pawnio_driver.rs
 //! semantics). Detection reads the uninstall registry key; install expects
-//! the official `PawnIO_setup.exe` to sit in `dependencies\PawnIO\` next to
-//! the deployed executables and runs it elevated via PowerShell. The setup
-//! package is staged from `packaging\PawnIO_setup.exe` by build.ps1 and
-//! Package-Installer.ps1 into both installer payloads.
+//! the official `PawnIO_setup.exe` (dash arguments: -install/-uninstall
+//! -silent) to sit in `dependencies\PawnIO\` next to the deployed
+//! executables and runs it directly — the requireAdministrator manifest
+//! makes the child inherit the elevated token. The setup package is staged
+//! from `packaging\PawnIO_setup.exe` by build.ps1 and Package-Installer.ps1
+//! into both installer payloads.
 
 use serde_json::{json, Value};
 
@@ -120,28 +122,17 @@ fn stop_sampling_service() {
     }
 }
 
-/// Runs the installer elevated and waits (UAC prompt goes to the user).
+/// Runs the driver setup and waits for it to finish. The main app carries a
+/// requireAdministrator manifest, so the child inherits the already-elevated
+/// token — spawn the setup directly instead of going through a PowerShell
+/// command string (no shell parsing, no quoting/injection surface).
 #[cfg(windows)]
 fn run_elevated(package: &std::path::Path, args: &[&str]) -> Result<(), String> {
-    let mut ps = std::process::Command::new("powershell");
-    let argument_list = args
-        .iter()
-        .map(|arg| format!("'{arg}'"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    ps.arg("-NoProfile")
-        .arg("-Command")
-        .arg(format!(
-            "Start-Process -FilePath '{}' -ArgumentList {} -Verb RunAs -Wait",
-            package.display(),
-            argument_list
-        ));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        ps.creation_flags(0x0800_0000);
-    }
-    let status = ps
+    let mut command = std::process::Command::new(package);
+    command.args(args);
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let status = command
         .status()
         .map_err(|error| format!("failed to launch the installer: {error}"))?;
     if !status.success() {

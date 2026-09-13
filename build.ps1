@@ -528,7 +528,8 @@ try {
         'WebView2Loader.dll',
         'packaging\Uninstall-FrameScopeMonitor.cmd',
         'packaging\README-FrameScopeMonitor.txt',
-        'THIRD-PARTY-NOTICES.md'
+        'THIRD-PARTY-NOTICES.md',
+        'PRIVACY.md'
     )
     $payloadFiles += $hardwareTelemetryDependencyNames
     foreach ($file in $payloadFiles) {
