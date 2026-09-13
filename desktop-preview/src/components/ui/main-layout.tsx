@@ -83,6 +83,7 @@ export function MainLayout({ children }: MainLayoutProps) {
     url: string;
     id: number;
     fading: boolean;
+    entering: boolean;
   }
   const [bgLayers, setBgLayers] = useState<BgLayer[]>([]);
 
@@ -102,12 +103,16 @@ export function MainLayout({ children }: MainLayoutProps) {
 
     setBgLayers((prev) => [
       ...prev.map((l) => ({ ...l, fading: true })),
-      { url: src, id: newId, fading: false },
+      { url: src, id: newId, fading: false, entering: true },
     ]);
 
-    // 动画完成后移除旧的图层
+    // 动画完成后移除旧的图层，并撤销新层的「入场中」标记
     const timer = setTimeout(() => {
-      setBgLayers((prev) => prev.filter((l) => l.id === newId));
+      setBgLayers((prev) =>
+        prev
+          .filter((l) => l.id === newId)
+          .map((l) => ({ ...l, entering: false }))
+      );
     }, 600);
 
     return () => clearTimeout(timer);
@@ -251,9 +256,12 @@ export function MainLayout({ children }: MainLayoutProps) {
             zIndex={0}
             opacity={layer.fading ? 0 : 1}
             overflow="hidden"
-            // 独立合成层：避免 WebView2 对整屏大图分块光栅化时出现竖向接缝（断层）
-            transform="translateZ(0)"
-            willChange="opacity"
+            // 条件式合成层提升（问题 2）：常驻 translateZ(0)+willChange 会把整屏
+            // 大图钉成常驻合成层，与 .page-animating 的 backdrop-filter 离散跳变
+            // 叠加导致切页闪一帧；仅在交叉淡化/入场期间提升，静止时移除。
+            // 竖向接缝若在静止期回归，fallback 是改用 contain: paint。
+            transform={layer.fading || layer.entering ? "translateZ(0)" : undefined}
+            willChange={layer.fading || layer.entering ? "opacity" : undefined}
             transition={layer.fading ? "opacity 0.5s ease-in-out" : undefined}
             animation={!layer.fading ? "bgFadeIn 0.5s ease-in-out" : undefined}
           >

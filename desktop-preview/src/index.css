@@ -86,7 +86,8 @@ body {
 
 [data-backdrop-filter] {
   transform: translateZ(0);
-  backface-visibility: hidden;
+  /* backface-visibility: hidden 已删除 —— 它让被强制提升的合成层圆角走
+     无抗锯齿的 mask 裁剪路径（问题 1 圆角毛刺的根因），与层提升本身无关 */
 }
 
 /* 页面切换动画期间（framer-motion 会把页面提升为独立合成层），

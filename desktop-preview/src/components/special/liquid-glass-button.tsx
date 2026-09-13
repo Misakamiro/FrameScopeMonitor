@@ -41,8 +41,7 @@ export function LiquidGlassButton({ children, className, ...props }: LiquidGlass
         WebkitBackdropFilter: backdropFilter,
         transform: "translateZ(0)",
         WebkitTransform: "translateZ(0)",
-        WebkitBackfaceVisibility: "hidden",
-        backfaceVisibility: "hidden",
+        /* backfaceVisibility: hidden 删除 —— 合成层圆角 AA 丢失的主开关（问题 1） */
         willChange: "auto",
         transition: "border-color 0.45s cubic-bezier(0.4, 0, 0.2, 1), backdrop-filter 0.45s cubic-bezier(0.4, 0, 0.2, 1)",
       }}

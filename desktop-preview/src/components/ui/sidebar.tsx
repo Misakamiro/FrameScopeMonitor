@@ -682,7 +682,8 @@ export function Sidebar() {
     px: 2,
     maxWidth: "64px",
     transition: containerTransition,
-    sx: { WebkitBackfaceVisibility: "hidden" as const, backfaceVisibility: "hidden" as const },
+    // backfaceVisibility: hidden 删除 —— 合成层圆角 AA 丢失的主开关（问题 1）
+    sx: {},
   };
 
   const topContainerStyles = {
@@ -698,7 +699,7 @@ export function Sidebar() {
     maxWidth: "2000px",
     width: "max-content",
     transition: containerTransition,
-    sx: { WebkitBackfaceVisibility: "hidden" as const, backfaceVisibility: "hidden" as const },
+    sx: {},
   };
 
   const containerStyles = isTop ? topContainerStyles : leftContainerStyles;

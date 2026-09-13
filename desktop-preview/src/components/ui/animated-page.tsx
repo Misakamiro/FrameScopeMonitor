@@ -108,7 +108,11 @@ export function AnimatedPage({ children }: AnimatedPageProps) {
       exit="exit"
       variants={getVariants(mode)}
       onAnimationStart={() => setAnimating(true)}
-      onAnimationComplete={() => setAnimating(false)}
+      onAnimationComplete={() => {
+        // 延后一帧再移除 .page-animating（恢复 backdrop-filter）：避免
+        // backdrop-filter 恢复与合成层合并在同一帧落地造成整屏闪烁（问题 2 配套）
+        requestAnimationFrame(() => setAnimating(false));
+      }}
       className={animating ? "page-animating" : undefined}
       style={{ width: "100%", height: "100%" }}
     >
