@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-13　|　交接人:ZCode　|　状态:**Round 6 P1/P2 完成——自研 Tauri 安装器(单 exe 双模式/单页向导/主 UI 同风格/静默 /S)实机全绿,NSIS 链路并存保留,P3 打磨待做;Round 5(样式切换三连修+热路径补修)、Round 4(竖排 OSD 透明度)继续有效,工作树干净,未 push****;本会话完整来龙去脉见 HANDOFF-SESSION-20260913-OSD-FINAL-NATIVE-INSTALLER.md
+> 交接日期:2026-09-14　|　交接人:ZCode　|　状态:**Round 7 完成——六问题三批实施(批1 FPS 采集链重写+OSD 周期置顶 / 批2 报告进度语义+玻璃模式契约 / 批3 合成层圆角 AA+淡化闪烁),三笔提交 616b049+c8d2f09+a82e8ec,未 push;游戏内实机验证(不封顶/阶跃响应/反作弊供数)与两项用户拍板项待做**;分析依据 docs/audit/2026-09-14-issue-analysis.md,实施指南 HANDOFF-SESSION-20260914-SIX-ISSUES-READY-TO-IMPLEMENT.md;Round 6/5/4 继续有效
 
 ---
 
@@ -9,7 +9,7 @@
 FrameScope Monitor 是面向 Windows 游戏玩家的本地性能监控工具。当前形态:
 
 - **UI**:Tauri 2 窗口 + NexBox 9.5.3 前端(React 19 + Chakra),经用户验收
-- **实时监控**:悬浮框(GDI 原生条 + 竖排 WebView 窗)与硬件页,数据来自常驻硬件采样链(LibreHardwareMonitor 0.9.6 + PawnIO + 常驻 ETW FPS + ICMP ping),1Hz 更新,fail-closed(缺失显示 "--")
+- **实时监控**:悬浮框(GDI 原生条 + 竖排 WebView 窗)与硬件页,数据来自常驻硬件采样链(LibreHardwareMonitor 0.9.6 + PawnIO + 常驻 ETW FPS + ICMP ping),服务端 10Hz 节流 + 宿主 10Hz 轮询 + GDI 4Hz 重绘,fail-closed(缺失显示 "--")
 - **采集记录**:watcher 自动发现游戏进程,拉起 worker + PresentMon + ProcessSampler + SystemSampler,游戏退出后自动生成 HTML 报告
 - **反作弊韧性(本轮新增)**:PresentMon 的 ETW trace 被反作弊拒绝时(BF6/Javelin 实测),报告自动从 hardware-samples.csv 的 Fps 列(常驻 ETW FPS 的 1Hz 采样)合成帧率序列,报告升级为 full 并标注 `etw-fps-sampled`
 - **数据一致性**:悬浮框快照 = hardware-samples.csv = 报告 GPU 数据源(三处同源);FPS 双源保留(悬浮框 ETW 实时值 / 报告 PresentMon 逐帧,反作弊时报告自动降级用 ETW 采样,用户拍板方案 A)
@@ -22,7 +22,7 @@ FrameScope Monitor 是面向 Windows 游戏玩家的本地性能监控工具。�
 - 采集链:`src/app|monitoring|reporting|core`(C#)+ `packaging/`(安装/卸载)
 - 部署:`tools/Deploy-PreviewBackend.ps1`(先停 FrameScope 进程链再拷贝)
 - 常规命令:前端 `npm run build` → `npx tauri build --no-bundle` → 部署脚本;C# 链 `build.ps1`(构建前自动停 FrameScope 进程);硬件服务 `cargo build --release`
-- 测试:cargo 20/20(服务)+ 5/5(宿主)、vitest 14/14(含 source-boundaries 命令表/列名一致性)、C# 28/28
+- 测试:cargo 44/44(服务,含 24 条 tubatools 移植验收单测)+ 5/5(宿主)、vitest 14/14(含 source-boundaries 命令表/列名一致性)、C# 28/28(Round 7 未改 C#,基线沿用)
 
 ## 三、架构速览
 
@@ -52,7 +52,7 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 7. **CREATE_NO_WINDOW 下 .NET 的 Console 编码设置器会崩**——provider 用 raw UTF-8 流
 8. **服务命名管道多实例 accept,裸指针 handle 进闭包过不了 Send 分析——用 usize 传地址**
 9. **mpsc worker 发回 `Result` 时,`recv()?` 剥的是信封,内层 Result 必须再解一次**——曾把 `{"Ok":...}` 发给前端炸 React
-10. **悬浮框数据缓存 carry-forward 有 5 秒 TTL**——修改缓存逻辑时不得移除
+10. **悬浮框数据缓存 carry-forward 有 1 秒 TTL**(Round 7 从 5s 收紧,对齐 tubatools 2s 无帧归零;5s 会让停帧读数糊 5 秒)——修改缓存逻辑时不得移除
 11. **传感器匹配无"任意第一"兜底**(提示列表顺序即优先级,ranked 选择)——防机箱风扇冒充 CPU 风扇
 12. **Rust 写 C# 要读的 JSON:int 字段必须写整数**——`1000.0` 浮点会让 JavaScriptSerializer 反序列化整体抛异常,ConfigStore.Load **静默回退默认配置**(watcher 全盲;config_save 曾因此让用户目标全丢)
 13. **FIRST_PIPE_INSTANCE 真值是 `0x00080000`**(写成 `0x0005_0000` 会 ERROR_INVALID_PARAMETER 服务秒死),且**只允许首实例断言**——accept 循环重建第二实例时带它必得 ACCESS_DENIED 被误判"冗余"自杀
@@ -75,6 +75,7 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 22.4 **判断透明是否生效必须在亮色内容上做像素采样**(inside vs outside),黑壁纸肉眼不可判;历史几轮"时好时坏"多为涂层/竞态+深色壁纸误判叠加。
 23. **强杀进程树会泄漏 ETW 内核会话**——残留 "NT Kernel Logger" 占住槽位后 PresentMon 静默零事件(Started recording 但零字节 CSV);用 logman query -ets 排查、logman stop "NT Kernel Logger" -ets 清理。另:CS2 新版启动停在静态模式选择对话框(不点击不渲染→零 present),自动化测试必须点过它;PM 2.x 只在优雅停止时落盘 CSV。
 24. **tauri bundle 用 mainBinaryName 改名产物**——target/release 里仍是 crate bin 名(framescope-ui-preview.exe),安装包里才是 FrameScope.exe;校验脚本要查对文件。设置页/关闭行为桌面端唯一事实源是 framescope-config.json(config_read/config_save 双向),前端 localStorage 只是浏览器回退。
+25. **game_fps.rs 的时间常量全部是 100ns ticks,而 ETW EVENT_HEADER.TimeStamp 是原始 QPC**——回调入口必须先过 qpc_to_100ns(QPF 归一,10MHz 恒等快路径);TierState 初始值为 0,tubatools 同款语义下会话启动 ~500ms 内对非 History 层有预热瞬态,测试时间基址要从大值起步
 
 ## 五、Round 3(2026-09-10)完成——用户反馈批次
 
@@ -127,6 +128,35 @@ FrameScopeHardwareService(Rust,命名管道 DACL 限提权、多实例 accept、
 - **实机全绿**:交互安装(文件+ARP+卸载器副本)、卸载皮肤往返、静默 /S 装卸、零残留(含自删)、完成态(window.close 修复——装完别关窗,让用户看到完成页)。
 - **⚠️ payload 布局修复(91579d4,用户实测"硬件信息加载失败"抓获)**:pack-payload.ps1 初版把 backend/ 目录原样塞进 payload,装完后硬件链在 `<dir>\backend\` 而主程序按 **exe 同级目录**解析后端→全挂。**铁律 26:payload/资源布局必须对齐 NSIS 映射(resources/backend/* 平铺到安装根,tools/、Fonts/ 同级)**;两条安装路径解包前删残留的旧 backend/ 目录。**另一个坑:include_bytes! 是构建时嵌入——先 pack 后 cargo build 的顺序错了就装出旧载荷**(build.rs rerun-if-changed 只在再编译时生效);改 payload 必须重跑 cargo build 再分发。排版修正(e7d0353):Shell footer 插槽修 GPL 小字出窗、卸载页 OptionArea 选项区解重叠。
 - **P3 待做**:进度/视觉打磨(SVG 折射玻璃/动画)、体积优化(79MB vs NSIS 60MB,可换 zstd)、集成进流水线默认产物、D= 路径实测、升级覆盖实测(装新版覆盖旧版)。
+
+## 五·六、Round 7(2026-09-14)完成——六问题三批实施
+
+依据 `docs/audit/2026-09-14-issue-analysis.md`(根因)与 `HANDOFF-SESSION-20260914-SIX-ISSUES-READY-TO-IMPLEMENT.md`(实施指南)。三笔提交,全部测试绿。
+
+**批 1 = 问题 5+6(616b049)**:`game_fps.rs` 按 tubatools FpsTracker(GPL-3.0,纯 ETW)重写——
+- QPC→100ns 归一(QueryPerformanceFrequency,10MHz 恒等快路径;单测锁死)
+- 分层去重窗口:History/legacy 1ms(原 Tier1 0.1ms)、0xC9 4ms;**EnableTraceEx2 MatchAnyKeyword=u64::MAX(原 0 = DxgKrnl 带 keyword 事件整类静默丢弃,才是 250FPS 封顶真因)+ FlushTimer=1s + 8KB 缓冲**
+- 瞬时 FPS=60 样本环 (n-1)/duration,EMA 删除;帧窗口 (绝对ticks,帧时间)×32768 绝对时间剪枝;1%/0.1% low=10s/30s 时间窗+100/900 门槛+最慢帧平均帧时间取倒数,1Hz 计算限频(CPU 预算)
+- 下游:服务节流 1Hz→10Hz、carry-forward 5s→1s、宿主 poller 1Hz→10Hz、GDI 重绘 500ms→250ms;停帧过期 3s→2s + 代次 bump 清环
+- 问题 6 方案 A:GDI+竖排 OSD 周期性 SetWindowPos(HWND_TOPMOST,SWP_NOACTIVATE)(GDI 挂 250ms WM_TIMER,竖排独立 500ms 线程);GDI 窗补 WS_EX_NOACTIVATE;宽度钳制按 MonitorFromPoint 取副屏矩形。方案 E:per-pid 呈现模式检测(0xB8/0xA8 孤立活跃=传统独占;0x10A=独立翻转;0xC9=合成),经 overlay `present_mode` 字段透出+日志
+- 新增 `FrameScopeHardwareService.exe --etw-diag [秒]` 诊断子命令(DxTraceDiag 移植,按 pid 打事件 ID 分布+帧间隔中位数)
+- 新增铁律 25:PRESENT 模式判定/分层算法常量单位是 100ns,ETW TimeStamp 是 QPC,必须归一
+
+**批 2 = 问题 4+3(c8d2f09)**:
+- 问题 4:`monitor_status` 读 `<dataRoot>/<Target>/<run>/report-progress.json`(C# 真实进度信号,10 分钟新鲜度、percent<100)返回 `phase=generating` + reportPercent/reportEtaSeconds;HomePage 进度条=合成进度(采集期空置不跑动),读秒删除,仅 generating 显示「预计还需 N 秒」
+- 问题 3:LiquidGlassCard 剔除调用方 bg/borderColor/backdropFilter(外观以组件计算值为准);HardwarePage StatCard/DetailCard 删二分;CpuScheduler/DeltaForce×3/Roulette/Announcement 同类二分删除;新增 `useGlassSurfaceStyle()` hook,NetworkOptimizer×6/AntiCheat/GameProcess×2/SteamPage 裸 Box 收敛;顺手修 1723d19 遗留的 sidebar.tsx Box 未导入编译错
+
+**批 3 = 问题 1+2(a82e8ec)**:
+- 问题 1:删 backface-visibility:hidden(index.css `[data-backdrop-filter]`、liquid-glass-button、sidebar 两容器)——合成层圆角无 AA 裁剪的主开关;translateZ 提升保留
+- 问题 2:main-layout 背景层 translateZ(0)+willChange 改条件式(仅 fading/entering 期间,600ms 清理定时器同步撤销 entering);animated-page onAnimationComplete 用 rAF 延后一帧恢复 backdrop-filter
+- 已验证:PrintWindow 实机抓图(亮色壁纸)——玻璃卡正常、4x 放大圆角平滑无锯齿、静止期背景无竖向断层。**未验证(需用户)**:淡化闪烁时域观感、blur=1 最差工作点、竖向接缝是否在静止期回归(若回归,改 contain: paint)
+
+### Round 7 遗留(待用户/实机)
+1. **游戏实测**:CS2 低画质关垂直同步验证 300/600/1000 不封顶;60↔300 阶跃响应 <500ms;EAC/BattlEye/Javelin 下 ETW 供数确认;独占全屏 OSD 显示(方案 A 预期解决 flip model 场景)
+2. **拍板项(未做,等用户)**:CSV 兜底采样率 1Hz→2-5Hz;方案 B「强制显示 OSD(掉帧 5-15%)」开关;模糊默认值 1→12
+3. **方案 E 的 UI 提示**(传统独占时引导切无边框)未做——数据已透出(present_mode 字段+日志)
+4. CPU/内存复测未做(改动前基线 ~0.8-1.1% / ~340MB)
+5. 本机有 2 个历史遗留 "NT Kernel Logger" ETW 会话在运行(非本会话产生,疑似此前 PresentMon 泄漏)——影响 PresentMon 兜底,`logman stop "NT Kernel Logger" -ets` 可清,需用户确认归属后处理
 
 ## 五·五、历史、本轮(2026-09-08/09)完成
 
