@@ -52,6 +52,12 @@ export function LiquidGlassCard({
     return `blur(${effectiveBlur}px) saturate(1.3)`;
   }, [glassOn, isReal, effectiveBlur]);
 
+  // 玻璃开启时给自身加圆角 clip-path：backdrop-filter 在合成动画
+  // （页面切换透明度层）期间会忽略 border-radius 裁剪，方形模糊区
+  // 溢出圆角；clip-path 是对 backdrop-filter 可靠的裁剪手段。
+  // 卡片无外置 box-shadow，自身裁剪不会截断阴影。
+  const glassClipPath = glassOn && !isReal ? "inset(0 round 0.75rem)" : undefined;
+
   // 边缘折射条用的 filter
   const edgeFilter = svgSupported ? "url(#nexbox-liquid-glass-filter)" : "none";
 
@@ -63,10 +69,11 @@ export function LiquidGlassCard({
       borderColor: isReal ? "rgba(255,255,255,0.06)" : (glassOn ? glassBorderColor : defaultBorder),
       backdropFilter,
       WebkitBackdropFilter: backdropFilter,
+      clipPath: glassClipPath,
       transition: "background 0.45s, border-color 0.45s, backdrop-filter 0.45s",
     };
     return base;
-  }, [backdropFilter, glassOn, glassBgColor, glassBorderColor, defaultBg, defaultBorder, isDashed, isReal, forceGlass]);
+  }, [backdropFilter, glassClipPath, glassOn, glassBgColor, glassBorderColor, defaultBg, defaultBorder, isDashed, isReal, forceGlass]);
 
   const borderGlowStyle = useMemo(() => getBorderGlowStyle(glowColor), [glowColor]);
 

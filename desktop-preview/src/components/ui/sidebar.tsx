@@ -712,7 +712,6 @@ export function Sidebar() {
       bg={liquidGlassEnabled ? glassBgColor : defaultBgColor}
       border="1px solid"
       borderColor={liquidGlassEnabled ? glassBorderColor : defaultBorderColor}
-      backdropFilter={backdropFilter}
       transition="max-width 0.25s cubic-bezier(0.95, 0, 1, 1), left 0.4s cubic-bezier(0.4, 0, 0.2, 1), top 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), padding 0.4s cubic-bezier(0.4, 0, 0.2, 1), background 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
       sx={{
         ...containerStyles.sx,
@@ -725,14 +724,29 @@ export function Sidebar() {
         }
       }}
     >
+      {/* 模糊层独立成带圆角 + clip-path 的内层：backdrop-filter 在带 3D transform
+          （translateY/translateZ 居中）的容器上会忽略圆角裁剪，方形模糊区溢出
+          圆角边框（Chromium 已知行为）；clip-path 对其裁剪是可靠的。 */}
+      {liquidGlassEnabled && (
+        <ChakraBox
+          position="absolute"
+          inset={0}
+          borderRadius="2xl"
+          backdropFilter={backdropFilter}
+          sx={{ WebkitBackdropFilter: backdropFilter, clipPath: "inset(0 round 1rem)", zIndex: 0 }}
+          pointerEvents="none"
+        />
+      )}
       {!isReal && (
         <ChakraBox
-          style={getBorderGlowStyle(glowColor)}
+          style={{ ...getBorderGlowStyle(glowColor), zIndex: 1 }}
           opacity={liquidGlassEnabled ? 1 : 0}
           transition="opacity 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
         />
       )}
-      {sidebarContent}
+      <Box position="relative" zIndex={1}>
+        {sidebarContent}
+      </Box>
     </ChakraBox>
   );
 }
