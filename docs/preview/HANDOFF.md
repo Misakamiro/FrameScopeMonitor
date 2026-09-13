@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-13　|　交接人:ZCode　|　状态:**Round 6 P1/P2 完成——自研 Tauri 安装器(单 exe 双模式/单页向导/主 UI 同风格/静默 /S)实机全绿,NSIS 链路并存保留,P3 打磨待做;Round 5(样式切换三连修+热路径补修)、Round 4(竖排 OSD 透明度)继续有效,工作树干净,未 push**
+> 交接日期:2026-09-13　|　交接人:ZCode　|　状态:**Round 6 P1/P2 完成——自研 Tauri 安装器(单 exe 双模式/单页向导/主 UI 同风格/静默 /S)实机全绿,NSIS 链路并存保留,P3 打磨待做;Round 5(样式切换三连修+热路径补修)、Round 4(竖排 OSD 透明度)继续有效,工作树干净,未 push****;本会话完整来龙去脉见 HANDOFF-SESSION-20260913-OSD-FINAL-NATIVE-INSTALLER.md
 
 ---
 
