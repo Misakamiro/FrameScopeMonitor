@@ -270,6 +270,14 @@ pub fn install(
 
     kill_running_app();
 
+    // A payload packed before the layout fix nested backend files under a
+    // backend/ subfolder the app never looks at - drop it so the flat
+    // extraction below is authoritative.
+    let stale_backend = target.join("backend");
+    if stale_backend.join("FrameScopeHardwareService.exe").exists() {
+        let _ = fs::remove_dir_all(&stale_backend);
+    }
+
     // Migrate away from a legacy NSIS install: its uninstaller exe/registry
     // entry would survive beside ours as a ghost entry.
     {
@@ -321,6 +329,14 @@ pub fn install(
 pub fn install_headless(target_dir: String, desktop_shortcut: bool, autostart: bool) -> Result<(), String> {
     let target = PathBuf::from(&target_dir);
     kill_running_app();
+
+    // A payload packed before the layout fix nested backend files under a
+    // backend/ subfolder the app never looks at - drop it so the flat
+    // extraction below is authoritative.
+    let stale_backend = target.join("backend");
+    if stale_backend.join("FrameScopeHardwareService.exe").exists() {
+        let _ = fs::remove_dir_all(&stale_backend);
+    }
     {
         let state = get_state();
         if state.installed && state.legacy_nsis {

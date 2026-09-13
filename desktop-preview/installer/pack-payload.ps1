@@ -27,11 +27,15 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 try {
     Copy-Item $mainExe (Join-Path $stage 'FrameScope.exe')
     # resources/* maps to the install root, same layout the NSIS package uses.
-    Copy-Item (Join-Path $staging '*') $stage -Recurse -Force
-    # payload.zip itself may linger from a previous run inside staging; never
-    # nest it.
-    if (Test-Path (Join-Path $stage 'payload.zip')) {
-        Remove-Item (Join-Path $stage 'payload.zip') -Force
+    # Layout must match the NSIS resource mapping (resources/backend/* ->
+    # install root, backend/tools -> tools/, fonts -> Fonts/): the app
+    # resolves its backend chain from EXE-side directories, so the payload
+    # must lay backend contents FLAT at the root - nesting a backend/ folder
+    # breaks hardware data entirely (measured).
+    Copy-Item (Join-Path $staging 'backend\*') $stage -Recurse -Force
+    New-Item -ItemType Directory -Path (Join-Path $stage 'Fonts') -Force | Out-Null
+    if (Test-Path (Join-Path $staging 'fonts\*')) {
+        Copy-Item (Join-Path $staging 'fonts\*') (Join-Path $stage 'Fonts') -Recurse -Force
     }
 
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $outZip -CompressionLevel Optimal
