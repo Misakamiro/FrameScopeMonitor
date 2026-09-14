@@ -674,7 +674,10 @@ export function Sidebar() {
     position: "fixed" as const,
     left: 6,
     top: "50%",
-    transform: "translateY(-50%) translateZ(0)",
+    transform: "translateY(-50%)",
+    // translateZ(0) 已移除（合成层提升会让圆角裁剪走无 AA 路径，问题 1）；
+    // 结构裁剪：容器 overflow hidden + borderRadius，内层模糊层不设圆角
+    overflow: "hidden",
     zIndex: 40,
     borderRadius: "2xl",
     boxShadow: "2xl",
@@ -690,7 +693,8 @@ export function Sidebar() {
     position: "fixed" as const,
     top: "54px",
     left: "50%",
-    transform: "translateX(-50%) translateZ(0)",
+    transform: "translateX(-50%)",
+    overflow: "hidden",
     zIndex: 40,
     borderRadius: "2xl",
     boxShadow: "2xl",
@@ -725,16 +729,16 @@ export function Sidebar() {
         }
       }}
     >
-      {/* 模糊层独立成带圆角 + clip-path 的内层：backdrop-filter 在带 3D transform
-          （translateY/translateZ 居中）的容器上会忽略圆角裁剪，方形模糊区溢出
-          圆角边框（Chromium 已知行为）；clip-path 对其裁剪是可靠的。 */}
+      {/* 模糊层独立内层（不设圆角、不用 clip-path）：容器的 borderRadius +
+          overflow:hidden 在**绘制阶段**裁剪它——圆角走完整抗锯齿路径。
+          旧方案内层自带 borderRadius + clipPath 且容器被 translateZ 提升为
+          合成层，圆角只能走无 AA 的 mask 裁剪（问题 1 毛刺根因）。 */}
       {liquidGlassEnabled && (
         <ChakraBox
           position="absolute"
           inset={0}
-          borderRadius="2xl"
           backdropFilter={backdropFilter}
-          sx={{ WebkitBackdropFilter: backdropFilter, clipPath: "inset(0 round 1rem)", zIndex: 0 }}
+          sx={{ WebkitBackdropFilter: backdropFilter, zIndex: 0 }}
           pointerEvents="none"
         />
       )}

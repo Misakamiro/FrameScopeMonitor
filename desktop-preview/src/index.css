@@ -90,13 +90,15 @@ body {
      无抗锯齿的 mask 裁剪路径（问题 1 圆角毛刺的根因），与层提升本身无关 */
 }
 
-/* 页面切换动画期间（framer-motion 会把页面提升为独立合成层），
-   层内 backdrop-filter 无法采样层外真实背景，会导致液态玻璃（含边缘折射条）
-   先透明、动画结束瞬间突变模糊/闪烁。
-   动画期间统一关闭所有 backdrop-filter，动画结束、合成层合并后
-   再配合各组件的 backdrop-filter transition 平滑浮现。 */
-.page-animating,
-.page-animating * {
+/* 页面切换动画期间的 backdrop-filter 处理（Round 8 重定）：
+   旧规则在动画起止把 backdrop-filter 在 none↔blur() 之间离散跳变——CSS 无法
+   在二者间插值，每次跳变都迫使背景大图整幅重新光栅化，表现为切页闪一帧
+   （仅预设/图片背景出现，视频/WebGL 背景天然免疫——用户实测确认的边界）。
+   折中取舍：动画期间保持 backdrop-filter 连续（不再跳变），代价是淡动画的
+   ~0.4s 内玻璃采样的是动画层内背景（轻微滞后/偏差），在背景交叉淡化的场景
+   下肉眼不可辨；换来的消除整屏闪烁是硬收益。 */
+.page-animating .liquid-glass-skip-anim,
+.page-animating .liquid-glass-skip-anim * {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }

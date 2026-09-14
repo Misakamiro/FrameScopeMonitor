@@ -65,6 +65,8 @@ interface HardwareData {
   fps: number | null;
   fps_1low: number | null;
   fps_01low: number | null;
+  /** 目标进程呈现模式（ETW 推断）：composited / independent-flip / legacy-exclusive */
+  present_mode?: string | null;
   cpu_usage: number | null;
   cpu_temp: number | null;
   cpu_clock: number | null;
@@ -496,6 +498,23 @@ export default function VerticalOverlayPage() {
         <div style={{ padding: "1px 0" }} />
       ) : (
         <>
+          {/* 问题 6 方案 E 的 UI 引导：ETW 判定传统独占全屏时 OSD 物理不可见
+              （交换链独占扫描输出），提示切无边框窗口模式 */}
+          {hardwareData?.present_mode === "legacy-exclusive" && (
+            <div
+              style={{
+                fontSize: "11px",
+                lineHeight: 1.5,
+                color: "#ffd166",
+                background: "rgba(0,0,0,0.55)",
+                borderRadius: "8px",
+                padding: "6px 8px",
+                marginBottom: "4px",
+              }}
+            >
+              检测到独占全屏：OSD 无法显示。建议在游戏内切换为「无边框窗口」模式。
+            </div>
+          )}
       {/* 内置项列表 */}
       {enabledItems.map((item) => {
         const rawValue = getItemValue(item, hardwareData);

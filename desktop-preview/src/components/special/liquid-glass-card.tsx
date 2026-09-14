@@ -59,28 +59,42 @@ export function LiquidGlassCard({
     return `blur(${effectiveBlur}px) saturate(1.3)`;
   }, [glassOn, isReal, effectiveBlur]);
 
-  // 玻璃开启时给自身加圆角 clip-path：backdrop-filter 在合成动画
-  // （页面切换透明度层）期间会忽略 border-radius 裁剪，方形模糊区
-  // 溢出圆角；clip-path 是对 backdrop-filter 可靠的裁剪手段。
-  // 卡片无外置 box-shadow，自身裁剪不会截断阴影。
-  const glassClipPath = glassOn && !isReal ? "inset(0 round 0.75rem)" : undefined;
-
   // 边缘折射条用的 filter
   const edgeFilter = svgSupported ? "url(#nexbox-liquid-glass-filter)" : "none";
 
+  // 结构裁剪（Round 8，问题 1 圆角毛刺的根治）：backdrop-filter 从根元素挪到
+  // zIndex:-1 的 ::before 底层，根只保留 borderRadius + overflow:hidden——
+  // 裁剪发生在根的**绘制阶段**（根不是合成层），圆角走完整抗锯齿路径；
+  // 旧方案根自身带 backdrop-filter 会被强制提升为合成层，圆角只能走无 AA 的
+  // mask 裁剪（毛刺根因）。玻璃色随 backdropFilter 同层，视觉不变。
+  const glassUnderlay = useMemo(() => ({
+    content: '""',
+    position: "absolute",
+    inset: 0,
+    zIndex: -1,
+    borderRadius: "inherit",
+    backdropFilter,
+    WebkitBackdropFilter: backdropFilter,
+    transition: "backdrop-filter 0.45s",
+  }), [backdropFilter]);
+
   const cardStyles = useMemo(() => {
     const base: any = {
+      // 玻璃色留在根：stacking context 内负 z 层画在根背景之上，模糊采样会把
+      // 蒙版一起处理（均匀色模糊不变），视觉与旧版（bg+blur 同元素）等效
       bg: isReal ? "transparent" : (glassOn ? glassBgColor : defaultBg),
       borderRadius: "xl" as const,
       border: isDashed ? "1px dashed" : "1px solid",
       borderColor: isReal ? "rgba(255,255,255,0.06)" : (glassOn ? glassBorderColor : defaultBorder),
-      backdropFilter,
-      WebkitBackdropFilter: backdropFilter,
-      clipPath: glassClipPath,
-      transition: "background 0.45s, border-color 0.45s, backdrop-filter 0.45s",
+      overflow: "hidden",
+      // zIndex:0 让根成为 stacking context：::before(-1) 被限制在卡片内部
+      // （bg 之上、children 之下），否则 -1 会掉到页面级底层压掉模糊层
+      zIndex: 0,
+      sx: { "::before": glassUnderlay },
+      transition: "background 0.45s, border-color 0.45s",
     };
     return base;
-  }, [backdropFilter, glassClipPath, glassOn, glassBgColor, glassBorderColor, defaultBg, defaultBorder, isDashed, isReal, forceGlass]);
+  }, [glassUnderlay, glassOn, glassBgColor, defaultBg, glassBorderColor, defaultBorder, isDashed, isReal]);
 
   const borderGlowStyle = useMemo(() => getBorderGlowStyle(glowColor), [glowColor]);
 
@@ -89,7 +103,6 @@ export function LiquidGlassCard({
       className={`jelly-bounce-card${isReal ? " real-liquid-glass" : ""}${className ? ` ${className}` : ""}`}
       {...cardStyles}
       position="relative"
-      overflow="visible"
       {...props}
     >
       {/* 边缘折射条 —— 独立叠加层，仅覆盖边缘 10px，卡片内部完全不受影响 */}

@@ -299,10 +299,21 @@ pub fn build_overlay_data(
         }
     }
 
+    // low 钳到窗口平均：瞬时 FPS 是 60 样本短窗，卡顿瞬间低于 10s 窗口的 low
+    // 会呈现「low 比 FPS 还高」的倒挂（用户报的显示异常）。low ≤ avg 只有在
+    // 同口径下恒成立，跨窗口时由这里强制。
+    let low_clamp = fps.0.map(|v| (v * 10.0).round() / 10.0).or(crate::game_fps::get_cached_window_avg_fps().map(f64::from));
+    let clamp_low = |low: Option<f64>| -> Option<f64> {
+        match (low, low_clamp) {
+            (Some(low), Some(cap)) if low > cap => Some(cap),
+            (other, _) => other,
+        }
+    };
+
     OverlayData {
         fps: fps.0.map(|v| (v * 10.0).round() / 10.0),
-        fps_1low: fps.1.map(|v| (v * 10.0).round() / 10.0),
-        fps_01low: fps.2.map(|v| (v * 10.0).round() / 10.0),
+        fps_1low: clamp_low(fps.1).map(|v| (v * 10.0).round() / 10.0),
+        fps_01low: clamp_low(fps.2).map(|v| (v * 10.0).round() / 10.0),
         cpu_usage: r1(dynamic_value(snapshot, "cpuUsage")),
         cpu_temp: r1(dynamic_value(snapshot, "cpuTemperature")),
         cpu_clock: dynamic_value(snapshot, "cpuFrequency").map(|v| v.round()),

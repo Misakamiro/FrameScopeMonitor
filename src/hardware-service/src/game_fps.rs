@@ -56,6 +56,11 @@ static ONE_PCT_LOW_FPS: AtomicU32 = AtomicU32::new(0);
 static ZERO_DOT_ONE_PCT_LOW_FPS: AtomicU32 = AtomicU32::new(0);
 /// 目标进程最近呈现模式（问题 6 方案 E）：0 未知 / 1 合成 / 2 独立翻转 / 3 传统独占
 static PRESENT_MODE: AtomicU8 = AtomicU8::new(0);
+/// 10s 窗口平均 FPS（与 1% low 同窗口口径）。OSD 的瞬时 FPS 是 60 样本短窗，
+/// 卡顿瞬间会低于 10s 窗口的 low 值，观感上「low 比 FPS 还高」像数据错误 ——
+/// overlay 层用本值把 low 钳到 ≤ 窗口平均（PresentMon/CapFrameX 语义里
+/// low ≤ avg 恒成立，同口径才成立）。
+static WINDOW_AVG_FPS: AtomicU32 = AtomicU32::new(0);
 
 pub const MODE_UNKNOWN: u8 = 0;
 pub const MODE_COMPOSITED: u8 = 1;
@@ -130,10 +135,13 @@ pub(crate) const INDEPENDENT_FLIP: u16 = 0x010A; // IndependentFlip_Info（Tier3
 
 /// 1ms：同帧去重窗口（History/legacy/MPO 路径）。内核一帧发多个事件（微秒级间隔）。
 pub(crate) const SAME_FRAME_WINDOW_TICKS: i64 = 10_000;
-/// 4ms：Win32k 一帧可对应多个 composition surface（多窗口/UI 层），用更宽窗口合并。
-/// 注意：这只限制 0xC9 单一信源路径的上限（250FPS）；现代路径的帧率来自 1ms 的
-/// Tier1 信源，不受此窗口影响（0xC9 不压制 0xAB/0xD7）。
-pub(crate) const WIN32K_SAME_FRAME_WINDOW_TICKS: i64 = 40_000;
+/// 2ms：Win32k 合成事件（0xC9）的同帧窗口。tubatools 原值 4ms 的理由是
+/// 「一帧可对应多个 composition surface」，但本机（Win11 24H2，多轮 etw-diag
+/// 实测）0xC9 每合成帧恰好 1 个、无多 surface 重复，4ms 只会把合成路径读数
+/// 钳到 250FPS。收紧到 2ms（上限 500FPS），2ms 仍能挡住同帧多 surface 毛刺。
+/// 注意：合成路径（composited）下 0xC9 的节奏 = DWM 合成节奏 ≤ 刷新率，
+/// 读数口径是「上屏 FPS」；高频读数依赖独立翻转路径的 Tier1/Tier3 信源。
+pub(crate) const WIN32K_SAME_FRAME_WINDOW_TICKS: i64 = 20_000;
 /// 500ms：信源优先级 shadow 窗口
 pub(crate) const MODE_WINDOW_TICKS: i64 = 5_000_000;
 
@@ -484,6 +492,23 @@ impl FpsTracker {
     pub(crate) fn session_avg_fps(&self) -> f64 {
         if self.total_frames > 0 && self.total_frame_time > 0.0 {
             self.total_frames as f64 / self.total_frame_time
+        } else {
+            0.0
+        }
+    }
+
+    /// 10s 窗口平均 FPS（与 1% low 同窗口、同剪枝口径）
+    pub(crate) fn window_avg_fps(&self) -> f64 {
+        let mut scratch = Vec::new();
+        if !self.window.collect_window(LOW1_WINDOW_TICKS, &mut scratch) && scratch.is_empty() {
+            return 0.0;
+        }
+        if scratch.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = scratch.iter().sum();
+        if sum > 0.0 {
+            scratch.len() as f64 / sum
         } else {
             0.0
         }
@@ -841,6 +866,7 @@ mod etw {
             rt.last_gen = gen;
             ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
             ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
+            WINDOW_AVG_FPS.store(0, Ordering::Relaxed);
         }
 
         // 瞬时 FPS：60 样本环形 (n-1)/duration，事件驱动逐帧刷新，无 EMA
@@ -851,6 +877,10 @@ mod etw {
 
         // 每 ~1 秒计算 1% / 0.1% Low（32768 帧排序不可高频跑，CPU 预算硬指标）
         if rt.last_low_calc.elapsed() >= Duration::from_secs(1) {
+            let wavg = rt.tracker.window_avg_fps();
+            if wavg > 0.0 {
+                WINDOW_AVG_FPS.store(wavg.round() as u32, Ordering::Relaxed);
+            }
             let one_low = rt.tracker.one_percent_low();
             if one_low > 0.0 {
                 ONE_PCT_LOW_FPS.store(one_low.round() as u32, Ordering::Relaxed);
@@ -1285,9 +1315,10 @@ fn process_tracker_loop() {
                     now - last_frame
                 );
                 SMOOTHED_FPS.store(0, Ordering::Relaxed);
-                // 过期同时清掉低分位，避免悬浮框长期滞留上一局的 1%/0.1% Low。
+                // 过期同时清掉低分位与窗口平均，避免悬浮框长期滞留上一局的读数。
                 ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
                 ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
+                WINDOW_AVG_FPS.store(0, Ordering::Relaxed);
                 PRESENT_MODE.store(MODE_UNKNOWN, Ordering::Relaxed);
                 TARGET_GENERATION.fetch_add(1, Ordering::Relaxed);
             }
@@ -1429,6 +1460,7 @@ pub fn stop_fps_monitor() {
     SMOOTHED_FPS.store(0, Ordering::Relaxed);
     ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
     ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
+    WINDOW_AVG_FPS.store(0, Ordering::Relaxed);
     LAST_FRAME_TIME.store(0, Ordering::Relaxed);
     TARGET_GENERATION.store(0, Ordering::Relaxed);
     PRESENT_MODE.store(MODE_UNKNOWN, Ordering::Relaxed);
@@ -1467,6 +1499,16 @@ pub fn get_cached_1low_fps() -> Option<u32> {
 /// 窗口未填满或帧数 <900 返回 None。
 pub fn get_cached_01low_fps() -> Option<u32> {
     let fps = ZERO_DOT_ONE_PCT_LOW_FPS.load(Ordering::Relaxed);
+    if fps == 0 {
+        None
+    } else {
+        Some(fps)
+    }
+}
+
+/// 获取缓存的 10s 窗口平均 FPS（与 1% low 同口径，供 overlay 钳制 low）
+pub fn get_cached_window_avg_fps() -> Option<u32> {
+    let fps = WINDOW_AVG_FPS.load(Ordering::Relaxed);
     if fps == 0 {
         None
     } else {
@@ -1648,9 +1690,9 @@ mod tests {
 
     #[test]
     fn tier_same_frame_windows_uncap_history_but_cap_win32k_single_source() {
-        // 设计口径（与 tubatools 一致）：History/legacy 路径 1ms 去重 → 上限
-        // 1000FPS；0xC9 单一信源路径 4ms → 250FPS（高频场景的帧率来自 Tier1，
-        // 不受 4ms 窗口影响——0xC9 不压制 0xAB/0xD7）。
+        // 设计口径：History/legacy 路径 1ms 去重 → 上限 1000FPS；0xC9 单一信源
+        // 路径 2ms → 500FPS（tubatools 原值 4ms 在本机无必要：etw-diag 实测 C9
+        // 每合成帧恰好 1 个，无多 surface 重复）。
         // 注：TierState 初始值为 0（tubatools 同款语义），真实 QPC ticks 巨大，
         // 仅会话启动后 ~500ms 内有对非 History 层的预热瞬态；测试从 100s 基址
         // 起步以避开该瞬态。
@@ -1662,8 +1704,8 @@ mod tests {
 
         let mut st2 = TierState::default();
         assert!(tier_dedup(&mut st2, WIN32K_PRESENT, base));
-        assert!(!tier_dedup(&mut st2, WIN32K_PRESENT, base + tick(3))); // 3ms < 4ms 丢
-        assert!(tier_dedup(&mut st2, WIN32K_PRESENT, base + tick(6))); // 6ms ≥ 4ms 收
+        assert!(!tier_dedup(&mut st2, WIN32K_PRESENT, base + 15_000)); // 1.5ms < 2ms 丢
+        assert!(tier_dedup(&mut st2, WIN32K_PRESENT, base + 25_000)); // 2.5ms ≥ 2ms 收
     }
 
     // ---- 呈现模式检测（问题 6 方案 E） ----
@@ -1896,6 +1938,16 @@ mod tests {
         // 若兜底取 3 帧，会混进一帧 50ms → 83ms → 12 FPS，不再落在此区间。
         let low = tracker.one_percent_low();
         assert!((9.5..=10.5).contains(&low), "got {low}");
+    }
+
+    #[test]
+    fn window_avg_matches_uniform_stream() {
+        let mut tracker = FpsTracker::new();
+        feed(&mut tracker, 700, tick(1000) / 70, 0); // 70Hz × 10s
+        let avg = tracker.window_avg_fps();
+        assert!((69.0..=71.0).contains(&avg), "got {avg}");
+        tracker.clear();
+        assert_eq!(tracker.window_avg_fps(), 0.0);
     }
 
     #[test]
