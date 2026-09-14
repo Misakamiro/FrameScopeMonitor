@@ -1,6 +1,6 @@
 # FrameScope · 交接文档
 
-> 交接日期:2026-09-14　|　交接人:ZCode　|　状态:**Round 7 完成——六问题三批实施(批1 FPS 采集链重写+OSD 周期置顶 / 批2 报告进度语义+玻璃模式契约 / 批3 合成层圆角 AA+淡化闪烁),三笔提交 616b049+c8d2f09+a82e8ec,未 push;游戏内实机验证(不封顶/阶跃响应/反作弊供数)与两项用户拍板项待做**;分析依据 docs/audit/2026-09-14-issue-analysis.md,实施指南 HANDOFF-SESSION-20260914-SIX-ISSUES-READY-TO-IMPLEMENT.md;Round 6/5/4 继续有效
+> 交接日期:2026-09-14　|　交接人:ZCode　|　状态:**Round 8 完成(用户实测五问题复盘,f87b7f0)——200封顶=C9合成节流口径(非bug,读数=上屏率)、low跨窗口倒挂已钳制、闪烁=page-animating跳变已除、圆角=::before结构裁剪已改、独占提示已加;Round 7 完成——六问题三批实施(批1 FPS 采集链重写+OSD 周期置顶 / 批2 报告进度语义+玻璃模式契约 / 批3 合成层圆角 AA+淡化闪烁),三笔提交 616b049+c8d2f09+a82e8ec,未 push;游戏内实机验证(不封顶/阶跃响应/反作弊供数)与两项用户拍板项待做**;分析依据 docs/audit/2026-09-14-issue-analysis.md,实施指南 HANDOFF-SESSION-20260914-SIX-ISSUES-READY-TO-IMPLEMENT.md;Round 6/5/4 继续有效
 
 ---
 
