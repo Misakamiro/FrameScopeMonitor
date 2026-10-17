@@ -304,7 +304,7 @@ function Expand-PayloadResource {
     Expand-ZipSafe -ZipPath $zipPath -Destination $Destination
 
     $fileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($AssemblyPath).FileVersion
-    if (-not $fileVersion.StartsWith($version + '.', [StringComparison]::Ordinal)) {
+    if (-not $fileVersion.StartsWith($version.Split('-')[0] + '.', [StringComparison]::Ordinal)) {
         throw "Assembly version mismatch: $AssemblyPath version=$fileVersion expected=$version"
     }
 

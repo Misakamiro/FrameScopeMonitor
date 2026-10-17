@@ -75,8 +75,8 @@ pub fn ensure_update_idle() -> Result<(),String> {
     ensure_not_closing()?;
     let status=monitor_status()?;
     match status["phase"].as_str() {
-        Some("idle"|"waiting"|"stopped"|"completed")=>Ok(()),
-        _=>Err("采集、停止收尾或报告生成期间不能安装，请先正常停止监控".into()),
+        Some(phase) if framescope_update::installation_allowed(phase)=>Ok(()),
+        _=>Err("请先正常停止监控，等待采集和报告收尾，再安装或恢复版本".into()),
     }
 }
 pub fn reserve_update()->Result<(),String>{
@@ -85,7 +85,7 @@ pub fn reserve_update()->Result<(),String>{
     if UPDATE_PENDING.swap(true,std::sync::atomic::Ordering::SeqCst){return Err("更新已在进行".into());}
     drop(report);drop(owned);
     let status=monitor_status();
-    if !status.is_ok_and(|s|matches!(s["phase"].as_str(),Some("idle"|"waiting"|"stopped"|"completed"))){release_update();return Err("监控正在采集或收尾，请稍后安装".into());}
+    if !status.is_ok_and(|s|s["phase"].as_str().is_some_and(framescope_update::installation_allowed)){release_update();return Err("监控正在运行或收尾，请先正常停止监控".into());}
     Ok(())
 }
 pub fn release_update(){UPDATE_PENDING.store(false,std::sync::atomic::Ordering::SeqCst);}

@@ -11,6 +11,7 @@ pub const MANIFEST: &str = "release-manifest.json";
 pub const SIGNATURE: &str = "release-manifest.json.minisig";
 pub const PUBLIC_KEY: &str = include_str!("../release.pub");
 pub fn public_key() -> &'static str { PUBLIC_KEY.lines().nth(1).expect("Minisign public key missing") }
+pub fn installation_allowed(phase:&str)->bool {matches!(phase,"idle"|"stopped"|"completed")}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BuildInfo { pub version:String, pub git_sha:String, pub channel:String }
@@ -21,6 +22,10 @@ impl BuildInfo {
 pub struct StartupTicket { pub nonce:String, pub build:BuildInfo }
 #[derive(Serialize, Deserialize)]
 pub struct StartupAck { pub nonce:String, pub build:BuildInfo, pub executable:PathBuf, pub pid:u32 }
+pub fn startup_ack_matches(ticket:&StartupTicket,ack:&StartupAck,expected:&Path,running_image:Option<&Path>)->bool {
+    ack.pid!=0&&ack.nonce==ticket.nonce&&ack.build.version==ticket.build.version&&ack.build.git_sha==ticket.build.git_sha
+        &&ack.build.channel==ticket.build.channel&&ack.executable==expected&&running_image==Some(expected)
+}
 pub fn acknowledge_startup(root:&Path,build:BuildInfo)->Result<()> {
     let ticket = root.join("FrameScopeUpdatePending.json");
     if !ticket.exists() {return Ok(());}

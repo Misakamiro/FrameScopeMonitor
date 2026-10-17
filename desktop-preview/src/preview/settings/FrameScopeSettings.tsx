@@ -77,7 +77,6 @@ export function AboutSettings() {
       <UpdateSettings />
       <Text fontSize="sm">界面直接复用 NexBox 9.5.3。硬件数据来自 FrameScope 硬件服务；目标、采集与报告已接入真实采集管线。</Text>
       <Text fontSize="sm">NexBox 来源：MuLiuSaMa/NexBox · c800dc5</Text>
-      <Text fontSize="sm">FrameScope 功能基线：Misakamiro/FrameScopeMonitor · 2c48031</Text>
       <Text fontSize="sm">NexBox 原作者及贡献者的版权与 GPL-3.0 许可保留在随附 LICENSE、LICENSE.EXTRA 和源码来源清单中。</Text>
     </VStack></LiquidGlassCard></Box>;
 }

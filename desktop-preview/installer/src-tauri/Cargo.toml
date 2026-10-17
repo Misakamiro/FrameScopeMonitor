@@ -36,3 +36,4 @@ dirs = "5"
 zip = "2"
 mslnk = "0.1"
 sha2 = "0.10"
+framescope-update = { path = "../../../src/updater" }

@@ -70,6 +70,7 @@ fn process(pid: u32) -> Result<Process> {
         Ok(Process(handle))
     }
 }
+pub fn running_image(pid:u32)->Result<PathBuf>{Ok(identity(&process(pid)?)?.1)}
 fn identity(process: &Process) -> Result<(u64, PathBuf)> {
     let mut creation = FileTime { low: 0, high: 0 };
     let mut exit = FileTime { low: 0, high: 0 };

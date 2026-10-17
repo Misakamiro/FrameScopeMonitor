@@ -73,12 +73,7 @@ try {
 } finally { Pop-Location }
 
 # 5. ship ---------------------------------------------------------------------
-$version = '1.0.0'
-$mainCargo = Join-Path $RepoRoot 'desktop-preview\src-tauri\Cargo.toml'
-if (Test-Path $mainCargo) {
-    $line = (Get-Content $mainCargo | Where-Object { $_ -like 'version = "*' } | Select-Object -First 1)
-    if ($line) { $version = $line.Split('"')[1] }
-}
+$version = (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'VERSION')).Trim()
 
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $dest = Join-Path $outDir "FrameScope_${version}_x64-setup.exe"

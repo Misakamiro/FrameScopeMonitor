@@ -151,7 +151,7 @@ function Get-PayloadFiles([string]$Root) {
     $required = @('FrameScopeHardwareService.exe', 'FrameScopeHardwareProvider.exe', 'FrameScopeMonitor.exe',
         'FrameScopeProcessSampler.exe', 'FrameScopeSystemSampler.exe', 'FrameScopeReportGenerator.exe',
         'LICENSE', 'LICENSE.EXTRA', 'PRIVACY.md', 'THIRD-PARTY-NOTICES.md', 'README-FrameScopeMonitor.txt',
-        'FrameScopeUninstaller.exe', 'FrameScopeHostCapabilities.json')
+        'FrameScopeUninstaller.exe', 'FrameScopeHostCapabilities.json', 'FrameScopeBuildInfo.json', 'Restore-FrameScope.cmd')
     $lock = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $Root 'dependencies.lock.json') | ConvertFrom-Json
     $required += @($lock.runtimeFiles.PSObject.Properties.Name)
     $required += 'tools\' + [IO.Path]::GetFileName([string]$lock.presentMon.file)

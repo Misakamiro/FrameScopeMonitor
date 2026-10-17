@@ -13,6 +13,9 @@ pub type Result<T> = std::result::Result<T, String>;
 pub const MANIFEST: &str = "FrameScopePayloadManifest.json";
 
 pub trait Runtime {
+    fn retain_previous(&self) -> bool { false }
+    fn confirm_startup(&mut self) -> Result<()> { Ok(()) }
+    fn abort_startup(&mut self) -> Result<()> { Ok(()) }
     fn space(&mut self, path: &Path) -> Result<u64>;
     fn stop(&mut self, target: &Path, helper: &Path) -> Result<()>;
     fn snapshot(&mut self) -> Result<serde_json::Value>;
@@ -48,6 +51,8 @@ struct Change {
 }
 #[derive(Serialize, Deserialize)]
 struct Journal {
+    #[serde(default)]
+    previous_build: Option<serde_json::Value>,
     schema: u32,
     target: PathBuf,
     work: PathBuf,
@@ -375,6 +380,95 @@ fn clean_committed(journal: &Journal) -> Result<()> {
     }
     Ok(())
 }
+fn finish_committed(journal:&Journal,home:&Path,runtime:&dyn Runtime)->Result<()> {
+    if journal.previous_build.is_none() || journal.uninstall {return clean_committed(journal);}
+    // Publish the new pointer before retiring any older recovery material.
+    let previous_path=home.join("previous.json");
+    let old=if previous_path.exists(){Some(serde_json::from_slice::<Journal>(&io(fs::read(&previous_path))?).map_err(|e|e.to_string())?)}else{None};
+    if let Some(old)=&old {validate_journal(old,&journal.target,home,runtime)?;}
+    for change in &journal.changes {
+        if change.old_hash.is_some() && !matches(&change.backup,&change.old_hash)? {return Err("Previous program backup failed verification".into());}
+    }
+    framescope_update::atomic_json(&previous_path,journal)?;
+    framescope_update::atomic_json(&journal.target.join("FrameScopePreviousVersion.json"),journal.previous_build.as_ref().unwrap())?;
+    let helper=journal.target.join("FrameScope Installer.exe");
+    framescope_update::atomic_json(&journal.target.join("FrameScopeRecoveryHost.json"),&framescope_update::Package {
+        name:"FrameScope Installer.exe".into(),size:io(fs::metadata(&helper))?.len(),sha256:hash(&helper)?})?;
+    if let Some(old)=old {if old.work!=journal.work {clean_committed(&old)?;}}
+    Ok(())
+}
+
+pub struct PreviousPayload {pub payload:Vec<u8>,pub installer:PathBuf,pub deletions:Vec<PathBuf>,pub build:serde_json::Value}
+pub fn previous_payload(target:&Path,runtime:&dyn Runtime)->Result<PreviousPayload> {
+    let target=normalize(target)?;
+    let home=transaction_home(&target)?;
+    let journal:Journal=serde_json::from_slice(&io(fs::read(home.join("previous.json")))?).map_err(|e|e.to_string())?;
+    validate_journal(&journal,&target,&home,runtime)?;
+    if journal.uninstall {return Err("Uninstall journal cannot be restored as a version".into());}
+    let build=journal.previous_build.clone().ok_or("No previous 2.x version")?;
+    let mut zip=zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut files=Vec::new();let mut installer=None;let mut deletions=Vec::new();
+    for change in &journal.changes {
+        let relative=change.destination.strip_prefix(&target).map_err(|_|"Recovery entry escapes program directory")?;
+        let name=relative.to_string_lossy().replace('\\',"/");
+        if change.old_hash.is_none(){deletions.push(change.destination.clone());continue;}
+        if !matches(&change.backup,&change.old_hash)? {return Err(format!("Previous backup hash mismatch: {name}"));}
+        if name=="FrameScope Installer.exe" {installer=Some(change.backup.clone());continue;}
+        if name==MANIFEST {continue;}
+        let bytes=io(fs::read(&change.backup))?;
+        zip.start_file(&name,zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
+        io(zip.write_all(&bytes))?;
+        files.push(serde_json::json!({"path":name,"length":bytes.len(),"sha256":change.old_hash}));
+    }
+    // A first fixture/manual 2.x installation may not have a generated installer
+    // backup. Production updates require it before normal shutdown.
+    let installer=installer.ok_or("Previous version has no independent installer backup")?;
+    zip.start_file(MANIFEST,zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
+    io(zip.write_all(&serde_json::to_vec(&serde_json::json!({"schema":1,"files":files})).map_err(|e|e.to_string())?))?;
+    Ok(PreviousPayload {payload:zip.finish().map_err(|e|e.to_string())?.into_inner(),installer,deletions,build})
+}
+pub fn discard_previous(target:&Path,runtime:&dyn Runtime)->Result<()> {
+    let target=normalize(target)?;let home=transaction_home(&target)?;let path=home.join("previous.json");
+    if !path.exists(){return Ok(());}
+    let journal:Journal=serde_json::from_slice(&io(fs::read(&path))?).map_err(|e|e.to_string())?;
+    validate_journal(&journal,&target,&home,runtime)?;
+    clean_committed(&journal)?;
+    io(fs::remove_file(path))?;
+    let marker=target.join("FrameScopePreviousVersion.json");if marker.exists(){io(fs::remove_file(marker))?;}Ok(())
+}
+/// One-time offline program backup for migration from the old installation.
+/// User data stays in place; no file is removed or replaced by this operation.
+pub fn backup_legacy(target:&Path)->Result<Option<PathBuf>> {
+    if !target.join("FrameScope.exe").exists()||target.join("FrameScopeBuildInfo.json").exists(){return Ok(None);}
+    let target=normalize(target)?;
+    fn collect(root:&Path,dir:&Path,files:&mut Vec<PathBuf>)->Result<()> {
+        assert_path(dir)?;
+        for item in io(fs::read_dir(dir))? {
+            let path=io(item)?.path();assert_path(&path)?;
+            let relative=path.strip_prefix(root).map_err(|e|e.to_string())?;
+            let first=relative.components().next().ok_or("Missing legacy entry")?.as_os_str().to_string_lossy();
+            if crate::installer::LOCAL_DATA_FILES.iter().chain(crate::installer::LOCAL_DATA_DIRS).any(|s|first.eq_ignore_ascii_case(s)){continue;}
+            if path.is_dir(){collect(root,&path,files)?;}else{files.push(path);}
+        }Ok(())
+    }
+    let mut files=Vec::new();collect(&target,&target,&mut files)?;
+    let home=transaction_home(&target)?;assert_path(&home)?;io(fs::create_dir_all(&home))?;
+    let backup=home.join(format!("offline-1x-{}.zip",std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos()));
+    let mut zip=zip::ZipWriter::new(io(fs::OpenOptions::new().create_new(true).write(true).open(&backup))?);
+    let mut inventory=Vec::new();
+    for path in files {
+        let name=path.strip_prefix(&target).map_err(|e|e.to_string())?.to_string_lossy().replace('\\',"/");
+        let before=hash(&path)?;
+        zip.start_file(&name,zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
+        io(std::io::copy(&mut io(fs::File::open(&path))?,&mut zip))?;
+        if hash(&path)?!=before{return Err("Legacy program changed during offline backup; installation cancelled".into());}
+        inventory.push(serde_json::json!({"path":name,"sha256":before}));
+    }
+    zip.start_file("FrameScopeOfflineBackup.json",zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
+    io(zip.write_all(&serde_json::to_vec(&inventory).map_err(|e|e.to_string())?))?;
+    io(zip.finish().map_err(|e|e.to_string())?.sync_all())?;
+    Ok(Some(backup))
+}
 fn recover_locked(target: &Path, home: &Path, runtime: &mut dyn Runtime) -> Result<()> {
     let path = home.join("journal.jsonl");
     assert_path(&path)?;
@@ -391,7 +485,7 @@ fn recover_locked(target: &Path, home: &Path, runtime: &mut dyn Runtime) -> Resu
         rollback(&journal, &path, runtime)
             .map_err(|e| format!("Recovery incomplete; journal and backups retained: {e}"))?;
     }
-    clean_committed(&journal)?;
+    if committed {finish_committed(&journal,home,runtime)?;} else {clean_committed(&journal)?;}
     io(fs::remove_file(&path))?;
     if path.with_extension("committed").exists() {
         io(fs::remove_file(path.with_extension("committed")))?;
@@ -428,6 +522,16 @@ pub fn recover(target: &Path, runtime: &mut dyn Runtime) -> Result<()> {
     let result = recover_locked(target, &home, runtime);
     drop(lock);
     result
+}
+pub fn interrupted_helper(target:&Path,runtime:&dyn Runtime)->Result<Option<PathBuf>> {
+    let target=normalize(target)?;let home=transaction_home(&target)?;let path=home.join("journal.jsonl");
+    if !path.exists(){return Ok(None);}
+    let (journal,_)=read_journal(&path)?;validate_journal(&journal,&target,&home,runtime)?;
+    let helper=journal.changes.iter().find(|c|c.destination==target.join("FrameScopeUninstaller.exe")).ok_or("Recovery journal lacks normal-stop helper")?;
+    for (path,expected) in [(Some(&helper.destination),&helper.new_hash),(helper.source.as_ref(),&helper.new_hash),(Some(&helper.backup),&helper.old_hash)] {
+        if let Some(path)=path {if expected.is_some()&&matches(path,expected)? {return Ok(Some(path.clone()));}}
+    }
+    Err("Verified shutdown helper unavailable; recovery material preserved".into())
 }
 
 pub fn stage_payload(
@@ -786,6 +890,13 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
         let mut created_dirs: Vec<_> = directories.into_iter().collect();
         created_dirs.sort_by_key(|p| p.components().count());
         let journal = Journal {
+            previous_build: if runtime.retain_previous() && !request.uninstall {
+                let path=target.join("FrameScopeBuildInfo.json");
+                if path.exists(){
+                    let build:serde_json::Value=serde_json::from_slice(&io(fs::read(path))?).map_err(|e|e.to_string())?;
+                    if build["version"].as_str().and_then(|s|s.split('.').next()?.parse::<u64>().ok()).unwrap_or(0)<2 {None}else{Some(build)}
+                }else{None}
+            } else {None},
             schema: 1,
             target: target.to_path_buf(),
             work: work.clone(),
@@ -862,11 +973,13 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
         runtime.apply()?;
         runtime.checkpoint("after-side-effects", 0)?;
         append(&log, "side-effects-complete", runtime, &mut sequence)?;
+        if !journal.uninstall { runtime.confirm_startup()?; }
         runtime.checkpoint("before-committed", 0)?;
         commit_marker(&log, &work, runtime)?;
         Ok(())
     })();
     if let Err(error) = commit {
+        if let Err(stop)=runtime.abort_startup(){return Err(format!("{error}; rollback incomplete; candidate could not drain; journal retained: {stop}"));}
         match rollback(&journal, &log, runtime) {
             Ok(()) => {
                 clean_committed(&journal)?;
@@ -880,7 +993,7 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
             }
         }
     }
-    clean_committed(&journal)
+    finish_committed(&journal,&home,runtime)
         .map_err(|e| format!("Commit complete; cleanup incomplete; journal retained: {e}"))?;
     io(fs::remove_file(&log))?;
     io(fs::remove_file(log.with_extension("committed")))?;

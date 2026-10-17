@@ -43,6 +43,8 @@ fn payload(corrupt: bool) -> Vec<u8> {
 }
 #[derive(Default)]
 struct Fake {
+    retain: bool,
+    fail_startup: bool,
     stops: usize,
     system: serde_json::Value,
     fail: Option<(&'static str, usize)>,
@@ -52,6 +54,8 @@ struct Fake {
     roots: Vec<PathBuf>,
 }
 impl Runtime for Fake {
+    fn retain_previous(&self)->bool {self.retain}
+    fn confirm_startup(&mut self)->Result<()> {if self.fail_startup {Err("startup handshake failed".into())}else{Ok(())}}
     fn space(&mut self, _: &Path) -> Result<u64> {
         Ok(self.space.unwrap_or(u64::MAX))
     }
@@ -92,6 +96,62 @@ impl Runtime for Fake {
             Ok(())
         }
     }
+}
+
+#[test]
+fn successful_upgrade_keeps_verified_previous_program_and_restore_preserves_new_data() {
+    let root=fixture();baseline(&root);
+    fs::write(root.join("install/FrameScope Installer.exe"),b"old installer").unwrap();
+    fs::write(root.join("install/FrameScopeBuildInfo.json"),br#"{"version":"2.0.0-beta.1","git_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","channel":"beta"}"#).unwrap();
+    let mut fake=Fake {retain:true,..Default::default()};
+    run(&root,&payload(false),&mut fake,false,vec![],vec![]).unwrap();
+    assert!(root.join("install/FrameScopePreviousVersion.json").exists());
+    fs::write(root.join("install/framescope-config.json"),b"latest settings").unwrap();
+    let previous=previous_payload(&root.join("install"),&fake).unwrap();
+    assert!(!previous.payload.is_empty());
+    assert_eq!(previous.build["version"],"2.0.0-beta.1");
+    assert_eq!(fs::read(root.join("install/framescope-config.json")).unwrap(),b"latest settings");
+    let journal:Journal=serde_json::from_slice(&fs::read(transaction_home(&root.join("install")).unwrap().join("previous.json")).unwrap()).unwrap();
+    let backup=journal.changes.iter().find(|c|c.destination.ends_with("FrameScope.exe")).unwrap();
+    fs::write(&backup.backup,b"tampered").unwrap();
+    assert!(previous_payload(&root.join("install"),&fake).is_err());
+}
+
+#[test]
+fn manual_restore_uses_transaction_and_preserves_latest_user_settings() {
+    let root=fixture();baseline(&root);
+    fs::write(root.join("install/FrameScope Installer.exe"),b"old installer").unwrap();
+    fs::write(root.join("install/FrameScopeBuildInfo.json"),br#"{"version":"2.0.0-beta.1","git_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","channel":"beta"}"#).unwrap();
+    let mut fake=Fake{retain:true,..Default::default()};
+    run(&root,&payload(false),&mut fake,false,vec![],vec![]).unwrap();
+    fs::write(root.join("install/framescope-config.json"),b"custom targets and new positions").unwrap();
+    let previous=previous_payload(&root.join("install"),&fake).unwrap();fake.retain=false;
+    execute(Request {target:&root.join("install"),payload:&previous.payload,self_exe:&previous.installer,
+        required:&["FrameScope.exe".into()],uninstall:false,delete_data:false,deletions:previous.deletions,data_roots:vec![],progress:&|_,_|{}},&mut fake).unwrap();
+    assert_eq!(fs::read(root.join("install/FrameScope.exe")).unwrap(),b"old FrameScope.exe");
+    assert_eq!(fs::read(root.join("install/FrameScope Installer.exe")).unwrap(),b"old installer");
+    assert_eq!(fs::read(root.join("install/framescope-config.json")).unwrap(),b"custom targets and new positions");
+    assert!(!root.join("install/new.dll").exists());
+    discard_previous(&root.join("install"),&fake).unwrap();
+    assert!(!root.join("install/FrameScopePreviousVersion.json").exists());
+}
+
+#[test]
+fn failed_new_startup_uses_existing_rollback_and_keeps_current_settings() {
+    let root=fixture();baseline(&root);
+    let mut fake=Fake {fail_startup:true,..Default::default()};
+    assert!(run(&root,&payload(false),&mut fake,false,vec![],vec![]).unwrap_err().contains("startup"));
+    old_unchanged(&root);
+}
+#[test]
+fn legacy_offline_backup_preserves_files_and_excludes_live_user_data(){
+    let root=fixture();baseline(&root);
+    let backup=backup_legacy(&root.join("install")).unwrap().unwrap();
+    let mut archive=zip::ZipArchive::new(fs::File::open(&backup).unwrap()).unwrap();
+    assert!(archive.by_name("FrameScope.exe").is_ok());
+    assert!(archive.by_name("FrameScopeOfflineBackup.json").is_ok());
+    assert!(archive.by_name("framescope-config.json").is_err());
+    old_unchanged(&root);
 }
 fn run(
     root: &Path,

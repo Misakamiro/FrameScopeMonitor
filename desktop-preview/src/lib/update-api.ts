@@ -4,7 +4,7 @@ export interface UpdatePreferences { startup_check:boolean; include_beta:boolean
 export interface UpdateRelease {id:number;tag:string;notes:string;manifest:{version:string;channel:string;git_sha:string;installer:{size:number;name:string;sha256:string}}}
 export interface UpdateSnapshot {
   build:BuildInfo;
-  state:{preferences:UpdatePreferences;phase:string;error:string|null;releases:UpdateRelease[];downloaded:number;total:number;ready:number|null};
+  state:{preferences:UpdatePreferences;phase:string;error:string|null;releases:UpdateRelease[];downloaded:number;total:number;ready:number|null;last_checked?:string|null};
   previous:{version:string;git_sha:string}|null;
 }
 type Command="update_status"|"update_ready"|"update_preferences"|"update_check"|"update_download"|"update_cancel"|"update_install"|"update_restore";

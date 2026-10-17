@@ -1,8 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import { readFileSync } from "node:fs";
 
 export default defineConfig(async () => ({
+  define: { __FRAMESCOPE_VERSION__: JSON.stringify(readFileSync(path.resolve(__dirname,"../VERSION"),"utf8").trim()) },
   plugins: [
     react({
       jsxImportSource: "@emotion/react",

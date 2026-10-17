@@ -17,11 +17,13 @@ public static partial class FrameScopeDiagnostics
     {
         Assembly assembly = typeof(FrameScopeDiagnostics).Assembly;
         string assemblyVersion = Convert.ToString(assembly.GetName().Version, CultureInfo.InvariantCulture);
-        string version = string.IsNullOrWhiteSpace(assemblyVersion) || assemblyVersion == "0.0.0.0" ? ProductVersion : assemblyVersion;
+        string version = ProductVersion;
         return new Dictionary<string, object>
         {
             { "name", "FrameScope Monitor" },
             { "version", version },
+            { "gitSha", FrameScopeProductInfo.GitSha },
+            { "assemblyVersion", assemblyVersion },
             { "process", RedactForPrivacy(Process.GetCurrentProcess().ProcessName) },
             { "is64BitProcess", Environment.Is64BitProcess }
         };

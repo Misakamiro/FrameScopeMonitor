@@ -153,6 +153,13 @@ try {
 # All host transforms (manifest/signing) must precede this marker and receipt.
 # A later transform invalidates both; this entry deliberately has no refresh bypass.
 Write-HostCapabilities -Root $RepoRoot
+$version = (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'VERSION')).Trim()
+$sha = $env:FRAMESCOPE_BUILD_SHA
+if (-not $sha) { $sha = (& git -C $RepoRoot rev-parse HEAD) }
+if ($sha -notmatch '^[a-f0-9]{40}$') { throw 'Missing full build SHA' }
+$buildInfo = [ordered]@{version=$version; git_sha=$sha; channel=$(if($version.Contains('-')){'beta'}else{'stable'})}
+[IO.File]::WriteAllText((Join-Path $backendDir 'FrameScopeBuildInfo.json'),($buildInfo | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'packaging/Restore-FrameScope.cmd') -Destination (Join-Path $backendDir 'Restore-FrameScope.cmd')
 $hostTransform = $null
 if ($CandidateHostTransformScript) { $hostTransform = Invoke-CandidateHostTransform -Root $RepoRoot -Script $CandidateHostTransformScript }
 $inputsAfter = Get-PayloadInputs -Root $RepoRoot

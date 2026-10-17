@@ -105,7 +105,7 @@ function Assert-IsolatedCargoOutputs([string]$Snapshot) {
 
 if ($FunctionsOnly) { return }
 $isolatedEnvironment = @{}
-foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR')) {
+foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR', 'FRAMESCOPE_BUILD_SHA')) {
     $isolatedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue
 }
@@ -132,6 +132,7 @@ Assert-PayloadPath -Path $OutputDirectory -Root $ancestor
 $files = @(Get-IsolatedSourceFiles -Root $RepoRoot)
 $head = (& git -C $RepoRoot rev-parse HEAD)
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read source HEAD' }
+$env:FRAMESCOPE_BUILD_SHA = $head
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 $snapshot = Join-Path $OutputDirectory 'source'
 # --no-local avoids writable shared Git objects. No checkout touches dirty inputs;

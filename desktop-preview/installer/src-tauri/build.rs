@@ -5,20 +5,6 @@ fn main() {
     // Track the payload so a re-packed zip relinks the installer binary.
     println!("cargo:rerun-if-changed=payload.zip");
 
-    // Version comes from the main app so installer and app never diverge.
-    let main_cargo = std::path::Path::new("../../src-tauri/Cargo.toml");
-    if main_cargo.exists() {
-        let content = std::fs::read_to_string(main_cargo).unwrap_or_default();
-        for line in content.lines() {
-            if let Some(ver) = line.strip_prefix("version = \"") {
-                if let Some(end) = ver.find('"') {
-                    println!("cargo:rustc-env=FRAMESCOPE_APP_VERSION={}", &ver[..end]);
-                    break;
-                }
-            }
-        }
-    }
-
     #[cfg(target_os = "windows")]
     {
         use tauri_build::WindowsAttributes;

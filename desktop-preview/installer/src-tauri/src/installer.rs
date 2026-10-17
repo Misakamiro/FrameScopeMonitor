@@ -291,6 +291,7 @@ pub fn install_headless(target_dir: String, desktop_shortcut: bool, autostart: b
 
 pub(crate) fn required_payload_files() -> Result<Vec<String>, String> {
     let mut files = ["FrameScope.exe", "FrameScopeUninstaller.exe", "FrameScopeHostCapabilities.json",
+        "FrameScopeBuildInfo.json", "Restore-FrameScope.cmd",
         "FrameScopeHardwareService.exe", "FrameScopeHardwareProvider.exe", "FrameScopeMonitor.exe",
         "FrameScopeProcessSampler.exe", "FrameScopeSystemSampler.exe", "FrameScopeReportGenerator.exe",
         "LICENSE", "LICENSE.EXTRA", "PRIVACY.md", "THIRD-PARTY-NOTICES.md", "README-FrameScopeMonitor.txt",
@@ -309,6 +310,12 @@ fn install_shared(target_dir: &str, desktop: bool, autostart: bool, progress: &d
     validate_install_target(&target)?;
     let self_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut runtime = crate::installation_system::WindowsRuntime::new(&target, false, desktop, autostart)?;
+    if target.join("FrameScopeBuildInfo.json").exists() {
+        runtime.keep_previous=true;runtime.preserve_settings=true;
+        runtime.startup_build=Some(framescope_update::BuildInfo::new(env!("FRAMESCOPE_VERSION"),env!("FRAMESCOPE_GIT_SHA")));
+    } else if let Some(backup)=crate::install_transaction::backup_legacy(&target)? {
+        framescope_update::atomic_json(&target.join("FrameScopeLegacyBackup.json"),&serde_json::json!({"archive":backup}))?;
+    }
     let mut deletions = legacy_injected_osd_paths(&target);
     if !runtime.legacy.is_empty() { deletions.push(target.join("uninstall.exe")); }
     crate::install_transaction::execute(crate::install_transaction::Request {
@@ -367,12 +374,15 @@ fn perform_uninstall(install_dir: &Path, delete_data: bool) -> Result<(), String
         uninstall: true, delete_data, deletions, data_roots, progress: &|_, _| {},
     }, &mut runtime)?;
     // Empty owned directories are optional housekeeping after a durable commit;
+    crate::install_transaction::discard_previous(install_dir,&runtime)?;
     // unknown files, data kept by the user, and reparse paths are never swept.
 
     let _ = fs::remove_dir(install_dir);
     Ok(())
 }
 pub(crate) const LOCAL_DATA_FILES: &[&str] = &[
+    "FrameScopePreviousVersion.json", "FrameScopeRecoveryHost.json", "FrameScopeInstalledRelease.json", "FrameScopeLegacyBackup.json",
+    "FrameScopeUpdatePending.json", "FrameScopeUpdateReady.json", "FrameScopeUpdateResult.json", "FrameScopeRolledBack.json",
     "framescope-config.json", "framescope-watcher-state.json", "framescope-history.jsonl",
     "framescope-watcher.log", "preview-native-settings.json", "settings.json",
 ];

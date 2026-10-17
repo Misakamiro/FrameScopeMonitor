@@ -42,6 +42,10 @@ struct Snapshot {
 }
 
 pub struct WindowsRuntime {
+    pub startup_build:Option<framescope_update::BuildInfo>,
+    pub keep_previous:bool,
+    pub preserve_settings:bool,
+    pub started_new:bool,
     pub target: PathBuf,
     pub uninstall: bool,
     pub desktop: bool,
@@ -358,6 +362,7 @@ impl WindowsRuntime {
             })
             .collect();
         Ok(Self {
+            startup_build:None,keep_previous:false,preserve_settings:false,started_new:false,
             target: target.into(),
             uninstall,
             desktop,
@@ -425,6 +430,13 @@ fn helper(helper: &Path, args: &[&std::ffi::OsStr], seconds: u64) -> Result<Stri
 }
 
 impl Runtime for WindowsRuntime {
+    fn retain_previous(&self)->bool {self.keep_previous}
+    fn confirm_startup(&mut self)->Result<()> {
+        if let Some(build)=self.startup_build.clone(){crate::update_install::confirm_startup(self,build)}else{Ok(())}
+    }
+    fn abort_startup(&mut self)->Result<()> {
+        if self.started_new {let target=self.target.clone();self.stop(&target,&target.join("FrameScopeUninstaller.exe"))?;self.started_new=false;}Ok(())
+    }
     fn allowed_data_roots(&self) -> Vec<PathBuf> {
         let mut roots: Vec<_> = [dirs::data_dir(), dirs::config_dir(), dirs::cache_dir()]
             .into_iter()
@@ -545,6 +557,13 @@ impl Runtime for WindowsRuntime {
         }
         for path in &self.legacy {
             io(root.delete_subkey_all(path))?;
+        }
+        if self.preserve_settings {
+            if let Some(build)=&self.startup_build {
+                let key=io(root.open_subkey_with_flags(ARP,KEY_SET_VALUE))?;
+                io(key.set_value("DisplayVersion",&build.version))?;
+            }
+            return Ok(());
         }
         for (index, path) in self.links.iter().enumerate() {
             transaction::assert_path(path)?;

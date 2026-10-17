@@ -19,7 +19,7 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $frontendRoot = Join-Path $repoRoot 'src\frontend'
 $npmBootstrapRoot = Join-Path $repoRoot 'tools\.cache\frontend-npm'
 $env:VITE_FRAMESCOPE_VERSION = (Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'VERSION')).Trim()
-if ($env:VITE_FRAMESCOPE_VERSION -notmatch '^\d+\.\d+\.\d+$') {
+if ($env:VITE_FRAMESCOPE_VERSION -notmatch '^\d+\.\d+\.\d+(-beta\.[1-9][0-9]*)?$') {
     throw "Invalid VERSION: $($env:VITE_FRAMESCOPE_VERSION)"
 }
 

@@ -2,6 +2,7 @@ mod installer;
 mod install_transaction;
 mod installation_system;
 mod self_relaunch;
+mod update_install;
 
 pub fn bootstrap_relaunch() -> Result<bool, String> { self_relaunch::bootstrap() }
 pub fn validated_relaunch_root() -> Option<std::path::PathBuf> { self_relaunch::original_root() }
@@ -35,6 +36,8 @@ pub fn run() {
 /// is created. NSIS-compatible flags: `/S` silent, `/D=path` install dir.
 #[derive(Debug, PartialEq)]
 pub enum HeadlessAction {
+    Update {dir:String,receipt:String},
+    Restore {dir:String},
     None,
     Invalid(String),
     Install { dir: Option<String>, desktop_shortcut: bool, autostart: bool },
@@ -48,6 +51,7 @@ pub fn parse_headless_args() -> HeadlessAction {
 
 fn parse_headless_args_from(args: &[String], default_dir: impl FnOnce() -> String) -> HeadlessAction {
     let uninstall = args.iter().any(|a| a == "--uninstall");
+    if uninstall && args.iter().any(|a| a=="--update"||a=="--restore-previous") {return HeadlessAction::Invalid("Conflicting installer modes".into());}
     let silent = args.iter().any(|a| a.eq_ignore_ascii_case("/S") || a.eq_ignore_ascii_case("/SILENT"));
     let mut dir = None;
     for arg in args.iter().skip(1) {
@@ -69,6 +73,16 @@ fn parse_headless_args_from(args: &[String], default_dir: impl FnOnce() -> Strin
         }
         // `--uninstall` without /S runs the uninstall UI, not headless.
         return HeadlessAction::None;
+    }
+    let update=args.iter().any(|a|a=="--update");
+    let restore=args.iter().any(|a|a=="--restore-previous");
+    if update||restore {
+        if !silent||update&&restore{return HeadlessAction::Invalid("Update/recovery requires /S and one explicit mode".into());}
+        let Some(dir)=dir.filter(|p|std::path::Path::new(p).is_absolute())else{return HeadlessAction::Invalid("Update/recovery requires /D=<current absolute installation directory>".into());};
+        if restore {return HeadlessAction::Restore{dir};}
+        let receipts:Vec<_>=args.iter().filter_map(|a|a.strip_prefix("--receipt=")).collect();
+        if receipts.len()!=1||!std::path::Path::new(receipts[0]).is_absolute(){return HeadlessAction::Invalid("Update requires one absolute receipt path".into());}
+        return HeadlessAction::Update{dir,receipt:receipts[0].into()};
     }
     if silent {
         return HeadlessAction::Install {
@@ -93,6 +107,12 @@ mod headless_tests {
     #[test]
     fn unicode_arguments_do_not_panic() {
         assert_eq!(parse(&["中文参数"]), HeadlessAction::None);
+    }
+    #[test]
+    fn update_and_recovery_require_explicit_target_and_unambiguous_mode(){
+        for args in [vec!["--update","/S"],vec!["--update","/S","/D=C:\\FrameScope"],vec!["--restore-previous","/S","/D=relative"],vec!["--uninstall","--update","/S"],vec!["--restore-previous","--update","/S","/D=C:\\FrameScope"]]{assert!(matches!(parse(&args),HeadlessAction::Invalid(_)));}
+        assert!(matches!(parse(&["--update","/S","/D=C:\\FrameScope","--receipt=C:\\Cache\\receipt.json"]),HeadlessAction::Update{..}));
+        assert!(matches!(parse(&["--restore-previous","/S","/D=C:\\FrameScope"]),HeadlessAction::Restore{..}));
     }
 
     #[test]
@@ -121,7 +141,10 @@ mod headless_tests {
 }
 
 pub fn run_headless(action: HeadlessAction) -> i32 {
+    let update_target=match &action {HeadlessAction::Update{dir,..}|HeadlessAction::Restore{dir}=>Some(std::path::PathBuf::from(dir)),_=>None};
     let result = match action {
+        HeadlessAction::Update{dir,receipt}=>update_install::perform_update(std::path::Path::new(&dir),std::path::Path::new(&receipt)),
+        HeadlessAction::Restore{dir}=>update_install::restore_previous(std::path::Path::new(&dir)),
         HeadlessAction::Install { dir, desktop_shortcut, autostart } => {
             let dir = dir.unwrap_or_else(get_default_install_path);
             install_headless(dir, desktop_shortcut, autostart)
@@ -133,6 +156,9 @@ pub fn run_headless(action: HeadlessAction) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
+            if let Some(target)=update_target {if target.is_dir()&&crate::installer::validate_install_target(&target).is_ok(){
+                let _=framescope_update::atomic_json(&target.join("FrameScopeUpdateResult.json"),&serde_json::json!({"success":false,"error":e}));
+            }}
             eprintln!("framescope-installer: {e}");
             1
         }

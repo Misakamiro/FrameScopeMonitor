@@ -18,7 +18,7 @@ $nugetSource = [string]$lock.nuget.source
 $nativePackagesLockPath = Join-Path $root ([string]$lock.nuget.lockFile -replace '/', '\')
 $nugetCache = Join-Path $root 'tools\.cache\nuget'
 $version = (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()
-if ($version -notmatch '^\d+\.\d+\.\d+$') {
+if ($version -notmatch '^\d+\.\d+\.\d+(-beta\.[1-9][0-9]*)?$') {
     throw "Invalid VERSION: $version"
 }
 

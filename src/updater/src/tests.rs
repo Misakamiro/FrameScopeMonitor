@@ -1,4 +1,22 @@
 use super::*;
+#[test]
+fn installation_never_interrupts_capture_report_or_waiting_auto_watcher(){
+    for phase in ["capturing","stopping","generating","waiting","unknown"]{assert!(!installation_allowed(phase));}
+    for phase in ["idle","stopped","completed"]{assert!(installation_allowed(phase));}
+}
+#[test]
+fn startup_handshake_rejects_stale_nonce_wrong_build_and_other_process_image(){
+    let build=BuildInfo::new("2.0.0-beta.1",&"a".repeat(40));
+    let ticket=StartupTicket{nonce:"fresh attempt".into(),build:build.clone()};
+    let expected=Path::new("C:/FrameScope/FrameScope.exe");
+    let mut ack=StartupAck{nonce:ticket.nonce.clone(),build,executable:expected.into(),pid:42};
+    assert!(startup_ack_matches(&ticket,&ack,expected,Some(expected)));
+    assert!(!startup_ack_matches(&ticket,&ack,expected,None));
+    assert!(!startup_ack_matches(&ticket,&ack,expected,Some(Path::new("C:/old/FrameScope.exe"))));
+    ack.nonce="old attempt".into();assert!(!startup_ack_matches(&ticket,&ack,expected,Some(expected)));
+    ack.nonce=ticket.nonce.clone();ack.build.git_sha="b".repeat(40);assert!(!startup_ack_matches(&ticket,&ack,expected,Some(expected)));
+    ack.build.git_sha=ticket.build.git_sha.clone();ack.build.version="2.0.0".into();assert!(!startup_ack_matches(&ticket,&ack,expected,Some(expected)));
+}
 
 #[test]
 fn channel_selection_obeys_semver_and_never_silently_downgrades() {
@@ -62,9 +80,14 @@ impl Server {
                 let path = request.split_whitespace().nth(1).unwrap_or("");
                 let body = if path.starts_with("/proxy/") { b"<html>proxy error</html>".to_vec() }
                     else if path.starts_with("/api/releases?") {
-                        serde_json::to_vec(&serde_json::json!([{"id":42,"tag_name":"v2.0.0-beta.1","draft":false,"prerelease":true,"body":"fixture","assets":[
+                        let valid=serde_json::json!({"id":42,"tag_name":"v2.0.0-beta.1","draft":false,"prerelease":true,"body":"fixture","assets":[
                             {"name":MANIFEST,"size":TEXT.len()},{"name":SIGNATURE,"size":SIG.len()},
-                            {"name":"FrameScope_2.0.0-beta.1_x64-setup.exe","size":17}]}])).unwrap()
+                            {"name":"FrameScope_2.0.0-beta.1_x64-setup.exe","size":17}]});
+                        let mut draft=valid.clone();draft["id"]=serde_json::json!(43);draft["draft"]=serde_json::json!(true);
+                        let mut legacy=valid.clone();legacy["tag_name"]=serde_json::json!("v1.2.0");
+                        let mut missing=valid.clone();missing["tag_name"]=serde_json::json!("v2.0.0-beta.2");missing["assets"]=serde_json::json!([]);
+                        let mut mismatch=valid.clone();mismatch["prerelease"]=serde_json::json!(false);
+                        serde_json::to_vec(&serde_json::json!([draft,legacy,missing,mismatch,valid])).unwrap()
                     } else if path.ends_with(SIGNATURE) {SIG.as_bytes().to_vec()}
                     else if path.ends_with(MANIFEST) {TEXT.as_bytes().to_vec()}
                     else {package.to_vec()};
@@ -75,6 +98,12 @@ impl Server {
         Self {base,stop,thread:Some(thread)}
     }
     fn source(&self,proxy:bool)->Source {Source::new(format!("{}/api",self.base),format!("{}/download",self.base),proxy.then(||format!("{}/proxy/",self.base)),test_key().into()).unwrap()}
+}
+#[test]
+fn disconnected_origin_returns_error_without_a_download(){
+    let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();let url=format!("http://{}",listener.local_addr().unwrap());drop(listener);
+    let source=Source::new(url.clone(),url,None,test_key().into()).unwrap();
+    assert!(source.check("2.0.0-beta.0",true,false,None,&AtomicBool::new(false)).is_err());
 }
 impl Drop for Server {fn drop(&mut self){self.stop.store(true,Ordering::SeqCst);self.thread.take().unwrap().join().unwrap();}}
 

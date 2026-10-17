@@ -79,3 +79,12 @@ tests/test-manifest.json
 *.minisign.key
 src/updater/target/
 
+# Local development handoffs and retired injection experiment (not build inputs)
+/docs/preview/HANDOFF-SESSION-*.md
+/docs/preview/HANDOFF-CURRENT-COMPLETED.md
+/docs/preview/DELIVERY-*.md
+/docs/preview/REPAIR-AUDIT-*.md
+/docs/preview/STATIC-AUDIT-FIX-CHECKLIST-*.md
+/docs/superpowers/
+/src/inprocess-osd/
+
