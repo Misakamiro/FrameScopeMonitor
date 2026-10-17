@@ -31,6 +31,7 @@ log = "0.4"
 chrono = "0.4"
 sha2 = "0.10"
 sysinfo = "0.30"
+framescope-update = { path = "../../src/updater" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_UI_Shell"] }

@@ -1185,6 +1185,7 @@ name = "framescope-ui-preview"
 version = "2.0.0-beta.1"
 dependencies = [
  "chrono",
+ "framescope-update",
  "log",
  "reqwest 0.12.28",
  "serde",
@@ -1200,6 +1201,19 @@ dependencies = [
  "tauri-plugin-single-instance",
  "windows 0.61.3",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "framescope-update"
+version = "0.1.0"
+dependencies = [
+ "minisign-verify",
+ "reqwest 0.12.28",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
 ]
 
 [[package]]
@@ -2288,6 +2302,12 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"
@@ -4435,7 +4455,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
 ]
 
 [[package]]

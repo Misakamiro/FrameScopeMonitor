@@ -19,7 +19,7 @@
       "@preview/native-core": ["./node_modules/@tauri-apps/api/core.d.ts"]
     }
   },
-  "include": ["src/main.tsx", "src/preview/**/*.ts", "src/preview/**/*.tsx"],
+  "include": ["src/main.tsx", "src/raw.d.ts", "src/preview/**/*.ts", "src/preview/**/*.tsx"],
   "exclude": ["src_old", "src/app", "src/components/components"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

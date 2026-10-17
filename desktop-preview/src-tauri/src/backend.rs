@@ -69,6 +69,26 @@ fn acquire_config_file_mutex_with_timeout(path: &Path, timeout_ms: u32) -> Resul
 static REGENERATING_RUN: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 static OWNED_WATCHER: std::sync::Mutex<Option<OwnedWatcher>> = std::sync::Mutex::new(None);
 static HOST_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UPDATE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn ensure_update_idle() -> Result<(),String> {
+    ensure_not_closing()?;
+    let status=monitor_status()?;
+    match status["phase"].as_str() {
+        Some("idle"|"waiting"|"stopped"|"completed")=>Ok(()),
+        _=>Err("采集、停止收尾或报告生成期间不能安装，请先正常停止监控".into()),
+    }
+}
+pub fn reserve_update()->Result<(),String>{
+    let owned=OWNED_WATCHER.lock().unwrap_or_else(|p|p.into_inner());
+    let report=REPORT_OPERATION.try_lock().map_err(|_|"报告正在处理，不能安装更新")?;
+    if UPDATE_PENDING.swap(true,std::sync::atomic::Ordering::SeqCst){return Err("更新已在进行".into());}
+    drop(report);drop(owned);
+    let status=monitor_status();
+    if !status.is_ok_and(|s|matches!(s["phase"].as_str(),Some("idle"|"waiting"|"stopped"|"completed"))){release_update();return Err("监控正在采集或收尾，请稍后安装".into());}
+    Ok(())
+}
+pub fn release_update(){UPDATE_PENDING.store(false,std::sync::atomic::Ordering::SeqCst);}
 
 struct OwnedWatcher {
     child: std::process::Child,
@@ -86,6 +106,7 @@ pub fn cancel_shutdown() {
 }
 
 pub fn ensure_not_closing() -> Result<(), String> {
+    if UPDATE_PENDING.load(std::sync::atomic::Ordering::SeqCst){return Err("正在安装或恢复版本，不能开始新操作".into());}
     if HOST_CLOSING.load(std::sync::atomic::Ordering::SeqCst) {
         Err("正在等待监控和报告收尾，不能启动新窗口或监控".into())
     } else { Ok(()) }
@@ -513,6 +534,7 @@ pub fn monitor_start() -> Result<Value, String> {
         return Err("正在等待监控和报告收尾，不能启动新监控".into());
     }
     let mut owned = OWNED_WATCHER.lock().unwrap_or_else(|p| p.into_inner());
+    ensure_not_closing()?;
     if HOST_CLOSING.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("正在等待监控和报告收尾，不能启动新监控".into());
     }
@@ -1655,6 +1677,7 @@ pub fn report_regenerate(id: &str) -> Result<Value, String> {
         return Err("正在退出，不能开始生成新报告".into());
     }
     let start_guard = OWNED_WATCHER.lock().unwrap_or_else(|p|p.into_inner());
+    ensure_not_closing()?;
     if HOST_CLOSING.load(std::sync::atomic::Ordering::SeqCst) {
         return Err("正在退出，不能开始生成新报告".into());
     }

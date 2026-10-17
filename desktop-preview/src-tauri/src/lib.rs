@@ -5,6 +5,7 @@ mod bounded_process;
 mod host_shutdown;
 mod hardware_service;
 mod runtime_uiaccess;
+mod updater;
 mod delta_password;
 mod overlay_panel;
 mod pawnio;
@@ -42,6 +43,7 @@ fn request_shutdown(app: &tauri::AppHandle) {
     });
 }
 const COMMANDS: &[&str] = &[
+    "build_info", "update_status", "update_ready", "update_preferences", "update_check", "update_download", "update_cancel", "update_install", "update_restore",
     "preview_set_hardware", "open_sensor_monitor", "start_overlay_panel", "stop_overlay_panel",
     "toggle_overlay_panel", "get_overlay_panel_status", "update_overlay_settings", "get_overlay_current_settings",
     "set_overlay_drag_mode", "reset_overlay_position", "open_vertical_overlay", "stop_vertical_overlay",
@@ -401,6 +403,9 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }
     }
     ensure_allowed(&command)?;
+    if command == "build_info" || command.starts_with("update_") && command != "update_overlay_settings" {
+        return updater::command(app,command,args).await;
+    }
     // Creating a webview window from inside the command handler deadlocks the main
     // thread (WebView2 controller init needs the message pump that is currently
     // blocked in this handler). All window-creating flows therefore run on a worker
@@ -868,6 +873,8 @@ pub fn run() {
         }).build())
         .invoke_handler(tauri::generate_handler![preview_native])
         .setup(move |app| {
+            app.manage(std::sync::Arc::new(updater::Service::new(app.path().app_data_dir()?.join("updates"))
+                .map_err(std::io::Error::other)?));
             // Single-instance forwarding runs before this setup. No matching
             // host: return a distinct code without creating GUI or providers.
             if request_exit_only { std::process::exit(3); }

@@ -14,6 +14,7 @@ import { ThemeColorProvider } from "./contexts/theme-color-context";
 import { AppStartupProvider } from "./contexts/app-startup-context";
 import { FontProvider } from "./contexts/font-context";
 import { ThemeModeProvider } from "./contexts/theme-mode-context";
+import { UpdateProvider } from "./contexts/update-context";
 import { LiquidGlassSvgFilter } from "./components/special/liquid-glass-svg-filter";
 import { RootErrorBoundary } from "./components/RootErrorBoundary";
 import theme from "./lib/theme";
@@ -43,7 +44,7 @@ function Root() {
               <ThemeColorProvider>
                 <FontProvider>
                   <LiquidGlassSvgFilter />
-                  <ThemeModeProvider><App /></ThemeModeProvider>
+                  <ThemeModeProvider><UpdateProvider><App /></UpdateProvider></ThemeModeProvider>
                 </FontProvider>
               </ThemeColorProvider>
             </BackgroundProvider>

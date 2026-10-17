@@ -5,6 +5,7 @@ import { CustomSelect } from "@/components/special/custom-select";
 import { usePreviewState, usePreviewAction, ActionError } from "../pages/shared";
 import { isDesktop } from "../runtime/platform";
 import type { PreviewScenario } from "../runtime";
+import { UpdateSettings } from "./UpdateSettings";
 type NumberConfigKey = "sampleIntervalMs" | "pollIntervalMs" | "captureDurationSeconds";
 export function FrameScopeSettings() {
   const state = usePreviewState();
@@ -71,9 +72,9 @@ export function FrameScopeSettings() {
   </Box>;
 }
 export function AboutSettings() {
-  return <Box><Heading size="lg" mb={6}>关于</Heading>
+  return <Box><Heading size="lg" mb={6}>关于／更新</Heading>
     <LiquidGlassCard p={6} borderRadius="xl"><VStack spacing={4} align="stretch">
-      <Text fontSize="xl" fontWeight="bold">FrameScope UI Preview</Text><Text>独立桌面前端预览 · 0.1.0</Text>
+      <UpdateSettings />
       <Text fontSize="sm">界面直接复用 NexBox 9.5.3。硬件数据来自 FrameScope 硬件服务；目标、采集与报告已接入真实采集管线。</Text>
       <Text fontSize="sm">NexBox 来源：MuLiuSaMa/NexBox · c800dc5</Text>
       <Text fontSize="sm">FrameScope 功能基线：Misakamiro/FrameScopeMonitor · 2c48031</Text>

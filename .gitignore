@@ -77,4 +77,5 @@ tests/test-manifest.json
 # Signing material stays outside the repository
 *.key
 *.minisign.key
+src/updater/target/
 

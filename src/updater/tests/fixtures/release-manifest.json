@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "version": "2.0.0-beta.1",
+  "channel": "beta",
+  "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "platform": "windows-x86_64",
+  "installer": {
+    "name": "FrameScope_2.0.0-beta.1_x64-setup.exe",
+    "size": 17,
+    "sha256": "bb43c2e945e913600f618f98b7fd78b997fe3a87a4f342d22b6dcab611e290cb"
+  }
+}
