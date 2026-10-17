@@ -17,7 +17,8 @@ New-Item -ItemType Directory -Path "$source\src\hardware-service\src" -Force | O
 [IO.File]::WriteAllText("$source\src\hardware-service\Cargo.toml", "[package]`nname = 'isolated_cargo_fixture'`nversion = '0.0.0'`nedition = '2021'`n")
 [IO.File]::WriteAllText("$source\src\hardware-service\Cargo.lock", "version = 4`n[[package]]`nname = 'isolated_cargo_fixture'`nversion = '0.0.0'`n")
 [IO.File]::WriteAllText("$source\src\hardware-service\src\lib.rs", '')
-[IO.File]::WriteAllText("$source\.gitignore", '*.exe')
+[IO.File]::WriteAllText("$source\.gitignore", "*.exe`nsrc/retained.cs`n")
+[IO.File]::WriteAllText("$source\src\retained.cs", 'tracked source covered by a later ignore rule')
 [IO.File]::WriteAllText("$source\tools\采集.exe", 'pinned present fixture')
 [IO.File]::WriteAllText("$source\packaging\webview.exe", 'pinned webview fixture')
 [IO.File]::WriteAllText("$source\packaging\PawnIO_setup.exe", 'explicit pawn fixture')
@@ -28,6 +29,7 @@ New-Item -ItemType Directory -Path "$source\src\hardware-service\src" -Force | O
 $lockPath = Join-Path $source 'dependencies.lock.json'
 [IO.File]::WriteAllText($lockPath, [IO.File]::ReadAllText($lockPath, [Text.Encoding]::UTF8), [Text.UTF8Encoding]::new($false))
 & $gitExe -C $source add -A
+& $gitExe -C $source add --force -- src/retained.cs
 # Only HEAD and the empty private clone boundary are synthetic. Enumeration,
 # private-index staging, byte copying, provenance and verification use production code.
 function git {
@@ -51,6 +53,7 @@ try {
     if (Test-Path -LiteralPath (Join-Path $owned 'must-not-write')) { throw 'Build boundary wrote an inherited external output directory' }
     if (Test-Path "$output\source\framescope-config.json") { throw 'Snapshot copied real config' }
     if ((Get-FileHash "$source\src\dirty.cs").Hash -ne (Get-FileHash "$output\source\src\dirty.cs").Hash) { throw 'Dirty bytes were not copied' }
+    if ((Get-FileHash "$source\src\retained.cs").Hash -ne (Get-FileHash "$output\source\src\retained.cs").Hash) { throw 'Tracked source covered by ignore rule disappeared from the snapshot' }
     if ((Get-Content "$output\source\.git\config" -Raw) -match 'worktree') { throw 'Snapshot is not a private Git repository' }
     & "$source\tools\Build-IsolatedInstaller.ps1" -RepoRoot $source -OutputDirectory $output -VerifyOnly
     $unicodePath = Join-Path "$source\src" $unicodeName
@@ -100,7 +103,7 @@ try {
     New-Item -ItemType Directory -Path $backend, $release, "$snapshot\desktop-preview\installer\src-tauri" -Force | Out-Null
     foreach ($name in @('FrameScopeHardwareService.exe', 'FrameScopeHardwareProvider.exe', 'FrameScopeMonitor.exe', 'FrameScopeProcessSampler.exe',
         'FrameScopeSystemSampler.exe', 'FrameScopeReportGenerator.exe', 'FrameScopeUninstaller.exe', 'LICENSE', 'LICENSE.EXTRA', 'PRIVACY.md',
-        'THIRD-PARTY-NOTICES.md', 'README-FrameScopeMonitor.txt', 'tools\采集.exe', 'fixture.dll')) {
+        'THIRD-PARTY-NOTICES.md', 'README-FrameScopeMonitor.txt', 'FrameScopeBuildInfo.json', 'Restore-FrameScope.cmd', 'tools\采集.exe', 'fixture.dll')) {
         $path = Join-Path $backend $name
         New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force | Out-Null
         [IO.File]::WriteAllText($path, "fixture $name")

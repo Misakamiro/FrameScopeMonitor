@@ -147,7 +147,9 @@ foreach ($file in $files) {
     Copy-Item -LiteralPath $source -Destination $destination
     if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $file.sha256) { throw "Source changed during copy: $($file.path)" }
 }
-& git -C $snapshot add -A -- .
+# Only inventoried bytes were copied. Force keeps source already tracked by the
+# original repository even when a newer ignore rule also matches that source.
+& git -C $snapshot add --force -A -- .
 if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize private snapshot index' }
 [ordered]@{ schema = 1; sourceRoot = $RepoRoot; sourceHead = $head; snapshotRoot = $snapshot;
     generatedPaths = @('framescope-config.example.json', 'obj/FrameScopeBuildMetadata.g.cs'); files = $files } |
