@@ -27,7 +27,13 @@ if($Action -in @('Check','Build')){
     if($LASTEXITCODE -eq 0){throw 'This release version already exists; increment VERSION before building'}
     $refs=Invoke-ReleaseCommand git @('-C',$RepoRoot,'ls-remote','--tags','origin',('refs/tags/v'+$version))
     if($refs.Count){throw 'This public version tag already exists and cannot be replaced'}
-    & (Join-Path $RepoRoot 'tools/Build-IsolatedInstaller.ps1') -RepoRoot $RepoRoot -OutputDirectory $OutputDirectory
+    $savedJobs=$env:CARGO_BUILD_JOBS
+    if(-not $savedJobs){$env:CARGO_BUILD_JOBS='1'}
+    try {
+        & (Join-Path $RepoRoot 'tools/Build-IsolatedInstaller.ps1') -RepoRoot $RepoRoot -OutputDirectory $OutputDirectory
+    } finally {
+        if($null -eq $savedJobs){Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue}else{$env:CARGO_BUILD_JOBS=$savedJobs}
+    }
     $source=Join-Path $OutputDirectory 'source'
     $result=Get-Content -Raw -LiteralPath (Join-Path $OutputDirectory 'isolated-build-result.json') | ConvertFrom-Json
     if(-not $result.inputsVerified -or $result.sourceHead -cne $sha){throw 'Isolated build provenance mismatch'}

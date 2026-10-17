@@ -251,6 +251,16 @@ fn validate_snapshot(snapshot: &Snapshot, target: &Path, links: &[PathBuf]) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_1x_upgrade_preserves_existing_startup_and_shortcut_policy() {
+        let root=std::env::temp_dir().join(format!("framescope-startup-migration-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&root).unwrap();
+        assert!(!WindowsRuntime::new(&root,false,true,true).unwrap().preserve_settings);
+        fs::write(root.join("FrameScope.exe"),b"legacy 1.x program fixture").unwrap();
+        assert!(!root.join("FrameScopeBuildInfo.json").exists());
+        assert!(WindowsRuntime::new(&root,false,false,false).unwrap().preserve_settings);
+        assert!(!WindowsRuntime::new(&root,true,false,false).unwrap().preserve_settings);
+    }
     fn snapshot() -> Snapshot {
         Snapshot {
             keys: vec![Key {
@@ -362,7 +372,8 @@ impl WindowsRuntime {
             })
             .collect();
         Ok(Self {
-            startup_build:None,keep_previous:false,preserve_settings:false,started_new:false,
+            startup_build:None,keep_previous:false,
+            preserve_settings:!uninstall && target.join("FrameScope.exe").is_file(),started_new:false,
             target: target.into(),
             uninstall,
             desktop,

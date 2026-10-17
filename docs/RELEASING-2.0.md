@@ -55,6 +55,8 @@ pwsh -File tools/Release-FrameScope.ps1 -Action Publish -OutputDirectory C:\fs-r
 
 Build 不上传或安装；Draft 不公开；Publish 不更新本机。发行附件为版本化安装器、`release-manifest.json`、`release-manifest.json.minisig`。变更说明和本地证据单独生成。构建发生在隔离快照，不用工作区历史产物凑包；完整 payload、版本、SHA、宿主能力标记逐项核对。
 
+未显式设置 `CARGO_BUILD_JOBS` 时，发布构建默认使用单任务 Rust 编译，以控制峰值内存；该设置只在构建子流程内生效，结束后恢复原环境。
+
 ## 验证边界
 
 源码实现的回归检查：前端 Vitest／类型检查／构建、宿主 Rust tests、`src/updater` 本地 HTTP 签名／回退／取消测试、安装器 TEMP 文件事务及故障注入、版本和发布工具契约测试、C# 诊断版本检查。
