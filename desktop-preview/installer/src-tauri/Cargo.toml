@@ -8,6 +8,14 @@ edition = "2021"
 name = "framescope_installer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+transaction-validation = []
+
+[[bin]]
+name = "transaction-validation"
+path = "src/transaction_validation_main.rs"
+required-features = ["transaction-validation"]
+
 [profile.release]
 lto = true
 codegen-units = 1
@@ -27,3 +35,4 @@ winreg = "0.52"
 dirs = "5"
 zip = "2"
 mslnk = "0.1"
+sha2 = "0.10"

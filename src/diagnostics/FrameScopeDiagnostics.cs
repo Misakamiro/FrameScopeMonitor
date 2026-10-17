@@ -55,19 +55,19 @@ public static partial class FrameScopeDiagnostics
         });
     }
 
-    public static void QueueGenerateReport(FrameScopeConfig config, string appRoot, string dataRoot, string reason, string runDir)
+    public static void QueueGenerateReport(FrameScopeConfig config, string appRoot, string dataRoot, string reason, string runDir, string diagnosticOutputRoot = null)
     {
         ThreadPool.QueueUserWorkItem(delegate
         {
             try
             {
-                GenerateReport(config, appRoot, dataRoot, reason, runDir);
+                GenerateReport(config, appRoot, dataRoot, reason, runDir, diagnosticOutputRoot);
             }
             catch { }
         });
     }
 
-    public static FrameScopeDiagnosticReportResult GenerateReport(FrameScopeConfig config, string appRoot, string dataRoot, string reason, string runDir)
+    public static FrameScopeDiagnosticReportResult GenerateReport(FrameScopeConfig config, string appRoot, string dataRoot, string reason, string runDir, string diagnosticOutputRoot = null, Action<string> cleanupObserver = null)
     {
         if (config == null) config = FrameScopeConfigStore.CreateDefaultConfig();
         FrameScopeConfigStore.Normalize(config);
@@ -75,13 +75,13 @@ public static partial class FrameScopeDiagnostics
         if (string.IsNullOrWhiteSpace(dataRoot)) dataRoot = FrameScopeConfigStore.DefaultDataRoot;
         dataRoot = ResolveRoot(appRoot, dataRoot);
 
-        string diagnosticsRoot = DefaultDiagnosticRoot;
+        string diagnosticsRoot = string.IsNullOrWhiteSpace(diagnosticOutputRoot) ? DefaultDiagnosticRoot : Path.GetFullPath(diagnosticOutputRoot);
+        if (cleanupObserver != null) cleanupObserver(diagnosticsRoot);
         Directory.CreateDirectory(diagnosticsRoot);
         CleanupDiagnosticReports(diagnosticsRoot, config.LogRetentionDays, config.MaxLogDiskMb);
         TrimLogFile(Path.Combine(appRoot, "framescope-watcher.log"), config.MaxLogDiskMb);
 
-        string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-        string outputDir = Path.Combine(diagnosticsRoot, "diagnostic-" + stamp);
+        string outputDir = Path.Combine(diagnosticsRoot, BuildDiagnosticDirectoryName(DateTime.Now, Guid.NewGuid()));
         Directory.CreateDirectory(outputDir);
 
         string recentRun = string.IsNullOrWhiteSpace(runDir) ? FindLatestRun(dataRoot) : runDir;
@@ -91,6 +91,7 @@ public static partial class FrameScopeDiagnostics
         FrameScopeJsonFile.Write(jsonPath, Json.Serialize(report));
         File.WriteAllText(markdownPath, BuildMarkdown(report), Encoding.UTF8);
 
+        if (cleanupObserver != null) cleanupObserver(diagnosticsRoot);
         FrameScopeDiagnosticCleanupResult cleanup = CleanupDiagnosticReports(diagnosticsRoot, config.LogRetentionDays, config.MaxLogDiskMb);
         return new FrameScopeDiagnosticReportResult
         {
@@ -99,6 +100,12 @@ public static partial class FrameScopeDiagnostics
             MarkdownPath = markdownPath,
             Cleanup = cleanup
         };
+    }
+
+    private static string BuildDiagnosticDirectoryName(DateTime timestamp, Guid nonce)
+    {
+        return "diagnostic-" + timestamp.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)
+            + "-" + nonce.ToString("N", CultureInfo.InvariantCulture);
     }
 
     public static Dictionary<string, object> BuildReport(FrameScopeConfig config, string appRoot, string dataRoot, string reason, string runDir)
@@ -131,11 +138,13 @@ public static partial class FrameScopeDiagnostics
         return RedactMap(report);
     }
 
-    public static void ApplyRetentionPolicy(string appRoot, FrameScopeConfig config)
+    public static void ApplyRetentionPolicy(string appRoot, FrameScopeConfig config, string diagnosticOutputRoot = null, Action<string> cleanupObserver = null)
     {
         if (config == null) return;
         FrameScopeConfigStore.Normalize(config);
-        CleanupDiagnosticReports(DefaultDiagnosticRoot, config.LogRetentionDays, config.MaxLogDiskMb);
+        string diagnosticsRoot = string.IsNullOrWhiteSpace(diagnosticOutputRoot) ? DefaultDiagnosticRoot : Path.GetFullPath(diagnosticOutputRoot);
+        if (cleanupObserver != null) cleanupObserver(diagnosticsRoot);
+        CleanupDiagnosticReports(diagnosticsRoot, config.LogRetentionDays, config.MaxLogDiskMb);
         if (!string.IsNullOrWhiteSpace(appRoot))
         {
             TrimLogFile(Path.Combine(appRoot, "framescope-watcher.log"), config.MaxLogDiskMb);

@@ -19,6 +19,10 @@ fn main() {
     #[cfg(target_os = "windows")]
     {
         use tauri_build::WindowsAttributes;
+        // The optional transaction-validation binary only operates on guarded
+        // TEMP fixtures. Normal installer builds retain requireAdministrator;
+        // main.rs disables the installer entry in a validation-feature build.
+        let validation = std::env::var_os("CARGO_FEATURE_TRANSACTION_VALIDATION").is_some();
         let windows = WindowsAttributes::new()
             // Iron rule from the main app: overriding the manifest MUST keep the
             // Tauri default Common-Controls dependency or SxS breaks (main app
@@ -46,7 +50,7 @@ fn main() {
     </security>
   </trustInfo>
 </assembly>
-            "#);
+            "#.replace("level=\"requireAdministrator\"", if validation { "level=\"asInvoker\"" } else { "level=\"requireAdministrator\"" }));
         tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
             .expect("Failed to run build script");
     }

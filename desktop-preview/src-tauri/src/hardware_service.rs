@@ -10,11 +10,110 @@ use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const PIPE_NAME: &str = "FrameScopeHardwareService";
+
+// Shared with the recorder. A request holds this installation-scoped mutex
+// until its pipe exchange ends; maintenance acquires it before stopping the
+// service and keeps it for the entire driver operation.
+pub(crate) struct MaintenanceLease(Handle);
+
+fn maintenance_name(root: &std::path::Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let root = root.to_string_lossy().trim_start_matches(r"\\?\").trim_end_matches(['\\', '/']).replace('/', "\\");
+    let root = invariant_uppercase(&root)?;
+    Ok(format!("Local\\FrameScopeHardwareMaintenance-{:X}", Sha256::digest(root.as_bytes())))
+}
+
+fn invariant_uppercase(value: &str) -> Result<String, String> {
+    use windows_sys::Win32::Globalization::{LCMapStringEx, LCMAP_UPPERCASE};
+    let input: Vec<u16> = value.encode_utf16().collect();
+    let locale = [0u16]; // LOCALE_NAME_INVARIANT, identical to the recorder.
+    unsafe {
+        let size = LCMapStringEx(locale.as_ptr(), LCMAP_UPPERCASE, input.as_ptr(), input.len() as i32,
+            null_mut(), 0, null_mut(), null_mut(), 0);
+        if size == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+        let mut mapped = vec![0u16; size as usize];
+        if LCMapStringEx(locale.as_ptr(), LCMAP_UPPERCASE, input.as_ptr(), input.len() as i32,
+            mapped.as_mut_ptr(), size, null_mut(), null_mut(), 0) != size {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        String::from_utf16(&mapped).map_err(|error| error.to_string())
+    }
+}
+
+impl MaintenanceLease {
+    fn acquire(root: &std::path::Path, timeout_ms: u32) -> Result<Self, String> {
+        use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        let name: Vec<u16> = maintenance_name(root)?.encode_utf16().chain(once(0)).collect();
+        unsafe {
+            let handle = CreateMutexW(null_mut(), 0, name.as_ptr());
+            if handle.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
+            let result = WaitForSingleObject(handle, timeout_ms);
+            if result == 0 || result == 0x80 { return Ok(Self(handle)); }
+            windows_sys::Win32::Foundation::CloseHandle(handle);
+            Err("hardware maintenance is active or requests have not drained".into())
+        }
+    }
+}
+
+impl Drop for MaintenanceLease {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::Threading::ReleaseMutex(self.0);
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+pub(crate) fn begin_maintenance() -> Result<MaintenanceLease, String> {
+    let (service, _) = backend_paths()?;
+    let root = service.parent().ok_or("hardware installation root missing")?;
+    begin_maintenance_at(root, &service, PIPE_NAME, &CLIENT)
+}
+
+fn begin_maintenance_at(root: &std::path::Path, service: &std::path::Path,
+    pipe_name: &str, client_slot: &Mutex<Option<PipeClient>>) -> Result<MaintenanceLease, String> {
+    let lease = MaintenanceLease::acquire(root, 30_000)?;
+    // No connection is spawned in maintenance. Remove the cached connection
+    // while holding the same client lock used by normal requests.
+    let mut slot = client_slot.lock().unwrap_or_else(|p| p.into_inner());
+    let client = match slot.take() {
+        Some(client) => Some(client),
+        None => match open_pipe_at(pipe_name, service) {
+            Ok(client) => Some(client),
+            Err(error) if error.starts_with("pipe connect failed (absent)") => None,
+            Err(error) => return Err(error),
+        },
+    };
+    if let Some(mut client) = client {
+        use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+        use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+        let mut pid = 0;
+        if unsafe { GetNamedPipeServerProcessId(client.handle.0, &mut pid) } == 0 {
+            return Err("cannot identify maintenance service".into());
+        }
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        if process.is_null() { return Err("cannot wait for maintenance service".into()); }
+        let stopped = client.request("stop", &Value::Null).and_then(|reply| {
+            if reply["status"] != "stopped" || reply["shutdownComplete"] != true {
+                return Err("service did not confirm maintenance cleanup".into());
+            }
+            drop(client);
+            if unsafe { WaitForSingleObject(process, 20_000) } != 0 {
+                return Err("service did not exit before maintenance".into());
+            }
+            Ok(())
+        });
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(process); }
+        stopped?;
+    }
+    Ok(lease)
+}
 
 // R-A7: while the PawnIO installer/uninstaller tears the driver down, the
 // 1 Hz poller must not query (or re-spawn) the sampling service. The pause
@@ -33,20 +132,28 @@ const CONNECT_RETRY_MS: u64 = 300;
 const CONNECT_RETRIES: usize = 20;
 const SPAWN_COOLDOWN: Duration = Duration::from_secs(5);
 
-// H7 tail: a hung service used to block the calling thread - and, under the
-// CLIENT lock, every other hardware caller - forever on ReadFile. Track the
-// in-flight read; a watchdog cancels it via CancelIoEx after a generous
-// budget (a cold LibreHardwareMonitor scan can legitimately take ~10s), so
-// the read errors out, the lock is released and the connection recycled.
-static INFLIGHT_HANDLE: AtomicUsize = AtomicUsize::new(0);
-static INFLIGHT_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+// Cold callers may own different connections concurrently. Registration and
+// cancellation share a lock so an expired handle cannot be closed/reused
+// between the watchdog's lookup and CancelIoEx.
+static INFLIGHT: Mutex<Vec<(usize, Instant)>> = Mutex::new(Vec::new());
 const READ_TIMEOUT_MS: u64 = 12_000;
 
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+struct IoDeadline(usize);
+
+impl IoDeadline {
+    fn start(handle: Handle) -> Self {
+        ensure_read_watchdog();
+        INFLIGHT.lock().unwrap_or_else(|p| p.into_inner())
+            .push((handle as usize, Instant::now()));
+        Self(handle as usize)
+    }
+}
+
+impl Drop for IoDeadline {
+    fn drop(&mut self) {
+        INFLIGHT.lock().unwrap_or_else(|p| p.into_inner())
+            .retain(|(handle, _)| *handle != self.0);
+    }
 }
 
 fn ensure_read_watchdog() {
@@ -56,22 +163,15 @@ fn ensure_read_watchdog() {
             .name("framescope-pipe-watchdog".into())
             .spawn(|| loop {
                 std::thread::sleep(Duration::from_millis(200));
-                let handle = INFLIGHT_HANDLE.load(Ordering::SeqCst);
-                if handle == 0 {
-                    continue;
-                }
-                let since = INFLIGHT_SINCE_MS.load(Ordering::SeqCst);
-                if since == 0 || now_unix_ms().saturating_sub(since) <= READ_TIMEOUT_MS {
-                    continue;
-                }
-                // Cancels every thread's I/O on this handle; the blocked
-                // ReadFile returns ERROR_OPERATION_ABORTED and the caller
-                // treats it as a transport failure (recycle + reconnect).
-                unsafe {
-                    windows_sys::Win32::System::IO::CancelIoEx(
-                        handle as *mut core::ffi::c_void,
-                        null_mut(),
-                    );
+                let inflight = INFLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+                for &(handle, since) in inflight.iter() {
+                    if since.elapsed() >= Duration::from_millis(READ_TIMEOUT_MS) {
+                        unsafe {
+                            windows_sys::Win32::System::IO::CancelIoEx(
+                                handle as Handle, null_mut(),
+                            );
+                        }
+                    }
                 }
             })
             .expect("spawn pipe watchdog");
@@ -112,6 +212,7 @@ struct PipeClient {
 }
 
 static CLIENT: Mutex<Option<PipeClient>> = Mutex::new(None);
+static HALTING: AtomicBool = AtomicBool::new(false);
 static LAST_SPAWN: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// `FRAMESCOPE_BACKEND_DIR` overrides the directory holding
@@ -204,13 +305,18 @@ fn kill_child_when_host_dies(child: &std::process::Child) {
 }
 
 fn open_pipe() -> Result<PipeClient, String> {
+    let (service, _) = backend_paths()?;
+    open_pipe_at(PIPE_NAME, &service)
+}
+
+fn open_pipe_at(pipe_name: &str, expected_service: &std::path::Path) -> Result<PipeClient, String> {
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
+        CreateFileW, OPEN_EXISTING, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
     };
     use windows_sys::Win32::System::Pipes::{PIPE_READMODE_MESSAGE, SetNamedPipeHandleState};
 
-    let full = format!("\\\\.\\pipe\\{PIPE_NAME}");
+    let full = format!("\\\\.\\pipe\\{pipe_name}");
     let wide: Vec<u16> = OsStr::new(&full).encode_wide().chain(once(0)).collect();
     unsafe {
         let handle = CreateFileW(
@@ -219,11 +325,17 @@ fn open_pipe() -> Result<PipeClient, String> {
             0,
             null_mut(),
             OPEN_EXISTING,
-            FILE_FLAG_FIRST_PIPE_INSTANCE,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
             null_mut(),
         );
         if handle.is_null() || handle == -1isize as Handle {
-            return Err(format!("pipe connect failed: {}", std::io::Error::last_os_error()));
+            let error = std::io::Error::last_os_error();
+            let absent = [Some(2), Some(3)].contains(&error.raw_os_error());
+            return Err(format!("pipe connect failed{}: {error}", if absent { " (absent)" } else { "" }));
+        }
+        if let Err(error) = verify_server(handle, expected_service) {
+            windows_sys::Win32::Foundation::CloseHandle(handle);
+            return Err(error);
         }
         let mode = PIPE_READMODE_MESSAGE;
         if SetNamedPipeHandleState(handle, &mode, null_mut(), null_mut()) == 0 {
@@ -239,6 +351,49 @@ fn open_pipe() -> Result<PipeClient, String> {
     }
 }
 
+fn verify_server(handle: Handle, expected_service: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Globalization::{CompareStringOrdinal, CSTR_EQUAL};
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let error = || format!("pipe server identity failed: {}", std::io::Error::last_os_error());
+    unsafe {
+        let mut pid = 0;
+        if GetNamedPipeServerProcessId(handle, &mut pid) == 0 || pid == 0 {
+            return Err(error());
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return Err(error());
+        }
+        let mut image = vec![0u16; 32768];
+        let mut length = image.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
+        let query_error = std::io::Error::last_os_error();
+        CloseHandle(process);
+        if ok == 0 {
+            return Err(format!("pipe server identity failed: {query_error}"));
+        }
+        let actual = std::path::PathBuf::from(std::ffi::OsString::from_wide(&image[..length as usize]));
+        let canonical = |path: &std::path::Path| -> Result<Vec<u16>, String> {
+            std::fs::canonicalize(path)
+                .map(|path| path.as_os_str().encode_wide().collect())
+                .map_err(|error| format!("pipe server identity path failed: {error}"))
+        };
+        let actual = canonical(&actual)?;
+        let expected = canonical(expected_service)?;
+        if CompareStringOrdinal(actual.as_ptr(), actual.len() as i32,
+            expected.as_ptr(), expected.len() as i32, 1) != CSTR_EQUAL {
+            return Err(format!("pipe server identity mismatch: PID {pid} is not {}", expected_service.display()));
+        }
+    }
+    Ok(())
+}
+
 impl PipeClient {
     fn request(&mut self, method: &str, params: &Value) -> Result<Value, String> {
         use windows_sys::Win32::Storage::FileSystem::{ReadFile, WriteFile};
@@ -248,6 +403,7 @@ impl PipeClient {
             .into_bytes();
         bytes.push(b'\n');
         let handle = self.handle.0;
+        let _deadline = IoDeadline::start(handle);
         let mut written: u32 = 0;
         unsafe {
             if WriteFile(
@@ -265,9 +421,6 @@ impl PipeClient {
         const ERROR_MORE_DATA: i32 = 234;
         let mut received: Vec<u8> = Vec::with_capacity(65_536);
         let mut read: u32 = 0;
-        ensure_read_watchdog();
-        INFLIGHT_HANDLE.store(handle as usize, Ordering::SeqCst);
-        INFLIGHT_SINCE_MS.store(now_unix_ms(), Ordering::SeqCst);
         let read_result = loop {
             let ok = unsafe {
                 ReadFile(handle, self.buffer.as_mut_ptr(), self.buffer.len() as u32, &mut read, null_mut())
@@ -278,11 +431,9 @@ impl PipeClient {
                     received.extend_from_slice(&self.buffer[..read as usize]);
                     continue;
                 }
-                INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
                 break Err(error);
             }
             received.extend_from_slice(&self.buffer[..read as usize]);
-            INFLIGHT_HANDLE.store(0, Ordering::SeqCst);
             break Ok(());
         };
         if read_result.is_err() || received.is_empty() {
@@ -325,11 +476,16 @@ impl Drop for PipeClient {
 /// the frontend keeps full precision while this feeds the native panel.
 pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
     const INT_FIELDS: &[&str] = &[
-        "fps", "fps_1low", "fps_01low", "cpu_usage", "cpu_clock", "gpu_usage", "game_ping",
+        "fps", "cpu_usage", "cpu_clock", "gpu_usage", "game_ping",
         "cpu_fan_speed", "gpu_fan_speed", "gpu_power", "gpu_clock", "gpu_vram_used",
         "gpu_vram_total", "gpu_memory_clock",
+        "net_time_offset_ms",
     ];
     if let Some(object) = overlay.as_object_mut() {
+        // Routing metadata belongs to the in-process snapshot, not the strict
+        // original GDI renderer contract.
+        object.remove("target_pid");
+        object.remove("timestamp_ms");
         for field in INT_FIELDS {
             if let Some(value) = object.get_mut(*field) {
                 if let Some(number) = value.as_f64() {
@@ -340,6 +496,9 @@ pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
         if let Some(gpus) = object.get_mut("gpu_sensors").and_then(Value::as_array_mut) {
             for gpu in gpus {
                 if let Some(gpu_object) = gpu.as_object_mut() {
+                    // GPU identity is service routing metadata; the original
+                    // GDI renderer consumes only its sensor values and name.
+                    gpu_object.remove("identifier");
                     for field in ["usage", "fan_speed", "power", "clock", "memory_clock", "vram_used", "vram_total"] {
                         if let Some(value) = gpu_object.get_mut(field) {
                             if let Some(number) = value.as_f64() {
@@ -357,25 +516,60 @@ pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
 /// One request against the hardware service; connects (and spawns the service
 /// process when needed) on first use and after any transport failure.
 pub fn call(method: &str, params: Value) -> Result<Value, String> {
-    // Fast path under the lock: reuse the published connection, holding the
-    // lock only for the request itself.
-    {
-        let mut guard = CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(client) = guard.as_mut() {
-            match client.request(method, &params) {
-                Ok(value) => return Ok(value),
-                Err(error) => {
-                    if !error.contains("pipe ") {
-                        return Err(error); // protocol-level answer, surface as-is
-                    }
-                    *guard = None; // transport broke; fall through to reconnect
+    if poller_paused() { return Err("hardware maintenance is active".into()); }
+    let (service, _) = backend_paths()?;
+    call_with_installation_client(service.parent().ok_or("hardware installation root missing")?,
+        &CLIENT, &HALTING, method, &params, connect_service)
+}
+
+fn call_with_installation_client(root: &std::path::Path, slot: &Mutex<Option<PipeClient>>,
+    halting: &AtomicBool, method: &str, params: &Value,
+    connect: impl FnOnce() -> Result<PipeClient, String>) -> Result<Value, String> {
+    if halting.load(Ordering::SeqCst) { return Err("hardware client is shutting down".into()); }
+    // Ordinary reads queue behind each other. A zero wait incorrectly classified
+    // concurrent UI/recorder reads as driver maintenance.
+    let _lease = MaintenanceLease::acquire(root, READ_TIMEOUT_MS as u32)?;
+    call_with_client(slot, halting, method, params, connect)
+}
+
+fn call_with_client(
+    slot: &Mutex<Option<PipeClient>>,
+    halting: &AtomicBool,
+    method: &str,
+    params: &Value,
+    connect: impl FnOnce() -> Result<PipeClient, String>,
+) -> Result<Value, String> {
+    if halting.load(Ordering::SeqCst) {
+        return Err("hardware client is shutting down".into());
+    }
+    // Keep cold connection publication under the same lock as stop. A call
+    // already connecting must publish its handle before shutdown can drain it.
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if halting.load(Ordering::SeqCst) {
+        return Err("hardware client is shutting down".into());
+    }
+    if let Some(client) = guard.as_mut() {
+        match client.request(method, params) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if !error.contains("pipe ") {
+                    return Err(error);
                 }
+                *guard = None;
             }
         }
     }
+    if halting.load(Ordering::SeqCst) {
+        return Err("hardware client is shutting down".into());
+    }
+    *guard = Some(connect()?);
+    if halting.load(Ordering::SeqCst) {
+        return Err("hardware client is shutting down".into());
+    }
+    guard.as_mut().unwrap().request(method, params)
+}
 
-    // Slow path OUTSIDE the lock: spawn (cooled) + bounded connect retries, so
-    // a slow connect can never stall other caller threads.
+fn connect_service() -> Result<PipeClient, String> {
     let (service, helper) = backend_paths()?;
     spawn_service(&service, &helper)?;
     let mut last_error = String::new();
@@ -392,8 +586,30 @@ pub fn call(method: &str, params: Value) -> Result<Value, String> {
             }
         }
     }
-    let mut client = opened.ok_or_else(|| format!("hardware service unavailable: {last_error}"))?;
-    let value = client.request(method, &params)?;
-    *CLIENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(client);
-    Ok(value)
+    opened.ok_or_else(|| format!("hardware service unavailable: {last_error}"))
 }
+
+/// Call synchronously before app.exit closes the kill-on-close Job.
+/// false means no cached connection, not proof that an external service stopped.
+pub fn stop_connected_service() -> Result<bool, String> {
+    set_poller_paused(true);
+    stop_connected_client(&CLIENT, &HALTING)
+}
+
+fn stop_connected_client(
+    slot: &Mutex<Option<PipeClient>>,
+    halting: &AtomicBool,
+) -> Result<bool, String> {
+    halting.store(true, Ordering::SeqCst);
+    let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(mut client) = guard.take() else { return Ok(false) };
+    let reply = client.request("stop", &Value::Null)?;
+    if reply["status"] != "stopped" || reply["shutdownComplete"] != true {
+        return Err("pipe stop did not confirm cleanup; service may be outdated".into());
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+#[path = "hardware_service_tests.rs"]
+mod tests;

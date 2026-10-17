@@ -23,6 +23,8 @@ internal sealed class ActiveMonitor
     public string RunRoot;
     public string RunDir;
     public DateTime StartedAt;
+    public string StopToken;
+    public bool StopSignalled;
 }
 
 internal static partial class FrameScopeNativeMonitor
@@ -31,6 +33,69 @@ internal static partial class FrameScopeNativeMonitor
     private static readonly FrameScopeLogRateLimiter PerformanceWatcherLogRateLimiter = new FrameScopeLogRateLimiter();
     private static readonly TimeSpan WatcherTargetScanLogInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan WatcherPerformancePollLogInterval = TimeSpan.FromSeconds(15);
+    private static string WatcherInstanceId;
+    private static long WatcherStartTimeUnix;
+    private static bool WatcherStopRequested;
+    private static string WatcherStopError = "";
+    private static string WatcherStopErrorCode = "";
+
+    private static void RecordWatcherStopError(string code, string error)
+    {
+        if (code == "report-finalization-failed" && !string.IsNullOrEmpty(WatcherStopErrorCode)) return;
+        WatcherStopErrorCode = code;
+        WatcherStopError = error;
+    }
+
+    private static bool PollWatcherStop(string configPath)
+    {
+        if (WatcherStopRequested) return true;
+        try
+        {
+            var path = Path.Combine(Root, "framescope-watcher-stop-" + WatcherInstanceId + ".json");
+            if (!File.Exists(path)) return false;
+            var request = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
+            WatcherStopRequested = Convert.ToString(request["Action"]) == "stop" &&
+                Convert.ToString(request["WatcherInstanceId"]) == WatcherInstanceId &&
+                Convert.ToInt32(request["WatcherPid"]) == Process.GetCurrentProcess().Id &&
+                Convert.ToInt64(request["WatcherStartTimeUnix"]) == WatcherStartTimeUnix &&
+                string.Equals(Path.GetFullPath(Convert.ToString(request["ConfigPath"])),
+                    Path.GetFullPath(configPath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch { }
+        return WatcherStopRequested;
+    }
+
+    private static void SignalMonitorStops(Dictionary<string, ActiveMonitor> activeMonitors)
+    {
+        foreach (var item in activeMonitors.Values)
+        {
+            if (item.StopSignalled || string.IsNullOrEmpty(item.StopToken)) continue;
+            try
+            {
+                FrameScopeJsonFile.Write(Path.Combine(item.RunDir, "monitor-stop-request.json"),
+                    Json.Serialize(new { Action = "stop", WorkerToken = item.StopToken }));
+                item.StopSignalled = true;
+            }
+            catch (Exception ex)
+            {
+                WriteFrameScopeLog("worker-stop-request-retry pid=" + item.MonitorPid + " error=" + ex.Message);
+            }
+        }
+    }
+
+    private static bool IsMonitorStopRequested(string runDir, string token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        try
+        {
+            string path = Path.Combine(runDir, "monitor-stop-request.json");
+            if (!File.Exists(path)) return false;
+            var request = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
+            return Convert.ToString(request["Action"]) == "stop" &&
+                Convert.ToString(request["WorkerToken"]) == token;
+        }
+        catch { return false; }
+    }
 
     private static void RunNativeWatcher(string[] args)
     {
@@ -38,8 +103,16 @@ internal static partial class FrameScopeNativeMonitor
         catch { }
 
         var configPath = GetArgValue(args, "--config", ConfigPath);
+        var diagnosticOutputRoot = GetArgValue(args, "--diagnostic-output-root", null);
+        WatcherInstanceId = Guid.NewGuid().ToString("N");
+        WatcherStartTimeUnix = (Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks -
+            new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks) / TimeSpan.TicksPerSecond;
+        WatcherStopRequested = false;
+        WatcherStopError = "";
+        WatcherStopErrorCode = "";
         var exitAfterFirstRun = HasArg(args, "--exit-after-first-run");
         var activeMonitors = new Dictionary<string, ActiveMonitor>(StringComparer.OrdinalIgnoreCase);
+        var retryPolicy = new FrameScopeWorkerRestartPolicy();
         var completedRuns = 0;
         var lastReport = "";
         var lastStateWrite = DateTime.MinValue;
@@ -53,21 +126,28 @@ internal static partial class FrameScopeNativeMonitor
         while (true)
         {
             var pollStarted = Stopwatch.StartNew();
+            if (PollWatcherStop(configPath))
+            {
+                WriteNativeWatcherState(configPath, "stopping", activeMonitors, completedRuns, lastReport);
+                SignalMonitorStops(activeMonitors);
+            }
             var config = LoadConfigFromPath(configPath);
             var dataRoot = ResolveDataRoot(config.DataRoot);
             Directory.CreateDirectory(dataRoot);
-            if (!recoveredStaleRuns)
+            if (!recoveredStaleRuns && !WatcherStopRequested)
             {
-                RecoverStaleMissingReports(dataRoot, config);
+                RecoverStaleMissingReports(dataRoot, config, delegate(string runDir) {
+                    WriteNativeWatcherState(configPath, runDir == null ? "starting" : "generating", activeMonitors, completedRuns, lastReport, runDir);
+                });
                 recoveredStaleRuns = true;
             }
-            if ((DateTime.Now - lastRetentionCleanup).TotalHours >= 6)
+            if (!WatcherStopRequested && (DateTime.Now - lastRetentionCleanup).TotalHours >= 6)
             {
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     try
                     {
-                        FrameScopeDiagnostics.ApplyRetentionPolicy(Root, config);
+                        FrameScopeDiagnostics.ApplyRetentionPolicy(Root, config, diagnosticOutputRoot);
                         ApplyRunAndHistoryRetention(dataRoot, config);
                     }
                     catch { }
@@ -77,33 +157,47 @@ internal static partial class FrameScopeNativeMonitor
 
             // R-B3: a worker dying on startup would be re-spawned every poll
             // tick; back off after three rapid failures.
-            var rapidWorkerFailures = 0;
             foreach (var key in activeMonitors.Keys.ToArray())
             {
                 var item = activeMonitors[key];
-                if (!MonitorHasExited(item)) continue;
-                if ((DateTime.Now - item.StartedAt).TotalSeconds < 5)
+                if (!MonitorHasExited(item))
                 {
-                    rapidWorkerFailures++;
+                    if ((DateTime.Now - item.StartedAt).TotalSeconds >= 5) retryPolicy.Reset(key);
+                    continue;
                 }
+                retryPolicy.RecordExit(key, DateTime.Now - item.StartedAt, DateTime.UtcNow);
+                if (!retryPolicy.CanStart(key, DateTime.UtcNow)) WriteFrameScopeLog("watcher-backoff target=" + key);
 
                 var run = !string.IsNullOrWhiteSpace(item.RunDir) && Directory.Exists(item.RunDir)
                     ? new DirectoryInfo(item.RunDir)
                     : null;
                 var status = run != null ? ReadStatusDictionary(run.FullName) : null;
                 var exitCode = GetMonitorExitCode(item, status);
+                if (status != null && status.ContainsKey("StoppedBeforeCapture") &&
+                    Convert.ToBoolean(status["StoppedBeforeCapture"]))
+                {
+                    DisposeProcess(item.Process);
+                    activeMonitors.Remove(key);
+                    continue;
+                }
                 if (run != null)
                 {
+                    if (PollWatcherStop(configPath)) SignalMonitorStops(activeMonitors);
+                    WriteNativeWatcherState(configPath, "generating", activeMonitors, completedRuns, lastReport, run.FullName);
                     status = EnsureReportForCompletedRun(run.FullName, status, exitCode, config);
                     var entry = AddHistoryEntry(item.Target, run.FullName, status, exitCode);
                     lastReport = entry.ReportHtml ?? "";
                     FrameScopeReportArtifactState reportArtifacts = FrameScopeReportArtifacts.Inspect(run.FullName);
                     bool reportAvailable = reportArtifacts.IsComplete;
+                    if (!reportAvailable)
+                    {
+                        RecordWatcherStopError("report-finalization-failed", "Report finalization failed for " + item.Target.Name);
+                    }
                     if (reportAvailable) lastReport = reportArtifacts.HtmlPath;
                     WriteFrameScopeLog("monitor-complete game=" + item.Target.Name + " report=" + lastReport);
                     if (config.AutoGenerateDiagnosticReport && FrameScopeLoggingPolicy.ShouldAutoGenerateDiagnosticReport(status, exitCode))
                     {
-                        FrameScopeDiagnostics.QueueGenerateReport(config, Root, dataRoot, "auto-monitor-complete", run.FullName);
+                        FrameScopeDiagnostics.QueueGenerateReport(config, Root, dataRoot, "auto-monitor-complete", run.FullName, diagnosticOutputRoot);
                         WriteFrameScopeLog("diagnostic-report-queued run=" + run.FullName);
                     }
                     else if (config.AutoGenerateDiagnosticReport)
@@ -128,6 +222,7 @@ internal static partial class FrameScopeNativeMonitor
                 }
                 else
                 {
+                    RecordWatcherStopError("worker-run-missing", "Worker exited without a run directory: " + item.Target.Name);
                     WriteFrameScopeLog("monitor-complete-no-run game=" + item.Target.Name);
                 }
 
@@ -135,14 +230,13 @@ internal static partial class FrameScopeNativeMonitor
                 activeMonitors.Remove(key);
                 completedRuns++;
             }
-            if (rapidWorkerFailures >= 3)
-            {
-                WriteFrameScopeLog("watcher-backoff rapid-worker-restarts=" + rapidWorkerFailures);
-                System.Threading.Thread.Sleep(5000);
-            }
-
             foreach (var target in config.Targets.Where(t => t != null && t.Enabled && !string.IsNullOrWhiteSpace(t.ProcessName)))
             {
+                if (PollWatcherStop(configPath))
+                {
+                    SignalMonitorStops(activeMonitors);
+                    break;
+                }
                 var processBases = BuildTargetProcessBaseNames(target.ProcessName, target.Name);
                 if (processBases.Count == 0) continue;
                 var processBase = processBases[0];
@@ -161,18 +255,29 @@ internal static partial class FrameScopeNativeMonitor
                     detectedText,
                     WatcherTargetScanLogInterval,
                     delegate { return "target-scan name=" + target.Name + " aliases=" + string.Join(";", processBases.ToArray()) + " detected=" + detectedText; });
-                if (detected == null) continue;
+                if (detected == null) { retryPolicy.Reset(key); continue; }
+                if (!retryPolicy.CanStart(key, DateTime.UtcNow)) continue;
 
                 var runRoot = Path.Combine(dataRoot, SafeName(target.Name, processBase));
                 Directory.CreateDirectory(runRoot);
                 var monitor = StartMonitorProcess(config, target, runRoot, processBases, detected);
-                if (monitor == null) continue;
+                if (monitor == null)
+                {
+                    retryPolicy.RecordExit(key, TimeSpan.Zero, DateTime.UtcNow);
+                    continue;
+                }
 
                 activeMonitors[key] = monitor;
                 WriteFrameScopeLog("monitor-start game=" + target.Name + " process=" + target.ProcessName + " targetPid=" + detected.ProcessId + " targetBase=" + detected.BaseName + " pid=" + monitor.MonitorPid);
             }
 
-            var phase = activeMonitors.Count > 0 ? "monitoring" : "idle";
+            if (WatcherStopRequested && activeMonitors.Count == 0)
+            {
+                WriteNativeWatcherState(configPath, "stopped", activeMonitors, completedRuns, lastReport);
+                WriteFrameScopeLog("native-watcher-graceful-stop-complete");
+                break;
+            }
+            var phase = WatcherStopRequested ? "stopping" : activeMonitors.Count > 0 ? "monitoring" : "idle";
             var stateSignature = phase + "|" + completedRuns + "|" + lastReport + "|" + string.Join(",", activeMonitors.Keys.OrderBy(v => v).ToArray());
             var stateIntervalMs = activeMonitors.Count > 0 ? 2000 : 5000;
             var now = DateTime.Now;
@@ -261,6 +366,7 @@ internal static partial class FrameScopeNativeMonitor
             return null;
         }
         var aliasArg = string.Join(";", processBaseNames.ToArray());
+        var stopToken = Guid.NewGuid().ToString("N");
         var args =
             "--monitor-session" +
             " --TargetProcessName " + Quote(target.ProcessName) +
@@ -280,6 +386,7 @@ internal static partial class FrameScopeNativeMonitor
             " --CpuVidSampleIntervalMs " + cpuVidSampleMs.ToString(CultureInfo.InvariantCulture) +
             " --CpuVidProvider " + Quote(cpuVidProvider) +
             " --MonitorProcessRole monitor-session-worker" +
+            " --StopRequestToken " + stopToken +
             " --EnableVerboseLogs " + (FrameScopeLoggingPolicy.IsVerboseEnabled(config) ? "true" : "false") +
             " --EnablePerformanceDiagnosticsLogs " + (FrameScopeLoggingPolicy.IsPerformanceDiagnosticsEnabled(config) ? "true" : "false") +
             " --ControlPollIntervalMs 3000" +
@@ -301,6 +408,7 @@ internal static partial class FrameScopeNativeMonitor
 
         try
         {
+            if (WatcherStopRequested) return null;
             var psi = new ProcessStartInfo
             {
                 FileName = Application.ExecutablePath,
@@ -323,6 +431,7 @@ internal static partial class FrameScopeNativeMonitor
                 MonitorPid = process.Id,
                 RunRoot = runRoot,
                 RunDir = reservedRunDir,
+                StopToken = stopToken,
                 StartedAt = DateTime.Now
             };
         }
@@ -375,7 +484,7 @@ internal static partial class FrameScopeNativeMonitor
         return -1;
     }
 
-    private static void WriteNativeWatcherState(string configPath, string phase, Dictionary<string, ActiveMonitor> activeMonitors, int completedRuns, string lastReport)
+    private static void WriteNativeWatcherState(string configPath, string phase, Dictionary<string, ActiveMonitor> activeMonitors, int completedRuns, string lastReport, string generatingRunDir = null)
     {
         var active = activeMonitors.Select(entry => new
         {
@@ -395,8 +504,15 @@ internal static partial class FrameScopeNativeMonitor
         {
             Time = DateTime.Now.ToString("o"),
             Phase = phase,
+            GeneratingRunDir = generatingRunDir,
             ConfigPath = configPath,
             WatcherPid = Process.GetCurrentProcess().Id,
+            WatcherStartTimeUnix = WatcherStartTimeUnix,
+            WatcherInstanceId = WatcherInstanceId,
+            StopProtocolVersion = 1,
+            StopRequested = WatcherStopRequested,
+            StopError = WatcherStopError,
+            StopErrorCode = WatcherStopErrorCode,
             WatcherMode = "native",
             CompletedRuns = completedRuns,
             LastReport = lastReport,
@@ -404,7 +520,7 @@ internal static partial class FrameScopeNativeMonitor
             LogPath = Path.Combine(Root, "framescope-watcher.log"),
             ActiveMonitors = active
         };
-        FrameScopeJsonFile.Write(StatePath, Json.Serialize(state));
+        FrameScopeJsonFile.WriteTransient(StatePath, Json.Serialize(state));
     }
 
     private static void WriteFrameScopeLog(string message)

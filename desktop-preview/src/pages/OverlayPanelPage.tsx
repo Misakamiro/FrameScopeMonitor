@@ -31,22 +31,20 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
-import { Eye, EyeOff, ArrowLeft, Trash2, Plus, Move, RotateCcw, Download, Settings } from "lucide-react";
+import { Eye, EyeOff, ArrowLeft, Trash2, Plus, Move, RotateCcw, Settings } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { useFloatingButtonStyle } from "@/hooks/use-floating-button-style";
 import { useBackground } from "@/contexts/background-context";
 import { useAppStartup } from "@/contexts/app-startup-context";
-import { useHardwareReportExport } from "@/lib/use-hardware-report-export";
 import { useNavigate } from "react-router-dom";
 import { CustomSelect } from "@/components/special/custom-select";
 import { HotkeyRecorder } from "@/components/hotkey-recorder";
 import { DraggableDisplayItems, DisplayItem } from "@/components/DraggableDisplayItems";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { CustomColorPicker } from "@/components/special/custom-color-picker";
-import { ThemeSwitch } from "@/components/special/theme-switch";
 import { hexToRgba } from "@/lib/color-utils";
-import { store } from "@/lib/store";
+import { usePreviewState, usePreviewAction } from "@/preview/pages/shared";
 
 interface DisplayItemConfig {
   id: string;
@@ -282,10 +280,11 @@ function CustomItemCard({ item, onUpdate, onRemove }: CustomItemCardProps) {
 }
 
 export default function OverlayPanelPage() {
+  const startupState = usePreviewState();
+  const startupAction = usePreviewAction();
   const { t } = useTranslation();
   const toast = useDynamicIsland("panels");
   const { overlaySettings, saveOverlaySettings, overlayHotkey, saveOverlayHotkey } = useAppStartup();
-  const { exportReport, isExporting } = useHardwareReportExport();
   const navigate = useNavigate();
   const adaptiveTitle = useAdaptiveTextColor();
   const floatBtn = useFloatingButtonStyle();
@@ -294,7 +293,6 @@ export default function OverlayPanelPage() {
   const [isEnabled, setIsEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isDragMode, setIsDragMode] = useState(false);
-  const [autoApplyOnStartup, setAutoApplyOnStartup] = useState(false);
   const [isNvidia, setIsNvidia] = useState(true);
   const [availableMaps, setAvailableMaps] = useState<string[]>([]);
   const [selectedMaps, setSelectedMaps] = useState<string[]>([]);
@@ -307,21 +305,9 @@ export default function OverlayPanelPage() {
 
   const headingColor = useColorModeValue("gray.900", "#ffffff");
   const subTextColor = useColorModeValue("gray.600", "gray.400");
-  const sliderBg = useColorModeValue("gray.200", "gray.600");
   const { getActiveColor, getHoverColor } = useThemeColor();
 
   const settings = overlaySettings || DEFAULT_SETTINGS;
-
-  useEffect(() => {
-    (async () => {
-      let v = await store.get<boolean>("nexbox_auto_overlay");
-      if (v !== null && v !== undefined) {
-        setAutoApplyOnStartup(v);
-      } else {
-        setAutoApplyOnStartup(localStorage.getItem("nexbox_auto_overlay") === "true");
-      }
-    })();
-  }, []);
 
   useEffect(() => {
     loadStatus();
@@ -439,10 +425,10 @@ export default function OverlayPanelPage() {
             isClosable: true,
           });
         } else {
-          setIsDragMode(false);
           // 退出拖动必须显式恢复穿透：若用户进入拖动后没在面板上按过鼠标，
           // 面板自身的 mouseup 恢复逻辑不会触发，面板会一直拦截桌面点击。
-          await invoke("set_vertical_overlay_click_through", { enabled: true }).catch(() => {});
+          await invoke("set_vertical_overlay_click_through", { enabled: true });
+          setIsDragMode(false);
           toast({
             title: t("overlayPanel.positionSaved") || "位置已保存",
             status: "success",
@@ -458,7 +444,7 @@ export default function OverlayPanelPage() {
       // 退出拖动模式时保存位置
       if (!newDragMode) {
         const currentSettings = await invoke<OverlaySettings>("get_overlay_current_settings");
-        saveOverlaySettings(currentSettings);
+        await saveOverlaySettings(currentSettings);
         toast({
           title: t("overlayPanel.positionSaved") || "位置已保存",
           status: "success",
@@ -673,16 +659,6 @@ export default function OverlayPanelPage() {
           >
             清除数据
           </Button>
-          <Button
-            leftIcon={<Download size={16} />}
-            size="sm"
-            variant="outline"
-            {...floatBtn}
-            onClick={exportReport}
-            isLoading={isExporting}
-          >
-            {t("hardwareReport.export") || "导出报告"}
-          </Button>
         </HStack>
       </HStack>
 
@@ -747,6 +723,20 @@ export default function OverlayPanelPage() {
               </Button>
             </HStack>
           </HStack>
+          <HStack justify="space-between" spacing={4}>
+            <Box>
+              <Text color={headingColor} fontSize="sm">启动软件时自动开启悬浮窗</Text>
+              <Text color={subTextColor} fontSize="xs">下次启动生效，使用已保存的样式和位置。</Text>
+            </Box>
+            <Switch aria-label="启动软件时自动开启悬浮窗" isChecked={startupState.config.autoStartOverlay}
+              isDisabled={startupAction.pending} colorScheme="teal"
+              onChange={async e => {
+                const enabled = e.target.checked;
+                if (!await startupAction.run("config.update", { autoStartOverlay: enabled })) {
+                  toast({ title: "悬浮窗自启动设置保存失败", status: "error", duration: 3000, isClosable: true });
+                }
+              }} />
+          </HStack>
           <HStack justify="space-between" align="flex-end" spacing={4}>
             <VStack align="flex-start" spacing={1} flex={1} minW={0}>
               <Text fontSize="xs" color={subTextColor} opacity={0.75}>
@@ -754,31 +744,6 @@ export default function OverlayPanelPage() {
               </Text>
               
             </VStack>
-            <HStack
-              bg={autoApplyOnStartup ? hexToRgba(getActiveColor(), 0.15) : sliderBg}
-              px={4}
-              py={2}
-              borderRadius="xl"
-              border="1px solid"
-              borderColor={autoApplyOnStartup ? getActiveColor() : "transparent"}
-              w="fit-content"
-              alignSelf="flex-end"
-              flexShrink={0}
-            >
-              <Text color={subTextColor} fontSize="xs" fontWeight="500">
-                启动新境盒时自动启用悬浮框
-              </Text>
-              <ThemeSwitch
-                isChecked={autoApplyOnStartup}
-                onChange={(e) => {
-                  const val = e.target.checked;
-                  setAutoApplyOnStartup(val);
-                  localStorage.setItem("nexbox_auto_overlay", val ? "true" : "false");
-                  store.set("nexbox_auto_overlay", val).then(() => store.save());
-                }}
-                isDisabled={isLoading}
-              />
-            </HStack>
           </HStack>
         </SettingCard>
 

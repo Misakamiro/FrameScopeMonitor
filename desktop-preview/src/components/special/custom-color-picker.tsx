@@ -34,6 +34,7 @@ export function CustomColorPicker({ color, onChange, compact }: { color: string;
   onChangeRef.current = onChange;
   const cardBorder = useColorModeValue("gray.200", "#333333");
   const panelBg = useColorModeValue("white", "#1a1a1a");
+  const previewTextColor = useColorModeValue("gray.700", "#e0e0e0");
   const panelShadow = useColorModeValue("0 4px 20px rgba(0,0,0,0.15)", "0 4px 20px rgba(0,0,0,0.4)");
   const [hexInput, setHexInput] = useState(colorToHex(color));
 
@@ -240,7 +241,7 @@ export function CustomColorPicker({ color, onChange, compact }: { color: string;
               {/* Preview + hex */}
               <HStack spacing={2}>
                 <Box w="24px" h="24px" borderRadius="md" bg={color} flexShrink={0} />
-                <Text fontSize="xs" fontWeight="semibold" letterSpacing="0.03em" color={useColorModeValue("gray.700", "#e0e0e0")}>
+                <Text fontSize="xs" fontWeight="semibold" letterSpacing="0.03em" color={previewTextColor}>
                   {colorToHex(color)}
                 </Text>
               </HStack>

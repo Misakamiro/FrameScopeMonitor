@@ -28,6 +28,9 @@ let cpuVidMetric = "summary";
 const PROCESS_TOP_N = 10;
 const PAD = { l: 64, r: 24, t: 34, b: 46 };
 let DATA = null;
+const esc = value => String(value);
+const metricSelect = {};
+const processSearch = { style: {} };
 
 eval(source.slice(start, end));
 
@@ -194,70 +197,40 @@ const longGapVoltageSample = getRenderablePoints(currentSeries[0], 90, {
 });
 assert(longGapVoltageSample.y.includes(null), "long invalid Vcore gaps should still break the rendered segment");
 
-const amdLhmRejectedReason =
-  "AMD LibreHardwareMonitor Core VID samples were rejected because this sensor source does not match the validated CPU Voltage / Vcore reading on this system; CPU Voltage / Vcore remains separate and is not used as VID.";
-const expectedAmdLhmNoDataMessage =
-  "\u8fd9\u4e0d\u662f\u8f6f\u4ef6\u6f0f\u753b\u56fe\u3002\u5f53\u524d\u786c\u4ef6\u7684 AMD LibreHardwareMonitor Core VID \u6765\u6e90\u4e0d\u53ef\u4fe1\uff0c\u5df2\u505c\u6b62\u663e\u793a\u8be5\u9519\u8bef VID\uff08\u7ea6 0.5V\uff09\u3002CPU Voltage / Vcore \u4ecd\u53ef\u5728 CPU \u7535\u538b / Vcore \u56fe\u8868\u4e2d\u67e5\u770b\uff1bVcore \u4e0d\u4f1a\u5192\u5145 VID\u3002\u672a\u6765\u68c0\u6d4b\u5230\u5408\u6cd5 VID \u6765\u6e90\u65f6\uff0cCPU Core VID \u56fe\u8868\u4f1a\u6b63\u5e38\u663e\u793a\u3002";
-
+const osdMissingReason = "本次记录未保存有效的 OSD CPU 电压；不会使用 VID 或其他电压来源补齐。";
 DATA = {
   fps: { t: [], avg: [], low1: [], low01: [] },
-  cpuCore: { t: [], series: [] },
-  cpuVoltage: {
-    available: true,
-    t: [0, 1],
-    series: [{ key: "cpu-voltage:vcore", name: "CPU Voltage / Vcore", data: [1.074, 1.092] }],
-  },
-  cpuVid: {
-    available: false,
-    status: "unavailable",
-    reason: amdLhmRejectedReason,
-    source: "builtin-librehardwaremonitor",
-    rejectedSampleCount: 496,
-    t: [],
-    series: [],
-  },
-  system: { t: [], usage: {}, perf: {}, io: {} },
-  process: { t: [], names: [], cpu: [], mem: [] },
-  frameStats: {},
+  cpuVoltage: { available: true, t: [0, 1], series: [{ key: "cpu-voltage:vcore", data: [1.8, 1.9] }] },
+  cpuVid: { available: true, t: [0, 1], series: [{ key: "cpu-vid:0", data: [0.5, 0.6] }] },
+  cpuOsdVoltage: { available: false, reason: osdMissingReason, t: [], series: [] },
   notes: {},
 };
 view = "cpuVid";
-cpuVidMetric = "summary";
-assert.strictEqual(
-  emptyMessage(),
-  expectedAmdLhmNoDataMessage,
-  "AMD LibreHardwareMonitor rejected CPU VID should show the clear Chinese no-data reason",
-);
-const emptyMessageMeasureContext = { measureText: (text) => ({ width: Array.from(String(text)).length * 8 }) };
-const emptyMessageWrappedLines = emptyMessageLines(expectedAmdLhmNoDataMessage, 360, emptyMessageMeasureContext);
-assert(emptyMessageWrappedLines.length > 1, "long CPU VID no-data reason should be wrapped across multiple canvas lines");
-assert(
-  emptyMessageWrappedLines.every((line) => emptyMessageMeasureContext.measureText(line).width <= 360),
-  "each wrapped CPU VID no-data line should fit inside the available canvas width",
-);
 buildSeries();
-assert.strictEqual(currentSeries.length, 0, "unavailable CPU VID should still avoid drawing rejected AMD LHM series");
-assert(source.includes("data-view='cpuVid'"), "CPU Core VID tab should still exist when CPU VID data is unavailable");
-
+assert.strictEqual(currentSeries.length, 0, "Missing OSD history must not fall back to VID or dedicated Vcore data");
+assert.strictEqual(emptyMessage(), osdMissingReason);
+const measure = { measureText: text => ({ width: Array.from(String(text)).length * 8 }) };
+assert(emptyMessageLines(osdMissingReason, 180, measure).every(l => measure.measureText(l).width <= 180));
+DATA.cpuOsdVoltage = { available: true, t: [0, 1, 2], series: [
+  { key: "cpu-osd-voltage:0", name: "核心 1 电压", color: "#009dff", data: [1.06, null, 1.04] },
+  { key: "cpu-osd-voltage:1", name: "核心 2 电压", color: "#ff3b45", data: [1.2, 1.3, null] },
+] };
+buildSeries();
+assert.strictEqual(currentSeries.length, 3, "OSD core voltage must retain average/max/min summaries");
+assert.deepStrictEqual(currentSeries[0].data, [1.13, 1.3, 1.04], "Summary must exclude missing cores, not count them as zero");
+DATA.cpuVid.available = false;
+setOptions();
+assert.strictEqual(metricSelect.value, "summary");
+assert(metricSelect.innerHTML.includes("核心 2 电压"));
+eval(source.slice(source.indexOf("function sourceRowsForTooltip("), source.indexOf("function hover(evt)")));
+assert.deepStrictEqual(sourceRowsForTooltip(2).map(s => s.value), [1.04, null]);
+cpuVidMetric = "cpu-osd-voltage:1";
+buildSeries();
+assert.deepStrictEqual(currentSeries[0].data, [1.2, 1.3, null], "Selecting core 2 must draw only core 2's OSD voltage");
+cpuVidMetric = "summary";
 view = "cpuVoltage";
 buildSeries();
-assert.strictEqual(currentSeries.length, 1, "CPU Voltage / Vcore should still render from DATA.cpuVoltage");
-assert.strictEqual(currentSeries[0].key, "cpu-voltage:vcore", "Vcore should stay in the CPU Voltage chart");
-assert.strictEqual(currentSeries[0].data[0], 1.074, "Vcore sample should not be copied through DATA.cpuVid");
-
-DATA.cpuVid = {
-  available: true,
-  status: "core-vid-available",
-  reason: "",
-  note: "VID is CPU request/target voltage, not real Vcore.",
-  t: [0, 1],
-  series: [{ key: "cpu-vid:0", name: "Core #1 VID", color: "#009dff", data: [1.112, 1.12] }],
-};
-view = "cpuVid";
-cpuVidMetric = "summary";
-buildSeries();
-assert.strictEqual(currentSeries.length, 3, "valid CPU VID fixture should still display summary series");
-assert.deepStrictEqual(currentSeries[0].data, [1.112, 1.12], "valid CPU VID values should still reach the rendered series");
+assert.strictEqual(currentSeries[0].data[0], 1.8, "Existing dedicated Vcore chart must stay independent");
 
 view = "process";
 readMode.value = "spike";
@@ -344,7 +317,6 @@ assert(source.includes("function fixedYAxisMax"), "percentage charts should supp
 assert(source.includes("return view==='system'?100:null"), "system usage chart Y-axis should be fixed to 0-100 percent");
 assert(source.includes("function aggregateCoreSeries"), "CPU core frequency and VID should support average/max/min summaries");
 assert(source.includes("cpuCoreMetric='summary'"), "CPU core frequency should default to a readable summary instead of all core lines");
-assert(source.includes("cpuVidMetric='summary'"), "CPU VID should default to a readable summary instead of all VID lines");
 assert(source.includes("const PROCESS_TOP_N=10"), "background process chart should default to a bounded Top N line set");
 assert(source.includes("processSearchIndex"), "process search should use a precomputed lower-case search index");
 assert(!source.includes("encoded.split(';')"), "RLE decoder should stream tokens without allocating a split array");
@@ -373,10 +345,7 @@ assert(source.includes("DATA.cpuVoltage"), "CPU Voltage chart should read DATA.c
 assert(source.includes("CPU 电压 / Vcore"), "CPU Voltage chart should use an explicit localized Vcore title/note");
 assert(source.includes("data-view='cpuVid'"), "report should expose CPU Core VID chart");
 assert(!source.includes("tab-disabled' data-view='cpuVid'"), "CPU Core VID chart tab should not be disabled");
-assert(source.includes("CPU 核心 VID（请求电压）"), "CPU VID chart should use an explicit localized VID title");
-assert(source.includes("DATA.cpuVid"), "CPU VID chart should read DATA.cpuVid instead of CPU voltage series");
-assert(source.includes("cpuVidMetric"), "CPU VID chart should keep its own metric selection state");
-assert(source.includes("request/target") || source.includes("请求/目标"), "CPU VID chart note should describe VID as request/target voltage");
+assert(source.includes("CPU 分核心电压（OSD）") && source.includes("DATA.cpuOsdVoltage"), "OSD voltage tab must identify and render its recorded source");
 assert(source.includes("bucketMs=Number(fps.bucketMs)||1000"), "fps tooltip should keep reading the English bucketMs machine key");
 assert(source.includes("平均 FPS / 1% Low / 0.1% Low"), "FPS metric dropdown should be localized");
 assert(source.includes("后台进程 CPU"), "process metric dropdown should be localized");
@@ -387,10 +356,10 @@ assert(source.includes("开始："), "run start label should be localized");
 assert(source.includes("结束："), "run end label should be localized");
 assert(source.includes("时长："), "run duration label should be localized");
 assert(source.includes("平均 / 最高 / 最低核心频率"), "CPU core summary option should be localized");
-assert(source.includes("平均 / 最高 / 最低 VID"), "CPU VID summary option should be localized");
+assert(source.includes("无 OSD 分核心电压数据"), "OSD voltage missing-data selector should be localized");
 assert(source.includes("GamePP 的 CPU 电压指标"), "CPU voltage note should localize the visible GamePP voltage wording");
 assert(source.includes("最大帧时间"), "frame summary labels should be localized");
-assert(source.includes("VID 是 CPU 每核心请求/目标电压"), "CPU VID chart note should explicitly separate VID from Vcore");
+assert(source.includes("核心编号与 OSD 一致"), "OSD voltage note should distinguish measured voltage from VID");
 assert(!source.includes("Average FPS only"), "report should not expose English FPS metric labels");
 assert(!source.includes("Background process CPU"), "report should not expose English process metric labels");
 assert(!source.includes("No drawable data for this chart."), "report should not expose English empty chart labels");
@@ -406,4 +375,19 @@ assert(source.includes("min-width:min(900px,100%)"), "chart box should shrink to
 assert(source.includes("Math.max(minWidth,Math.round(base*scale))"), "default chart width should avoid narrow-viewport horizontal overflow");
 assert(source.includes("canvasRoundRect(c,42,130,1516,820,26)"), "exported PNG should use rounded chart framing");
 
+assert.strictEqual(finiteOrNull(null), null, "missing FPS statistics must not become zero");
+assert.strictEqual(finiteOrNull(""), null, "empty FPS statistics must not become zero");
+assert.strictEqual(finiteOrNull(0), 0, "a measured zero remains valid");
+assert.strictEqual(seriesStats({ data: [null, 60] }).avg, 60, "series averages ignore missing values");
+view = "fps";
+DATA = {
+  fps: { source: "etw-fps-sampled", t: [0, 1], avg: [60, 120], low1: [null, null], low01: [null, null] },
+  frameStats: { average: null, low1: null, low01: null, minInstant: null, maxInstant: null },
+  fpsSampleStats: { average: 90, minimum: 60, maximum: 120 },
+};
+buildSeries();
+assert.strictEqual(currentSeries.length, 1, "sampled reports expose only the measured FPS trend");
+assert(currentSeries[0].name.includes("采样"), "sampled trend is explicitly labeled");
+assert.deepStrictEqual(fpsFrameStats(), { low1: null, low01: null, min: 60, max: 120, average: 90 },
+  "sample reference lines use sample statistics without fabricated low values");
 console.log("chart-sampling-tests: PASS");

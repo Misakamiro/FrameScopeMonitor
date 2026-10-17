@@ -11,7 +11,19 @@ public static class FrameScopeJsonFile
         Write(path, json, ReplaceFile);
     }
 
+    // Re-creatable live state still needs atomic replacement, but not a
+    // synchronous device flush on the capture thread for every heartbeat.
+    public static void WriteTransient(string path, string json)
+    {
+        Write(path, json, ReplaceFile, false);
+    }
+
     internal static void Write(string path, string json, Action<string, string> replaceAction)
+    {
+        Write(path, json, replaceAction, true);
+    }
+
+    internal static void Write(string path, string json, Action<string, string> replaceAction, bool durable)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("JSON path is empty.", "path");
         if (replaceAction == null) throw new ArgumentNullException("replaceAction");
@@ -34,10 +46,10 @@ public static class FrameScopeJsonFile
                 FileAccess.Write,
                 FileShare.None,
                 4096,
-                FileOptions.WriteThrough))
+                durable ? FileOptions.WriteThrough : FileOptions.None))
             {
                 stream.Write(bytes, 0, bytes.Length);
-                stream.Flush(true);
+                stream.Flush(durable);
             }
 
             if (File.Exists(destinationPath))

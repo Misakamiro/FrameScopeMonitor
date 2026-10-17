@@ -103,21 +103,27 @@ internal static partial class FrameScopeReportGenerator
         return merged;
     }
 
-    /// Anti-cheat fallback: builds a 1 Hz "frame" series from the ETW FPS
-    /// values the recorder captured (the overlay's own FPS source). Used when
-    /// PresentMon's ETW trace was denied (Battlefield 6 / EA Javelin) so the
-    /// run still gets a full FPS report instead of a diagnostic stub. Frame
-    /// ms is the reciprocal of each one-second sample.
-    private static List<KeyValuePair<DateTime, double>> SynthesizeFramesFromHardwareSamples(List<SystemRow> systemRows)
+    private static Dictionary<string, object> BuildSampledFps(List<SystemRow> rows, DateTime start)
     {
-        var frames = new List<KeyValuePair<DateTime, double>>();
-        if (systemRows == null) return frames;
-        foreach (SystemRow row in systemRows)
+        var times = new List<double>();
+        var values = new List<double?>();
+        var unavailableLows = new List<double?>();
+        var counts = new List<int>();
+        foreach (SystemRow row in rows)
         {
-            if (!row.Fps.HasValue || row.Fps.Value <= 0 || row.Fps.Value > 1000) continue;
-            frames.Add(new KeyValuePair<DateTime, double>(row.Time, 1000.0 / row.Fps.Value));
+            bool valid = row.Fps.HasValue && row.Fps.Value >= 0;
+            times.Add(RoundDouble((row.Time - start).TotalSeconds, 3));
+            values.Add(valid ? row.Fps : null);
+            unavailableLows.Add(null);
+            counts.Add(valid ? 1 : 0);
         }
-        return frames;
+        // Keep actual sample times and gaps; there is no reconstructed frame stream.
+        return new Dictionary<string, object>
+        {
+            { "bucketMs", null }, { "lowWindowMs", null },
+            { "t", times }, { "avg", values }, { "low1", unavailableLows },
+            { "low01", unavailableLows }, { "samples", counts }
+        };
     }
 
     private static Dictionary<string, object> SeriesFromSystem(List<SystemRow> rows, DateTime start, double? totalMemoryMb)
@@ -215,6 +221,7 @@ internal static partial class FrameScopeReportGenerator
         SortedDictionary<double, Dictionary<string, CpuCoreBucketValue>> frequencyPoints = new SortedDictionary<double, Dictionary<string, CpuCoreBucketValue>>();
         SortedSet<string> frequencyCores = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         int rowCount = 0;
+        int missingTimeRows = 0;
 
         using (CsvTable table = CsvTable.Open(path))
         {
@@ -223,7 +230,7 @@ internal static partial class FrameScopeReportGenerator
             while ((row = table.ReadRow()) != null)
             {
                 double pointTime;
-                if (!TryCpuCorePointTime(row, h, start, out pointTime)) continue;
+                if (!TryCpuCorePointTime(row, h, start, out pointTime)) { missingTimeRows++; continue; }
                 string coreKey = CpuCoreKey(Get(row, h, "ProcessorGroup"), Get(row, h, "LogicalProcessor"));
                 if (String.IsNullOrWhiteSpace(coreKey)) continue;
 
@@ -243,16 +250,19 @@ internal static partial class FrameScopeReportGenerator
             frequency["sampleCount"] = Math.Max(rowCount, GetIntDiagnostic(metadata, "cpuCoreSampleCount", rowCount));
         }
 
+        RecordMissingCpuTime(frequency, missingTimeRows);
         return new Dictionary<string, object> { { "frequency", frequency }, { "voltage", voltage }, { "vid", vid } };
     }
 
     private static Dictionary<string, object> ReadCpuVoltageChart(string runDir, DateTime start, Dictionary<string, object> metadata)
     {
+        Dictionary<string, object> missingTimeChart = null;
         string dedicatedPath = Path.Combine(runDir, "cpu-voltage-samples.csv");
         if (File.Exists(dedicatedPath))
         {
             Dictionary<string, object> chart = ReadCpuVoltageChartFromCsv(dedicatedPath, start, metadata);
             if (Convert.ToBoolean(chart["available"], CultureInfo.InvariantCulture)) return chart;
+            if (chart.ContainsKey("timeAlignmentMissingReason")) missingTimeChart = chart;
         }
 
         string legacyPath = Path.Combine(runDir, "cpu-core-samples.csv");
@@ -260,8 +270,10 @@ internal static partial class FrameScopeReportGenerator
         {
             Dictionary<string, object> legacy = ReadCpuVoltageChartFromCsv(legacyPath, start, metadata);
             if (Convert.ToBoolean(legacy["available"], CultureInfo.InvariantCulture)) return legacy;
+            if (legacy.ContainsKey("timeAlignmentMissingReason")) missingTimeChart = legacy;
         }
 
+        if (missingTimeChart != null) return missingTimeChart;
         Dictionary<string, object> empty = EmptyCpuCoreChart("V", CpuVoltageUnavailableReason(metadata));
         AddCpuVoltageChartMetadata(empty, metadata);
         return empty;
@@ -274,6 +286,7 @@ internal static partial class FrameScopeReportGenerator
         string voltageHeader = "";
         string source = GetStringDiagnostic(metadata, "cpuVoltageSource", "");
         int rowCount = 0;
+        int missingTimeRows = 0;
 
         using (CsvTable table = CsvTable.Open(path))
         {
@@ -285,7 +298,7 @@ internal static partial class FrameScopeReportGenerator
             while ((row = table.ReadRow()) != null)
             {
                 double pointTime;
-                if (!TryCpuCorePointTime(row, h, start, out pointTime)) continue;
+                if (!TryCpuCorePointTime(row, h, start, out pointTime)) { missingTimeRows++; continue; }
                 string status = (Get(row, h, "Status") ?? "").Trim();
                 string sensorName = Get(row, h, "SensorName");
                 string sensorIdentifier = Get(row, h, "SensorIdentifier");
@@ -299,14 +312,69 @@ internal static partial class FrameScopeReportGenerator
             }
         }
 
-        if (voltagePoints.Count == 0) return voltage;
+        if (voltagePoints.Count == 0) { RecordMissingCpuTime(voltage, missingTimeRows); return voltage; }
 
         voltage = BuildCpuVoltageVcoreChart(voltagePoints, "");
         voltage["sourceField"] = voltageHeader;
         voltage["source"] = source;
         voltage["sampleCount"] = Math.Max(rowCount, GetIntDiagnostic(metadata, "cpuVoltageVcoreSampleCount", rowCount));
         AddCpuVoltageChartMetadata(voltage, metadata);
+        RecordMissingCpuTime(voltage, missingTimeRows);
         return voltage;
+    }
+
+    private static Dictionary<string, object> ReadCpuOsdVoltageChart(string runDir, DateTime start)
+    {
+        const string reason = "本次记录未保存 OSD 分核心电压数据；需要更新后重新采集，不会用整体 Vcore 或旧 VID 补齐。";
+        var chart = EmptyCpuCoreChart("V", reason);
+        chart["source"] = "hardware-service overlay snapshot: cpu_core_voltages";
+        chart["sourceField"] = "CpuCoreVoltages";
+        chart["samplesCsv"] = Path.Combine(runDir, "hardware-samples.csv");
+        chart["note"] = "逐核心使用记录时 OSD 的分核心电压数组，核心编号与 OSD 一致。若 OSD 的各核心读数相同，曲线会重合；这里不将整体 Vcore 补成分核心数据。";
+        if (!File.Exists((string)chart["samplesCsv"])) return chart;
+
+        var points = new SortedDictionary<double, Dictionary<string, CpuCoreBucketValue>>();
+        var cores = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        int count = 0;
+        using (CsvTable table = CsvTable.Open((string)chart["samplesCsv"]))
+        {
+            List<string> row;
+            while ((row = table.ReadRow()) != null)
+            {
+                DateTime sampleTime;
+                if (!TryParseDate(Get(row, table.Headers, "Time"), out sampleTime) || sampleTime < start) continue;
+                double time = RoundDouble((sampleTime - start).TotalSeconds, 3);
+                if (!points.ContainsKey(time)) points[time] = new Dictionary<string, CpuCoreBucketValue>();
+                string raw = Get(row, table.Headers, "CpuCoreVoltages");
+                if (String.IsNullOrWhiteSpace(raw)) continue;
+                string[] values = raw.Split(';');
+                for (int i = 0; i < values.Length; i++)
+                {
+                    string core = i.ToString(CultureInfo.InvariantCulture);
+                    cores.Add(core);
+                    double? volts = ParseNullableDouble(values[i]);
+                    if (!IsValidVoltageValue(volts)) continue;
+                    AddCpuCorePoint(points, time, core, volts.Value);
+                    count++;
+                }
+            }
+        }
+        if (count == 0) return chart;
+        var valuesChart = BuildCpuCoreChart("V", points, cores, 3, true, "");
+        var series = (List<Dictionary<string, object>>)valuesChart["series"];
+        foreach (var item in series)
+        {
+            int index = Int32.Parse(((string)item["key"]).Substring("cpu-core:".Length), CultureInfo.InvariantCulture);
+            item["key"] = "cpu-osd-voltage:" + index.ToString(CultureInfo.InvariantCulture);
+            item["name"] = "核心 " + (index + 1).ToString(CultureInfo.InvariantCulture) + " 电压";
+        }
+        chart["available"] = true;
+        chart["reason"] = "";
+        chart["t"] = valuesChart["t"];
+        chart["series"] = series;
+        chart["sampleCount"] = count;
+        chart["coreCount"] = cores.Count;
+        return chart;
     }
 
     private static Dictionary<string, object> ReadCpuVidChart(string runDir, DateTime start, Dictionary<string, object> metadata)
@@ -321,6 +389,7 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, string> names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         string source = GetStringDiagnostic(metadata, "cpuVidSource", "");
         int rowCount = 0;
+        int missingTimeRows = 0;
         bool rejectedAmdLhmCoreVid = false;
 
         using (CsvTable table = CsvTable.Open(path))
@@ -333,7 +402,7 @@ internal static partial class FrameScopeReportGenerator
             while ((row = table.ReadRow()) != null)
             {
                 double pointTime;
-                if (!TryCpuCorePointTime(row, h, start, out pointTime)) continue;
+                if (!TryCpuCorePointTime(row, h, start, out pointTime)) { missingTimeRows++; continue; }
                 string status = (Get(row, h, "Status") ?? "").Trim();
                 if (!String.IsNullOrWhiteSpace(status) &&
                     !String.Equals(status, "core-vid", StringComparison.OrdinalIgnoreCase) &&
@@ -369,6 +438,7 @@ internal static partial class FrameScopeReportGenerator
             vid["reason"] = rejectedAmdLhmCoreVid
                 ? UnreliableAmdLibreHardwareMonitorCoreVidReason()
                 : CpuVidUnavailableReason(metadata);
+            RecordMissingCpuTime(vid, missingTimeRows);
             return vid;
         }
 
@@ -378,6 +448,7 @@ internal static partial class FrameScopeReportGenerator
         vid["sampleCount"] = Math.Max(rowCount, GetIntDiagnostic(metadata, "cpuVidSampleCount", rowCount));
         vid["coreCount"] = Math.Max(cores.Count, GetIntDiagnostic(metadata, "cpuVidCoreCount", cores.Count));
         AddCpuVidChartMetadata(vid, metadata);
+        RecordMissingCpuTime(vid, missingTimeRows);
         return vid;
     }
 
@@ -580,20 +651,21 @@ internal static partial class FrameScopeReportGenerator
         bucketValue.Add(value);
     }
 
+    private static void RecordMissingCpuTime(Dictionary<string, object> chart, int count)
+    {
+        chart["missingAbsoluteTimeRows"] = count;
+        if (count > 0) chart["timeAlignmentMissingReason"] = "Absolute sample time is missing; sampler-private ElapsedMs has no proven report origin.";
+    }
+
     private static bool TryCpuCorePointTime(List<string> row, Dictionary<string, int> headers, DateTime start, out double pointTime)
     {
         pointTime = 0;
-        double? elapsedMs = ParseNullableDouble(Get(row, headers, "ElapsedMs"));
-        if (elapsedMs.HasValue)
-        {
-            pointTime = RoundDouble(Math.Max(0, elapsedMs.Value / 1000.0), 3);
-            return true;
-        }
-
         DateTime time;
         if (TryParseDate(Get(row, headers, "Time"), out time))
         {
-            pointTime = RoundDouble(Math.Max(0, (time - start).TotalSeconds), 3);
+            double elapsedSeconds = (time.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds;
+            if (elapsedSeconds < 0 || start == DateTime.MinValue) return false;
+            pointTime = RoundDouble(elapsedSeconds, 3);
             return true;
         }
 

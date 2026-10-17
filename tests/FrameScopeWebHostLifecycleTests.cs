@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 public static class FrameScopeWebHostLifecycleTests
@@ -10,6 +10,7 @@ public static class FrameScopeWebHostLifecycleTests
             UserCloseHidesOnlyWhenTrayMinimizeIsEnabled();
             ExplicitCloseAndDisposingAreNeverTrapped();
             ActiveMonitoringAlwaysRequiresExitConfirmation();
+            EveryNonHiddenCloseStopsBeforeClosing();
             Console.WriteLine("FrameScopeWebHostLifecycleTests: PASS");
             return 0;
         }
@@ -53,6 +54,21 @@ public static class FrameScopeWebHostLifecycleTests
     {
         AssertEqual(true, FrameScopeWebHostLifecycle.RequiresActiveMonitoringConfirmation(true), "active monitoring confirmation");
         AssertEqual(false, FrameScopeWebHostLifecycle.RequiresActiveMonitoringConfirmation(false), "idle monitoring confirmation");
+    }
+
+    private static void EveryNonHiddenCloseStopsBeforeClosing()
+    {
+        var method = typeof(FrameScopeWebHostLifecycle).GetMethod("ShouldStopOnClose");
+        AssertEqual(true, method != null, "close routing policy exists");
+        var config = FrameScopeConfigStore.CreateDefaultConfig();
+        config.CloseWindowBehavior = "minimize-to-tray";
+        config.TrayEnabled = true;
+        AssertEqual(false, (bool)method.Invoke(null, new object[] { config, false, false, true }), "user close hides to tray");
+        AssertEqual(true, (bool)method.Invoke(null, new object[] { config, false, false, false }), "system/application/task-manager close requires stop");
+        config.TrayEnabled = false;
+        AssertEqual(true, (bool)method.Invoke(null, new object[] { config, false, false, true }), "disabled tray close requires stop");
+        AssertEqual(false, (bool)method.Invoke(null, new object[] { config, true, false, false }), "completed explicit close passes through");
+        AssertEqual(false, (bool)method.Invoke(null, new object[] { config, false, true, false }), "disposal passes through");
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)

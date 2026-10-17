@@ -1,0 +1,23 @@
+const assert=require('node:assert/strict');const fs=require('node:fs/promises');const path=require('node:path');const {chromium}=require('playwright');
+(async()=>{
+ const {createServer}=await import('vite');const server=await createServer({root:path.resolve(__dirname,'..'),server:{host:'127.0.0.1',port:1451,strictPort:true,watch:null,hmr:false}});await server.listen();
+ const browser=await chromium.launch({headless:true,channel:'msedge'});const results=[];
+ try{
+  const page=await browser.newPage();const base=server.resolvedUrls.local[0];async function run(name,task){try{await task();results.push({name,passed:true})}catch(e){results.push({name,passed:false,error:String(e)})}}
+  await page.goto(base+'tests/nexbox-slide-fixture.html');await page.locator('[data-page="a"]').waitFor();
+  await run('NexBox 10px and 180/150ms source parameters',async()=>{assert.deepEqual(await page.evaluate(()=>window.variants),{initial:{opacity:0,x:10},enter:{opacity:1,x:0,transition:{duration:0.18,ease:'easeOut'}},exit:{opacity:0,x:-10,transition:{duration:0.15,ease:'easeIn'}}})});
+  await run('live page wrapper stays opaque',async()=>{
+   const frames=await page.evaluate(async()=>{const frames=[];window.navigate('b');const start=performance.now();while(performance.now()-start<450){await new Promise(requestAnimationFrame);frames.push({time:performance.now()-start,pages:[...document.querySelectorAll('article')].map(e=>({page:e.dataset.page,transform:getComputedStyle(e.parentElement).transform,opacity:Number(getComputedStyle(e.parentElement).opacity)})),navX:document.querySelector('#nav').getBoundingClientRect().x})}return frames});
+   assert.ok(frames.every(f=>f.pages.length<=1));assert.ok(frames.every(f=>f.pages.every(p=>p.opacity===1&&p.transform==='none')));assert.ok(frames.every(f=>f.navX===frames[0].navX));results.push({name:'fixture frames',frames});
+  });
+  await run('rapid navigation ends on latest page and clears animation class',async()=>{await page.evaluate(()=>{window.navigate('c');setTimeout(()=>window.navigate('d'),30);setTimeout(()=>window.navigate('e'),60)});await page.waitForTimeout(700);assert.equal(await page.locator('article').getAttribute('data-page'),'e');assert.equal(await page.locator('.page-animating').count(),0)});
+  await page.evaluate(()=>{localStorage.setItem('nexbox_page_transition','slide');localStorage.setItem('framescope.preview.store.settings.json',JSON.stringify({'has-launched':true,'background-mode':'preset','active-preset-index':0,'carousel-enabled':false,'liquid-glass-enabled':true,'liquid-glass-mode':'normal','liquid-glass-blur':12,'jelly-bounce-enabled':false,nexbox_page_transition:'slide'}))});
+  await page.goto(base+'targets');await page.locator('#main-sidebar a[href="/reports"]').waitFor();await page.waitForTimeout(600);
+  await run('actual routes move content and keep navigation still',async()=>{
+   const observed=await page.evaluate(async()=>{const nav=document.querySelector('#main-sidebar'),rect=nav.getBoundingClientRect(),content=document.querySelector('[data-page-content]');document.querySelector('#main-sidebar a[href="/reports"]').click();const frames=[],begun=performance.now();while(performance.now()-begun<500){await new Promise(requestAnimationFrame);frames.push({navX:nav.getBoundingClientRect().x,animations:content.getAnimations().map(a=>({frames:a.effect.getKeyframes()}))})}return {navX:rect.x,frames}});
+   assert.ok(observed.frames.some(f=>f.animations.some(a=>a.frames[0].transform==='translateX(10px)')));assert.ok(observed.frames.every(f=>f.navX===observed.navX));results.push({name:'actual route frames',observed});
+  });
+  await run('rapid real routes and home round trip remain usable',async()=>{await page.evaluate(()=>{document.querySelector('a[href="/targets"]').click();setTimeout(()=>document.querySelector('a[href="/hardware"]').click(),25);setTimeout(()=>document.querySelector('a[href="/overlay-panel"]').click(),50)});await page.waitForTimeout(750);assert.equal(new URL(page.url()).pathname,'/overlay-panel');assert.equal(await page.locator('.page-animating').count(),0);await page.locator('#main-sidebar a[href="/"]').click();await page.waitForTimeout(300);await page.locator('#main-sidebar a[href="/reports"]').click();await page.waitForTimeout(500);assert.equal(new URL(page.url()).pathname,'/reports');assert.equal(await page.locator('.page-animating').count(),0)});
+  console.log(JSON.stringify(results.filter(r=>'passed'in r),null,2));const output=process.argv[2];if(output)await fs.writeFile(output,JSON.stringify(results,null,2));if(results.some(r=>r.passed===false))process.exitCode=1;
+ }finally{await browser.close();await server.close()}
+})().catch(e=>{console.error(e);process.exitCode=1});

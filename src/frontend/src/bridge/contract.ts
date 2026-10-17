@@ -182,6 +182,8 @@ export interface ReportListPayload {
 }
 
 export interface ReportListItem {
+  artifactStatus?: string;
+  artifactError?: string;
   reportId: string;
   game: string;
   processName: string;

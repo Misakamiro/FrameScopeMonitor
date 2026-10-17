@@ -459,6 +459,8 @@ export default function SensorMonitorPage() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fetchingRef = useRef(false);
   const sensorsRef = useRef<SensorReading[]>([]);
+  const lastReadAt = useRef(0);
+  const expiryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleRef = useRef(true);
 
   const bg = useColorModeValue("#111111", "#0a0a0a");
@@ -529,16 +531,29 @@ export default function SensorMonitorPage() {
       try {
         const response = await invoke<SensorsResponse>("get_all_sensors");
         if (!isMounted.current) return;
+        lastReadAt.current = Date.now();
+        if (expiryTimer.current) clearTimeout(expiryTimer.current);
+        expiryTimer.current = setTimeout(() => {
+          if (!isMounted.current) return;
+          sensorsRef.current = [];
+          setSensors([]);
+          setError("传感器数据已过期，正在重新读取");
+        }, 2000);
         const prev = sensorsRef.current;
         const next = response.sensors;
         if (prev.length !== next.length || prev.some((s, i) => s.value !== next[i]?.value || s.name !== next[i]?.name)) {
           sensorsRef.current = next;
           setSensors(next);
-          setUpdatedAt(response.updatedAt);
+
         }
+        setUpdatedAt(response.updatedAt);
         setError(null);
       } catch (e) {
         if (!isMounted.current) return;
+        // A missed refresh does not erase a still-fresh list; real outages expire it.
+        if (sensorsRef.current.length && Date.now() - lastReadAt.current < 2000) return;
+        sensorsRef.current = [];
+        setSensors([]);
         setError(String(e));
       } finally {
         // Reset unconditionally: gating the reset on isMounted stranded the
@@ -560,6 +575,7 @@ export default function SensorMonitorPage() {
 
     return () => {
       isMounted.current = false;
+      if (expiryTimer.current) clearTimeout(expiryTimer.current);
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -759,11 +775,7 @@ export default function SensorMonitorPage() {
                 onClick={() => {
                   setLoading(true);
                   setError(null);
-                  invoke<SensorsResponse>("get_all_sensors").then((resp) => {
-                    setSensors(resp.sensors);
-                    setUpdatedAt(resp.updatedAt);
-                    setError(null);
-                  }).catch((e) => setError(String(e))).finally(() => setLoading(false));
+                  void createFetchFn()();
                 }}
               />
             </VStack>

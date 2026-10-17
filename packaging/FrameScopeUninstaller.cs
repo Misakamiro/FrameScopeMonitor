@@ -13,6 +13,44 @@ internal static class FrameScopeUninstaller
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Length > 0 && (args[0] == "--shutdown-capability" || args[0] == "--shutdown-plan" || args[0] == "--stop-installation"))
+        {
+            // A winexe has no console codepage; write UTF-8 directly to inherited pipes.
+            Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { AutoFlush = true });
+            Console.SetError(new StreamWriter(Console.OpenStandardError(), new System.Text.UTF8Encoding(false)) { AutoFlush = true });
+        }
+        if (args.Length > 0 && args[0] == "--shutdown-capability")
+        {
+            if (args.Length != 1)
+            {
+                Console.Error.WriteLine("Expected --shutdown-capability without arguments.");
+                Environment.ExitCode = 2;
+                return;
+            }
+            Console.WriteLine(FrameScopeInstallationShutdown.Capability);
+            return;
+        }
+        if (args.Length > 0 && (args[0] == "--stop-installation" || args[0] == "--shutdown-plan"))
+        {
+            try
+            {
+                if (args.Length != 2) throw new InvalidOperationException("Expected --stop-installation <absolute root>.");
+                if (args[0] == "--shutdown-plan")
+                {
+                    Console.WriteLine(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { capability = FrameScopeInstallationShutdown.Capability,
+                        maximumBudgetMs = FrameScopeInstallationShutdown.MaximumBudget(args[1]) }));
+                    return;
+                }
+                string warning = FrameScopeInstallationShutdown.Stop(args[1]);
+                Console.WriteLine(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new { status = warning.Length == 0 ? "stopped" : "stopped-with-warning", warning = warning }));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex.Message);
+                Environment.ExitCode = ex is TimeoutException ? 3 : 2;
+            }
+            return;
+        }
         bool quiet = HasArg(args, "/quiet") || HasArg(args, "--quiet");
         bool deleteData = HasArg(args, "/delete-data") || HasArg(args, "--delete-data");
         string appDir = ResolveAppDir();
@@ -39,7 +77,7 @@ internal static class FrameScopeUninstaller
 
         try
         {
-            StopFrameScopeProcesses();
+            string stopWarning = StopFrameScopeProcesses(appDir);
             DeleteShortcuts();
             if (deleteData) DeleteDirectoryIfSafe(dataRoot);
             try { Registry.CurrentUser.DeleteSubKeyTree(UninstallKeyPath, false); } catch { }
@@ -47,7 +85,8 @@ internal static class FrameScopeUninstaller
             if (!quiet)
             {
                 MessageBox.Show(
-                    deleteData ? "卸载完成，程序和数据目录已删除。" : "卸载完成，数据和报告目录已保留。",
+                    (deleteData ? "卸载完成，程序和数据目录已删除。" : "卸载完成，数据和报告目录已保留。") +
+                    (string.IsNullOrEmpty(stopWarning) ? "" : "\r\n报告收尾警告：" + stopWarning),
                     "FrameScope Monitor 卸载",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -126,35 +165,12 @@ internal static class FrameScopeUninstaller
         return value.Replace("\\\"", "\"").Replace("\\\\", "\\").Replace("\\/", "/");
     }
 
-    private static void StopFrameScopeProcesses()
+    private static string StopFrameScopeProcesses(string appDir)
     {
-        int currentPid = Process.GetCurrentProcess().Id;
-        string[] names =
-        {
-            "FrameScopeMonitor",
-            "FrameScopeReportGenerator",
-            "FrameScopeProcessSampler",
-            "FrameScopeSystemSampler",
-            "FrameScopeHardwareService",
-            "FrameScopeHardwareProvider",
-            "PresentMon-2.4.1-x64"
-        };
-
-        foreach (string name in names)
-        {
-            foreach (Process proc in Process.GetProcessesByName(name))
-            {
-                try
-                {
-                    if (proc.Id == currentPid) continue;
-                    proc.Kill();
-                    proc.WaitForExit(3000);
-                }
-                catch { }
-            }
-        }
+        string warning = FrameScopeInstallationShutdown.Stop(appDir);
+        if (!string.IsNullOrEmpty(warning)) Console.Error.WriteLine("Shutdown warning: " + warning);
+        return warning;
     }
-
     private static void DeleteShortcuts()
     {
         TryDeleteFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "FrameScope Monitor.lnk"));

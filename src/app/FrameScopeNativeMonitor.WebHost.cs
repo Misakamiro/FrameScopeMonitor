@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -74,8 +74,27 @@ internal static partial class FrameScopeNativeMonitor
         {
             try
             {
-                FrameScopeConfig config = FrameScopeConfigStore.Load(ConfigPath);
-                FrameScopeConfigStore.Save(ConfigPath, config);
+                FrameScopeWebBridgeHostResult result = null;
+                MonitorLifecycle.Start(delegate { result = StartMonitorCore(context); });
+                return result;
+            }
+            catch (Exception ex)
+            {
+                WriteFrameScopeLog("web-bridge-monitor-start-failed " + ex.Message);
+                return FrameScopeWebBridgeHostResult.Failure("monitor_start_failed", ex.Message, null);
+            }
+        }
+
+        private FrameScopeWebBridgeHostResult StartMonitorCore(FrameScopeWebBridgeHostContext context)
+        {
+            try
+            {
+                FrameScopeConfig config;
+                using (FrameScopeConfigStore.AcquireMutationLock(context.ConfigPath))
+                {
+                    config = FrameScopeConfigStore.Load(context.ConfigPath);
+                    FrameScopeConfigStore.Save(context.ConfigPath, config);
+                }
 
                 int existingPid;
                 if (IsWatcherRunning(out existingPid) || HasFrameScopeBackgroundProcesses())
@@ -96,7 +115,7 @@ internal static partial class FrameScopeNativeMonitor
                 var psi = new ProcessStartInfo
                 {
                     FileName = Application.ExecutablePath,
-                    Arguments = "--watcher --config " + Quote(ConfigPath),
+                    Arguments = "--watcher --config " + Quote(context.ConfigPath),
                     WorkingDirectory = Root,
                     UseShellExecute = false,
                     CreateNoWindow = true,
@@ -104,6 +123,8 @@ internal static partial class FrameScopeNativeMonitor
                 };
                 var process = Process.Start(psi);
                 int pid = process == null ? 0 : process.Id;
+                if (pid <= 0) throw new InvalidOperationException("Watcher did not start.");
+                RecordOwnedWatcher(process, context.ConfigPath);
                 try
                 {
                     if (process != null) process.PriorityClass = ProcessPriorityClass.BelowNormal;
@@ -139,24 +160,18 @@ internal static partial class FrameScopeNativeMonitor
             try
             {
                 int before = EnumerateFrameScopeBackgroundPids().Count;
-                int after;
-                if (before > 0)
-                {
-                    after = StopFrameScopeBackgroundProcessesAndWait(8000);
-                }
-                else
-                {
-                    after = WaitForFrameScopeBackgroundProcessesToExit(1000);
-                }
+                int after = StopFrameScopeBackgroundProcessesAndWait(0);
 
                 WriteFrameScopeLog("web-bridge-monitor-stopped before=" + before.ToString(CultureInfo.InvariantCulture) + " after=" + after.ToString(CultureInfo.InvariantCulture));
                 return FrameScopeWebBridgeHostResult.Success(
                     "monitor.stopped",
-                    before == 0 ? "未发现正在运行的监控 worker。" : "监控 worker 已停止，watcher / monitor-session 子进程已清理。",
+                    !string.IsNullOrEmpty(LastStopWarning) ? "监控 worker 已停止，但报告生成失败；失败证据已保留。" :
+                    before == 0 ? "未发现正在运行的监控 worker。" : "监控 worker 已正常停止。",
                     new Dictionary<string, object>
                     {
                         { "stoppedProcessCount", before },
                         { "remainingProcessCount", after },
+                        { "warning", LastStopWarning ?? "" },
                         { "processRole", "watcher-worker" },
                         { "workerProcessName", "FrameScopeMonitor.exe" },
                         { "workerExplanation", "任务管理器中可能显示一个 FrameScopeMonitor.exe 子进程，这是监控 worker，不是重复打开软件。" }
@@ -416,6 +431,8 @@ internal sealed class FrameScopeWebHostForm : Form
     private bool pageReady;
     private bool finishStarted;
     private bool explicitCloseRequested;
+    private bool exitStopInFlight;
+    private System.Threading.Tasks.Task pendingExitStop;
     private bool disposingForm;
     private bool trayIconDisposed;
     private bool usingReactFrontend;
@@ -1507,7 +1524,8 @@ document.documentElement.dataset.theme = mode === 'dark'
             FrameScopeConfig trayConfig = FrameScopeConfigStore.CreateDefaultConfig();
             trayConfig.CloseWindowBehavior = FrameScopeWebHostLifecycle.CloseBehaviorMinimizeToTray;
             trayConfig.TrayEnabled = true;
-            FrameScopeConfigStore.Save(options.ConfigPath, trayConfig);
+            using (FrameScopeConfigStore.AcquireMutationLock(options.ConfigPath))
+                FrameScopeConfigStore.Save(options.ConfigPath, trayConfig);
             ApplyTrayIconVisibilityFromConfig();
 
             bool initialVisible = Visible && !trayWindowHidden;
@@ -1528,6 +1546,7 @@ document.documentElement.dataset.theme = mode === 'dark'
             bool stillVisibleAfterBlockedExit = Visible && IsTrayIconVisible();
             activeMonitoringOverride = false;
             bool exitAllowedWithoutActiveMonitoring = TryRequestExplicitExit("tray-smoke-exit-no-active-monitoring", false, true);
+            if (pendingExitStop != null) await pendingExitStop;
             bool automationCloseGuard = exitAllowedWithoutActiveMonitoring && explicitCloseRequested;
             explicitCloseRequested = false;
             bool disposeGuard = !FrameScopeWebHostLifecycle.ShouldHideOnUserClose(trayConfig, false, true, true);
@@ -1572,7 +1591,7 @@ document.documentElement.dataset.theme = mode === 'dark'
         {
             activeMonitoringOverride = originalActiveOverride;
             activeMonitoringOverrideEnabled = originalActiveOverrideEnabled;
-            try { FrameScopeConfigStore.Save(options.ConfigPath, originalConfig); }
+            try { using (FrameScopeConfigStore.AcquireMutationLock(options.ConfigPath)) FrameScopeConfigStore.Save(options.ConfigPath, originalConfig); }
             catch { }
         }
         smokePayload = result;
@@ -1950,6 +1969,8 @@ if(!window.__framescopeBridgeSmoke){
         if (!options.Smoke || !smokeConfigSnapshotCaptured || !smokeConfigRestoreNeeded) return;
         try
         {
+            using (FrameScopeConfigStore.AcquireMutationLock(options.ConfigPath))
+            {
             if (smokeConfigExisted)
             {
                 File.WriteAllText(options.ConfigPath, smokeOriginalConfigText ?? "", Encoding.UTF8);
@@ -1957,6 +1978,7 @@ if(!window.__framescopeBridgeSmoke){
             else if (File.Exists(options.ConfigPath))
             {
                 File.Delete(options.ConfigPath);
+            }
             }
             Log("host:config-snapshot restored");
         }
@@ -2039,10 +2061,11 @@ if(!window.__framescopeBridgeSmoke){
         TryRequestExplicitExit("tray-exit", true, true);
     }
 
-    private bool TryRequestExplicitExit(string reason, bool closeWhenAllowed, bool promptWhenActive)
+    private bool TryRequestExplicitExit(string reason, bool closeWhenAllowed, bool promptWhenActive, bool allowActiveWithoutPrompt = false)
     {
+        if (exitStopInFlight) return false;
         bool activeMonitoring = IsActiveMonitoringForExit();
-        if (FrameScopeWebHostLifecycle.RequiresActiveMonitoringConfirmation(activeMonitoring))
+        if (FrameScopeWebHostLifecycle.RequiresActiveMonitoringConfirmation(activeMonitoring) && !allowActiveWithoutPrompt)
         {
             if (!promptWhenActive)
             {
@@ -2063,17 +2086,40 @@ if(!window.__framescopeBridgeSmoke){
             }
         }
 
-        if (activeMonitoring)
+        exitStopInFlight = true;
+        var stopTask = FrameScopeNativeMonitor.RunOwnedExitAsync(delegate
         {
-            try { FrameScopeNativeMonitor.StopFrameScopeBackgroundProcesses(true); }
-            catch (Exception ex) { Log("host:explicit-exit-stop-monitoring-error " + ex.Message); }
-        }
-
-        Log("host:explicit-exit-allowed reason=" + (reason ?? "") + " activeMonitoring=" + activeMonitoring.ToString(CultureInfo.InvariantCulture));
-        explicitCloseRequested = true;
-        ExitCode = 0;
-        if (closeWhenAllowed) Close();
+            FrameScopeNativeMonitor.StopOwnedWatcherForHostExit();
+        });
+        pendingExitStop = CompleteExplicitExitAsync(reason, closeWhenAllowed, activeMonitoring, stopTask);
         return true;
+    }
+
+    private async System.Threading.Tasks.Task CompleteExplicitExitAsync(string reason, bool closeWhenAllowed, bool activeMonitoring, System.Threading.Tasks.Task stopTask)
+    {
+        await System.Threading.Tasks.Task.Yield();
+        try
+        {
+            await stopTask;
+            if (disposingForm || IsDisposed) return;
+            Log("host:explicit-exit-allowed reason=" + (reason ?? "") + " activeMonitoring=" + activeMonitoring.ToString(CultureInfo.InvariantCulture));
+            if (!string.IsNullOrEmpty(FrameScopeNativeMonitor.LastStopWarning))
+                Log("host:explicit-exit-report-warning " + FrameScopeNativeMonitor.LastStopWarning);
+            explicitCloseRequested = true;
+            ExitCode = 0;
+            if (closeWhenAllowed) Close();
+        }
+        catch (Exception ex)
+        {
+            if (disposingForm || IsDisposed) return;
+            Log("host:explicit-exit-stop-monitoring-error " + ex.Message);
+            MessageBox.Show("监控停止未完成，窗口保持打开，可以重试。" + Environment.NewLine + ex.Message,
+                "FrameScope Monitor", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            exitStopInFlight = false;
+        }
     }
 
     private bool IsActiveMonitoringForExit()
@@ -2204,6 +2250,12 @@ if(!window.__framescopeBridgeSmoke){
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        if (exitStopInFlight && !explicitCloseRequested)
+        {
+            e.Cancel = true;
+            return;
+        }
+
         FrameScopeConfig config = LoadCurrentConfig();
         bool userClosing = e.CloseReason == CloseReason.UserClosing;
         if (FrameScopeWebHostLifecycle.ShouldHideOnUserClose(config, explicitCloseRequested, disposingForm, userClosing))
@@ -2213,13 +2265,11 @@ if(!window.__framescopeBridgeSmoke){
             return;
         }
 
-        if (!explicitCloseRequested && userClosing && string.Equals(config.CloseWindowBehavior, FrameScopeWebHostLifecycle.CloseBehaviorExit, StringComparison.OrdinalIgnoreCase))
+        if (FrameScopeWebHostLifecycle.ShouldStopOnClose(config, explicitCloseRequested, disposingForm, userClosing))
         {
-            if (!TryRequestExplicitExit("window-close-exit", false, true))
-            {
-                e.Cancel = true;
-                return;
-            }
+            e.Cancel = true;
+            TryRequestExplicitExit("window-close-" + e.CloseReason.ToString(), true, userClosing, !userClosing);
+            return;
         }
 
         base.OnFormClosing(e);

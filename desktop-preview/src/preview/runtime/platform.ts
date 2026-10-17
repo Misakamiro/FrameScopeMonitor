@@ -21,7 +21,7 @@ export async function nativeOperation<T>(command: string, args: Record<string, u
 // never send them (they have local equivalents in the preview switch).
 const backendOnlyCommands = new Set([
   "targets_save", "processes_refresh", "monitor_start", "monitor_stop",
-  "reports_list", "report_open", "report_open_directory", "report_regenerate",
+  "reports_list", "report_open", "report_open_directory", "report_regenerate", "report_delete",
   "config_save", "config_read",
 ]);
 

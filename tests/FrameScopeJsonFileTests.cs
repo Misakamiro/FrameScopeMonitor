@@ -12,6 +12,7 @@ public static class FrameScopeJsonFileTests
             FirstWriteCreatesUtf8JsonWithoutBom();
             ExistingJsonIsReplacedAtomically();
             ReplaceFailurePreservesOldJsonAndCleansTemporaryFile();
+            TransientReplacementKeepsAtomicReaderAndFailureSemantics();
             Console.WriteLine("FrameScopeJsonFileTests: PASS");
             return 0;
         }
@@ -20,6 +21,26 @@ public static class FrameScopeJsonFileTests
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             return 1;
         }
+    }
+
+    private static void TransientReplacementKeepsAtomicReaderAndFailureSemantics()
+    {
+        WithTemporaryDirectory(delegate(string dir) {
+            string path = Path.Combine(dir, "live.json");
+            const string oldJson = "{\"message\":\"旧快照\"}";
+            FrameScopeJsonFile.WriteTransient(path, oldJson);
+            using (var oldReader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+                FrameScopeJsonFile.WriteTransient(path, "{\"message\":\"新快照\"}");
+                using (var reader = new StreamReader(oldReader)) AssertEqual(oldJson, reader.ReadToEnd(), "open reader retains complete old snapshot");
+            }
+            string current = File.ReadAllText(path, Encoding.UTF8);
+            try {
+                FrameScopeJsonFile.Write(path, "{}", delegate(string temp, string destination) { throw new IOException("replace failed"); }, false);
+                throw new Exception("Transient replacement failure was swallowed");
+            } catch (IOException) { }
+            AssertEqual(current, File.ReadAllText(path, Encoding.UTF8), "transient failure preserves last snapshot");
+            AssertEqual(1, Directory.GetFiles(dir).Length, "transient write cleans staging files");
+        });
     }
 
     private static void FirstWriteCreatesUtf8JsonWithoutBom()

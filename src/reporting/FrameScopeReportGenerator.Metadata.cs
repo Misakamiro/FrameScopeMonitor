@@ -69,6 +69,9 @@ internal static partial class FrameScopeReportGenerator
                 CopyDiagnosticValue(map, result, "PresentMonCaptureMode");
                 CopyDiagnosticValue(map, result, "PresentMonCaptureTarget");
                 CopyDiagnosticValue(map, result, "PresentMonArgs");
+                foreach (string key in new[] { "PresentMonProfile", "PresentMonRecoveryReason", "PresentMonDisplayTimingAvailable",
+                    "PresentMonFullTraceArgs", "PresentMonFullTraceExitCode", "PresentMonRuntimeStderr" })
+                    CopyDiagnosticValue(map, result, key);
                 CopyDiagnosticValue(map, result, "PresentMonPreflightIsElevated");
                 CopyDiagnosticValue(map, result, "PresentMonPreflightInPerformanceLogUsers");
                 CopyDiagnosticValue(map, result, "PresentMonPreflightToolExists");
@@ -680,6 +683,21 @@ internal static partial class FrameScopeReportGenerator
     }
 
     private static Dictionary<string, object> LoadHardware()
+    {
+        // Machine inventory is optional enrichment, never a prerequisite for a report.
+        if (hardwareRead == null)
+            hardwareRead = System.Threading.Tasks.Task.Factory.StartNew<Dictionary<string, object>>(ReadHardwareInventory);
+        try
+        {
+            if (hardwareRead.Wait(1500)) return hardwareRead.Result;
+        }
+        catch { }
+        return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) { { "QueryStatus", "unavailable" } };
+    }
+
+    private static System.Threading.Tasks.Task<Dictionary<string, object>> hardwareRead;
+
+    private static Dictionary<string, object> ReadHardwareInventory()
     {
         Dictionary<string, object> h = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         try

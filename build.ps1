@@ -2,14 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# M17: a running FrameScope chain locks the very DLLs/exes this script
-# rewrites in place, which used to fail the build halfway through and leave a
-# stale, mixed output set. Same stop list as Deploy-PreviewBackend.ps1.
-foreach ($stopName in @('framescope-ui-preview', 'FrameScopeMonitor', 'FrameScopeHardwareService',
-        'FrameScopeHardwareProvider', 'FrameScopeProcessSampler', 'FrameScopeSystemSampler',
-        'PresentMon-2.4.1-x64')) {
-    Get-Process -Name $stopName -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
+# Building never terminates running applications. A locked output fails the build.
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
@@ -240,6 +233,7 @@ function Build-HardwareService {
             & $cargo.Source generate-lockfile
             if ($LASTEXITCODE -ne 0) { throw 'cargo generate-lockfile failed: FrameScopeHardwareService' }
         }
+        & (Join-Path $root 'tools\Verify-IsolatedBuildStage.ps1') -RepoRoot $root
         & $cargo.Source build --release --locked
         if ($LASTEXITCODE -ne 0) { throw 'cargo build --release --locked failed: FrameScopeHardwareService.exe' }
     }
@@ -313,6 +307,7 @@ $commonCoreSources = @(
     'src\core\FrameScopeJsonFile.cs'
 )
 $monitorSources = @(
+    'src\core\FrameScopeLiveFrameStats.cs'
     'src\core\FrameScopeBoundedProcessRunner.cs'
     'src\core\FrameScopeHistoryFile.cs'
     'src\core\FrameScopeRunRetention.cs'
@@ -359,6 +354,7 @@ $monitorSources = @(
     'src\app\FrameScopeNativeMonitor.ReportOpen.Browser.cs'
     'src\app\FrameScopeNativeMonitor.ReportOpen.Status.cs'
     'src\app\FrameScopeNativeMonitor.ProcessCleanup.cs'
+    'src\core\FrameScopeWatcherShutdown.cs'
     'src\app\FrameScopeNativeMonitor.Watcher.cs'
     'src\app\FrameScopeNativeMonitor.MonitorSession.cs'
     'src\app\FrameScopeNativeMonitor.MonitorSession.Models.cs'
@@ -388,6 +384,7 @@ $systemSamplerSources = @(
     'src\monitoring\FrameScopeSystemSampler.IO.cs'
 )
 $reportSources = @(
+    'src\core\FrameScopeLiveFrameStats.cs'
     'src\core\FrameScopeReportProgress.cs'
     'src\core\FrameScopePresentMonDiagnostics.cs'
     'src\core\FrameScopeReportArtifacts.cs'
@@ -414,12 +411,18 @@ $setupSources = @(
     'src\core\FrameScopeConfigStore.cs'
     'src\app\FrameScopeWebView2Runtime.cs'
     'packaging\FrameScopeSetupNative.cs'
+    'packaging\FrameScopeInstallationShutdown.cs'
+    'src\core\FrameScopeWatcherShutdown.cs'
 )
 $uninstallerSources = @(
     'packaging\FrameScopeUninstaller.cs'
+    'packaging\FrameScopeInstallationShutdown.cs'
+    'src\core\FrameScopeWatcherShutdown.cs'
 )
 $legacyCleanupSources = @(
     'packaging\FrameScopeLegacyCleanup.cs'
+    'packaging\FrameScopeInstallationShutdown.cs'
+    'src\core\FrameScopeWatcherShutdown.cs'
 )
 $hardwareProviderSources = @(
     'src\app\FrameScopeHardwareProvider.cs'
@@ -454,6 +457,7 @@ $setupReferences = @(
     'System.IO.Compression.dll'
     'System.IO.Compression.FileSystem.dll'
     'System.Web.Extensions.dll'
+    'System.Management.dll'
 )
 
 function Resolve-GeneratedReleasePath {
@@ -491,10 +495,10 @@ try {
         -Sources @($commonCoreSources + $reportSources) `
         -References $reportReferences
     Invoke-CSharpBuild -OutputPath 'FrameScopeUninstaller.exe' -Target 'winexe' `
-        -Sources $uninstallerSources -References $windowsFormsReferences -Win32Icon $appIcon
+        -Sources @($commonCoreSources + $uninstallerSources) -References @($windowsFormsReferences + 'System.Web.Extensions.dll' + 'System.Management.dll') -Win32Icon $appIcon
     Invoke-CSharpBuild -OutputPath 'FrameScopeLegacyCleanup.exe' -Target 'winexe' `
-        -Sources $legacyCleanupSources `
-        -References @($windowsFormsReferences + 'System.Management.dll') -Win32Icon $appIcon
+        -Sources @($commonCoreSources + $legacyCleanupSources) `
+        -References @($windowsFormsReferences + 'System.Management.dll' + 'System.Web.Extensions.dll') -Win32Icon $appIcon
     Invoke-CSharpBuild -OutputPath 'FrameScopeHardwareProvider.exe' -Target 'exe' `
         -Sources $hardwareProviderSources `
         -References @('System.Management.dll', 'System.Web.Extensions.dll')
@@ -611,6 +615,8 @@ try {
 
     $payloadZip = Join-Path $sourceRoot 'payload.zip'
     Compress-Archive -Path (Join-Path $payloadRoot '*') -DestinationPath $payloadZip -Force
+    Copy-Item -LiteralPath (Join-Path $root 'packaging\Install-FrameScopeMonitor.ps1') -Destination $sourceRoot -Force
+    Copy-Item -LiteralPath (Join-Path $root 'FrameScopeUninstaller.exe') -Destination $sourceRoot -Force
     $payloadZipSha256 = (Get-FileHash -LiteralPath $payloadZip -Algorithm SHA256).Hash.ToUpperInvariant()
     Write-Host "Payload provenance: version=$version buildId=$buildId SHA256=$payloadZipSha256 files=$($payloadEntries.Count)"
 
@@ -633,7 +639,7 @@ try {
 
     $releaseZip = Join-Path $distStage 'FrameScopeMonitor-Installer.zip'
     if (Test-Path -LiteralPath $releaseZip) { Remove-Item -LiteralPath $releaseZip -Force }
-    Compress-Archive -LiteralPath @($setupExe, $fullSetupExe, $legacyCleanupExe, $distReadme) -DestinationPath $releaseZip -Force
+    Compress-Archive -LiteralPath @($setupExe, $fullSetupExe, $legacyCleanupExe, $distReadme, $sourceRoot) -DestinationPath $releaseZip -Force
 
     & (Join-Path $root 'tools\Test-FrameScopePackages.ps1') -RepoRoot $root -DistRoot $distStage | Out-Host
 

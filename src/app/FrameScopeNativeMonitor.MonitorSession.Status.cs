@@ -62,16 +62,17 @@ internal static partial class FrameScopeNativeMonitor
             { "CpuVidTelemetryStatusPath", paths.CpuVidTelemetryStatusPath }
         };
 
-        AddDictionary(status, BuildNativeMonitorSamplerDiagnostics(
-            CreateNativeMonitorSamplerState(true, processSamplerPath, paths.ProcessCsv, paths.ProcessSamplerStdout, paths.ProcessSamplerStderr),
-            CreateNativeMonitorSamplerState(true, systemSamplerPath, paths.SamplesCsv, paths.SystemSamplerStdout, paths.SystemSamplerStderr)));
+        if (extra == null || !extra.ContainsKey("ProcessSamplerStatus") || !extra.ContainsKey("SystemSamplerStatus"))
+            AddDictionary(status, BuildNativeMonitorSamplerDiagnostics(
+                CreateNativeMonitorSamplerState(true, processSamplerPath, paths.ProcessCsv, paths.ProcessSamplerStdout, paths.ProcessSamplerStderr),
+                CreateNativeMonitorSamplerState(true, systemSamplerPath, paths.SamplesCsv, paths.SystemSamplerStdout, paths.SystemSamplerStderr)));
 
         if (extra != null)
         {
             foreach (var pair in extra) status[pair.Key] = pair.Value;
         }
 
-        FrameScopeJsonFile.Write(paths.StatusPath, Json.Serialize(status));
+        FrameScopeJsonFile.WriteTransient(paths.StatusPath, Json.Serialize(status));
     }
 
     /// <summary>
@@ -88,7 +89,7 @@ internal static partial class FrameScopeNativeMonitor
             if (status == null) return;
             status["HardwareSampleRows"] = rowsWritten;
             status["HardwareSampleLastError"] = lastError ?? "";
-            FrameScopeJsonFile.Write(statusPath, Json.Serialize(status));
+            FrameScopeJsonFile.WriteTransient(statusPath, Json.Serialize(status));
         }
         catch { }
     }

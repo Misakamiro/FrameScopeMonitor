@@ -343,18 +343,10 @@ export default function VerticalOverlayPage() {
     };
   }, [win, persistPosition]);
 
-  // 页面渲染完成后通知 Rust 端 show 窗口（避免加载时的白屏闪烁）
+  // 设置完成首次绘制后再显示窗口，避免默认透明度先闪一帧。
   useEffect(() => {
-    invoke("vertical_overlay_ready");
-  }, []);
-
-  // 窗口本身是 transparent(true)，但 Chakra 全局主题会把 body 涂成不透明
-  // 暗色——面板的 rgba 透明度叠在它上面就永远透不出桌面。把文档背景清成
-  // 透明，透明度滑块才控的是真实穿透。
-  useEffect(() => {
-    document.documentElement.style.background = "transparent";
-    document.body.style.background = "transparent";
-  }, []);
+    if (settingsLoaded) invoke("vertical_overlay_ready");
+  }, [settingsLoaded]);
 
   // 每秒刷新（驱动时间显示）
   useEffect(() => {
@@ -362,37 +354,42 @@ export default function VerticalOverlayPage() {
     return () => clearInterval(timer);
   }, []);
 
-  // 强制背景透明（与桌面歌词窗口相同处理）
-  useEffect(() => {
+  // 布局阶段完成文档透明化，早于 ready 通知；限定样式可抵抗主题重绘。
+  useLayoutEffect(() => {
     const html = document.documentElement;
-    const body = document.body;
-    const root = document.getElementById("root");
-    const prevHtmlBg = html.style.background;
-    const prevBodyBg = body.style.background;
-    const prevRootBg = root?.style.background;
-
-    html.style.background = "transparent";
-    body.style.background = "transparent";
-    if (root) root.style.background = "transparent";
+    html.dataset.overlayWindow = "vertical";
 
     return () => {
-      html.style.background = prevHtmlBg;
-      body.style.background = prevBodyBg;
-      if (root) root.style.background = prevRootBg || "";
+      delete html.dataset.overlayWindow;
     };
   }, []);
 
-  // 获取设置
+  // 先注册设置事件，再读取初值；新事件不能被迟到的初值覆盖。
   useEffect(() => {
+    let disposed = false;
+    let receivedUpdate = false;
+    let unlisten: UnlistenFn | undefined;
     (async () => {
       try {
+        const stop = await listen<OverlaySettings>("vertical-overlay-settings", (event) => {
+          if (disposed) return;
+          receivedUpdate = true;
+          setSettings(event.payload);
+          setSettingsLoaded(true);
+        });
+        if (disposed) { stop(); return; }
+        unlisten = stop;
         const stored = await invoke<OverlaySettings>("get_overlay_current_settings");
-        setSettings(stored);
+        if (!disposed && !receivedUpdate) setSettings(stored);
       } catch {
         // 使用默认设置
       }
-      setSettingsLoaded(true);
+      if (!disposed) setSettingsLoaded(true);
     })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   // 监听硬件数据
@@ -401,17 +398,6 @@ export default function VerticalOverlayPage() {
     (async () => {
       unlisten = await listen<HardwareData>("vertical-overlay-data", (event) => {
         setHardwareData(event.payload);
-      });
-    })();
-    return () => { unlisten?.(); };
-  }, []);
-
-  // 监听设置更新
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    (async () => {
-      unlisten = await listen<OverlaySettings>("vertical-overlay-settings", (event) => {
-        setSettings(event.payload);
       });
     })();
     return () => { unlisten?.(); };

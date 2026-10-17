@@ -69,3 +69,12 @@ host-stderr.log
 
 # Generated installer staging (Package-Installer.ps1)
 desktop-preview/src-tauri/resources/
+
+# Local UI diagnostics and generated test metadata
+desktop-preview/.playwright-cli/
+tests/BuildMetadata.g.cs
+tests/test-manifest.json
+# Signing material stays outside the repository
+*.key
+*.minisign.key
+

@@ -79,7 +79,7 @@ public static class FrameScopeNativeWatcherPolicyTests
         string watcherSource = ReadSource("src", "app", "FrameScopeNativeMonitor.Watcher.cs");
         string webHostSource = ReadSource("src", "app", "FrameScopeNativeMonitor.WebHost.cs");
         int initialStateWrite = watcherSource.IndexOf("WriteNativeWatcherState(configPath, \"starting\"", StringComparison.Ordinal);
-        int recovery = watcherSource.IndexOf("RecoverStaleMissingReports(dataRoot, config)", StringComparison.Ordinal);
+        int recovery = watcherSource.IndexOf("RecoverStaleMissingReports(", StringComparison.Ordinal);
 
         AssertTrue(initialStateWrite >= 0 && initialStateWrite < recovery, "watcher must publish PID before stale report recovery");
         AssertContains(webHostSource, "HasFrameScopeBackgroundProcesses()", "start action must detect watcher processes before state file exists");
@@ -92,7 +92,8 @@ public static class FrameScopeNativeWatcherPolicyTests
 
     private static string ReadSource(params string[] parts)
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = Environment.GetEnvironmentVariable("FRAMESCOPE_TEST_REPO_ROOT");
+        if (string.IsNullOrWhiteSpace(root)) root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
         string path = Path.Combine(new[] { root }.Concat(parts).ToArray());
         if (!File.Exists(path)) throw new Exception("Source not found: " + path);
         return File.ReadAllText(path);

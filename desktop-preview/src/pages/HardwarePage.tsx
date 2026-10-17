@@ -38,7 +38,6 @@ import {
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { useHardwareReportExport } from "@/lib/use-hardware-report-export";
 import { PawnioInstallModal } from "@/components/PawnioInstallModal";
 
 interface DisplayInfo {
@@ -46,20 +45,9 @@ interface DisplayInfo {
   value: string;
 }
 
-interface MemoryStatus {
-  total: number;
-  available: number;
-  used: number;
-  usage_percent: number;
-}
 
-interface DiskInfo {
-  name: string;
-  total_gb: number;
-  available_gb: number;
-  used_gb: number;
-  usage_percent: number;
-}
+
+
 
 /** 文字过长时自动轮播：没超出不滚；超出时从右侧进入、向左滚出、再从右侧滚回 */
 function MarqueeText({ text, color }: { text: string; color?: string }) {
@@ -140,19 +128,7 @@ function MarqueeText({ text, color }: { text: string; color?: string }) {
   );
 }
 
-interface GpuSensorData {
-  name: string;
-  hardware_type: string;
-  temperature: number | null;
-  usage: number | null;
-  fan_speed: number | null;
-  power: number | null;
-  clock: number | null;
-  memory_clock: number | null;
-  vram_used: number | null;
-  vram_total: number | null;
-  voltage: number | null;
-}
+
 
 function Sparkline({ data, color }: { data: number[]; color: string }) {
   if (data.length < 2) return null;
@@ -326,10 +302,9 @@ function DetailCard({
 
 export default function HardwarePage() {
   const toast = useDynamicIsland("cpu");
-  const { hardwareInfo } = useAppStartup();
+  const { hardwareInfo, liveHardware } = useAppStartup();
   const { t } = useTranslation();
   const adaptiveTitle = useAdaptiveTextColor();
-  const { exportReport, isExporting } = useHardwareReportExport();
   const { isOpen: isPawnioModalOpen, onOpen: onPawnioModalOpen, onClose: onPawnioModalClose } = useDisclosure();
   
   const cardBg = useColorModeValue("white", "#111111");
@@ -350,13 +325,12 @@ export default function HardwarePage() {
     _hover: { bg: floatBtnBgHover },
   } as const;
 
-  const [cpuLoad, setCpuLoad] = useState<number | null>(null);
-  const [cpuTemp, setCpuTemp] = useState<number | null>(null);
-  const [gpuSensors, setGpuSensors] = useState<GpuSensorData[]>([]);
-  const [activeGpuIndex, setActiveGpuIndex] = useState(0);
-  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
-  const [diskStatus, setDiskStatus] = useState<DiskInfo | null>(null);
-
+  const cpuLoad = liveHardware?.overlay.cpu_usage ?? null;
+  const cpuTemp = liveHardware?.overlay.cpu_temp ?? null;
+  const gpuSensors = liveHardware?.overlay.gpu_sensors ?? [];
+  const memoryStatus = liveHardware?.memory ?? null;
+  const diskStatus = liveHardware?.disk ?? null;
+  const [activeGpuIndex, setActiveGpuIndex] = useState(liveHardware?.overlay.active_gpu_index ?? 0);
   const [cpuSparkline, setCpuSparkline] = useState<number[]>(Array(20).fill(0));
   const [gpuSparkline, setGpuSparkline] = useState<number[]>(Array(20).fill(0));
   const [memSparkline, setMemSparkline] = useState<number[]>(Array(20).fill(0));
@@ -387,97 +361,18 @@ export default function HardwarePage() {
     }
   };
 
-  const isMounted = useRef(true);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  // Stale-response guard: a slow 2s poll can still be in flight when the
-  // next one fires; only the newest generation may touch state.
-  const fetchGenerationRef = useRef(0);
-
+  // Sampling belongs to the application; route changes only subscribe to its latest snapshot.
   useEffect(() => {
-    isMounted.current = true;
-
-    const fetchSensorData = async () => {
-      if (!isMounted.current) return;
-      const fetchId = ++fetchGenerationRef.current;
-
-      try {
-        // 从悬窗缓存读取实时数据（后台线程每1秒更新，无需等待 PowerShell）
-        const overlay = await invoke<{
-          cpu_usage: number | null;
-          cpu_temp: number | null;
-          gpu_temp: number | null;
-          gpu_usage: number | null;
-          memory_usage: number | null;
-          gpu_sensors: GpuSensorData[];
-          active_gpu_index: number;
-        }>("get_overlay_hardware_data");
-        if (!isMounted.current || fetchId !== fetchGenerationRef.current) return;
-
-        const cpuLoadVal = overlay.cpu_usage ?? null;
-        const cpuTempVal = overlay.cpu_temp ?? null;
-        const memPercent = overlay.memory_usage ?? null;
-
-        setCpuLoad(cpuLoadVal);
-        setCpuTemp(cpuTempVal !== null ? Math.round(cpuTempVal) : null);
-        if (cpuLoadVal !== null) {
-          setCpuSparkline((prev) => [...prev.slice(1), cpuLoadVal]);
-        }
-        if (memPercent !== null) {
-          setMemSparkline((prev) => [...prev.slice(1), Math.round(memPercent)]);
-        }
-
-        // 多 GPU 数据处理：每轮都更新传感器数值（温度/占用率等实时变化）
-        setGpuSensors(overlay.gpu_sensors ?? []);
-        if (overlay.gpu_sensors && overlay.gpu_sensors.length > 0) {
-          setGpuSensors(overlay.gpu_sensors);
-          // 同步后端活跃 GPU 索引
-          setActiveGpuIndex((prev) => {
-            const idx = overlay.active_gpu_index;
-            if (idx < overlay.gpu_sensors.length) return idx;
-            return prev;
-          });
-          // 更新当前活跃 GPU 的 sparkline
-          const activeGpu = overlay.gpu_sensors[overlay.active_gpu_index] ?? overlay.gpu_sensors[0];
-          if (activeGpu?.usage !== null && activeGpu.usage !== undefined) {
-            setGpuSparkline((prev) => [...prev.slice(1), activeGpu.usage as number]);
-          }
-        }
-
-        // 内存和磁盘的详情（非百分比信息）仍需单独查询
-        const memResult = await invoke<MemoryStatus>("get_memory_status");
-        if (!isMounted.current || fetchId !== fetchGenerationRef.current) return;
-        if (memResult) {
-          setMemoryStatus(memResult);
-          if (memPercent === null) {
-            setMemSparkline((prev) => [...prev.slice(1), Math.round(memResult.usage_percent)]);
-          }
-        } else setMemoryStatus(null);
-
-        const diskResult = await invoke<DiskInfo>("get_disk_status");
-        if (!isMounted.current || fetchId !== fetchGenerationRef.current) return;
-        setDiskStatus(diskResult ?? null);
-        if (diskResult) {
-          setDiskStatus(diskResult);
-          setStorageSparkline((prev) => [...prev.slice(1), Math.round(diskResult.usage_percent)]);
-        }
-      } catch (error) {
-        console.error("Failed to fetch sensor data:", error);
-      }
-    };
-
-    fetchSensorData();
-    intervalRef.current = setInterval(fetchSensorData, 2000);
-
-    return () => {
-      isMounted.current = false;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-  }, []); // 不依赖 hardwareInfo，立即开始轮询
-
-  // 从多 GPU 列表中取当前活跃 GPU 的数据
+    if (!liveHardware) return;
+    const overlay = liveHardware.overlay;
+    if (overlay.cpu_usage !== null) setCpuSparkline(previous => [...previous.slice(1), overlay.cpu_usage!]);
+    if (overlay.memory_usage !== null) setMemSparkline(previous => [...previous.slice(1), Math.round(overlay.memory_usage!)]);
+    const index = Math.min(overlay.active_gpu_index, Math.max(0, overlay.gpu_sensors.length - 1));
+    setActiveGpuIndex(index);
+    const gpu = overlay.gpu_sensors[index];
+    if (gpu?.usage !== null && gpu?.usage !== undefined) setGpuSparkline(previous => [...previous.slice(1), gpu.usage!]);
+    if (liveHardware.disk) setStorageSparkline(previous => [...previous.slice(1), Math.round(liveHardware.disk!.usage_percent)]);
+  }, [liveHardware]);
   const activeGpuData = gpuSensors.length > 0 ? (gpuSensors[activeGpuIndex] ?? gpuSensors[0]) : null;
   const gpuTemp = activeGpuData?.temperature ?? null;
   const gpuUsage = activeGpuData?.usage ?? null;
@@ -825,16 +720,6 @@ export default function HardwarePage() {
             }}
           >
             清除数据
-          </Button>
-          <Button
-            leftIcon={<Download size={16} />}
-            size="sm"
-            variant="outline"
-            {...floatBtnStyle}
-            onClick={exportReport}
-            isLoading={isExporting}
-          >
-            {t("hardwareReport.export") || "导出报告"}
           </Button>
         </HStack>
       </HStack>

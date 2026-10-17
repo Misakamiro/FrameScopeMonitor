@@ -13,11 +13,14 @@ public static class FrameScopeWebBridgeTests
     {
         try
         {
+            StaleSettingsPreserveSavedTargets();
+            ReportPayloadUsesValidatedCapabilities();
             MissingRequestIdReturnsContractError();
             StateSnapshotReturnsMatchingResponse();
             StateSnapshotIncludesHostWindowState();
             ConfigGetReadsRealConfig();
             ConfigSaveWritesOnlyConfiguredPath();
+            ConfigSaveAcceptsIntegralJsonNumbers();
             ConfigSaveRoundTripsThemeWindowAndCpuTelemetryFields();
             ProcessesRefreshReturnsAcceptedThenEvent();
             MonitorStartReturnsAcceptedThenEvent();
@@ -43,6 +46,37 @@ public static class FrameScopeWebBridgeTests
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             return 1;
         }
+    }
+
+    private static void StaleSettingsPreserveSavedTargets()
+    {
+        string root = CreateTempRoot("config-stale-settings");
+        string path = Path.Combine(root, "framescope-config.json");
+        FrameScopeConfig stale = FrameScopeConfigStore.CreateDefaultConfig();
+        stale.DataRoot = Path.Combine(root, "runs");
+        FrameScopeConfigStore.Save(path, stale);
+        stale.ThemeMode = "dark";
+        var bridge = CreateBridge(root);
+        string targets = "{\"targets\":[{\"Enabled\":true,\"Name\":\"Fresh target\",\"ProcessName\":\"Fresh.exe\"}]}";
+        var targetResponse = Decode(bridge.HandleJsonMessage(Request("fresh-target", "targets.save", targets)));
+        AssertEqual(true, AsBool(targetResponse, "ok"), "fresh target save succeeds");
+        var response = Decode(bridge.HandleJsonMessage(Request("stale-settings", "config.save", "{\"config\":" + Json.Serialize(stale) + "}")));
+        AssertEqual(true, AsBool(response, "ok"), "stale settings save succeeds");
+        FrameScopeConfig current = FrameScopeConfigStore.Load(path);
+        AssertEqual(1, current.Targets.Count, "settings must preserve new target list");
+        AssertEqual("Fresh.exe", current.Targets[0].ProcessName, "settings must preserve target saved after draft was loaded");
+        AssertEqual("dark", current.ThemeMode, "settings edit remains applied");
+    }
+
+    private static void ReportPayloadUsesValidatedCapabilities()
+    {
+        Type type = typeof(FrameScopeWebBridge).GetNestedType("FrameScopeWebReportEntry", System.Reflection.BindingFlags.NonPublic);
+        object entry = Activator.CreateInstance(type, true);
+        type.GetField("ReportExists").SetValue(entry, true);
+        type.GetField("RunDirExists").SetValue(entry, true);
+        var payload = (Dictionary<string, object>)type.GetMethod("ToPayload").Invoke(entry, null);
+        if ((bool)payload["canOpenReport"] || (bool)payload["canRegenerate"])
+            throw new Exception("Report capabilities must come from artifact validation, not file existence.");
     }
 
     private static void MissingRequestIdReturnsContractError()
@@ -153,7 +187,20 @@ public static class FrameScopeWebBridgeTests
         AssertEqual("save-1", AsString(response, "requestId"), "save request id");
         AssertEqual(true, AsBool(response, "ok"), "save ok");
         AssertEqual(false, saved.OpenReportOnComplete, "saved auto open");
-        AssertEqual("SavedGame.exe", saved.Targets[0].ProcessName, "saved target");
+        AssertEqual("cs2.exe", saved.Targets[0].ProcessName, "settings do not replace targets");
+    }
+
+    private static void ConfigSaveAcceptsIntegralJsonNumbers()
+    {
+        string root = CreateTempRoot("config-save-integral");
+        var bridge = CreateBridge(root);
+        string payload = "{\"config\":{\"DataRoot\":\"" + Escape(Path.Combine(root, "runs")) + "\",\"PollIntervalMs\":1500.0,\"TelemetrySampleIntervalMs\":2000.0,\"Targets\":[{\"Enabled\":true,\"ProcessName\":\"numeric.exe\",\"SampleIntervalMs\":2000.0}]}}";
+        var response = Decode(bridge.HandleJsonMessage(Request("numeric-save", "config.save", payload)));
+        AssertEqual(true, AsBool(response, "ok"), "integral JSON config.save succeeds");
+        FrameScopeConfig saved = FrameScopeConfigStore.Load(Path.Combine(root, "framescope-config.json"));
+        AssertEqual(1500, saved.PollIntervalMs, "bridge integral poll interval");
+        AssertEqual(2000, saved.TelemetrySampleIntervalMs, "bridge integral telemetry interval");
+        AssertEqual("cs2.exe", saved.Targets[0].ProcessName, "numeric settings do not replace targets");
     }
 
     private static void ConfigSaveRoundTripsThemeWindowAndCpuTelemetryFields()
@@ -295,6 +342,10 @@ public static class FrameScopeWebBridgeTests
             { "ReportCanRetry", true },
             { "ReportGenerationExitCode", -1 }
         }));
+        string manifestPath = Path.Combine(runDir, "charts", FrameScopeReportArtifacts.ManifestFileName);
+        var manifest = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(manifestPath));
+        manifest["reportKind"] = "partial";
+        File.WriteAllText(manifestPath, Json.Serialize(manifest));
         string unsafeRun = Path.Combine(Path.GetTempPath(), "FrameScopeWebBridgeTests-outside-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(unsafeRun);
         File.AppendAllText(Path.Combine(root, "framescope-history.jsonl"), HistoryJson("Bridge Game", "BridgeGame.exe", runDir, Path.Combine(runDir, "charts", "framescope-interactive-report.html")) + Environment.NewLine);
@@ -395,8 +446,8 @@ public static class FrameScopeWebBridgeTests
         var bridge = CreateBridge(root, null, adapter);
 
         var response = Decode(bridge.HandleJsonMessage(Request("report-open-html-only-1", "reports.open", "{\"reportId\":\"" + Escape(reportId) + "\"}")));
-        AssertEqual(true, AsBool(response, "ok"), "legacy HTML-only report open accepted");
-        AssertEqual(1, adapter.OpenReportCount, "legacy HTML-only report reaches host adapter");
+        AssertEqual(false, AsBool(response, "ok"), "unproven HTML-only report cannot open");
+        AssertEqual(0, adapter.OpenReportCount, "missing artifact set never reaches host adapter");
     }
 
     private static void ReportOpenDirectoryUsesValidatedReportId()
@@ -590,8 +641,8 @@ public static class FrameScopeWebBridgeTests
         string charts = Path.Combine(runDir, "charts");
         Directory.CreateDirectory(charts);
         File.WriteAllText(Path.Combine(runDir, "presentmon.csv"),
-            "Application,MsBetweenPresents" + Environment.NewLine +
-            game.Replace(" ", "") + ".exe,6.9" + Environment.NewLine);
+            "TimeInDateTime,Application,MsBetweenPresents" + Environment.NewLine +
+            "2026-01-01T00:00:00Z," + game.Replace(" ", "") + ".exe,6.9" + Environment.NewLine);
         File.WriteAllText(Path.Combine(runDir, "status.json"), "{\"Phase\":\"done\",\"ReportKind\":\"full\",\"ReportFrameCount\":1}");
         string report = Path.Combine(charts, "framescope-interactive-report.html");
         string data = Path.Combine(charts, "framescope-interactive-data.js");
@@ -605,6 +656,7 @@ public static class FrameScopeWebBridgeTests
             { "processSamples", 0 },
             { "systemSamples", 0 },
             { "reportKind", "full" },
+            { "inputFingerprintVersion", 2 },
             { FrameScopeReportArtifacts.InputFingerprintFieldName, FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value }
         }));
         if (appendHistory)

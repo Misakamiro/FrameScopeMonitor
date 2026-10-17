@@ -16,7 +16,8 @@ internal static class FakePresentMon
         }
 
         string output = FrameScopePubgSimulationCommon.GetArgValue(args, "--output_file", "");
-        if (string.IsNullOrWhiteSpace(output)) return 0;
+        bool outputStdout = FrameScopePubgSimulationCommon.HasFlag(args, "--output_stdout");
+        if (!outputStdout && string.IsNullOrWhiteSpace(output)) return 0;
 
         string scenario = Environment.GetEnvironmentVariable("FRAMESCOPE_FAKE_PRESENTMON_SCENARIO");
         if (string.IsNullOrWhiteSpace(scenario)) scenario = "stable";
@@ -27,7 +28,12 @@ internal static class FakePresentMon
 
         if (!scenario.Equals("missing-csv", StringComparison.OrdinalIgnoreCase))
         {
-            FrameScopePubgSimulationCommon.WritePresentMonCsv(output, scenario, rows);
+            if (outputStdout)
+            {
+                FrameScopePubgSimulationCommon.WritePresentMonCsv(Console.Out, scenario, rows);
+                Console.Out.Flush();
+            }
+            else FrameScopePubgSimulationCommon.WritePresentMonCsv(output, scenario, rows);
         }
 
         DateTime deadline = DateTime.Now.AddSeconds(30);

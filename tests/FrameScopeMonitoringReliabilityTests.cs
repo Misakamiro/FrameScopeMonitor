@@ -398,7 +398,7 @@ public static class FrameScopeMonitoringReliabilityTests
 
     private static string ReadSource(params string[] parts)
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.SourceRoot;
         string path = Path.Combine(root, Path.Combine(parts));
         if (!File.Exists(path)) throw new Exception("Source not found: " + path);
         return File.ReadAllText(path);

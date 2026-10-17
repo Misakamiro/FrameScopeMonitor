@@ -19,6 +19,9 @@ import { RootErrorBoundary } from "./components/RootErrorBoundary";
 import theme from "./lib/theme";
 import { startPreviewRuntime } from "./preview/runtime";
 const emotionCache = createCache({ key: "css", prepend: true });
+if (window.location.pathname === "/vertical-overlay") {
+  document.documentElement.dataset.overlayWindow = "vertical";
+}
 
 function Root() {
   const [isI18nReady, setIsI18nReady] = useState(i18n.isInitialized);

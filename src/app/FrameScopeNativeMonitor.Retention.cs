@@ -28,7 +28,7 @@ internal static partial class FrameScopeNativeMonitor
                     Phase = StatusString(status, "Phase", ""),
                     LastWriteTimeUtc = directory.LastWriteTimeUtc,
                     SizeBytes = DirectorySize(directory.FullName),
-                    ReportComplete = artifacts.IsComplete,
+                    ReportComplete = artifacts.IsReadable,
                     HasUsableMonitorData = FrameScopeReportArtifacts.HasUsableMonitorData(directory.FullName),
                     ReportGenerationInProgress = IsReportGenerationInProgress(status),
                     RecoveryExhausted = StatusBool(status, "ReportRecoveryExhausted", false)

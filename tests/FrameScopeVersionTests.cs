@@ -6,7 +6,7 @@ using System.Web.Script.Serialization;
 
 internal static class FrameScopeVersionTests
 {
-    private static readonly string Root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+    private static readonly string Root = FrameScopeTestPaths.SourceRoot;
 
     private static int Main()
     {
@@ -48,7 +48,7 @@ internal static class FrameScopeVersionTests
             "FrameScopeLegacyCleanup.exe"
         })
         {
-            string path = Path.Combine(Root, name);
+            string path = Path.Combine(FrameScopeTestPaths.RuntimeRoot, name);
             if (!File.Exists(path)) throw new Exception("Missing built assembly: " + name);
             string version = FileVersionInfo.GetVersionInfo(path).FileVersion ?? "";
             if (!version.StartsWith(expected + ".", StringComparison.Ordinal))

@@ -31,7 +31,7 @@ internal static partial class FrameScopeReportGenerator
             Dictionary<string, int> h = table.Headers;
             int[] columns = new[]
             {
-                HeaderIndex(h, "TimeInDateTime"),
+                HeaderIndex(h, h.ContainsKey("TimeInDateTime") ? "TimeInDateTime" : "TimeInSeconds"),
                 HeaderIndex(h, "MsBetweenPresents"),
                 HeaderIndex(h, "Application"),
                 HeaderIndex(h, "ProcessID"),
@@ -109,11 +109,12 @@ internal static partial class FrameScopeReportGenerator
             double? p99 = PercentileHigh(scoring, 0.99);
             track.MedianFps = medianMs.HasValue && medianMs.Value > 0 ? 1000.0 / medianMs.Value : (double?)null;
             track.P99FrameMs = p99;
-            track.Score = track.HardwareRows * 3.0 + track.Rows;
-            if (track.MedianFps.HasValue) track.Score += Math.Min(240.0, track.MedianFps.Value) * 20.0;
-            if (track.P99FrameMs.HasValue) track.Score -= Math.Min(1000.0, track.P99FrameMs.Value) * 2.0;
+            track.Score = FrameScopeLiveFrameStats.TrackScore(track.HardwareRows, track.Rows, medianMs, p99);
         }
-        summaries.Sort(delegate(PresentTrack a, PresentTrack b) { return b.Score.CompareTo(a.Score); });
+        summaries.Sort(delegate(PresentTrack a, PresentTrack b) {
+            return FrameScopeLiveFrameStats.CompareTracks(a.Score, a.ProcessId + "|" + a.SwapChain + "|" + a.Application,
+                b.Score, b.ProcessId + "|" + b.SwapChain + "|" + b.Application);
+        });
         PresentTrack selected = summaries[0];
         bool multiTrack = summaries.Count > 1;
         bool useHardwareOnly = multiTrack && selected.HardwareRows > 0;
@@ -171,5 +172,23 @@ internal static partial class FrameScopeReportGenerator
             { "frames", result.Frames.Count },
             { "diagnostics", result.Diagnostics }
         };
+    }
+
+    internal static Dictionary<string, object> ReadLiveFrameStatsForTests(string path)
+    {
+        var stats = CalculateFrameStats(ReadPresentMon(path).Frames);
+        return new Dictionary<string, object> { { "count", (int)stats.Count }, { "low1", stats.Low1Fps }, { "low01", stats.Low01Fps } };
+    }
+
+    internal static Dictionary<string, object> ReadRollingFrameStatsForTests(string path)
+    {
+        var frames = ReadPresentMon(path).Frames;
+        var fenwick = new Fenwick(100001);
+        if (frames.Count > 0) {
+            DateTime start = frames[frames.Count - 1].Key.AddSeconds(-3);
+            foreach (var frame in frames) if (frame.Key >= start) fenwick.Add(MsToBin(frame.Value), 1);
+        }
+        return new Dictionary<string, object> { { "count", fenwick.Count },
+            { "low1", FpsFromFenwick(fenwick, .99) }, { "low01", FpsFromFenwick(fenwick, .999) } };
     }
 }

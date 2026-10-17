@@ -65,6 +65,7 @@ internal static partial class FrameScopeNativeMonitor
         map["ReportRecoveryAttempts"] = recoveryAttempts;
         ApplyReportSamplerEvidence(map, result);
         FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));
+        map["ReportCanRetry"] = result.CanRetry;
 
         try { FrameScopeJsonFile.Write(statusPath, Json.Serialize(map)); }
         catch (Exception ex) { WriteFrameScopeLog("status-update-failed run=" + runDir + " error=" + ex.Message); }
@@ -129,6 +130,7 @@ internal static partial class FrameScopeNativeMonitor
             ApplyReportSamplerEvidence(reports, result);
             map["Reports"] = reports;
             FrameScopeReportProgress.AddTo(map, FrameScopeReportProgress.Read(result.ProgressPath));
+            map["ReportCanRetry"] = result.CanRetry;
             FrameScopeJsonFile.Write(path, Json.Serialize(map));
         }
         catch (Exception ex)

@@ -10,6 +10,7 @@ internal static partial class FrameScopeNativeMonitor
 
     internal static bool IsInteractiveUiLaunch(string[] args)
     {
+        if (HasLaunchArg(args, "--stop-owned-background")) return false;
         if (HasLaunchArg(args, "--watcher")) return false;
         if (HasLaunchArg(args, "--monitor-session")) return false;
         if (HasLaunchArg(args, "--generate-diagnostic-report")) return false;

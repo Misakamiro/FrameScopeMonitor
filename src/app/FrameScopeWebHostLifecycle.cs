@@ -1,4 +1,4 @@
-internal static class FrameScopeWebHostLifecycle
+﻿internal static class FrameScopeWebHostLifecycle
 {
     public const string CloseBehaviorExit = "exit";
     public const string CloseBehaviorMinimizeToTray = "minimize-to-tray";
@@ -8,6 +8,12 @@ internal static class FrameScopeWebHostLifecycle
         if (config == null || explicitCloseRequested || disposing || !userClosing) return false;
         return config.TrayEnabled &&
             string.Equals(config.CloseWindowBehavior, CloseBehaviorMinimizeToTray, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool ShouldStopOnClose(FrameScopeConfig config, bool explicitCloseRequested, bool disposing, bool userClosing)
+    {
+        return !explicitCloseRequested && !disposing &&
+            !ShouldHideOnUserClose(config, false, false, userClosing);
     }
 
     public static bool RequiresActiveMonitoringConfirmation(bool activeMonitoring)

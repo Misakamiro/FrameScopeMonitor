@@ -15,6 +15,7 @@ internal static class FrameScopeReportProcessTests
             LargeOutputIsBoundedAndKeepsTail();
             HangingChildHonorsTotalTimeout();
             TimeoutKillsDescendantProcess();
+            TimeoutDoesNotWaitBeyondGlobalBudget();
             Console.WriteLine("FrameScopeReportProcessTests: PASS");
             return 0;
         }
@@ -25,9 +26,18 @@ internal static class FrameScopeReportProcessTests
         }
     }
 
+    private static void TimeoutDoesNotWaitBeyondGlobalBudget()
+    {
+        Stopwatch timer = Stopwatch.StartNew();
+        FrameScopeProcessResult result = FrameScopeBoundedProcessRunner.Run(SelfPath(), "--spawn-grandchild " + Quote(Path.Combine(Path.GetTempPath(), "framescope-report-budget-" + Guid.NewGuid().ToString("N") + ".txt")), Environment.CurrentDirectory, 200, null);
+        timer.Stop();
+        AssertTrue(result.TimedOut, "global budget timeout");
+        AssertTrue(timer.ElapsedMilliseconds < 2000, "drain and cleanup remain bounded by global budget");
+    }
+
     private static void LegacyUnboundedReportRunnerIsAbsent()
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.SourceRoot;
         string source = File.ReadAllText(Path.Combine(root, "src", "app", "FrameScopeNativeMonitor.ReportOrchestration.cs"));
         AssertFalse(source.Contains("RunReportGenerationLegacy"), "legacy unbounded report runner must stay removed");
     }

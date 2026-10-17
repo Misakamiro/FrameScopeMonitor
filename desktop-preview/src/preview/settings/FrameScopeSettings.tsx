@@ -39,8 +39,16 @@ export function FrameScopeSettings() {
             <FormControl key={key}><FormLabel fontSize="sm">{label}</FormLabel><NumberInput value={draft[key]} min={min} max={max} onChange={(_, value) => update({ [key]: value })}>
               <NumberInputField /><NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper></NumberInput></FormControl>)}
           {!desktop && <FormControl><FormLabel fontSize="sm">预览数据目录</FormLabel><Input value={draft.outputDirectory} onChange={e => update({ outputDirectory: e.target.value })} /></FormControl>}
+          <HStack justify="space-between">
+            <Box><Text fontSize="sm">启动软件时自动开启监控</Text><Text fontSize="xs" opacity={.7}>下次打开软件时生效，不改变当前监控状态。</Text></Box>
+            <Switch aria-label="启动软件时自动开启监控" colorScheme="teal" isChecked={draft.autoStart} onChange={e => update({ autoStart: e.target.checked })} />
+          </HStack>
           {([["autoOpenReport", "完成后自动打开报告"], ["detailedLogging", "详细日志"], ["diagnosticLogging", "性能诊断日志"]] as const).map(([key, label]) =>
             <HStack key={key} justify="space-between"><Text fontSize="sm">{label}</Text><Switch aria-label={label} colorScheme="teal" isChecked={draft[key]} onChange={e => update({ [key]: e.target.checked })} /></HStack>)}
+          <HStack justify="space-between">
+            <Box><Text fontSize="sm">启动软件时自动最小化</Text><Text fontSize="xs" opacity={.7}>下次启动时最小化到任务栏，不影响监控和悬浮窗。</Text></Box>
+            <Switch aria-label="启动软件时自动最小化" colorScheme="teal" isChecked={draft.startMinimized} onChange={e => update({ startMinimized: e.target.checked })} />
+          </HStack>
           <ActionError message={error} /><HStack justify="flex-end"><Button variant="ghost" onClick={() => { setDraft(state.config); setDirty(false); setSaved(false); }}>取消修改</Button><Button type="submit" colorScheme="teal" isLoading={pending}>保存</Button></HStack>
           {saved && <Text role="status" fontSize="sm" color="teal.500">设置已保存</Text>}
         </VStack>

@@ -32,7 +32,6 @@ export const BUILTIN_FONT_OPTIONS: FontOption[] = [
   { value: "Sinter-Regular", label: "Sinter" },
   { value: "AiDianFengYaHei", label: "AiDianFengYaHei" },
   { value: "Cubic", label: "Cubic" },
-  { value: "NotoSerifSC-900", label: "思源宋体 900" },
 ];
 
 /** 默认字体 */
@@ -101,11 +100,6 @@ export function FontProvider({ children }: { children: ReactNode }) {
       try {
         // 加载当前选中字体
         const savedFont = await store.get<string>("app-font-family");
-        if (savedFont) {
-          setFontState(savedFont);
-          fontRef.current = savedFont;
-        }
-
         // 加载自定义字体列表
         const savedCustomFonts = await store.get<CustomFontRecord[]>("app-custom-fonts");
         if (savedCustomFonts && Array.isArray(savedCustomFonts) && savedCustomFonts.length > 0) {
@@ -115,6 +109,13 @@ export function FontProvider({ children }: { children: ReactNode }) {
           }
           setCustomFonts(savedCustomFonts);
         }
+
+        // 已移除的内置字体回退到默认值，但保留用户导入的同名字体。
+        const retiredBuiltin = savedFont === "NotoSerifSC-900"
+          && !(Array.isArray(savedCustomFonts) && savedCustomFonts.some(cf => cf.value === savedFont));
+        const selectedFont = retiredBuiltin ? DEFAULT_FONT : savedFont || DEFAULT_FONT;
+        setFontState(selectedFont);
+        fontRef.current = selectedFont;
 
         setIsLoaded(true);
       } catch (error) {

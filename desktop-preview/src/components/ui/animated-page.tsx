@@ -1,4 +1,4 @@
-import { motion, Transition, Variants } from "framer-motion";
+import { Transition, Variants } from "framer-motion";
 import { ReactNode, useEffect, useState } from "react";
 import { store } from "@/lib/store";
 
@@ -22,7 +22,7 @@ export const slideVariants: Variants = {
 export const fadeVariants: Variants = {
   initial: { opacity: 0 },
   enter: { opacity: 1, transition: { duration: 0.18, ease: "easeOut" } },
-  exit: { opacity: 0, transition: { duration: 0.15, ease: "easeIn" } },
+  exit: { opacity: 0, transition: { duration: 0.18, ease: "easeIn" } },
 };
 
 export const slideTransition: Transition = {
@@ -67,56 +67,47 @@ export function readTransitionMode(): TransitionMode {
     store.set(STORE_KEY, mode).then(() => store.save());
     return mode;
   }
-  return (localStorage.getItem(LS_KEY) as TransitionMode) || "fade";
+  const saved = localStorage.getItem(LS_KEY);
+  return saved === "slide" || saved === "off" ? saved : "fade";
 }
 
 export function useTransitionMode(): TransitionMode {
   const [mode, setMode] = useState<TransitionMode>(readTransitionMode);
 
   useEffect(() => {
-    (async () => {
-      let saved = await store.get<string>(STORE_KEY) as TransitionMode | null;
-      if (saved === "slide" || saved === "fade" || saved === "off") {
-        setMode(saved);
+    let disposed = false;
+    let changed = false;
+    const handler = (event: Event) => {
+      changed = true;
+      const value = (event as CustomEvent<TransitionMode>).detail;
+      if (value === "slide" || value === "fade" || value === "off") {
+        localStorage.setItem(LS_KEY, value);
+        setMode(value);
+      } else {
+        setMode(readTransitionMode());
       }
-    })();
-  }, []);
-
-  useEffect(() => {
-    const handler = async () => {
-      setMode(readTransitionMode());
     };
     window.addEventListener(EVENT_NAME, handler);
-    return () => window.removeEventListener(EVENT_NAME, handler);
+    (async () => {
+      try {
+        const saved = await store.get<string>(STORE_KEY);
+        if (!disposed && !changed && (saved === "slide" || saved === "fade" || saved === "off")) {
+          localStorage.setItem(LS_KEY, saved);
+          setMode(saved);
+        }
+      } catch (error) {
+        console.error("Failed to load page transition setting:", error);
+      }
+    })();
+    return () => {
+      disposed = true;
+      window.removeEventListener(EVENT_NAME, handler);
+    };
   }, []);
 
   return mode;
 }
 
 export function AnimatedPage({ children }: AnimatedPageProps) {
-  const mode = useTransitionMode();
-  const [animating, setAnimating] = useState(false);
-
-  if (mode === "off") {
-    return <div style={{ width: "100%", height: "100%" }}>{children}</div>;
-  }
-
-  return (
-    <motion.div
-      initial="initial"
-      animate="enter"
-      exit="exit"
-      variants={getVariants(mode)}
-      onAnimationStart={() => setAnimating(true)}
-      onAnimationComplete={() => {
-        // 延后一帧再移除 .page-animating（恢复 backdrop-filter）：避免
-        // backdrop-filter 恢复与合成层合并在同一帧落地造成整屏闪烁（问题 2 配套）
-        requestAnimationFrame(() => setAnimating(false));
-      }}
-      className={animating ? "page-animating" : undefined}
-      style={{ width: "100%", height: "100%" }}
-    >
-      {children}
-    </motion.div>
-  );
+  return <div style={{ width: "100%", height: "100%" }}>{children}</div>;
 }

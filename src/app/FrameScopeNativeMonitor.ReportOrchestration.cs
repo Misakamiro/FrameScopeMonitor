@@ -15,7 +15,7 @@ using System.Runtime.InteropServices;
 
 internal static partial class FrameScopeNativeMonitor
 {
-    private static void RecoverStaleMissingReports(string dataRoot, FrameScopeConfig config)
+    private static void RecoverStaleMissingReports(string dataRoot, FrameScopeConfig config, Action<string> reportState = null)
     {
         try
         {
@@ -38,7 +38,7 @@ internal static partial class FrameScopeNativeMonitor
                         TargetKey = gameDir.FullName,
                         Phase = phase,
                         LastWriteTimeUtc = run.LastWriteTimeUtc,
-                        ReportComplete = artifacts.IsComplete,
+                        ReportComplete = artifacts.IsComplete || artifacts.LegacyReadable,
                         HasUsableMonitorData = FrameScopeReportArtifacts.HasUsableMonitorData(run.FullName),
                         InputStable = input.Stable && DateTime.Now - LatestMonitorCsvWriteTime(run.FullName) > TimeSpan.FromMinutes(2),
                         InputFingerprint = input.Value,
@@ -57,6 +57,8 @@ internal static partial class FrameScopeNativeMonitor
                 if (!before.Stable || !string.Equals(before.Value, candidate.InputFingerprint, StringComparison.OrdinalIgnoreCase)) continue;
                 if (IsRecoveryCaptureActive(status, candidate.Phase, ownerBefore)) continue;
 
+                if (reportState != null) reportState(candidate.RunDirectory);
+                try {
                 status = MarkRecoveryAttemptStarted(candidate.RunDirectory, status);
                 WriteFrameScopeLog("recover-stale-report run=" + candidate.RunDirectory + " phase=" + candidate.Phase);
                 status = EnsureReportForCompletedRun(
@@ -65,6 +67,7 @@ internal static partial class FrameScopeNativeMonitor
                     StatusInt(status, "ExitCode", -1),
                     config,
                     true);
+                } finally { if (reportState != null) reportState(null); }
 
                 FrameScopeReportInputFingerprint after = FrameScopeReportArtifacts.CaptureInputFingerprint(candidate.RunDirectory);
                 Dictionary<string, object> statusAfter = ReadStatusDictionary(candidate.RunDirectory) ?? status;
@@ -86,7 +89,7 @@ internal static partial class FrameScopeNativeMonitor
     {
         FrameScopeReportArtifactState artifacts = FrameScopeReportArtifacts.Inspect(runDir);
         var reportHtml = artifacts.HtmlPath;
-        if (artifacts.IsComplete)
+        if (artifacts.IsComplete || artifacts.LegacyReadable)
         {
             return status;
         }
@@ -205,7 +208,7 @@ internal static partial class FrameScopeNativeMonitor
     private static DateTime LatestMonitorCsvWriteTime(string runDir)
     {
         DateTime latest = DateTime.MinValue;
-        foreach (var name in new[] { "presentmon.csv", "process-samples.csv", "system-samples.csv" })
+        foreach (var name in new[] { "presentmon.csv", "process-samples.csv", "system-samples.csv", "hardware-samples.csv" })
         {
             var path = Path.Combine(runDir, name);
             if (!File.Exists(path)) continue;

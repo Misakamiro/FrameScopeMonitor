@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"></head><body>
+<div id="root"></div><script type="module">
+import React from 'react';import {createRoot} from 'react-dom/client';import {AnimatePresence} from 'framer-motion';
+import {AnimatedPage,slideVariants} from '../src/components/ui/animated-page';import {store} from '../src/lib/store';
+localStorage.setItem('nexbox_page_transition','slide');store.get=async()=> 'slide';window.variants=slideVariants;
+function Probe(){const [page,setPage]=React.useState('a');window.navigate=setPage;return React.createElement(React.Fragment,null,
+ React.createElement('nav',{id:'nav'},'Navigation'),React.createElement(AnimatePresence,{mode:'wait',initial:false},
+ React.createElement(AnimatedPage,{key:page},React.createElement('article',{'data-page':page},page))));}
+createRoot(document.getElementById('root')).render(React.createElement(Probe));
+</script></body></html>

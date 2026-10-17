@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh">
+  <head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Delivered component hook regression</title></head>
+  <body>
+    <button id="outside">Outside</button>
+    <div id="root" style="padding:24px;max-width:1200px"></div>
+    <script type="module">
+      import "../src/preview/browser";
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import { ChakraProvider } from "@chakra-ui/react";
+      import { MemoryRouter } from "react-router-dom";
+      import { I18nextProvider } from "react-i18next";
+      import { BackgroundProvider } from "../src/contexts/background-context";
+      import { ThemeColorProvider } from "../src/contexts/theme-color-context";
+      import { ThemeModeProvider } from "../src/contexts/theme-mode-context";
+      import { FontProvider } from "../src/contexts/font-context";
+      import { CustomColorPicker } from "../src/components/special/custom-color-picker";
+      import { GlobalSearch } from "../src/components/ui/global-search";
+      import SettingsPage from "../src/pages/SettingsPage";
+      import theme from "../src/lib/theme";
+      import i18n from "../src/lib/i18n";
+      import "../src/index.css";
+
+      function Picker() {
+        const [color, setColor] = React.useState("#98DDD0");
+        return React.createElement("section", { id: "picker" },
+          React.createElement(CustomColorPicker, { color, onChange: setColor }));
+      }
+      const mode = new URLSearchParams(location.search).get("mode");
+      const component = mode === "picker" ? Picker : mode === "search" ? GlobalSearch : SettingsPage;
+      let content = React.createElement(component);
+      for (const Provider of [ThemeModeProvider, FontProvider, ThemeColorProvider, BackgroundProvider]) {
+        content = React.createElement(Provider, null, content);
+      }
+      content = React.createElement(MemoryRouter, {
+        initialEntries: ["/settings?section=appearance"],
+      }, content);
+      content = React.createElement(I18nextProvider, { i18n }, content);
+      createRoot(document.getElementById("root")).render(
+        React.createElement(ChakraProvider, { theme }, content),
+      );
+    </script>
+  </body>
+</html>

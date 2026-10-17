@@ -21,7 +21,7 @@ export function LiquidGlassMenuItem({
 }: LiquidGlassMenuItemProps) {
   const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode } = useBackground();
   const { getActiveColor, getBorderColor, getContrastTextColor } = useThemeColor();
-  const { mouseX, mouseY, isHovering, handleMouseMove, handleMouseLeave, handleMouseEnter } = useGlowEffect();
+  const { isHovering, handleMouseMove, handleMouseLeave, handleMouseEnter } = useGlowEffect();
   const { svgSupported } = useLiquidGlassRefraction(liquidGlassEnabled && liquidGlassMode === "real");
 
   const activeBg = getActiveColor();
@@ -39,16 +39,13 @@ export function LiquidGlassMenuItem({
   const outlineColor = getActiveColor();
   const glowColor = useColorModeValue("rgba(255,255,255,0.8)", "rgba(255,255,255,0.5)");
 
-  // 模糊立即生效：页面切换动画期间的 backdrop-filter 关闭由 .page-animating 类统一处理
+  // 普通模式在底层模糊；透明模式只折射边缘，选中项仍保留主题色。
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
-  const transition = "background 0.45s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.45s cubic-bezier(0.4, 0, 0.2, 1), backdrop-filter 0.45s cubic-bezier(0.4, 0, 0.2, 1)";
+  const transition = "background 0.45s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.45s cubic-bezier(0.4, 0, 0.2, 1)";
   const isReal = liquidGlassEnabled && liquidGlassMode === "real";
 
-  const backdropFilter = isReal
-    ? (svgSupported
-        ? `url(#nexbox-liquid-glass-filter) saturate(1.4)`
-        : `saturate(1.4) brightness(1.05)`)
-    : `blur(${effectiveBlur}px)`;
+  const backdropFilter = liquidGlassEnabled && !isReal ? `blur(${effectiveBlur}px)` : "none";
+  const edgeFilter = svgSupported ? "url(#nexbox-liquid-glass-filter)" : "none";
 
   return (
     <Box
@@ -58,22 +55,28 @@ export function LiquidGlassMenuItem({
       borderRadius="lg"
       px={3}
       py={2.5}
-      bg={isActive ? activeBg : (liquidGlassEnabled ? (isHovering ? glassHoverBg : glassInactiveBg) : (isHovering ? hoverBg : defaultInactiveBg))}
+      bg={isActive ? activeBg : (isReal ? "transparent" : (liquidGlassEnabled ? (isHovering ? glassHoverBg : glassInactiveBg) : (isHovering ? hoverBg : defaultInactiveBg)))}
       border="1px solid"
-      borderColor={isActive ? (liquidGlassEnabled ? glassActiveBorder : activeBg) : (liquidGlassEnabled ? glassBorderColor : "transparent")}
-      backdropFilter={backdropFilter}
+      borderColor={isActive ? (liquidGlassEnabled ? glassActiveBorder : activeBg) : (isReal && !isHovering ? "rgba(255,255,255,0.06)" : (liquidGlassEnabled ? glassBorderColor : "transparent"))}
       position="relative"
+      overflow="hidden"
+      zIndex={0}
       color={isActive ? activeTextFinal : (liquidGlassEnabled ? glassInactiveText : inactiveText)}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       onMouseEnter={handleMouseEnter}
       sx={{
-        WebkitBackdropFilter: backdropFilter,
-        transform: "translateZ(0)",
-        WebkitTransform: "translateZ(0)",
-        WebkitBackfaceVisibility: "hidden",
-        backfaceVisibility: "hidden",
-        willChange: "auto",
+        // 与 LiquidGlassCard 一致：根只裁剪，滤镜留在独立底层。
+        "::before": {
+          content: '""',
+          position: "absolute",
+          inset: 0,
+          zIndex: -1,
+          borderRadius: "inherit",
+          backdropFilter,
+          WebkitBackdropFilter: backdropFilter,
+          transition: "backdrop-filter 0.45s",
+        },
         transition,
       }}
       _focusVisible={{
@@ -82,6 +85,22 @@ export function LiquidGlassMenuItem({
         outlineOffset: "2px"
       }}
     >
+      {isReal && svgSupported && (
+        <>
+          <Box position="absolute" top={0} left={0} w="100%" h="10px" zIndex={0}
+            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+            bg="transparent" pointerEvents="none" />
+          <Box position="absolute" bottom={0} left={0} w="100%" h="10px" zIndex={0}
+            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+            bg="transparent" pointerEvents="none" />
+          <Box position="absolute" left={0} top={0} w="10px" h="100%" zIndex={0}
+            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+            bg="transparent" pointerEvents="none" />
+          <Box position="absolute" right={0} top={0} w="10px" h="100%" zIndex={0}
+            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+            bg="transparent" pointerEvents="none" />
+        </>
+      )}
       {!isReal && (
         <Box
           style={getBorderGlowStyle(glowColor)}

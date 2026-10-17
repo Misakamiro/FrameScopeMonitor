@@ -9,9 +9,8 @@ import {
   Icon,
   useColorModeValue,
   Kbd,
-  Image,
 } from "@chakra-ui/react";
-import { Search, Home, Cpu, Wrench, Package, Crosshair, TrendingUp, Heart, Settings } from "lucide-react";
+import { Search } from "lucide-react";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -24,7 +23,6 @@ import {
   categoryOrder,
   getThirdPartyToolIcon,
   type SearchItem,
-  type SearchCategory,
 } from "@/config/search-index";
 import { invoke } from "@tauri-apps/api/core";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
@@ -52,7 +50,7 @@ export function GlobalSearch() {
   const navigate = useNavigate();
   const toast = useDynamicIsland("search");
   const { liquidGlassEnabled, liquidGlassBlur } = useBackground();
-  const { getActiveColor, getHoverColor, getContrastTextColor } = useThemeColor();
+  const { getActiveColor, getContrastTextColor } = useThemeColor();
   const { tools } = useAppStartup();
 
   const [isOpen, setIsOpen] = useState(false);
@@ -85,7 +83,6 @@ export function GlobalSearch() {
   );
   const textColor = useColorModeValue("gray.700", "#ffffff");
   const placeholderColor = useColorModeValue("gray.500", "gray.400");
-  const resultItemBg = useColorModeValue("gray.50", "gray.800");
   const resultItemHoverBg = useColorModeValue("gray.100", "gray.700");
   const categoryColor = useColorModeValue("gray.500", "gray.400");
   const noResultColor = useColorModeValue("gray.400", "gray.500");
@@ -267,10 +264,10 @@ export function GlobalSearch() {
         {!isOpen && (
           <Box position="absolute" right={3} top="50%" transform="translateY(-50%)">
             <HStack spacing={1}>
-              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={useColorModeValue("gray.100", "gray.700")}>
+              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={resultItemHoverBg}>
                 Ctrl
               </Kbd>
-              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={useColorModeValue("gray.100", "gray.700")}>
+              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={resultItemHoverBg}>
                 K
               </Kbd>
             </HStack>

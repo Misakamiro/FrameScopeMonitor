@@ -1,3 +1,4 @@
+param([string]$OutputDirectory = '', [string[]]$TestNames = @(), [string]$RuntimeRoot = '')
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -6,7 +7,13 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
 }
-$buildMetadata = & (Join-Path $root 'tools\Write-FrameScopeBuildMetadata.ps1') -RepoRoot $root
+if (-not $OutputDirectory) { $OutputDirectory = $testRoot }
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+$manifestPath = Join-Path $OutputDirectory 'test-manifest.json'
+$builtTests = [Collections.Generic.List[object]]::new()
+[pscustomobject]@{ RepoRoot = $root; Tests = @() } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+$buildMetadata = & (Join-Path $root 'tools\Write-FrameScopeBuildMetadata.ps1') -RepoRoot $root -OutputPath (Join-Path $OutputDirectory 'BuildMetadata.g.cs')
 
 function Invoke-TestBuild {
     param(
@@ -16,7 +23,9 @@ function Invoke-TestBuild {
         [string]$MainType = ''
     )
 
-    $args = @('/nologo', '/target:exe', '/platform:x64', '/optimize+', '/codepage:65001', ('/out:' + (Join-Path $testRoot $OutputName)))
+    if ($TestNames.Count -and $OutputName -notin $TestNames -and
+        -not ($OutputName -eq 'FrameScopePubgFakePresentMon.exe' -and 'FrameScopeTargetLifecycleIntegrationTests.exe' -in $TestNames)) { return }
+    $args = @('/nologo', '/target:exe', '/platform:x64', '/optimize+', '/codepage:65001', ('/out:' + (Join-Path $OutputDirectory $OutputName)))
     if (-not [string]::IsNullOrWhiteSpace($MainType)) {
         $args += ('/main:' + $MainType)
     }
@@ -24,6 +33,7 @@ function Invoke-TestBuild {
         $args += ('/reference:' + $reference)
     }
     $args += (Join-Path $root 'src\core\FrameScopeJsonFile.cs')
+    $args += (Join-Path $testRoot 'FrameScopeTestPaths.cs')
     $args += $buildMetadata
     foreach ($source in $Sources) {
         $args += (Join-Path $root $source)
@@ -31,11 +41,34 @@ function Invoke-TestBuild {
 
     & $csc @args
     if ($LASTEXITCODE -ne 0) { throw "csc failed: $OutputName" }
+    if ($OutputName -like '*Tests.exe') {
+        $dependencies = @()
+        if ($OutputName -eq 'FrameScopeTargetLifecycleIntegrationTests.exe') {
+            $dependencies = @((Join-Path $OutputDirectory 'FrameScopePubgFakePresentMon.exe'))
+        }
+        $builtTests.Add([pscustomobject]@{ Path = (Join-Path $OutputDirectory $OutputName); Arguments = @(); Dependencies = $dependencies })
+    }
 }
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeJsonFileTests.exe' `
     -Sources @('tests\FrameScopeJsonFileTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeHardwareProviderTruthTests.exe' `
+    -References @('System.Web.Extensions.dll', 'System.Management.dll') `
+    -MainType 'FrameScopeHardwareProviderTruthTests' `
+    -Sources @('src\app\FrameScopeHardwareProvider.cs', 'tests\FrameScopeHardwareProviderTruthTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeHardwareMaintenanceTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -MainType 'FrameScopeHardwareMaintenanceTests' `
+    -Sources @('src\monitoring\FrameScopeHardwareServiceClient.cs', 'tests\FrameScopeHardwareMaintenanceTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeCaptureControlTests.exe' `
+    -Sources @('src\core\FrameScopeTargetLifecycle.cs', 'src\core\FrameScopeRunContract.cs', 'tests\FrameScopeCaptureControlTests.cs')
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeVersionTests.exe' `
@@ -64,6 +97,21 @@ Invoke-TestBuild `
     -OutputName 'FrameScopeConfigStoreTests.exe' `
     -References @('System.Web.Extensions.dll') `
     -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigStoreTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeConfigMutationTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigMutationTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeConfigLockFixture.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeConfigLockFixture.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeHotkeyConfigTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeConfigStore.cs', 'tests\FrameScopeHotkeyConfigTests.cs')
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeLoggingPolicyTests.exe' `
@@ -162,6 +210,7 @@ Invoke-TestBuild `
     -References @('System.Web.Extensions.dll', 'System.Management.dll', 'Microsoft.VisualBasic.dll') `
     -MainType 'FrameScopeReportManifestTests' `
     -Sources @(
+        'src\core\FrameScopeLiveFrameStats.cs',
         'src\core\FrameScopeReportProgress.cs',
         'src\core\FrameScopePresentMonDiagnostics.cs',
         'src\core\FrameScopeReportArtifacts.cs',
@@ -183,6 +232,8 @@ Invoke-TestBuild `
         'src\reporting\FrameScopeReportGenerator.Html.Styles.cs',
         'src\reporting\FrameScopeReportGenerator.Html.Sections.cs',
         'src\reporting\FrameScopeReportGenerator.Html.Scripts.cs',
+        'tests\FrameScopeOsdVoltageReportTests.cs',
+        'src\monitoring\FrameScopeHardwareServiceClient.cs',
         'tests\FrameScopeReportManifestTests.cs'
     )
 
@@ -270,6 +321,7 @@ Invoke-TestBuild `
     -References @('System.Management.dll', 'System.Web.Extensions.dll') `
     -Sources @(
         'src\app\FrameScopeNativeMonitor.ProcessCleanup.cs',
+        'src\core\FrameScopeWatcherShutdown.cs',
         'tests\FrameScopeProcessCleanupTests.cs'
     )
 
@@ -286,4 +338,24 @@ Invoke-TestBuild `
     -References @('System.Drawing.dll', 'System.Windows.Forms.dll') `
     -Sources @('src\app\FrameScopeAppIcon.cs', 'tests\FrameScopeIconTests.cs')
 
-'FrameScope tests rebuilt.'
+Invoke-TestBuild `
+    -OutputName 'FrameScopeSampledFpsAudit.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('tests\FrameScopeSampledFpsAudit.cs')
+
+if (-not $TestNames.Count -or 'FrameScopeLiveFrameStatsTests.exe' -in $TestNames) {
+    & (Join-Path $testRoot 'Build-LiveFrameStatsTests.ps1') -OutputDirectory $OutputDirectory -BuildOnly
+    $builtTests.Add([pscustomobject]@{ Path = (Join-Path $OutputDirectory 'FrameScopeLiveFrameStatsTests.exe'); Arguments = @() })
+}
+Invoke-TestBuild `
+    -OutputName 'FrameScopeHardwareSnapshotTests.exe' `
+    -MainType 'FrameScopeHardwareSnapshotTests' `
+    -References @('System.Management.dll', 'System.Web.Extensions.dll') `
+    -Sources @('src\app\FrameScopeHardwareProvider.cs', 'tests\FrameScopeHardwareSnapshotTests.cs')
+Invoke-TestBuild `
+    -OutputName 'FrameScopeInstallationShutdownTests.exe' `
+    -MainType 'FrameScopeInstallationShutdownTests' `
+    -References @('System.Web.Extensions.dll', 'System.Management.dll', 'System.Windows.Forms.dll', 'System.Drawing.dll') `
+    -Sources @('packaging\FrameScopeInstallationShutdown.cs', 'src\core\FrameScopeWatcherShutdown.cs', 'packaging\FrameScopeUninstaller.cs', 'packaging\FrameScopeLegacyCleanup.cs', 'tests\FrameScopeInstallationShutdownTests.cs')
+[pscustomobject]@{ RepoRoot = $root; RuntimeRoot = $RuntimeRoot; Tests = @($builtTests.ToArray()) } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+'FrameScope tests rebuilt. Manifest: ' + $manifestPath

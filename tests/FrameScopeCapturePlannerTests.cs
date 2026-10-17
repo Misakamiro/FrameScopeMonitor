@@ -10,6 +10,7 @@ public static class FrameScopeCapturePlannerTests
         PubgUsesProcessNameCaptureAcrossAliases();
         NonPubgSingleProcessUsesPidCapture();
         TargetNotFoundDiagnosticIsActionable();
+        EmptyCaptureRecoveryIsBoundedAndPreservesTarget();
         Console.WriteLine("FrameScopeCapturePlannerTests: PASS");
         return 0;
     }
@@ -73,6 +74,24 @@ public static class FrameScopeCapturePlannerTests
         AssertTrue(Convert.ToString(diagnostic["FrameCaptureMessage"]).Contains("PUBG"), "message names PUBG");
         AssertTrue(Convert.ToString(diagnostic["FrameCaptureMessage"]).Contains("管理员"), "message mentions elevation");
         AssertTrue(Convert.ToString(diagnostic["FrameCaptureMessage"]).Contains("无边框"), "message mentions borderless");
+    }
+
+    private static void EmptyCaptureRecoveryIsBoundedAndPreservesTarget()
+    {
+        AssertTrue(FrameScopeCapturePlanner.ShouldRecoverStalledCapture(8000, null, false), "recover a collector which never produces a frame");
+        AssertTrue(FrameScopeCapturePlanner.ShouldRecoverStalledCapture(90000, 2100, false), "recover after an initially healthy collector stops producing");
+        AssertTrue(!FrameScopeCapturePlanner.ShouldRecoverStalledCapture(90000, 100, false), "retain genuinely fresh full frames");
+        AssertTrue(!FrameScopeCapturePlanner.ShouldRecoverStalledCapture(7999, null, false), "allow initial startup grace");
+        AssertTrue(!FrameScopeCapturePlanner.ShouldRecoverStalledCapture(90000, 9000, true), "recovery remains one-way");
+        var plan = FrameScopeCapturePlanner.CreatePresentMonPlan(new List<string> { "cs2" }, "cs2.exe", "CS2", 1234,
+            "presentmon.csv", "owned-session", true, 7, true, true);
+        AssertTrue(ContainsPair(plan.Arguments, "--process_id", "1234"), "preserve selected pid");
+        AssertTrue(ContainsPair(plan.Arguments, "--timed", "7"), "use remaining capture duration");
+        foreach (string flag in new[] { "--v1_metrics", "--no_track_gpu", "--no_track_input", "--no_track_display", "--output_stdout" })
+            AssertTrue(plan.Arguments.Contains(flag), "runtime recovery flag " + flag);
+        var normal = FrameScopeCapturePlanner.CreatePresentMonPlan(new List<string> { "cs2" }, "cs2.exe", "CS2", 1234,
+            "presentmon.csv", "owned-session", false, 0, true);
+        AssertTrue(!normal.Arguments.Contains("--no_track_display"), "keep full tracing as default");
     }
 
     private static bool ContainsPair(List<string> values, string key, string value)

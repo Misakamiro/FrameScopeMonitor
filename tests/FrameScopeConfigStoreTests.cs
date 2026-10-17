@@ -5,13 +5,15 @@ using System.Web.Script.Serialization;
 
 public static class FrameScopeConfigStoreTests
 {
-    private static readonly string Root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+    private static readonly string Root = FrameScopeTestPaths.SourceRoot;
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
     public static int Main()
     {
         try
         {
+            AutoStartMonitoringDefaultsAndExplicitDisableSurviveSerialization();
+            WindowStartupPreferencesSurviveTargetEdits();
             CreateDefaultConfigUsesNativeModeAndSeparateDataRoot();
             CreateDefaultConfigIncludesThemeWindowAndCpuTelemetryDefaults();
             CreateDefaultConfigUsesOneGlobalTelemetrySampleInterval();
@@ -27,6 +29,8 @@ public static class FrameScopeConfigStoreTests
             BuildConfigFromEditableTargetsUsesNormalProcessSamplingForNewTargets();
             BuildConfigFromEditableTargetsPreservesThemeWindowAndCpuTelemetryFields();
             SaveAndLoadRoundTripsNormalizedConfig();
+            IntegralJsonNumbersPreserveUserTargets();
+            FractionalJsonNumbersAreNotRoundedToIntegers();
             LoadLegacyConfigWithPollInterval();
             LoadLegacyPerTargetSamplingDoesNotPolluteGlobalInterval();
             ExampleMatchesRuntimeDefault();
@@ -41,12 +45,69 @@ public static class FrameScopeConfigStoreTests
         }
     }
 
+    private static void AutoStartMonitoringDefaultsAndExplicitDisableSurviveSerialization()
+    {
+        foreach (string input in new[] { "{}", "{\"AutoStartMonitoring\":false}" }) {
+            var config = Json.Deserialize<FrameScopeConfig>(input);
+            var saved = Json.Deserialize<Dictionary<string, object>>(Json.Serialize(config));
+            AssertTrue(saved.ContainsKey("AutoStartMonitoring"), "automatic monitoring is persisted in the real config model");
+            AssertEqual(input == "{}", Convert.ToBoolean(saved["AutoStartMonitoring"]), "missing defaults to true; explicit false survives");
+            var merged = FrameScopeConfigStore.BuildConfigFromEditableTargets(config, "", true, config.Targets);
+            var edited = Json.Deserialize<Dictionary<string, object>>(Json.Serialize(merged));
+            AssertEqual(input == "{}", Convert.ToBoolean(edited["AutoStartMonitoring"]), "editing targets preserves the auto-start preference");
+        }
+    }
+
+    private static void WindowStartupPreferencesSurviveTargetEdits()
+    {
+        foreach (bool enabled in new[] { false, true }) {
+            var config = Json.Deserialize<FrameScopeConfig>(enabled ? "{\"AutoStartOverlay\":true,\"StartMinimized\":true}" : "{}");
+            var merged = FrameScopeConfigStore.BuildConfigFromEditableTargets(config, "", true, config.Targets);
+            var saved = Json.Deserialize<Dictionary<string, object>>(Json.Serialize(merged));
+            AssertTrue(saved.ContainsKey("AutoStartOverlay") && saved.ContainsKey("StartMinimized"), "window startup preferences must be persisted");
+            AssertEqual(enabled, Convert.ToBoolean(saved["AutoStartOverlay"]), "overlay startup preference survives target edits");
+            AssertEqual(enabled, Convert.ToBoolean(saved["StartMinimized"]), "minimized startup preference survives target edits");
+        }
+    }
+
     private static void ExampleMatchesRuntimeDefault()
     {
         FrameScopeConfig expected = FrameScopeConfigStore.CreateDefaultConfig();
         expected.DataRoot = "framescope-runs";
         FrameScopeConfig actual = Json.Deserialize<FrameScopeConfig>(File.ReadAllText(Path.Combine(Root, "framescope-config.example.json")));
         AssertEqual(Json.Serialize(expected), Json.Serialize(actual), "example matches runtime defaults");
+    }
+
+    private static void IntegralJsonNumbersPreserveUserTargets()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-config-integral-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string path = Path.Combine(dir, "config.json");
+            File.WriteAllText(path, "{\"PollIntervalMs\":1500.0,\"TelemetrySampleIntervalMs\":2000.0,\"CpuTelemetry\":{\"PerCoreSampleIntervalMs\":2000.0},\"Targets\":[{\"Enabled\":true,\"Name\":\"Custom\",\"ProcessName\":\"custom.exe\",\"SampleIntervalMs\":2000.0}]}");
+            FrameScopeConfig config = FrameScopeConfigStore.Load(path);
+            AssertEqual(1500, config.PollIntervalMs, "integral JSON number poll interval");
+            AssertEqual(2000, config.TelemetrySampleIntervalMs, "integral JSON number telemetry interval");
+            AssertEqual(1, config.Targets.Count, "integral JSON numbers must not replace custom targets with defaults");
+            AssertEqual("custom.exe", config.Targets[0].ProcessName, "custom target preserved");
+            AssertEqual(2000, config.CpuTelemetry.PerCoreSampleIntervalMs, "nested CPU integer preserved");
+            AssertEqual(2000, config.Targets[0].SampleIntervalMs, "nested target integer preserved");
+            FrameScopeConfigStore.Save(path, config);
+            AssertEqual(1, FrameScopeConfigStore.Load(path).Targets.Count, "normalized numeric config round trip");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    private static void FractionalJsonNumbersAreNotRoundedToIntegers()
+    {
+        foreach (string number in new[] { "1500.5", "1500.000000000000000000001", "2147483648.0" })
+        {
+            bool rejected = false;
+            try { FrameScopeConfigStore.Deserialize("{\"PollIntervalMs\":" + number + "}"); }
+            catch { rejected = true; }
+            AssertTrue(rejected, "non-integral or overflowing config number must be rejected: " + number);
+        }
     }
 
     private static void InstallerHasNoHandwrittenTargetJson()
@@ -428,6 +489,7 @@ public static class FrameScopeConfigStoreTests
             DataRoot = @"C:\OldDataRoot",
             ThemeMode = "dark",
             CloseWindowBehavior = "exit",
+            OverlayHotkey = "Ctrl+F8",
             TrayEnabled = false,
             CpuTelemetry = new FrameScopeCpuTelemetryConfig
             {
@@ -470,6 +532,7 @@ public static class FrameScopeConfigStoreTests
 
         AssertEqual("dark", merged.ThemeMode, "theme mode should be preserved");
         AssertEqual("exit", merged.CloseWindowBehavior, "close behavior should be preserved");
+        AssertEqual("Ctrl+F8", merged.OverlayHotkey, "target editing preserves overlay hotkey");
         AssertEqual(false, merged.TrayEnabled, "tray enabled should be preserved");
         AssertTrue(merged.CpuTelemetry != null, "cpu telemetry should be preserved");
         AssertEqual(true, merged.CpuTelemetry.CollectPerCoreFrequency, "per-core frequency toggle should be preserved");

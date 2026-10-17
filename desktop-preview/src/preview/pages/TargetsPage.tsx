@@ -9,10 +9,11 @@ import { CustomSelect } from "@/components/special/custom-select";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, useFloatingFieldStyle } from "./shared";
 import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
-import { monitorBusy } from "@/preview/runtime/state";
+import { getTargetsSaveError, isTargetsSynced, targetEditingBlocked } from "@/preview/runtime/state";
 import type { PreviewTarget } from "@/preview/runtime";
 
-const fallbackProcesses = ["cs2.exe", "VALORANT-Win64-Shipping.exe", "TslGame.exe", "GamePreview.exe"];
+type ProcessOption = { processName: string; windowTitle?: string };
+const fallbackProcesses: ProcessOption[] = ["cs2.exe", "VALORANT-Win64-Shipping.exe", "TslGame.exe", "GamePreview.exe"].map(processName => ({ processName }));
 export default function TargetsPage() {
   const state = usePreviewState();
   const color = useAdaptiveTextColor();
@@ -23,7 +24,7 @@ export default function TargetsPage() {
   // Desktop: real window-titled process enumeration (fallback examples only
   // apply to the browser preview, and a load failure surfaces in the UI
   // instead of silently masquerading as real data).
-  const [processes, setProcesses] = useState<string[]>(isDesktop() ? [] : fallbackProcesses);
+  const [processes, setProcesses] = useState<ProcessOption[]>(isDesktop() ? [] : fallbackProcesses);
   const [processesUnavailable, setProcessesUnavailable] = useState(false);
   useEffect(() => {
     if (!isDesktop()) return;
@@ -31,18 +32,20 @@ export default function TargetsPage() {
     backendInvoke<{ processes: Array<{ processName: string; displayText?: string }> }>("processes_refresh", { query: "" })
       .then(payload => {
         if (cancelled) return;
-        const names = (payload.processes ?? [])
-          .map(p => p.displayText ? p.processName + " — " + p.displayText : p.processName)
-          .filter(Boolean);
-        if (names.length) setProcesses(names);
+        const options = (payload.processes ?? [])
+          .map(p => ({ processName: p.processName, windowTitle: p.displayText }))
+          .filter(p => Boolean(p.processName));
+        if (options.length) setProcesses(options);
         else setProcessesUnavailable(true);
       })
       .catch(() => { if (!cancelled) setProcessesUnavailable(true); });
     return () => { cancelled = true; };
   }, []);
-  const busy = monitorBusy();
+  const busy = targetEditingBlocked();
   const field = useFloatingFieldStyle();
   const targets = state.targets.filter(t => `${t.name} ${t.executable}`.toLowerCase().includes(query.toLowerCase()));
+  const syncing = isDesktop() && !isTargetsSynced();
+  const saveError = getTargetsSaveError();
   const close = () => { setEditing(null); clearError(); };
   const save = async () => {
     if (!editing) return;
@@ -54,21 +57,22 @@ export default function TargetsPage() {
   return <Box pt={8}>
     <HStack justify="space-between" mb={6}>
       <Heading size="lg" color={color.text} textShadow={color.shadow}>监控目标</Heading>
-      <Button leftIcon={<Plus size={16} />} colorScheme="teal" size="sm" isDisabled={busy}
+      <Button leftIcon={<Plus size={16} />} colorScheme="teal" size="sm" isDisabled={busy || syncing}
         onClick={() => { clearError(); setEditing({ name: "", executable: "", enabled: true }); }}>添加目标</Button>
     </HStack>
+    {busy && <Text fontSize="sm" mb={4}>采集或生成报告期间，请先停止监控再修改目标。</Text>}
     <InputGroup maxW="400px" mb={5}><InputLeftElement pointerEvents="none" color={field.iconColor}><Search size={16} /></InputLeftElement>
       <Input aria-label="搜索目标" placeholder="搜索游戏或进程" value={query} onChange={e => setQuery(e.target.value)} sx={field.sx} /></InputGroup>
     <VStack align="stretch" spacing={3}>
       {targets.map(target => <LiquidGlassCard key={target.id} p={5} borderRadius="xl">
         <HStack spacing={4}>
-          <Switch aria-label={`启用 ${target.name}`} isChecked={target.enabled} isDisabled={busy} colorScheme="teal"
+          <Switch aria-label={`启用 ${target.name}`} isChecked={target.enabled} isDisabled={busy || syncing} colorScheme="teal"
             onChange={e => void run("target.update", { id: target.id, enabled: e.target.checked })} />
           <Box flex={1} minW={0}><Text fontWeight="bold" noOfLines={1}>{target.name}</Text><Text fontSize="sm" opacity={.7} noOfLines={1}>{target.executable}</Text></Box>
           <Badge colorScheme={target.enabled ? "green" : "gray"}>{target.enabled ? "已启用" : "未启用"}</Badge>
-          <Tooltip label="编辑"><IconButton aria-label={`编辑 ${target.name}`} icon={<Pencil size={16} />} variant="ghost" size="sm" isDisabled={busy}
+          <Tooltip label="编辑"><IconButton aria-label={`编辑 ${target.name}`} icon={<Pencil size={16} />} variant="ghost" size="sm" isDisabled={busy || syncing}
             onClick={() => { clearError(); setEditing({ ...target }); }} /></Tooltip>
-          <Tooltip label="删除"><IconButton aria-label={`删除 ${target.name}`} icon={<Trash2 size={16} />} variant="ghost" colorScheme="red" size="sm" isDisabled={busy}
+          <Tooltip label="删除"><IconButton aria-label={`删除 ${target.name}`} icon={<Trash2 size={16} />} variant="ghost" colorScheme="red" size="sm" isDisabled={busy || syncing}
             onClick={() => { clearError(); setRemoving(target); }} /></Tooltip>
         </HStack>
       </LiquidGlassCard>)}
@@ -81,10 +85,13 @@ export default function TargetsPage() {
         <FormControl isRequired><FormLabel>进程名</FormLabel><Input placeholder="game.exe" value={editing?.executable ?? ""} onChange={e => setEditing({ ...editing, executable: e.target.value })} /></FormControl>
         <FormControl><FormLabel>预览进程列表</FormLabel><CustomSelect width="100%" ariaLabel="选择进程"
           placeholder={processesUnavailable ? "进程列表不可用" : "选择进程"} disabled={processesUnavailable} value=""
-          onChange={executable => setEditing({ ...editing, executable })}
-          options={processesUnavailable ? [] : processes.map((process, index) => ({ value: String(index), label: process }))} /></FormControl>
+          onChange={value => setEditing({ ...editing, executable: value })}
+          options={processesUnavailable ? [] : processes.map(process => ({
+            value: process.processName,
+            label: process.windowTitle ? `${process.processName} — ${process.windowTitle}` : process.processName,
+          }))} /></FormControl>
         <HStack justify="space-between"><Text>启用目标</Text><Switch aria-label="启用目标" colorScheme="teal" isChecked={editing?.enabled ?? true} onChange={e => setEditing({ ...editing, enabled: e.target.checked })} /></HStack>
-        <ActionError message={error} /><HStack justify="flex-end"><Button variant="ghost" onClick={close}>取消</Button><Button type="submit" colorScheme="teal" isLoading={pending}>保存</Button></HStack>
+        <ActionError message={error || saveError} /><HStack justify="flex-end"><Button variant="ghost" onClick={close}>取消</Button><Button type="submit" colorScheme="teal" isLoading={pending || syncing}>保存</Button></HStack>
       </VStack>
     </PreviewDialog>
     <PreviewDialog title="删除目标" isOpen={!!removing} onClose={() => setRemoving(null)}>

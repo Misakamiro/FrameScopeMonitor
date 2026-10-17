@@ -5,10 +5,13 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct GpuSensorData {
     pub name: String,
+    pub identifier: String,
     pub hardware_type: String,
     pub temperature: Option<f64>,
     pub usage: Option<f64>,
@@ -61,6 +64,7 @@ pub struct OverlayData {
 #[derive(Debug, Clone, Copy)]
 struct SensorRow<'a> {
     hardware: &'a str,
+    identifier: &'a str,
     hardware_type: &'a str,
     name: &'a str,
     sensor_type: &'a str,
@@ -92,6 +96,7 @@ fn parse_sensors(snapshot: &Value) -> Vec<SensorRow<'_>> {
                     let value = row.get("value").and_then(Value::as_f64)?;
                     Some(SensorRow {
                         hardware: row.get("hardware").and_then(Value::as_str).unwrap_or(""),
+                        identifier: row.get("identifier").and_then(Value::as_str).unwrap_or(""),
                         hardware_type: row.get("hardwareType").and_then(Value::as_str).unwrap_or(""),
                         name: row.get("name").and_then(Value::as_str).unwrap_or(""),
                         sensor_type: row.get("sensorType").and_then(Value::as_str).unwrap_or(""),
@@ -208,23 +213,27 @@ pub fn build_overlay_data(
     let rows = parse_sensors(snapshot);
 
     // One GpuSensorData per distinct GPU hardware, in first-seen order.
-    let mut gpu_names: Vec<&str> = Vec::new();
+    let mut gpu_names: Vec<(&str, &str)> = Vec::new();
     for row in &rows {
-        if contains(row.hardware_type, "gpu") && !gpu_names.iter().any(|name| name.eq_ignore_ascii_case(row.hardware)) {
-            gpu_names.push(row.hardware);
+        if contains(row.hardware_type, "gpu") && !gpu_names.iter().any(|(name, id)| {
+            if !row.identifier.is_empty() && !id.is_empty() { id.eq_ignore_ascii_case(row.identifier) }
+            else { row.identifier.is_empty() && id.is_empty() && name.eq_ignore_ascii_case(row.hardware) }
+        }) {
+            gpu_names.push((row.hardware, row.identifier));
         }
     }
 
     let gpu_sensors: Vec<GpuSensorData> = gpu_names
         .iter()
-        .map(|gpu| {
+        .map(|(gpu, identifier)| {
             let per_gpu: Vec<SensorRow<'_>> = rows
                 .iter()
-                .filter(|row| row.hardware.eq_ignore_ascii_case(gpu))
+                .filter(|row| if !identifier.is_empty() { row.identifier.eq_ignore_ascii_case(identifier) } else { row.identifier.is_empty() && row.hardware.eq_ignore_ascii_case(gpu) })
                 .copied()
                 .collect();
             GpuSensorData {
                 name: (*gpu).to_string(),
+                identifier: (*identifier).to_string(),
                 hardware_type: per_gpu.first().map(|row| row.hardware_type).unwrap_or("").to_string(),
                 temperature: r1(sensor_value(&per_gpu, "Temperature", "", &["GPU Core", "GPU Hot Spot", "GPU"])),
                 usage: r1(sensor_value(&per_gpu, "Load", "", &["GPU Core", "GPU"])),
@@ -299,21 +308,10 @@ pub fn build_overlay_data(
         }
     }
 
-    // low 钳到窗口平均：瞬时 FPS 是 60 样本短窗，卡顿瞬间低于 10s 窗口的 low
-    // 会呈现「low 比 FPS 还高」的倒挂（用户报的显示异常）。low ≤ avg 只有在
-    // 同口径下恒成立，跨窗口时由这里强制。
-    let low_clamp = fps.0.map(|v| (v * 10.0).round() / 10.0).or(crate::game_fps::get_cached_window_avg_fps().map(f64::from));
-    let clamp_low = |low: Option<f64>| -> Option<f64> {
-        match (low, low_clamp) {
-            (Some(low), Some(cap)) if low > cap => Some(cap),
-            (other, _) => other,
-        }
-    };
-
     OverlayData {
         fps: fps.0.map(|v| (v * 10.0).round() / 10.0),
-        fps_1low: clamp_low(fps.1).map(|v| (v * 10.0).round() / 10.0),
-        fps_01low: clamp_low(fps.2).map(|v| (v * 10.0).round() / 10.0),
+        fps_1low: r1(fps.1),
+        fps_01low: r1(fps.2),
         cpu_usage: r1(dynamic_value(snapshot, "cpuUsage")),
         cpu_temp: r1(dynamic_value(snapshot, "cpuTemperature")),
         cpu_clock: dynamic_value(snapshot, "cpuFrequency").map(|v| v.round()),
@@ -354,11 +352,8 @@ macro_rules! carry_forward {
     };
 }
 
-/// Field-level OR merge: a null in `new` inherits the previous snapshot's value.
+/// Carry hardware values forward; FPS nulls explicitly invalidate a stream.
 pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
-    carry_forward!(new.fps, old.fps);
-    carry_forward!(new.fps_1low, old.fps_1low);
-    carry_forward!(new.fps_01low, old.fps_01low);
     carry_forward!(new.cpu_usage, old.cpu_usage);
     carry_forward!(new.cpu_temp, old.cpu_temp);
     carry_forward!(new.cpu_clock, old.cpu_clock);
@@ -394,7 +389,11 @@ pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
     for (value, old_value) in new.cpu_core_voltages.iter_mut().zip(old.cpu_core_voltages.iter()) {
         carry_forward!(*value, old_value);
     }
-    for (gpu, old_gpu) in new.gpu_sensors.iter_mut().zip(old.gpu_sensors.iter()) {
+    for gpu in new.gpu_sensors.iter_mut() {
+        let Some(old_gpu) = old.gpu_sensors.iter().find(|candidate| {
+            !gpu.identifier.is_empty() && !candidate.identifier.is_empty() && gpu.identifier.eq_ignore_ascii_case(&candidate.identifier)
+                || gpu.identifier.is_empty() && candidate.identifier.is_empty() && gpu.name.eq_ignore_ascii_case(&candidate.name)
+        }) else { continue; };
         carry_forward!(gpu.temperature, old_gpu.temperature);
         carry_forward!(gpu.usage, old_gpu.usage);
         carry_forward!(gpu.fan_speed, old_gpu.fan_speed);
@@ -404,6 +403,66 @@ pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
         carry_forward!(gpu.vram_used, old_gpu.vram_used);
         carry_forward!(gpu.vram_total, old_gpu.vram_total);
         carry_forward!(gpu.voltage, old_gpu.voltage);
+    }
+}
+
+pub fn clear_hardware_values(data: &mut OverlayData) {
+    macro_rules! clear { ($($field:ident),+) => { $(data.$field = None;)+ }; }
+    clear!(cpu_usage, cpu_temp, cpu_clock, cpu_voltage, cpu_power, cpu_fan_speed,
+        gpu_temp, gpu_usage, gpu_fan_speed, gpu_power, gpu_clock, gpu_voltage,
+        gpu_memory_clock, gpu_vram_used, gpu_vram_total, memory_usage, ssd_temp);
+    data.cpu_core_clocks.fill(None);
+    data.cpu_core_voltages.fill(None);
+    for gpu in &mut data.gpu_sensors {
+        gpu.temperature = None; gpu.usage = None; gpu.fan_speed = None; gpu.power = None;
+        gpu.clock = None; gpu.voltage = None; gpu.memory_clock = None; gpu.vram_used = None; gpu.vram_total = None;
+    }
+}
+
+pub fn record_observed_fields(data: &OverlayData, now: Instant, times: &mut HashMap<String, Instant>) {
+    macro_rules! seen { ($name:expr, $value:expr) => { if $value.is_some() { times.insert($name.to_string(), now); } }; }
+    seen!("cpu_usage", data.cpu_usage); seen!("cpu_temp", data.cpu_temp); seen!("cpu_clock", data.cpu_clock);
+    seen!("cpu_voltage", data.cpu_voltage); seen!("cpu_power", data.cpu_power); seen!("cpu_fan_speed", data.cpu_fan_speed);
+    seen!("memory_usage", data.memory_usage); seen!("ssd_temp", data.ssd_temp); seen!("game_ping", data.game_ping);
+    for (index, value) in data.cpu_core_clocks.iter().enumerate() { seen!(&format!("core_clock:{index}"), *value); }
+    for (index, value) in data.cpu_core_voltages.iter().enumerate() { seen!(&format!("core_voltage:{index}"), *value); }
+    for gpu in &data.gpu_sensors {
+        let key = if gpu.identifier.is_empty() { format!("gpu:name:{}", gpu.name.to_ascii_lowercase()) } else { format!("gpu:id:{}", gpu.identifier.to_ascii_lowercase()) };
+        seen!(&format!("{key}:temp"), gpu.temperature); seen!(&format!("{key}:usage"), gpu.usage);
+        seen!(&format!("{key}:fan"), gpu.fan_speed); seen!(&format!("{key}:power"), gpu.power);
+        seen!(&format!("{key}:clock"), gpu.clock); seen!(&format!("{key}:voltage"), gpu.voltage);
+        seen!(&format!("{key}:memclock"), gpu.memory_clock); seen!(&format!("{key}:vramused"), gpu.vram_used); seen!(&format!("{key}:vramtotal"), gpu.vram_total);
+    }
+}
+
+pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Instant, times: &HashMap<String, Instant>, ttl: Duration) {
+
+    macro_rules! carry { ($name:expr, $field:expr, $old:expr) => { if $field.is_none() && times.get($name).map(|t| now.duration_since(*t) <= ttl).unwrap_or(false) { $field = $old; } }; }
+    carry!("cpu_usage", new.cpu_usage, old.cpu_usage); carry!("cpu_temp", new.cpu_temp, old.cpu_temp); carry!("cpu_clock", new.cpu_clock, old.cpu_clock);
+    carry!("cpu_voltage", new.cpu_voltage, old.cpu_voltage); carry!("cpu_power", new.cpu_power, old.cpu_power); carry!("cpu_fan_speed", new.cpu_fan_speed, old.cpu_fan_speed);
+    carry!("memory_usage", new.memory_usage, old.memory_usage); carry!("ssd_temp", new.ssd_temp, old.ssd_temp); carry!("game_ping", new.game_ping, old.game_ping);
+    if new.cpu_core_clocks.len() < old.cpu_core_clocks.len() { new.cpu_core_clocks.resize(old.cpu_core_clocks.len(), None); }
+    if new.cpu_core_voltages.len() < old.cpu_core_voltages.len() { new.cpu_core_voltages.resize(old.cpu_core_voltages.len(), None); }
+    for i in 0..new.cpu_core_clocks.len() { carry!(&format!("core_clock:{i}"), new.cpu_core_clocks[i], old.cpu_core_clocks.get(i).cloned().unwrap_or(None)); }
+    for i in 0..new.cpu_core_voltages.len() { carry!(&format!("core_voltage:{i}"), new.cpu_core_voltages[i], old.cpu_core_voltages.get(i).cloned().unwrap_or(None)); }
+    for gpu in &mut new.gpu_sensors {
+        let old_gpu = old.gpu_sensors.iter().find(|candidate| {
+            (!gpu.identifier.is_empty() && gpu.identifier.eq_ignore_ascii_case(&candidate.identifier)) ||
+            (gpu.identifier.is_empty() && candidate.identifier.is_empty() && gpu.name.eq_ignore_ascii_case(&candidate.name))
+        });
+        let Some(old_gpu) = old_gpu else { continue; };
+        let key = if gpu.identifier.is_empty() { format!("gpu:name:{}", gpu.name.to_ascii_lowercase()) } else { format!("gpu:id:{}", gpu.identifier.to_ascii_lowercase()) };
+        carry!(&format!("{key}:temp"), gpu.temperature, old_gpu.temperature); carry!(&format!("{key}:usage"), gpu.usage, old_gpu.usage);
+        carry!(&format!("{key}:fan"), gpu.fan_speed, old_gpu.fan_speed); carry!(&format!("{key}:power"), gpu.power, old_gpu.power);
+        carry!(&format!("{key}:clock"), gpu.clock, old_gpu.clock); carry!(&format!("{key}:voltage"), gpu.voltage, old_gpu.voltage);
+        carry!(&format!("{key}:memclock"), gpu.memory_clock, old_gpu.memory_clock); carry!(&format!("{key}:vramused"), gpu.vram_used, old_gpu.vram_used); carry!(&format!("{key}:vramtotal"), gpu.vram_total, old_gpu.vram_total);
+    }
+    // Top-level GPU fields are a projection of the selected identity's independently aged values.
+    // No timestamp or number from the previously selected GPU can enter this projection.
+    if let Some(gpu) = new.gpu_sensors.get(new.active_gpu_index) {
+        new.gpu_temp = gpu.temperature; new.gpu_usage = gpu.usage; new.gpu_fan_speed = gpu.fan_speed;
+        new.gpu_power = gpu.power; new.gpu_clock = gpu.clock; new.gpu_voltage = gpu.voltage;
+        new.gpu_memory_clock = gpu.memory_clock; new.gpu_vram_used = gpu.vram_used; new.gpu_vram_total = gpu.vram_total;
     }
 }
 
@@ -470,6 +529,31 @@ mod tests {
     fn requested_gpu_index_is_clamped() {
         let data = build_overlay_data(&sample_snapshot(), (None, None, None), None, 9);
         assert_eq!(data.active_gpu_index, 0);
+    }
+
+    #[test]
+    fn low_windows_are_not_clamped_to_unrelated_instantaneous_fps() {
+        let data = build_overlay_data(
+            &sample_snapshot(), (Some(60.0), Some(180.0), Some(120.0)), None, 0,
+        );
+        assert_eq!(data.fps_1low, Some(180.0));
+        assert_eq!(data.fps_01low, Some(120.0));
+    }
+
+    #[test]
+    fn merge_does_not_resurrect_invalidated_fps_or_low_samples() {
+        let old = build_overlay_data(
+            &sample_snapshot(), (Some(300.0), Some(250.0), Some(200.0)), None, 0,
+        );
+        let mut fresh = build_overlay_data(&sample_snapshot(), (None, None, None), None, 0);
+        for _ in 0..30 {
+            let previous = fresh.clone();
+            merge_overlay(&mut fresh, &old);
+            merge_overlay(&mut fresh, &previous);
+        }
+        assert_eq!(fresh.fps, None);
+        assert_eq!(fresh.fps_1low, None);
+        assert_eq!(fresh.fps_01low, None);
     }
 
     #[test]

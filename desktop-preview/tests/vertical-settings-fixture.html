@@ -1,0 +1,10 @@
+<!doctype html><html><head><link rel="icon" href="data:,"></head><body><div id="root"></div>
+<script type="module">
+import React from "react";
+import { createRoot } from "react-dom/client";
+import VerticalOverlayPage from "../src/pages/VerticalOverlayPage";
+import "../src/index.css";
+const root = createRoot(document.getElementById("root"));
+window.unmountOverlay = () => root.unmount();
+root.render(React.createElement(VerticalOverlayPage));
+</script></body></html>

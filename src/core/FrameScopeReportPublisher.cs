@@ -37,7 +37,8 @@ internal static class FrameScopeReportPublisher
         {
             if (!Directory.Exists(charts) && Directory.Exists(backup))
             {
-                moveDirectory(backup, charts);
+                try { moveDirectory(backup, charts); }
+                catch (Exception restore) { LogRecoveryFailure(run, restore); throw; }
             }
             throw;
         }
@@ -50,6 +51,11 @@ internal static class FrameScopeReportPublisher
 
     internal static void RecoverInterruptedPublication(string runDirectory)
     {
+        RecoverInterruptedPublicationForTests(runDirectory, Directory.Move);
+    }
+
+    internal static void RecoverInterruptedPublicationForTests(string runDirectory, Action<string, string> moveDirectory)
+    {
         string run = Path.GetFullPath(runDirectory ?? "");
         if (!Directory.Exists(run)) return;
         string charts = Path.Combine(run, "charts");
@@ -58,18 +64,35 @@ internal static class FrameScopeReportPublisher
             .ToArray();
         if (backups.Length == 0) return;
 
-        bool chartsComplete = FrameScopeReportArtifacts.Inspect(run).IsComplete;
-        string recoverableBackup = backups.FirstOrDefault(path => FrameScopeReportArtifacts.InspectGeneratedDirectory(run, path).IsComplete);
-        if (!chartsComplete && !string.IsNullOrWhiteSpace(recoverableBackup))
+        if (StructurallyValid(FrameScopeReportArtifacts.Inspect(run))) return;
+        string recoverableBackup = backups.FirstOrDefault(path => StructurallyValid(FrameScopeReportArtifacts.InspectGeneratedDirectory(run, path)));
+        if (string.IsNullOrWhiteSpace(recoverableBackup)) return;
+        string displaced = Path.Combine(run, ".framescope-report-incomplete-" + Guid.NewGuid().ToString("N"));
+        try
         {
-            DeleteDirectoryIfPresent(charts);
-            Directory.Move(recoverableBackup, charts);
+            if (Directory.Exists(charts)) moveDirectory(charts, displaced);
+            moveDirectory(recoverableBackup, charts);
         }
+        catch (Exception ex)
+        {
+            LogRecoveryFailure(run, ex);
+            if (!Directory.Exists(charts) && Directory.Exists(displaced))
+            {
+                try { moveDirectory(displaced, charts); }
+                catch (Exception restore) { LogRecoveryFailure(run, restore); }
+            }
+            throw;
+        }
+    }
 
-        foreach (string backup in backups)
-        {
-            if (Directory.Exists(backup)) DeleteDirectoryIfPresent(backup);
-        }
+    private static bool StructurallyValid(FrameScopeReportArtifactState state)
+    {
+        return state.HtmlExists && state.DataExists && state.ManifestValid && state.PathsMatchRun;
+    }
+
+    private static void LogRecoveryFailure(string run, Exception error)
+    {
+        try { File.AppendAllText(Path.Combine(run, "report-publication-recovery.log"), DateTime.UtcNow.ToString("o") + " " + error + Environment.NewLine); } catch { }
     }
 
     private static void DeleteDirectoryIfPresent(string path)

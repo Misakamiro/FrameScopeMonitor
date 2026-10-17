@@ -22,11 +22,16 @@ internal static partial class FrameScopeNativeMonitor
         catch { }
 
         Process presentMon = null;
+        Process runtimeBackup = null;
+        string runtimeBackupSession = null;
+        string runtimeBackupExecutable = null;
         Process processSampler = null;
         Process systemSampler = null;
         NativeMonitorSamplerState processSamplerState = null;
         NativeMonitorSamplerState systemSamplerState = null;
         MonitorSessionPaths paths = null;
+        FrameScopeLiveFrameStats liveFrameStats = null;
+        bool liveStatsCompleted = false;
         Dictionary<string, object> presentMonPreflight = null;
         bool verboseLogs = false;
         bool performanceDiagnosticsLogs = false;
@@ -49,11 +54,12 @@ internal static partial class FrameScopeNativeMonitor
             var enableCpuVidTelemetry = ParseBoolArgument(args, "--EnableCpuVidTelemetry", false);
             var cpuVidSampleIntervalMs = ParseIntArgument(args, "--CpuVidSampleIntervalMs", 1000);
             var cpuVidProvider = GetArgValue(args, "--CpuVidProvider", "auto");
-            var controlPollIntervalMs = ParseIntArgument(args, "--ControlPollIntervalMs", 3000);
+            var controlPollIntervalMs = ParseIntArgument(args, "--ControlPollIntervalMs", 1000);
             var targetProcessName = GetArgValue(args, "--TargetProcessName", "cs2.exe");
             var runRoot = GetArgValue(args, "--RunRoot", DefaultDataRoot);
             var runNamePrefix = GetArgValue(args, "--RunNamePrefix", GetTargetBaseName(targetProcessName));
             var requestedRunDirectory = GetArgValue(args, "--RunDirectory", "");
+            var stopRequestToken = GetArgValue(args, "--StopRequestToken", "");
             var requestedPresentMon = GetArgValue(args, "--PresentMonExe", "");
             var requestedProcessSampler = GetArgValue(args, "--ProcessSamplerExe", "");
             var requestedSystemSampler = GetArgValue(args, "--SystemSamplerExe", "");
@@ -151,6 +157,12 @@ internal static partial class FrameScopeNativeMonitor
             WriteVerboseFrameScopeLog(verboseLogs, delegate { return "monitor-session-created run=" + paths.RunDir + " target=" + presentMonProcessName + " captureMode=" + captureMode; });
             WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate { return "monitor-session-created-ms=" + sessionStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " run=" + paths.RunDir; });
 
+            if (IsMonitorStopRequested(paths.RunDir, stopRequestToken))
+            {
+                createdStatus["StoppedBeforeCapture"] = true;
+                WriteNativeMonitorStatus(paths, "done", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, createdStatus);
+                return 0;
+            }
             if (string.IsNullOrWhiteSpace(presentMonPath) || !File.Exists(presentMonPath))
             {
                 throw new InvalidOperationException("PresentMon not found. Expected portable copy under tools\\PresentMon-2.4.1-x64.exe or NVIDIA FrameView SDK PresentMon.");
@@ -190,6 +202,13 @@ internal static partial class FrameScopeNativeMonitor
             var targetWaitStopwatch = Stopwatch.StartNew();
             var targetProc = WaitForTargetProcess(targetProcessBases, waitSeconds, initialTargetPid, out selectedTarget);
             targetWaitStopwatch.Stop();
+            if (IsMonitorStopRequested(paths.RunDir, stopRequestToken))
+            {
+                DisposeProcess(targetProc);
+                waitingStatus["StoppedBeforeCapture"] = true;
+                WriteNativeMonitorStatus(paths, "done", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, waitingStatus);
+                return 0;
+            }
             WritePerformanceFrameScopeLog(performanceDiagnosticsLogs, delegate
             {
                 return "monitor-target-wait-ms=" + targetWaitStopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
@@ -227,7 +246,7 @@ internal static partial class FrameScopeNativeMonitor
                     paths.PresentMonCsv,
                     presentMonSessionName,
                     !captureUntilTargetExit,
-                    captureSeconds);
+                    captureSeconds, true);
                 presentMonCaptureMode = presentMonPlan.CaptureMode;
                 presentMonCaptureTarget = presentMonPlan.CaptureTarget;
                 presentMonArguments = JoinArguments(presentMonPlan.Arguments);
@@ -261,13 +280,30 @@ internal static partial class FrameScopeNativeMonitor
                     presentMonPath,
                     presentMonArguments,
                     Root,
-                    paths.PresentMonStdout,
+                    paths.PresentMonCsv,
                     paths.PresentMonStderr,
-                    ProcessPriorityClass.BelowNormal);
+                    ProcessPriorityClass.BelowNormal, true);
                 if (presentMon != null)
                 {
                     presentMonStartedAt = DateTime.Now;
                     presentMonRuntimeStopwatch = Stopwatch.StartNew();
+                }
+                // Keep application submissions from the beginning, so recovery
+                // does not lose the first seconds while full display tracing waits.
+                string runtimeBackupCsv = Path.Combine(paths.RunDir, "presentmon-runtime.csv");
+                string runtimeBackupError = Path.Combine(paths.RunDir, "presentmon-runtime.stderr.log");
+                runtimeBackupSession = FrameScopePresentMonSessionPolicy.CreateSessionName(prefix,
+                    Process.GetCurrentProcess().Id, Guid.NewGuid().ToString("N"));
+                runtimeBackupExecutable = presentMonPath;
+                var runtimePlan = FrameScopeCapturePlanner.CreatePresentMonPlan(targetProcessBases,
+                    targetProcessName, targetDisplayLabel, targetProc.Id, runtimeBackupCsv,
+                    runtimeBackupSession, !captureUntilTargetExit, captureSeconds, true, true);
+                string runtimeArguments = JoinArguments(runtimePlan.Arguments);
+                try {
+                    runtimeBackup = StartNativeMonitorChild(presentMonPath, runtimeArguments, Root,
+                        runtimeBackupCsv, runtimeBackupError, ProcessPriorityClass.BelowNormal, true);
+                } catch (Exception backupError) {
+                    WriteFrameScopeLog("presentmon-runtime-backup-start-failed " + backupError.Message);
                 }
 
                 processSampler = StartNativeMonitorSampler(
@@ -347,10 +383,121 @@ internal static partial class FrameScopeNativeMonitor
                 // The overlay's own snapshot stream: one hardware-samples.csv row
                 // per second so the report shows exactly what the user saw.
                 var hardwareRecorder = new FrameScopeHardwareSampleRecorder(paths.HardwareSamplesCsv);
+                liveFrameStats = new FrameScopeLiveFrameStats(paths.PresentMonCsv, true);
+                var backupStats = new FrameScopeLiveFrameStats(runtimeBackupCsv, true);
+                int runtimeRetries = 0;
+                long runtimeLastStartMs = 0;
+                DateTime runtimeStartedAt = DateTime.Now;
+                var runtimeStopwatch = Stopwatch.StartNew();
+                bool runtimeSelected = false;
+                presentMonPreflight["PresentMonProfile"] = "full";
+                Action<bool> restartRuntime = delegate(bool selected) {
+                    var previous = selected ? presentMon : runtimeBackup;
+                    string csv = selected ? paths.PresentMonCsv : runtimeBackupCsv;
+                    string session = selected ? presentMonSessionName : runtimeBackupSession;
+                    if (!ProcessExited(previous)) RequestPresentMonStopWithTargetedFallback(presentMonPath, session);
+                    StopMonitorChild(previous, 3000, true);
+                    if (!ProcessExited(previous)) throw new IOException("Runtime PresentMon writer did not stop for retry.");
+                    WaitForNativeMonitorChildOutput(previous, 5000);
+                    CleanupOwnedPresentMonSessionIfPresent(presentMonPath, session);
+                    DisposeNativeMonitorChild(previous);
+                    runtimeRetries++;
+                    string retryError = Path.Combine(paths.RunDir, "presentmon-runtime-retry-" + runtimeRetries + ".stderr.log");
+                    session = FrameScopePresentMonSessionPolicy.CreateSessionName(prefix,
+                        Process.GetCurrentProcess().Id, Guid.NewGuid().ToString("N"));
+                    int remainingSeconds = captureUntilTargetExit ? 0 : Math.Max(1, (int)Math.Ceiling((captureDeadline - DateTime.Now).TotalSeconds));
+                    runtimePlan = FrameScopeCapturePlanner.CreatePresentMonPlan(targetProcessBases,
+                        targetProcessName, targetDisplayLabel, targetProc.Id, csv,
+                        session, !captureUntilTargetExit, remainingSeconds, true, true);
+                    runtimeArguments = JoinArguments(runtimePlan.Arguments);
+                    // Same v1 schema, append after the old writer drains. Never
+                    // truncate frames already recorded for the final report.
+                    var replacement = StartNativeMonitorChild(presentMonPath, runtimeArguments, Root,
+                        csv, retryError, ProcessPriorityClass.BelowNormal, true, true);
+                    runtimeLastStartMs = captureLoopStopwatch.ElapsedMilliseconds;
+                    runtimeStartedAt = DateTime.Now;
+                    runtimeStopwatch = Stopwatch.StartNew();
+                    if (selected) {
+                        presentMon = replacement;
+                        presentMonSessionName = session;
+                        presentMonArguments = runtimeArguments;
+                        presentMonExitCode = null;
+                        presentMonExitedEarly = false;
+                        presentMonExitedAt = null;
+                        presentMonRuntimeMs = null;
+                        presentMonStartedAt = runtimeStartedAt;
+                        presentMonRuntimeStopwatch = runtimeStopwatch;
+                    } else {
+                        runtimeBackup = replacement;
+                        runtimeBackupSession = session;
+                    }
+                    runtimeBackupError = retryError;
+                    presentMonPreflight["PresentMonRuntimeRetries"] = runtimeRetries;
+                    presentMonPreflight["PresentMonRuntimeStderr"] = retryError;
+                    WriteFrameScopeLog("presentmon-runtime-retry attempt=" + runtimeRetries + " selected=" + selected);
+                };
+                Action<bool> selectCapture = delegate(bool final) {
+                    if (!final && runtimeRetries < 2) {
+                        bool exited = runtimeSelected ? ProcessExited(presentMon) : runtimeBackup == null || ProcessExited(runtimeBackup);
+                        bool empty = !runtimeSelected && !backupStats.HasFrames && !liveFrameStats.HasFrames;
+                        long delay = exited ? 3000 : 10000;
+                        if ((exited || empty) && captureLoopStopwatch.ElapsedMilliseconds - runtimeLastStartMs >= delay
+                            && IsAnyTargetProcessRunning(targetProcessBases)) {
+                            restartRuntime(runtimeSelected);
+                            return;
+                        }
+                    }
+                    if (runtimeBackup == null) return;
+                    // Observe the backup continuously, including while full
+                    // tracing works, so freshness never comes from old file rows.
+                    var backup = backupStats.Poll(final);
+                    if (final ? liveFrameStats.HasFrames : !FrameScopeCapturePlanner.ShouldRecoverStalledCapture(
+                        captureLoopStopwatch.ElapsedMilliseconds, liveFrameStats.SourceAgeMilliseconds, runtimeSelected)) return;
+                    if (backup.Error != null || !backup.CaughtUp || !backupStats.HasFrames) return;
+                    if (!final && (backup.Count == 0 || !backupStats.SourceAgeMilliseconds.HasValue
+                        || backupStats.SourceAgeMilliseconds.Value >= 2000 || ProcessExited(runtimeBackup))) return;
+                    string recoveryReason = liveFrameStats.HasFrames ? "full-trace-stalled" : "full-trace-produced-no-frames";
+                    // Stop/drain the old writer before renaming. The backup
+                    // writer explicitly shares DELETE and keeps its file handle.
+                    if (!ProcessExited(presentMon)) RequestPresentMonStopWithTargetedFallback(presentMonPath, presentMonSessionName);
+                    StopMonitorChild(presentMon, 3000, true);
+                    if (!ProcessExited(presentMon)) throw new IOException("Full PresentMon writer did not stop for recovery.");
+                    WaitForNativeMonitorChildOutput(presentMon, 5000);
+                    CleanupOwnedPresentMonSessionIfPresent(presentMonPath, presentMonSessionName);
+                    presentMonPreflight["PresentMonFullTraceExitCode"] = presentMon.ExitCode;
+                    presentMonPreflight["PresentMonFullTraceArgs"] = presentMonArguments;
+                    if (File.Exists(paths.PresentMonCsv)) File.Move(paths.PresentMonCsv, Path.Combine(paths.RunDir, "presentmon-full-attempt.csv"));
+                    if (File.Exists(paths.PresentMonStderr)) File.Move(paths.PresentMonStderr, Path.Combine(paths.RunDir, "presentmon-full-attempt.stderr.log"));
+                    File.Move(runtimeBackupCsv, paths.PresentMonCsv);
+                    DisposeNativeMonitorChild(presentMon);
+                    presentMon = runtimeBackup;
+                    runtimeBackup = null;
+                    presentMonSessionName = runtimeBackupSession;
+                    // The redirected error writer retains its original path.
+                    presentMonPreflight["PresentMonRuntimeStderr"] = runtimeBackupError;
+                    presentMonArguments = runtimeArguments;
+                    presentMonExitCode = null;
+                    presentMonExitedEarly = false;
+                    presentMonExitedAt = null;
+                    presentMonRuntimeMs = null;
+                    presentMonStartedAt = runtimeStartedAt;
+                    presentMonRuntimeStopwatch = runtimeStopwatch;
+                    runtimeSelected = true;
+                    presentMonPreflight["PresentMonProfile"] = "application-present-v1";
+                    presentMonPreflight["PresentMonRecoveryReason"] = recoveryReason;
+                    presentMonPreflight["PresentMonDisplayTimingAvailable"] = false;
+                    backupStats.Relocate(paths.PresentMonCsv);
+                    liveFrameStats = backupStats;
+                    WriteFrameScopeLog("presentmon-recovered-application-submissions session=" + presentMonSessionName);
+                };
+                var lastLiveStats = DateTime.MinValue;
                 hardwareRecorder.Start();
 
                 while (true)
                 {
+                    // Leave through the existing sampler/PresentMon flush path,
+                    // never terminate the worker to acknowledge a UI stop.
+                    if (IsMonitorStopRequested(paths.RunDir, stopRequestToken)) break;
                     RecordNativeMonitorSamplerExit(processSamplerState, true);
                     RecordNativeMonitorSamplerExit(systemSamplerState, true);
                     var selectedPidExitedAtIterationStart = selectedPidExited;
@@ -388,6 +535,15 @@ internal static partial class FrameScopeNativeMonitor
                     }
 
                     var now = DateTime.Now;
+                    // Read between publications too, so a bounded parser slice
+                    // can catch up without waiting another full second.
+                    liveFrameStats.ReadAvailable();
+                    if ((now - lastLiveStats).TotalSeconds >= 1) {
+                        selectCapture(false);
+                        liveFrameStats.Publish(paths.RunDir, Process.GetCurrentProcess().Id,
+                            presentMonExitedEarly || File.Exists(paths.PresentMonCsv + ".capture-error.txt") ? "unavailable" : "capturing", false);
+                        lastLiveStats = now;
+                    }
                     if ((now - lastStatusWrite).TotalSeconds >= 10)
                     {
                         var capturingStatus = new Dictionary<string, object>
@@ -408,17 +564,19 @@ internal static partial class FrameScopeNativeMonitor
                             { "HardwareSampleRows", hardwareRecorder.RowsWritten },
                             { "HardwareSampleLastError", hardwareRecorder.LastError ?? "" }
                         };
-                        AddDictionary(capturingStatus, BuildNativeMonitorSamplerDiagnostics(processSamplerState, systemSamplerState));
+                        AddDictionary(capturingStatus, BuildNativeMonitorSamplerDiagnostics(processSamplerState, systemSamplerState, false));
                         AddDictionary(capturingStatus, presentMonPreflight);
                         WriteNativeMonitorStatus(paths, "capturing", presentMonProcessName, captureMode, sampleIntervalMs, processSampleIntervalMs, slowSampleIntervalMs, controlPollIntervalMs, presentMonPath, processSamplerPath, systemSamplerPath, capturingStatus);
                         lastStatusWrite = now;
                     }
 
                     sampleIndex++;
-                    var remainingMs = controlPollIntervalMs;
+                    // Live FPS/Low expires after 3s; publication must not wait
+                    // for a configured 3s control interval plus its I/O jitter.
+                    var remainingMs = Math.Min(controlPollIntervalMs, 1000);
                     if (!captureUntilTargetExit)
                     {
-                        remainingMs = Math.Max(1, Math.Min(controlPollIntervalMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
+                        remainingMs = Math.Max(1, Math.Min(remainingMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
                     }
 
                     if (!selectedPidExited)
@@ -457,7 +615,7 @@ internal static partial class FrameScopeNativeMonitor
                             : remainingMs;
                         if (!captureUntilTargetExit)
                         {
-                            aliasWaitMs = Math.Max(1, Math.Min(controlPollIntervalMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
+                            aliasWaitMs = Math.Max(1, Math.Min(remainingMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
                         }
                         Thread.Sleep(aliasWaitMs);
                     }
@@ -491,6 +649,8 @@ internal static partial class FrameScopeNativeMonitor
                 try { if (File.Exists(paths.SamplerStopPath)) File.Delete(paths.SamplerStopPath); }
                 catch { }
 
+                liveFrameStats.Poll(false);
+                selectCapture(true);
                 if (presentMon != null && !ProcessExited(presentMon))
                 {
                     targetRunningAtPresentMonExitCheck = IsAnyTargetProcessRunning(targetProcessBases);
@@ -527,9 +687,13 @@ internal static partial class FrameScopeNativeMonitor
                 {
                     presentMonRuntimeMs = presentMonRuntimeStopwatch.ElapsedMilliseconds;
                 }
+                if (runtimeSelected && File.Exists(runtimeBackupError))
+                    File.Copy(runtimeBackupError, paths.PresentMonStderr, true);
                 if (!presentMonExitCode.HasValue && File.Exists(paths.PresentMonCsv)) presentMonExitCode = 0;
                 CleanupOwnedPresentMonSessionIfPresent(presentMonPath, presentMonSessionName);
                 long presentMonCsvPostExitWaitMs = WaitForPresentMonCsvFlush(paths.PresentMonCsv, 2000);
+                liveFrameStats.Publish(paths.RunDir, Process.GetCurrentProcess().Id, "completed", true);
+                liveStatsCompleted = true;
 
                 var endTime = DateTime.Now;
                 var reportHtml = Path.Combine(paths.RunDir, "charts", "framescope-interactive-report.html");
@@ -680,6 +844,15 @@ internal static partial class FrameScopeNativeMonitor
         }
         finally
         {
+            if (runtimeBackup != null) {
+                if (!ProcessExited(runtimeBackup)) RequestPresentMonStopWithTargetedFallback(runtimeBackupExecutable, runtimeBackupSession);
+                StopMonitorChild(runtimeBackup, 3000, true);
+                DisposeNativeMonitorChild(runtimeBackup);
+            }
+            if (!liveStatsCompleted && liveFrameStats != null && paths != null) {
+                try { liveFrameStats.Publish(paths.RunDir, Process.GetCurrentProcess().Id, "unavailable", false); }
+                catch (IOException) { }
+            }
             DisposeNativeMonitorChild(processSampler);
             DisposeNativeMonitorChild(systemSampler);
             DisposeNativeMonitorChild(presentMon);

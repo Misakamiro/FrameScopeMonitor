@@ -27,6 +27,9 @@ internal static class FrameScopeHardwareServiceClient
     {
         try
         {
+            using (var lease = MaintenanceLease.TryAcquire(AppDomain.CurrentDomain.BaseDirectory, ReadTimeoutMs))
+            {
+            if (lease == null) return null;
             var line = Exchange("{\"id\":\"" + Interlocked.Increment(ref _requestSequence).ToString(CultureInfo.InvariantCulture) + "\",\"method\":\"get_overlay_data\",\"params\":{}}");
             if (string.IsNullOrWhiteSpace(line)) return null;
             var serializer = new JavaScriptSerializer();
@@ -34,6 +37,7 @@ internal static class FrameScopeHardwareServiceClient
             if (response == null || !response.ContainsKey("ok") || !Convert.ToBoolean(response["ok"], CultureInfo.InvariantCulture)) return null;
             var result = response.ContainsKey("result") ? response["result"] as Dictionary<string, object> : null;
             return result == null ? null : serializer.Serialize(result);
+            }
         }
         catch
         {
@@ -85,6 +89,9 @@ internal static class FrameScopeHardwareServiceClient
 
     public static void EnsureServiceRunning()
     {
+        using (var lease = MaintenanceLease.TryAcquire(AppDomain.CurrentDomain.BaseDirectory))
+        {
+        if (lease == null) return;
         // Throttle spawn attempts: when the service exe is broken/blocked the
         // old code spawned a doomed process every second (per sampler tick).
         if ((DateTime.UtcNow - lastSpawnAttemptUtc).TotalSeconds < 5) return;
@@ -114,6 +121,76 @@ internal static class FrameScopeHardwareServiceClient
             using (Process.Start(start)) { }
         }
         catch { }
+        }
+    }
+
+    internal sealed class MaintenanceLease : IDisposable
+    {
+        private Mutex mutex;
+        private MaintenanceLease(Mutex acquired) { mutex = acquired; }
+
+        internal static string Name(string root)
+        {
+            var normalized = CanonicalRoot(root).TrimEnd('\\', '/').Replace('/', '\\');
+            if (normalized.StartsWith(@"\\?\", StringComparison.Ordinal)) normalized = normalized.Substring(4);
+            normalized = InvariantUppercase(normalized);
+            using (var hash = System.Security.Cryptography.SHA256.Create())
+                return @"Local\FrameScopeHardwareMaintenance-" + BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(normalized))).Replace("-", "");
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern int LCMapStringEx(string locale, uint flags, string source, int sourceLength, char[] destination, int destinationLength, IntPtr version, IntPtr reserved, IntPtr sortHandle);
+
+        private static string InvariantUppercase(string value)
+        {
+            const uint Uppercase = 0x00000200;
+            var size = LCMapStringEx("", Uppercase, value, value.Length, null, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            if (size == 0) throw new IOException("Cannot normalize hardware installation root");
+            var mapped = new char[size];
+            if (LCMapStringEx("", Uppercase, value, value.Length, mapped, mapped.Length, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) != size)
+                throw new IOException("Cannot normalize hardware installation root");
+            return new string(mapped);
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle handle, StringBuilder name, uint length, uint flags);
+
+        private static string CanonicalRoot(string root)
+        {
+            using (var directory = CreateFile(Path.GetFullPath(root), 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+            {
+                if (directory.IsInvalid) throw new IOException("Cannot resolve hardware installation root");
+                var path = new StringBuilder(32768);
+                var size = GetFinalPathNameByHandle(directory, path, (uint)path.Capacity, 0);
+                if (size == 0 || size >= path.Capacity) throw new IOException("Cannot resolve hardware installation root");
+                return path.ToString();
+            }
+        }
+
+        internal static MaintenanceLease TryAcquire(string root, int timeoutMs = 0)
+        {
+            Mutex gate;
+            try { gate = new Mutex(false, Name(root)); }
+            catch { return null; }
+            var acquired = false;
+            try
+            {
+                try { acquired = gate.WaitOne(timeoutMs); }
+                catch (AbandonedMutexException) { acquired = true; }
+                return acquired ? new MaintenanceLease(gate) : null;
+            }
+            finally { if (!acquired) gate.Dispose(); }
+        }
+
+        public void Dispose()
+        {
+            if (mutex == null) return;
+            mutex.ReleaseMutex();
+            mutex.Dispose();
+            mutex = null;
+        }
     }
 
     private static string QuoteArgument(string value)
@@ -138,7 +215,7 @@ internal sealed class FrameScopeHardwareSampleRecorder
         // Fps is the resident ETW FPS session's value from the same overlay
         // snapshot. It lets the report still build a full FPS series when an
         // anti-cheat denies PresentMon's own ETW trace (Battlefield 6).
-        "Fps"
+        "Fps", "CpuCoreVoltages"
     };
 
     private readonly string _csvPath;
@@ -235,7 +312,8 @@ internal sealed class FrameScopeHardwareSampleRecorder
             Text(data, "memory_usage"),
             Text(data, "ssd_temp"),
             Text(data, "game_ping"),
-            Text(data, "fps")
+            Text(data, "fps"),
+            CoreVoltages(data)
         };
         try
         {
@@ -255,6 +333,18 @@ internal sealed class FrameScopeHardwareSampleRecorder
         if (data == null || !data.TryGetValue(key, out value) || value == null) return "";
         var text = Convert.ToString(value, CultureInfo.InvariantCulture);
         return text == null ? "" : text.Replace(",", "");
+    }
+
+    private static string CoreVoltages(Dictionary<string, object> data)
+    {
+        object value;
+        if (!data.TryGetValue("cpu_core_voltages", out value)) return "";
+        var cores = value as System.Collections.IEnumerable;
+        if (cores == null || value is string) return "";
+        var values = new List<string>();
+        foreach (object core in cores)
+            values.Add(core == null ? "" : Convert.ToString(core, CultureInfo.InvariantCulture));
+        return string.Join(";", values);
     }
 
     private static string GibToMib(string gibText)

@@ -2,10 +2,61 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
+using System.Runtime.InteropServices;
 
 public static class FrameScopeConfigStore
 {
+    public static IDisposable AcquireMutationLock(string path)
+    {
+        string full = Path.GetFullPath(path ?? "");
+        string parent = Path.GetDirectoryName(full);
+        Directory.CreateDirectory(parent);
+        string normalized;
+        using (var directory = CreateFile(parent, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero))
+        {
+            if (directory.IsInvalid) throw new IOException("Cannot resolve configuration directory.");
+            var buffer = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandle(directory, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0 || length >= buffer.Capacity) throw new IOException("Cannot resolve configuration directory.");
+            normalized = buffer.ToString();
+        }
+        if (normalized.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) normalized = @"\\" + normalized.Substring(8);
+        else if (normalized.StartsWith(@"\\?\", StringComparison.Ordinal)) normalized = normalized.Substring(4);
+        normalized = Path.Combine(normalized, Path.GetFileName(full)).Replace('/', '\\');
+        int size = LCMapStringEx("", 0x200, normalized, normalized.Length, null, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+        if (size == 0) throw new IOException("Cannot normalize configuration path.");
+        var mapped = new char[size];
+        if (LCMapStringEx("", 0x200, normalized, normalized.Length, mapped, size, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) != size)
+            throw new IOException("Cannot normalize configuration path.");
+        normalized = new string(mapped);
+        byte[] digest;
+        using (SHA256 sha = SHA256.Create()) digest = sha.ComputeHash(Encoding.UTF8.GetBytes(normalized));
+        Mutex mutex = new Mutex(false, "Local\\FrameScopeConfig-" + BitConverter.ToString(digest).Replace("-", ""));
+        bool acquired = false;
+        try { acquired = mutex.WaitOne(TimeSpan.FromSeconds(30)); }
+        catch (AbandonedMutexException) { acquired = true; /* The previous writer died; ownership is transferred to this writer. */ }
+        catch { mutex.Dispose(); throw; }
+        if (!acquired) { mutex.Dispose(); throw new IOException("Timed out waiting for the configuration file lock."); }
+        return new MutationLock(mutex);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle handle, StringBuilder path, uint size, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern int LCMapStringEx(string locale, uint flags, string source, int sourceLength, char[] destination, int destinationLength, IntPtr version, IntPtr reserved, IntPtr sortHandle);
+
+    private sealed class MutationLock : IDisposable
+    {
+        private Mutex mutex;
+        internal MutationLock(Mutex value) { mutex = value; }
+        public void Dispose() { if (mutex == null) return; try { mutex.ReleaseMutex(); } finally { mutex.Dispose(); mutex = null; } }
+    }
     public const string NativeMonitorMode = "native-csharp";
     public const int InternalPollIntervalMs = 1000;
     public const int PollIntervalMinMs = 250;
@@ -49,6 +100,7 @@ public static class FrameScopeConfigStore
             MonitorScript = NativeMonitorMode,
             ThemeMode = "system",
             CloseWindowBehavior = "minimize-to-tray",
+            OverlayHotkey = "Shift+F10",
             TrayEnabled = true,
             CpuTelemetry = new FrameScopeCpuTelemetryConfig(),
             Targets = new List<FrameScopeTarget>
@@ -69,6 +121,8 @@ public static class FrameScopeConfigStore
     public static FrameScopeConfig Load(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Config path is empty.", "path");
+        using (AcquireMutationLock(path))
+        {
         if (!File.Exists(path))
         {
             FrameScopeConfig created = CreateDefaultConfig();
@@ -78,7 +132,7 @@ public static class FrameScopeConfigStore
 
         try
         {
-            FrameScopeConfig config = Json.Deserialize<FrameScopeConfig>(File.ReadAllText(path));
+            FrameScopeConfig config = Deserialize(File.ReadAllText(path));
             Normalize(config);
             return config;
         }
@@ -86,15 +140,52 @@ public static class FrameScopeConfigStore
         {
             return CreateDefaultConfig();
         }
+        }
     }
 
     public static void Save(string path, FrameScopeConfig config)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Config path is empty.", "path");
+        using (AcquireMutationLock(path))
+        {
         Normalize(config);
         string dir = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
         FrameScopeJsonFile.Write(path, Json.Serialize(config));
+        }
+    }
+
+    public static FrameScopeConfig Deserialize(string text)
+    {
+        // JSON has one number type; other writers may encode an integer as 1000.0.
+        return Json.ConvertToType<FrameScopeConfig>(NormalizeIntegralJsonNumbers(Json.DeserializeObject(text)));
+    }
+
+    private static object NormalizeIntegralJsonNumbers(object value)
+    {
+        if (value is decimal)
+        {
+            decimal number = (decimal)value;
+            if (number >= int.MinValue && number <= int.MaxValue && decimal.Truncate(number) == number)
+                return decimal.ToInt32(number);
+        }
+        else if (value is double)
+        {
+            double number = Convert.ToDouble(value);
+            if (number >= int.MinValue && number <= int.MaxValue && Math.Truncate(number) == number)
+                return Convert.ToInt32(value);
+        }
+        var map = value as Dictionary<string, object>;
+        if (map != null)
+        {
+            foreach (string key in map.Keys.ToArray()) map[key] = NormalizeIntegralJsonNumbers(map[key]);
+        }
+        var items = value as object[];
+        if (items != null)
+        {
+            for (int i = 0; i < items.Length; i++) items[i] = NormalizeIntegralJsonNumbers(items[i]);
+        }
+        return value;
     }
 
     public static void Normalize(FrameScopeConfig config)
@@ -121,6 +212,7 @@ public static class FrameScopeConfigStore
         // "ask" is a UI-only-but-legitimate value: the frontend close-confirm
         // dialog writes it and the Tauri host honors it on CloseRequested.
         config.CloseWindowBehavior = NormalizeChoice(config.CloseWindowBehavior, "minimize-to-tray", "exit", "minimize-to-tray", "ask");
+        config.OverlayHotkey = string.IsNullOrWhiteSpace(config.OverlayHotkey) ? "Shift+F10" : config.OverlayHotkey.Trim();
         NormalizeCpuTelemetry(config);
         foreach (FrameScopeTarget target in config.Targets)
         {
@@ -169,6 +261,9 @@ public static class FrameScopeConfigStore
             TelemetrySampleIntervalMs = existing.TelemetrySampleIntervalMs,
             DataRoot = (dataRoot ?? "").Trim(),
             OpenReportOnComplete = openReportOnComplete,
+            AutoStartMonitoring = existing.AutoStartMonitoring,
+            AutoStartOverlay = existing.AutoStartOverlay,
+            StartMinimized = existing.StartMinimized,
             EnableVerboseLogs = existing.EnableVerboseLogs,
             EnablePerformanceDiagnosticsLogs = existing.EnablePerformanceDiagnosticsLogs,
             AutoGenerateDiagnosticReport = existing.AutoGenerateDiagnosticReport,
@@ -177,6 +272,7 @@ public static class FrameScopeConfigStore
             MonitorScript = NativeMonitorMode,
             ThemeMode = existing.ThemeMode,
             CloseWindowBehavior = existing.CloseWindowBehavior,
+            OverlayHotkey = existing.OverlayHotkey,
             TrayEnabled = existing.TrayEnabled,
             CpuTelemetry = CloneCpuTelemetry(existing.CpuTelemetry),
             Targets = targets
@@ -309,6 +405,9 @@ public sealed class FrameScopeConfig
         TelemetrySampleIntervalMs = FrameScopeConfigStore.DefaultTelemetrySampleIntervalMs;
         DataRoot = "";
         OpenReportOnComplete = true;
+        AutoStartMonitoring = true;
+        AutoStartOverlay = false;
+        StartMinimized = false;
         EnableVerboseLogs = false;
         EnablePerformanceDiagnosticsLogs = false;
         AutoGenerateDiagnosticReport = false;
@@ -317,6 +416,7 @@ public sealed class FrameScopeConfig
         MonitorScript = "";
         ThemeMode = "system";
         CloseWindowBehavior = "minimize-to-tray";
+        OverlayHotkey = "Shift+F10";
         TrayEnabled = true;
         CpuTelemetry = new FrameScopeCpuTelemetryConfig();
         Targets = new List<FrameScopeTarget>();
@@ -326,6 +426,9 @@ public sealed class FrameScopeConfig
     public int TelemetrySampleIntervalMs { get; set; }
     public string DataRoot { get; set; }
     public bool OpenReportOnComplete { get; set; }
+    public bool AutoStartMonitoring { get; set; }
+    public bool AutoStartOverlay { get; set; }
+    public bool StartMinimized { get; set; }
     public bool EnableVerboseLogs { get; set; }
     public bool EnablePerformanceDiagnosticsLogs { get; set; }
     public bool AutoGenerateDiagnosticReport { get; set; }
@@ -334,6 +437,7 @@ public sealed class FrameScopeConfig
     public string MonitorScript { get; set; }
     public string ThemeMode { get; set; }
     public string CloseWindowBehavior { get; set; }
+    public string OverlayHotkey { get; set; }
     public bool TrayEnabled { get; set; }
     public FrameScopeCpuTelemetryConfig CpuTelemetry { get; set; }
     public List<FrameScopeTarget> Targets { get; set; }

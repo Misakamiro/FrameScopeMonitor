@@ -23,6 +23,7 @@ export function TitleBar() {
   const logoSrc = "/logo/framescope.png";
 
   const [showCloseDialog, setShowCloseDialog] = useState(false);
+  const [exitError, setExitError] = useState<string | null>(null);
   const [searchBarVisible, setSearchBarVisible] = useState(true);
   const [navPosition, setNavPosition] = useState<"left" | "top">("left");
   const [isMaximized, setIsMaximized] = useState(false);
@@ -37,6 +38,16 @@ export function TitleBar() {
     return () => {
       window.removeEventListener("immersive-page-fullscreen", handler as EventListener);
     };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("app-exit-failed", event => {
+      setExitError(event.payload);
+      setShowCloseDialog(true);
+    }).then(fn => { if (cancelled) fn(); else unlisten = fn; }).catch(console.error);
+    return () => { cancelled = true; unlisten?.(); };
   }, []);
 
   useEffect(() => {
@@ -207,9 +218,13 @@ export function TitleBar() {
       closeBehaviorRef.current = "close";
     }
     try {
+      setExitError(null);
       await invoke("exit_app");
     } catch (error) {
       console.error("Failed to exit app:", error);
+      setExitError(`退出失败：${String(error)}`);
+      setShowCloseDialog(true);
+      return;
     }
     setShowCloseDialog(false);
   };
@@ -302,6 +317,7 @@ export function TitleBar() {
       </Box>
 
       <CloseConfirmDialog
+        exitError={exitError}
         isOpen={showCloseDialog}
         onClose={() => setShowCloseDialog(false)}
         onCloseApp={(savePreference) => performClose(savePreference)}

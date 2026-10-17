@@ -22,6 +22,8 @@ kernel32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uin
 kernel32.ReadFile.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
 kernel32.WriteFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
 kernel32.SetNamedPipeHandleState.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p, ctypes.c_void_p]
+kernel32.QueryPerformanceCounter.argtypes = [ctypes.POINTER(ctypes.c_int64)]
+kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 
 PIPE_NAME = r"\\.\pipe\FrameScopeHardwareService"
 
@@ -58,6 +60,8 @@ def main():
         seq += 1
         try:
             resp = request(h, "get_overlay_data", {}, str(seq))
+            qpc = ctypes.c_int64()
+            kernel32.QueryPerformanceCounter(ctypes.byref(qpc))
             result = resp.get("result") or {}
             rows.append([
                 round(time.time() - t0, 2),
@@ -65,13 +69,16 @@ def main():
                 result.get("fps_1low"),
                 result.get("fps_01low"),
                 result.get("present_mode"),
+                qpc.value,
             ])
         except OSError as e:
-            rows.append([round(time.time() - t0, 2), "ERR", str(e), "", ""])
+            rows.append([round(time.time() - t0, 2), "ERR", str(e), "", "", ""])
+            kernel32.CloseHandle(h)
             h = connect()
         time.sleep(0.2)
+    kernel32.CloseHandle(h)
     writer = csv.writer(sys.stdout)
-    writer.writerow(["t", "fps", "fps_1low", "fps_01low", "present_mode"])
+    writer.writerow(["t", "fps", "fps_1low", "fps_01low", "present_mode", "qpc"])
     writer.writerows(rows)
     fps_vals = [r[1] for r in rows if isinstance(r[1], (int, float))]
     if fps_vals:

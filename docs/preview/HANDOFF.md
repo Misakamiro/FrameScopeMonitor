@@ -1,5 +1,9 @@
 # FrameScope · 交接文档
 
+> **本会话最新完成交接入口**：[HANDOFF-CURRENT-COMPLETED.md](C:/Users/misakamiro/Documents/FrameScopeMonitor-Rebuild/docs/preview/HANDOFF-CURRENT-COMPLETED.md)。先读此入口了解当前实验版、最终方案、部署哈希、验证边界及回滚。下方 Round 7/8 与其他中途状态保留为历史，不能直接当作当前待办执行。
+
+> **验证状态更正**：下方 Round 7/8 完成描述属于历史记录，不代表五个用户问题已通过验收。请先读 `HANDOFF-SESSION-20260914-ROUND8-FIVE-ISSUES-UNVERIFIED.md`，再读本轮 `REPAIR-AUDIT-20260918.md`；源码修复、自动化通过、浏览器证据与用户实机验收分别记录。
+
 > 交接日期:2026-09-14　|　交接人:ZCode　|　状态:**Round 8 完成(用户实测五问题复盘,f87b7f0)——200封顶=C9合成节流口径(非bug,读数=上屏率)、low跨窗口倒挂已钳制、闪烁=page-animating跳变已除、圆角=::before结构裁剪已改、独占提示已加;Round 7 完成——六问题三批实施(批1 FPS 采集链重写+OSD 周期置顶 / 批2 报告进度语义+玻璃模式契约 / 批3 合成层圆角 AA+淡化闪烁),三笔提交 616b049+c8d2f09+a82e8ec,未 push;游戏内实机验证(不封顶/阶跃响应/反作弊供数)与两项用户拍板项待做**;分析依据 docs/audit/2026-09-14-issue-analysis.md,实施指南 HANDOFF-SESSION-20260914-SIX-ISSUES-READY-TO-IMPLEMENT.md;Round 6/5/4 继续有效
 
 ---

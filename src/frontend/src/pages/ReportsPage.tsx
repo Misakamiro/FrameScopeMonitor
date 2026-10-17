@@ -551,6 +551,9 @@ function reportStatusTone(report: ReportListItem) {
 }
 
 function reportStatusLabel(report: ReportListItem) {
+  if (report.artifactStatus === "legacy-readable") return "历史兼容，建议重新生成";
+  if (report.artifactStatus === "inputs-changed") return "输入已变化，需重新生成";
+  if (report.artifactStatus === "incomplete") return "产物不完整";
   switch (report.reportKind) {
     case "full":
       return report.hasFrameData ? "完整" : "可查看";

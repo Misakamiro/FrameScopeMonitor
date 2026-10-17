@@ -17,6 +17,12 @@ pub fn take_position_changed() -> bool {
     POSITION_CHANGED.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 static OVERLAY_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
+#[cfg(feature = "uiaccess-acceptance")]
+static RENDER_DIAGNOSTICS: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+#[cfg(feature = "uiaccess-acceptance")]
+pub fn render_diagnostics() -> serde_json::Value {
+    RENDER_DIAGNOSTICS.lock().unwrap_or_else(|p|p.into_inner()).clone().unwrap_or(serde_json::Value::Null)
+}
 
 fn get_net_offset_ms() -> Option<i64> {
     CURRENT_HARDWARE_DATA.lock().unwrap().as_ref().and_then(|d| d.net_time_offset_ms)
@@ -169,8 +175,10 @@ pub struct GpuSensorData {
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayHardwareData {
     fps: Option<u32>,
-    fps_1low: Option<u32>,
-    fps_01low: Option<u32>,
+    // Low metrics are fractional FPS values. Keeping them as integers here
+    // silently truncated the service result before it reached the native OSD.
+    fps_1low: Option<f64>,
+    fps_01low: Option<f64>,
     cpu_usage: Option<u16>,
     cpu_temp: Option<f64>,
     cpu_clock: Option<u32>,
@@ -336,6 +344,11 @@ pub fn get_or_init_settings() -> OverlaySettings {
 
 #[cfg(target_os = "windows")]
 mod win32 {
+    #[cfg(test)]
+    mod tests {
+        include!("overlay_panel_tests.rs");
+    }
+
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::Graphics::GdiPlus::*;
@@ -348,6 +361,7 @@ mod win32 {
 
     static GDIPLUS_TOKEN: Mutex<Option<usize>> = Mutex::new(None);
     static FONT_PATH: Mutex<Option<String>> = Mutex::new(None);
+    static IN_SIZE_MOVE: super::AtomicBool = super::AtomicBool::new(false);
 
     fn find_misans_font_path() -> Option<PathBuf> {
         let font_name = "MiSansVF.ttf";
@@ -445,82 +459,42 @@ mod win32 {
         }
     }
 
-    fn calculate_window_width(settings: &super::OverlaySettings) -> i32 {
-        // 使用可配置的单项宽度
-        let normal_item_width = settings.item_width as i32;
-        // 默认密码项宽度（逻辑像素）
-        let mut password_item_width = 220;
-        if settings.display_items.iter().any(|item| item.id == "delta_password" && item.enabled) {
-            if let Ok(lock) = super::CURRENT_HARDWARE_DATA.lock() {
-                if let Some(ref data) = *lock {
-                    if let Some(ref pwd) = data.delta_password {
-                        unsafe {
-                            // 使用屏幕 DC 和字体测量文本宽度，按 DPI 缩放
-                            let screen_dc = GetDC(ptr::null_mut());
-                            if !screen_dc.is_null() {
-                                let dpi_x = GetDeviceCaps(screen_dc, 88);
-                                let dpi_scale = dpi_x as f32 / 96.0;
-                                let hfont = create_compatible_font(dpi_scale, &settings.font, settings.font_size);
-                                if !hfont.is_null() {
-                                    let val_w = measure_text_width(screen_dc, hfont, pwd);
-                                    let est = val_w + (12.0 * dpi_scale) as i32 + 20;
-                                                if est > password_item_width {
-                                                    password_item_width = est;
-                                                }
-                                    DeleteObject(hfont as _);
-                                }
-                                ReleaseDC(ptr::null_mut(), screen_dc);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut width = 0i32;
-        let mut enabled_count = 0i32;
-        for item in &settings.display_items {
-            if item.enabled {
-                enabled_count += 1;
-                match item.id.as_str() {
-                    "delta_password" => { width += password_item_width; }
-                    _ => { width += normal_item_width; }
-                }
-            }
-        }
-
-        // 自定义项宽度（各 150px 基础宽度）
-        let custom_item_width = 150;
-        let mut custom_count = 0i32;
-        for custom in &settings.custom_items {
-            if custom.enabled && !custom.text.is_empty() {
-                width += custom_item_width;
-                custom_count += 1;
-            }
-        }
-
-        if width == 0 { return 200; }
-        enabled_count += custom_count;
-        let sep_count = if enabled_count > 1 { enabled_count - 1 } else { 0 };
-        width + 32 + sep_count * 16
-    }
-
-    /// 指定屏幕坐标点所在显示器的像素宽度（MonitorFromPoint + GetMonitorInfoW）。
-    /// 取不到时返回 None，调用方回退主屏宽度（SM_CXSCREEN）。
-    unsafe fn monitor_width_at(x: f32, y: f32) -> Option<i32> {
+    unsafe fn monitor_work_area(settings: &super::OverlaySettings) -> RECT {
         let hmon = MonitorFromPoint(
-            POINT { x: x as i32, y: y as i32 },
+            POINT { x: settings.position_x.unwrap_or(0), y: settings.position_y.unwrap_or(0) },
             MONITOR_DEFAULTTONEAREST,
         );
-        if hmon.is_null() {
-            return None;
-        }
         let mut info: MONITORINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if GetMonitorInfoW(hmon, &mut info) == 0 {
-            return None;
+        if !hmon.is_null() && GetMonitorInfoW(hmon, &mut info) != 0 {
+            info.rcWork
+        } else {
+            RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }
         }
-        Some(info.rcMonitor.right - info.rcMonitor.left)
+    }
+
+    fn fitted_position(settings: &super::OverlaySettings, area: RECT, width: i32, height: i32) -> POINT {
+        let x = settings.position_x.unwrap_or(area.left + (area.right - area.left - width) / 2);
+        let y = settings.position_y.unwrap_or(area.top + if settings.style == "dynamic_island" { 4 } else { 0 });
+        POINT {
+            x: x.clamp(area.left, (area.right - width).max(area.left)),
+            y: y.clamp(area.top, (area.bottom - height).max(area.top)),
+        }
+    }
+
+    fn remember_fitted_position(settings: &super::OverlaySettings, point: POINT) {
+        if settings.position_x.is_none() && settings.position_y.is_none() {
+            return;
+        }
+        if let Some(current) = super::CURRENT_SETTINGS.lock().unwrap().as_mut() {
+            if current.position_x == settings.position_x && current.position_y == settings.position_y
+                && (current.position_x != Some(point.x) || current.position_y != Some(point.y))
+            {
+                current.position_x = Some(point.x);
+                current.position_y = Some(point.y);
+                super::POSITION_CHANGED.store(true, super::Ordering::SeqCst);
+            }
+        }
     }
 
     pub unsafe fn create_overlay_window(
@@ -562,38 +536,13 @@ mod win32 {
         }
         let dpi_scale = dpi_x as f32 / 96.0;
 
-        // 多显示器修正：保存位置落在副屏时，宽度钳制按该位置所在显示器的矩形
-        // 计算（SM_CXSCREEN 只反映主屏，OSD 在副屏时钳制与居中都会错位）。
-        let monitor_width_px = settings
-            .position_x
-            .zip(settings.position_y)
-            .and_then(|(px, py)| monitor_width_at(px as f32, py as f32))
-            .unwrap_or_else(|| GetSystemMetrics(SM_CXSCREEN));
-
-        let logical_width = {
-            // Horizontal styles lay every enabled item out in ONE row. A
-            // settings set configured for the vertical panel (20+ items) used
-            // to produce a window wider than the desktop (measured 7865px
-            // across two monitors) - clamp to the primary screen so the bar
-            // stays visible; items past the clamp simply draw off-edge until
-            // the user trims the item list.
-            let max_logical = ((monitor_width_px as f32 / dpi_scale) as i32 - 40).max(200);
-            calculate_window_width(settings).min(max_logical)
-        };
+        // The first measured repaint supplies the real dimensions.
+        let area = monitor_work_area(settings);
         let base_height = if settings.style == "dynamic_island" { 36 } else { 28 };
         let logical_height = base_height + (settings.font_size.saturating_sub(13) * 2) as i32;
-        let physical_width = (logical_width as f32 * dpi_scale) as i32;
-        let physical_height = (logical_height as f32 * dpi_scale) as i32;
-
-        // 使用保存的位置，或使用默认位置
-        let (x, y) = if let (Some(px), Some(py)) = (settings.position_x, settings.position_y) {
-            (px, py)
-        } else {
-            let screen_width = GetSystemMetrics(SM_CXSCREEN);
-            let default_x = (screen_width - physical_width) / 2;
-            let default_y = if settings.style == "dynamic_island" { 4 } else { 0 };
-            (default_x, default_y)
-        };
+        let physical_width = ((200.0 * dpi_scale) as i32).min(area.right - area.left).max(1);
+        let physical_height = ((logical_height as f32 * dpi_scale) as i32).min(area.bottom - area.top).max(1);
+        let point = fitted_position(settings, area, physical_width, physical_height);
 
         let hwnd = CreateWindowExW(
             // WS_EX_NOACTIVATE：OSD 永不抢焦点（配合 WS_EX_TRANSPARENT），游戏中
@@ -602,8 +551,8 @@ mod win32 {
             class_name,
             windows_sys::core::w!("FrameScope Overlay"),
             WS_POPUP,
-            x,
-            y,
+            point.x,
+            point.y,
             physical_width,
             physical_height,
             ptr::null_mut(),
@@ -764,14 +713,14 @@ mod win32 {
                 "fps_1low" => {
                     let (val, color) = match data.fps_1low {
                         Some(v) => {
-                            let c = if v < 30 {
+                            let c = if v < 30.0 {
                                 0x000000FFu32
-                            } else if v < 60 {
+                            } else if v < 60.0 {
                                 0x0000FFFFu32
                             } else {
                                 0x0000FF00u32
                             };
-                            (format!("{}", v), Some(c))
+                            (format!("{v:.1}"), Some(c))
                         }
                         None => ("--".to_string(), None),
                     };
@@ -780,14 +729,14 @@ mod win32 {
                 "fps_01low" => {
                     let (val, color) = match data.fps_01low {
                         Some(v) => {
-                            let c = if v < 30 {
+                            let c = if v < 30.0 {
                                 0x000000FFu32
-                            } else if v < 60 {
+                            } else if v < 60.0 {
                                 0x0000FFFFu32
                             } else {
                                 0x0000FF00u32
                             };
-                            (format!("{}", v), Some(c))
+                            (format!("{v:.1}"), Some(c))
                         }
                         None => ("--".to_string(), None),
                     };
@@ -888,6 +837,179 @@ mod win32 {
         total
     }
 
+    struct ItemLayout {
+        items: Vec<DisplayItem>,
+        positions: Vec<(i32, i32)>,
+        width: i32,
+        height: i32,
+        row_height: i32,
+    }
+
+    fn item_color(item: &DisplayItem, font_color: u32) -> u32 {
+        if let Some(color) = item.custom_color {
+            return color;
+        }
+        if !item.label.is_empty() && !item.value.contains("--")
+            && (item.value.contains("°C") || item.value.contains('%') || item.value.bytes().all(|b| b.is_ascii_digit()))
+        {
+            let number: String = item.value.chars()
+                .skip_while(|ch| !ch.is_ascii_digit() && *ch != '.')
+                .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+                .collect();
+            if let Ok(value) = number.parse::<f32>() {
+                return if value < 50.0 { 0x0000FF00 } else if value < 80.0 { 0x0000FFFF } else { 0x000000FF };
+            }
+        }
+        font_color
+    }
+
+    fn fitting_prefix(text: &str, width: i32, measure: &impl Fn(&str) -> i32) -> Result<usize, String> {
+        let mut end = 0;
+        for (offset, ch) in text.char_indices() {
+            let next = offset + ch.len_utf8();
+            if measure(&text[..next]) > width {
+                break;
+            }
+            end = next;
+        }
+        if end == 0 && !text.is_empty() {
+            Err(format!("OSD glyph cannot fit available width {width} at the configured font size"))
+        } else {
+            Ok(end)
+        }
+    }
+
+    // Keep a metric intact unless the metric alone is wider than a whole row.
+    fn wrap_item(
+        mut item: DisplayItem, width: i32, text_gap: i32,
+        font_color: u32, measure: &impl Fn(&str) -> i32,
+    ) -> Result<Vec<DisplayItem>, String> {
+        if item.total_width <= width {
+            return Ok(vec![item]);
+        }
+        item.custom_color = Some(item_color(&item, font_color));
+        let mut parts = Vec::new();
+        let mut label = item.label.as_str();
+        let mut value = item.value.as_str();
+        while !label.is_empty() || !value.is_empty() {
+            let label_end = fitting_prefix(label, width, measure)?;
+            let label_part = &label[..label_end];
+            let label_width = measure(label_part);
+            let gap = if label_part.is_empty() { 0 } else { text_gap };
+            let remaining = width - label_width - gap;
+            let value_end = if label_end == label.len() {
+                fitting_prefix(value, remaining, measure).unwrap_or(0)
+            } else { 0 };
+            if label_part.is_empty() && value_end == 0 {
+                return Err(format!("OSD value cannot fit available width {width} at the configured font size"));
+            }
+            let value_part = &value[..value_end];
+            let value_width = measure(value_part);
+            parts.push(DisplayItem {
+                label: label_part.to_string(), value: value_part.to_string(),
+                label_width, value_width,
+                total_width: label_width + value_width + if value_part.is_empty() { 0 } else { gap },
+                custom_color: item.custom_color,
+            });
+            label = &label[label_end..];
+            value = &value[value_end..];
+        }
+        Ok(parts)
+    }
+
+    fn layout_measured_items(
+        items: Vec<DisplayItem>, area: RECT, dpi_scale: f32, row_height: i32,
+        font_color: u32, measure: impl Fn(&str) -> i32,
+    ) -> Result<ItemLayout, String> {
+        let padding = (16.0 * dpi_scale) as i32;
+        let item_gap = (16.0 * dpi_scale) as i32;
+        let text_gap = (10.0 * dpi_scale) as i32;
+        let content_width = area.right - area.left - 2 * padding;
+        if content_width <= 0 || row_height <= 0 {
+            return Err("OSD work area has no room for text and padding".into());
+        }
+        let mut result = ItemLayout {
+            items: Vec::new(), positions: Vec::new(),
+            width: padding * 2, height: row_height, row_height,
+        };
+        let mut x = padding;
+        let mut y = 0;
+        for item in items {
+            let oversized = item.total_width > content_width;
+            let parts = wrap_item(item, content_width, text_gap, font_color, &measure)?;
+            for (index, part) in parts.into_iter().enumerate() {
+                if x > padding && (oversized || x + item_gap + part.total_width > padding + content_width)
+                    || index > 0
+                {
+                    x = padding;
+                    y += row_height;
+                } else if x > padding {
+                    x += item_gap;
+                }
+                result.positions.push((x, y));
+                x += part.total_width;
+                result.width = result.width.max(x + padding);
+                result.items.push(part);
+            }
+        }
+        result.height = y + row_height;
+        if result.height > area.bottom - area.top {
+            return Err(format!("OSD needs {}px height, work area has {}px; content was not clipped",
+                result.height, area.bottom - area.top));
+        }
+        Ok(result)
+    }
+
+    unsafe fn measured_row_height(hdc: HDC, hfont: HFONT, dpi_scale: f32, island: bool) -> i32 {
+        let old = SelectObject(hdc, hfont as _);
+        let mut metrics: TEXTMETRICW = std::mem::zeroed();
+        GetTextMetricsW(hdc, &mut metrics);
+        SelectObject(hdc, old);
+        let base = if island { 36.0 } else { 28.0 };
+        (metrics.tmHeight + (4.0 * dpi_scale) as i32).max((base * dpi_scale) as i32)
+    }
+
+    unsafe fn measure_gdiplus_text(graphics: *mut GpGraphics, font: *mut GpFont, format: *mut GpStringFormat, text: &str) -> i32 {
+        if text.is_empty() {
+            return 0;
+        }
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let area = RectF { X: 0.0, Y: 0.0, Width: 100000.0, Height: 100000.0 };
+        let mut bounds: RectF = std::mem::zeroed();
+        if GdipMeasureString(graphics, wide.as_ptr(), wide.len() as i32, font, &area, format,
+            &mut bounds, ptr::null_mut(), ptr::null_mut()) != 0
+        {
+            return 0;
+        }
+        bounds.Width.ceil() as i32
+    }
+
+    #[cfg(feature = "uiaccess-acceptance")]
+    unsafe fn record_render(hwnd: HWND, bits: *mut std::ffi::c_void, width: i32, height: i32, settings: &super::OverlaySettings, success: bool) {
+        if bits.is_null() { return; }
+        let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
+        let mut histogram = std::collections::BTreeMap::<u32,usize>::new();
+        let mut invalid = 0;
+        for pixel in pixels {
+            *histogram.entry(*pixel).or_default() += 1;
+            let alpha = pixel >> 24;
+            if ((pixel >> 16) & 255) > alpha || ((pixel >> 8) & 255) > alpha || (pixel & 255) > alpha { invalid += 1; }
+        }
+        let dominant = histogram.iter().max_by_key(|(_,count)|*count).map(|(pixel,_)|*pixel).unwrap_or(0);
+        *super::RENDER_DIAGNOSTICS.lock().unwrap_or_else(|p|p.into_inner()) = Some(serde_json::json!({
+            "hwnd":hwnd as usize,"style":settings.style,"opacity":settings.opacity,"width":width,"height":height,
+            "updated":success,"dominant_pixel":dominant,"invalid_premultiplied_pixels":invalid,
+            "transparent_pixels":pixels.iter().filter(|pixel|**pixel >> 24 == 0).count(),"pixels":pixels.len()}));
+    }
+
+    fn repair_gdi_text_alpha(pixels: &mut [u32]) {
+        for pixel in pixels.iter_mut() {
+            let alpha = (*pixel >> 24) & 0xFF;
+            let rgb = *pixel & 0x00FFFFFF;
+            if alpha == 0 { *pixel = if rgb == 0x000001 { 0 } else { 0xFF000000 | rgb }; }
+        }
+    }
+
     pub unsafe fn draw_overlay_content(
         hwnd: HWND,
         settings: &super::OverlaySettings,
@@ -911,17 +1033,22 @@ mod win32 {
         let font_color = parse_hex_color(&settings.font_color);
         let temp_dc = GetDC(ptr::null_mut());
         let mut items = build_display_items(settings, data);
-        let padding = (16.0 * dpi_scale) as i32;
-        let item_gap = (16.0 * dpi_scale) as i32;
-        let content_width = measure_and_layout_items(temp_dc, hfont, &mut items, dpi_scale);
+        measure_and_layout_items(temp_dc, hfont, &mut items, dpi_scale);
+        let area = monitor_work_area(settings);
+        let row_height = measured_row_height(temp_dc, hfont, dpi_scale, false);
+        let layout = layout_measured_items(items, area, dpi_scale, row_height, font_color,
+            |text| measure_text_width(temp_dc, hfont, text));
         ReleaseDC(ptr::null_mut(), temp_dc);
-        let sep_count = if items.len() > 1 { items.len() as i32 - 1 } else { 0 };
-        let total_content_width = content_width + sep_count * item_gap + padding * 2;
-        let logical_height = 28 + (settings.font_size.saturating_sub(13) * 2) as i32;
-        let physical_height = (logical_height as f32 * dpi_scale) as i32;
-
-        let dib_width = total_content_width;
-        let dib_height = physical_height;
+        let layout = match layout {
+            Ok(layout) => layout,
+            Err(error) => {
+                log::error!("{error}");
+                DeleteObject(hfont as _);
+                return;
+            }
+        };
+        let dib_width = layout.width;
+        let dib_height = layout.height;
 
         let screen_dc = GetDC(ptr::null_mut());
         let mut bmi: BITMAPINFO = std::mem::zeroed();
@@ -955,10 +1082,11 @@ mod win32 {
 
         GdipSetSmoothingMode(graphics, SmoothingModeAntiAlias);
 
-        let mut clear_brush: *mut GpSolidFill = ptr::null_mut();
-        GdipCreateSolidFill(0x00000001, &mut clear_brush);
-        GdipFillRectangle(graphics, clear_brush as *mut GpBrush, 0.0, 0.0, dib_width as f32, dib_height as f32);
-        GdipDeleteBrush(clear_brush as *mut GpBrush);
+        // An alpha-zero GDI+ brush does not initialize the DIB. Write the
+        // transparent sentinel directly so blank pixels are not mistaken for text.
+        if !bits.is_null() {
+            std::slice::from_raw_parts_mut(bits as *mut u32, (dib_width * dib_height) as usize).fill(0x00000001);
+        }
 
         // opacity>0 时才填充背景：opacity=0 时跳过，避免 GDI+ 预乘 alpha 把背景 rgb 归零，
         // 与纯黑文字 rgb=0 混淆（否则背景会被误判为文字而变不透明）。
@@ -975,21 +1103,15 @@ mod win32 {
         SetBkMode(mem_dc, TRANSPARENT as i32);
 
         let gap = (10.0 * dpi_scale) as i32;
-        let mut current_x: i32 = padding;
-        let win_height_i32 = dib_height;
-
-        for (i, item) in items.iter().enumerate() {
-            if i > 0 {
-                current_x += item_gap;
-            }
+        for (item, &(current_x, current_y)) in layout.items.iter().zip(&layout.positions) {
 
             if !item.label.is_empty() {
                 let wide_label: Vec<u16> = item.label.encode_utf16().chain(std::iter::once(0)).collect();
                 let mut label_rect = RECT {
                     left: current_x,
-                    top: 0,
+                    top: current_y,
                     right: current_x + item.label_width,
-                    bottom: win_height_i32,
+                    bottom: current_y + layout.row_height,
                 };
                 SetTextColor(mem_dc, font_color);
                 DrawTextW(
@@ -1009,40 +1131,12 @@ mod win32 {
             let wide_value: Vec<u16> = item.value.encode_utf16().chain(std::iter::once(0)).collect();
             let mut value_rect = RECT {
                 left: value_x,
-                top: 0,
+                top: current_y,
                 right: value_x + item.value_width,
-                bottom: win_height_i32,
+                bottom: current_y + layout.row_height,
             };
 
-            let mut color: u32 = font_color;
-            if let Some(custom_color) = item.custom_color {
-                color = custom_color;
-            } else if !item.label.is_empty() && !item.value.contains("--")
-                && (item.value.contains("°C") || item.value.contains('%') || item.value.bytes().all(|b| b.is_ascii_digit()))
-            {
-                let mut num_str = String::new();
-                for ch in item.value.chars() {
-                    if ch.is_ascii_digit() || ch == '.' {
-                        num_str.push(ch);
-                    } else if !num_str.is_empty() {
-                        break;
-                    }
-                }
-                if !num_str.is_empty() {
-                    if let Ok(nf) = num_str.parse::<f32>() {
-                        let nv = nf as i32;
-                        if nv < 50 {
-                            color = 0x0000FF00;
-                        } else if nv < 80 {
-                            color = 0x0000FFFF;
-                        } else {
-                            color = 0x000000FF;
-                        }
-                    }
-                }
-            }
-
-            SetTextColor(mem_dc, color);
+            SetTextColor(mem_dc, item_color(item, font_color));
             DrawTextW(
                 mem_dc,
                 wide_value.as_ptr(),
@@ -1050,8 +1144,6 @@ mod win32 {
                 &mut value_rect,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE,
             );
-
-            current_x += item.total_width;
         }
 
         SelectObject(mem_dc, old_font);
@@ -1061,23 +1153,10 @@ mod win32 {
                 bits as *mut u32,
                 (dib_width * dib_height) as usize,
             );
-            for pixel in pixels.iter_mut() {
-                let alpha = (*pixel >> 24) & 0xFF;
-                let rgb = *pixel & 0x00FFFFFF;
-                // GDI 文字像素 alpha=0，清屏基准色为 0x000001 → rgb 为 0x000001 是空白、其余均为 GDI 文字
-                // 旧逻辑 rgb != 0 漏掉了纯黑文字（rgb=0），这里用 rgb != 0x000001 同时覆盖黑字和彩色字
-                if alpha == 0 && rgb != 0x000001 {
-                    *pixel = 0xFF000000 | rgb;
-                }
-            }
+            repair_gdi_text_alpha(pixels);
         }
 
-        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-        let default_x = (screen_width - dib_width) / 2;
-        let use_x = settings.position_x.unwrap_or(default_x);
-        let use_y = settings.position_y.unwrap_or(0);
-
-        let ppt_dst = POINT { x: use_x, y: use_y };
+        let ppt_dst = fitted_position(settings, area, dib_width, dib_height);
         let psize = SIZE { cx: dib_width, cy: dib_height };
         let ppt_src = POINT { x: 0, y: 0 };
         let blend = BLENDFUNCTION {
@@ -1087,7 +1166,7 @@ mod win32 {
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
 
-        UpdateLayeredWindow(
+        let updated = UpdateLayeredWindow(
             hwnd,
             ptr::null_mut(),
             &ppt_dst,
@@ -1098,6 +1177,11 @@ mod win32 {
             &blend,
             ULW_ALPHA,
         );
+        #[cfg(feature = "uiaccess-acceptance")]
+        record_render(hwnd,bits,dib_width,dib_height,settings,updated != 0);
+        if updated != 0 {
+            remember_fitted_position(settings, ppt_dst);
+        }
 
         SelectObject(mem_dc, old_bmp);
         DeleteObject(hbitmap as HGDIOBJ);
@@ -1126,14 +1210,13 @@ mod win32 {
         }
 
         let font_color = parse_hex_color(&settings.font_color);
-        let padding = (16.0 * dpi_scale) as i32;
-        let item_gap = (16.0 * dpi_scale) as i32;
         let text_gap = (10.0 * dpi_scale) as i32;
+        let area = monitor_work_area(settings);
 
         // 用 GDI+ 测量文字宽度（与绘制 GdipDrawString 同一文字引擎），
         // 避免测宽与绘制度量不一致导致文字被裁剪/换行。字体句柄复用给绘制。
         let mut font_handle: *mut GpFont = ptr::null_mut();
-        let (dib_width, dib_height, layout_items);
+        let layout;
         {
             let temp_dc = GetDC(ptr::null_mut());
             let old_temp_font = SelectObject(temp_dc, hfont as _);
@@ -1144,35 +1227,13 @@ mod win32 {
                 && GdipCreateFromHDC(temp_dc, &mut mg) == 0 && !mg.is_null()
                 && GdipCreateFontFromDC(temp_dc, &mut font_handle) == 0 && !font_handle.is_null();
 
-            let sep_count = if layout_items_tmp.len() > 1 { layout_items_tmp.len() as i32 - 1 } else { 0 };
-            let mut content_width: i32 = -1;
+            let mut fmt: *mut GpStringFormat = ptr::null_mut();
+            let mut measured = false;
             if gdiplus_ok {
-                let mut fmt: *mut GpStringFormat = ptr::null_mut();
                 if GdipCreateStringFormat(StringFormatFlagsNoWrap as i32, 0, &mut fmt) == 0 && !fmt.is_null() {
-                    let mut c = 0i32;
+                    GdipSetTextRenderingHint(mg, TextRenderingHintAntiAliasGridFit);
                     for item in layout_items_tmp.iter_mut() {
-                        let measure_w = |s: &str| -> i32 {
-                            if s.is_empty() {
-                                return 0;
-                            }
-                            let wide: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
-                            let arect = RectF { X: 0.0, Y: 0.0, Width: 100000.0, Height: 100000.0 };
-                            let mut brect = RectF { X: 0.0, Y: 0.0, Width: 0.0, Height: 0.0 };
-                            if GdipMeasureString(
-                                mg,
-                                wide.as_ptr(),
-                                (wide.len() - 1) as i32,
-                                font_handle,
-                                &arect,
-                                fmt,
-                                &mut brect,
-                                ptr::null_mut(),
-                                ptr::null_mut(),
-                            ) != 0 {
-                                return 0;
-                            }
-                            brect.Width.ceil() as i32
-                        };
+                        let measure_w = |s: &str| measure_gdiplus_text(mg, font_handle, fmt, s);
                         item.label_width = measure_w(&item.label);
                         item.value_width = measure_w(&item.value);
                         item.total_width = if item.label.is_empty() {
@@ -1180,35 +1241,40 @@ mod win32 {
                         } else {
                             item.label_width + text_gap + item.value_width
                         };
-                        c += item.total_width;
                     }
-                    content_width = c;
-                    // 记录布局有效，供后续 DIB 宽度计算
-                    GdipDeleteStringFormat(fmt);
+                    measured = true;
                 }
             }
 
             // GDI+ 测量失败时退回 GDI 测量（保持兼容）
-            let content_width = if content_width >= 0 {
-                content_width
-            } else {
-                measure_and_layout_items(temp_dc, hfont, &mut layout_items_tmp, dpi_scale)
-            };
-
-            let logical_height = 36 + (settings.font_size.saturating_sub(13) * 2) as i32;
-            let tmp_dib_width = content_width + sep_count * item_gap + padding * 2;
-            let tmp_dib_height = (logical_height as f32 * dpi_scale) as i32;
+            if !measured {
+                measure_and_layout_items(temp_dc, hfont, &mut layout_items_tmp, dpi_scale);
+            }
+            let row_height = measured_row_height(temp_dc, hfont, dpi_scale, true);
+            layout = layout_measured_items(layout_items_tmp, area, dpi_scale, row_height, font_color,
+                |text| if measured { measure_gdiplus_text(mg, font_handle, fmt, text) }
+                    else { measure_text_width(temp_dc, hfont, text) });
+            if !fmt.is_null() {
+                GdipDeleteStringFormat(fmt);
+            }
 
             SelectObject(temp_dc, old_temp_font);
             ReleaseDC(ptr::null_mut(), temp_dc);
             if !mg.is_null() {
                 GdipDeleteGraphics(mg);
             }
-
-            dib_width = tmp_dib_width.max(2);
-            dib_height = tmp_dib_height.max(2);
-            layout_items = layout_items_tmp;
         }
+        let layout = match layout {
+            Ok(layout) => layout,
+            Err(error) => {
+                log::error!("{error}");
+                if !font_handle.is_null() { GdipDeleteFont(font_handle); }
+                DeleteObject(hfont as _);
+                return;
+            }
+        };
+        let dib_width = layout.width;
+        let dib_height = layout.height;
 
         // --- Create 32-bit ARGB DIB section (like crosshair) ---
         let screen_dc = GetDC(ptr::null_mut());
@@ -1225,6 +1291,7 @@ mod win32 {
         ReleaseDC(ptr::null_mut(), screen_dc);
 
         if hbitmap.is_null() {
+            if !font_handle.is_null() { GdipDeleteFont(font_handle); }
             DeleteObject(hfont as _);
             return;
         }
@@ -1238,6 +1305,7 @@ mod win32 {
             SelectObject(mem_dc, old_bmp);
             DeleteObject(hbitmap as HGDIOBJ);
             DeleteDC(mem_dc);
+            if !font_handle.is_null() { GdipDeleteFont(font_handle); }
             DeleteObject(hfont as _);
             return;
         }
@@ -1246,16 +1314,15 @@ mod win32 {
 
         // Clear to fully transparent（alpha=0）。GDI+ 按预乘 alpha 写入，透明区 rgb 归零，
         // 圆角外区域保持全透明，配合末尾逆预乘不会再出现黑边/不透明圆角。
-        let mut clear_brush: *mut GpSolidFill = ptr::null_mut();
-        GdipCreateSolidFill(0x00000000, &mut clear_brush);
-        GdipFillRectangle(graphics, clear_brush as *mut GpBrush, 0.0, 0.0, dib_width as f32, dib_height as f32);
-        GdipDeleteBrush(clear_brush as *mut GpBrush);
+        if !bits.is_null() {
+            std::slice::from_raw_parts_mut(bits as *mut u32, (dib_width * dib_height) as usize).fill(0);
+        }
 
         // Draw rounded rect with GDI+ (proper per-pixel alpha anti-aliasing)。
         // 半透明胶囊背景，alpha 由 opacity 决定；最终统一逆预乘输出直线 alpha。
         if settings.opacity > 0 {
             let bg_argb: u32 = ((settings.opacity as u32) << 24) | 0x00111111;
-            let corner_r = dib_height as f32 * 0.5;
+            let corner_r = layout.row_height.min(dib_width) as f32 * 0.5;
             let mut bg_brush: *mut GpSolidFill = ptr::null_mut();
             GdipCreateSolidFill(bg_argb, &mut bg_brush);
 
@@ -1293,12 +1360,7 @@ mod win32 {
                 GdipSetStringFormatLineAlign(string_format, StringAlignmentCenter);
 
                 let gap = text_gap;
-                let mut current_x: i32 = padding;
-
-                for (i, item) in layout_items.iter().enumerate() {
-                    if i > 0 {
-                        current_x += item_gap;
-                    }
+                for (item, &(current_x, current_y)) in layout.items.iter().zip(&layout.positions) {
 
                     // label：右对齐
                     if !item.label.is_empty() {
@@ -1306,9 +1368,9 @@ mod win32 {
                         if GdipCreateSolidFill(gdi_to_argb(font_color), &mut brush_handle) == 0 && !brush_handle.is_null() {
                             let rect_f = RectF {
                                 X: current_x as f32,
-                                Y: 0.0,
+                                Y: current_y as f32,
                                 Width: item.label_width as f32,
-                                Height: dib_height as f32,
+                                Height: layout.row_height as f32,
                             };
                             GdipSetStringFormatAlign(string_format, StringAlignmentFar);
                             let wide: Vec<u16> = item.label.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1332,41 +1394,15 @@ mod win32 {
                         current_x + item.label_width + gap
                     };
 
-                    let mut color: u32 = font_color;
-                    if let Some(custom_color) = item.custom_color {
-                        color = custom_color;
-                    } else if !item.label.is_empty() && !item.value.contains("--")
-                        && (item.value.contains("°C") || item.value.contains('%') || item.value.bytes().all(|b| b.is_ascii_digit()))
-                    {
-                        let mut num_str = String::new();
-                        for ch in item.value.chars() {
-                            if ch.is_ascii_digit() || ch == '.' {
-                                num_str.push(ch);
-                            } else if !num_str.is_empty() {
-                                break;
-                            }
-                        }
-                        if !num_str.is_empty() {
-                            if let Ok(nf) = num_str.parse::<f32>() {
-                                let nv = nf as i32;
-                                if nv < 50 {
-                                    color = 0x0000FF00;
-                                } else if nv < 80 {
-                                    color = 0x0000FFFF;
-                                } else {
-                                    color = 0x000000FF;
-                                }
-                            }
-                        }
-                    }
+                    let color = item_color(item, font_color);
 
                     let mut brush_handle: *mut GpSolidFill = ptr::null_mut();
                     if GdipCreateSolidFill(gdi_to_argb(color), &mut brush_handle) == 0 && !brush_handle.is_null() {
                         let rect_f = RectF {
                             X: value_x as f32,
-                            Y: 0.0,
+                            Y: current_y as f32,
                             Width: item.value_width as f32,
-                            Height: dib_height as f32,
+                            Height: layout.row_height as f32,
                         };
                         GdipSetStringFormatAlign(string_format, StringAlignmentNear);
                         let wide: Vec<u16> = item.value.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1381,8 +1417,6 @@ mod win32 {
                         );
                         GdipDeleteBrush(brush_handle as *mut GpBrush);
                     }
-
-                    current_x += item.total_width;
                 }
                 GdipDeleteStringFormat(string_format);
             }
@@ -1394,34 +1428,11 @@ mod win32 {
             GdipDeleteFont(font_handle);
         }
 
-        // 对半透明像素做 alpha 逆预乘：GDI+ 按预乘 alpha 写入，
-        // 而 UpdateLayeredWindow(AC_SRC_ALPHA) 需要直线 alpha，否则半透明边缘会偏暗、发黑。
-        // alpha==0（透明/圆角外）与 alpha==255（纯不透明）保持不动。
-        if !bits.is_null() {
-            let pixels = std::slice::from_raw_parts_mut(
-                bits as *mut u32,
-                (dib_width * dib_height) as usize,
-            );
-            for pixel in pixels.iter_mut() {
-                let v = *pixel;
-                let a = (v >> 24) & 0xFF;
-                if a > 0 && a < 255 {
-                    let ar = a as u32;
-                    let r = ((v >> 16) & 0xFF) as u32 * 255 / ar;
-                    let g = ((v >> 8) & 0xFF) as u32 * 255 / ar;
-                    let b = (v & 0xFF) as u32 * 255 / ar;
-                    *pixel = (a as u32) << 24 | (r.clamp(0, 255) << 16) | (g.clamp(0, 255) << 8) | b.clamp(0, 255);
-                }
-            }
-        }
+        // GDI+ already writes premultiplied BGRA, as required by
+        // UpdateLayeredWindow(AC_SRC_ALPHA). Keep the translucent pixels intact.
 
         // --- Position and composite via UpdateLayeredWindow ---
-        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-        let default_x = (screen_width - dib_width) / 2;
-        let use_x = settings.position_x.unwrap_or(default_x);
-        let use_y = settings.position_y.unwrap_or(4);
-
-        let ppt_dst = POINT { x: use_x, y: use_y };
+        let ppt_dst = fitted_position(settings, area, dib_width, dib_height);
         let psize = SIZE { cx: dib_width, cy: dib_height };
         let ppt_src = POINT { x: 0, y: 0 };
         let blend = BLENDFUNCTION {
@@ -1442,8 +1453,12 @@ mod win32 {
             &blend,
             ULW_ALPHA,
         );
+        #[cfg(feature = "uiaccess-acceptance")]
+        record_render(hwnd,bits,dib_width,dib_height,settings,ulw_ret != 0);
         if ulw_ret == 0 {
             eprintln!("[osd-island] UpdateLayeredWindow failed err={} size={}x{}", GetLastError(), psize.cx, psize.cy);
+        } else {
+            remember_fitted_position(settings, ppt_dst);
         }
 
         SelectObject(mem_dc, old_bmp);
@@ -1455,6 +1470,9 @@ mod win32 {
     /// One full redraw from the current settings + hardware snapshot. Shared
     /// by the 500ms timer and the WM_APP hot-repaint path.
     unsafe fn repaint_overlay(hwnd: HWND) {
+        if IN_SIZE_MOVE.load(super::Ordering::SeqCst) {
+            return;
+        }
         let data = super::collect_hardware_data();
         *super::CURRENT_HARDWARE_DATA.lock().unwrap() = Some(data.clone());
         let settings = super::get_or_init_settings();
@@ -1525,7 +1543,12 @@ mod win32 {
                     DefWindowProcW(hwnd, msg, wparam, lparam)
                 }
             }
+            WM_ENTERSIZEMOVE => {
+                IN_SIZE_MOVE.store(true, super::Ordering::SeqCst);
+                0
+            }
             WM_EXITSIZEMOVE => {
+                IN_SIZE_MOVE.store(false, super::Ordering::SeqCst);
                 // 拖动结束后只保存位置，不退出拖动模式
                 // 退出由前端按钮控制，避免样式切换导致位置重置
                 if super::DRAG_MODE.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1544,6 +1567,7 @@ mod win32 {
 
                     // 标记位置已变更
                     super::POSITION_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    repaint_overlay(hwnd);
                 }
                 0
             }
@@ -1770,4 +1794,3 @@ pub fn request_overlay_repaint() -> bool {
 pub fn publish_hardware_data(data: OverlayHardwareData) {
     *CURRENT_HARDWARE_DATA.lock().unwrap() = Some(data);
 }
-

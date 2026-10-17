@@ -83,7 +83,7 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         AssertNoExistingProcess("TslGame-Win64-Shipping");
 
         string testRoot = AppDomain.CurrentDomain.BaseDirectory;
-        string root = Path.GetFullPath(Path.Combine(testRoot, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string fixture = Path.Combine(Path.GetTempPath(), "framescope-target-lifecycle-" + Guid.NewGuid().ToString("N"));
         retainedFixture = fixture;
         string dataRoot = Path.Combine(fixture, "runs");
@@ -276,7 +276,7 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         AssertNoExistingProcess(barBaseName);
 
         string testRoot = AppDomain.CurrentDomain.BaseDirectory;
-        string root = Path.GetFullPath(Path.Combine(testRoot, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string fixture = Path.Combine(Path.GetTempPath(), "framescope-overlap-claim-" + Guid.NewGuid().ToString("N"));
         retainedFixture = fixture;
         string dataRoot = Path.Combine(fixture, "runs");
@@ -417,7 +417,7 @@ public static class FrameScopeTargetLifecycleIntegrationTests
         AssertNoExistingProcess(targetBaseName);
 
         string testRoot = AppDomain.CurrentDomain.BaseDirectory;
-        string root = Path.GetFullPath(Path.Combine(testRoot, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string fixture = Path.Combine(Path.GetTempPath(), "framescope-partial-watcher-" + Guid.NewGuid().ToString("N"));
         retainedFixture = fixture;
         string dataRoot = Path.Combine(fixture, "runs");
@@ -547,6 +547,9 @@ public static class FrameScopeTargetLifecycleIntegrationTests
 
     private static Process StartHidden(string fileName, string arguments, string workingDirectory)
     {
+        if (string.Equals(Path.GetFileName(fileName), "FrameScopeMonitor.exe", StringComparison.OrdinalIgnoreCase)
+            && arguments.Contains("--watcher"))
+            arguments += " --diagnostic-output-root " + Quote(Path.Combine(workingDirectory, "diagnostics"));
         Process process = Process.Start(new ProcessStartInfo
         {
             FileName = fileName,

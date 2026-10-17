@@ -37,6 +37,26 @@ internal static partial class FrameScopeNativeMonitor
     [STAThread]
     private static void Main(string[] args)
     {
+        if (HasArg(args, "--stop-owned-background"))
+        {
+            int exitCode;
+            string error = "";
+            try
+            {
+                string stopConfig = GetArgValue(args, "--config", null);
+                if (string.IsNullOrWhiteSpace(stopConfig)) throw new InvalidOperationException("--config is required.");
+                StopVerifiedBackground(Path.GetFullPath(stopConfig), 0);
+                exitCode = 0;
+            }
+            catch (TimeoutException ex) { exitCode = 3; error = ex.Message; }
+            catch (Exception ex) { exitCode = 2; error = ex.Message; }
+            Console.WriteLine(Json.Serialize(new { success = exitCode == 0, exitCode = exitCode, error = error,
+                status = exitCode == 0 ? string.IsNullOrEmpty(LastStopWarning) ? "stopped" : "stopped-with-warning" : "failed",
+                warning = exitCode == 0 ? LastStopWarning ?? "" : "" }));
+            Environment.Exit(exitCode);
+            return;
+        }
+
         if (args != null && args.Any(a => a.Equals("--monitor-session", StringComparison.OrdinalIgnoreCase)))
         {
             Environment.Exit(RunNativeMonitorSession(args));
@@ -105,7 +125,8 @@ internal static partial class FrameScopeNativeMonitor
 
     private static void SaveConfig(FrameScopeConfig config)
     {
-        FrameScopeConfigStore.Save(ConfigPath, config);
+        using (FrameScopeConfigStore.AcquireMutationLock(ConfigPath))
+            FrameScopeConfigStore.Save(ConfigPath, config);
     }
 
     private static int GenerateDiagnosticReportFromCommandLine(string[] args)
@@ -117,7 +138,8 @@ internal static partial class FrameScopeNativeMonitor
             var dataRoot = ResolveDataRoot(config.DataRoot);
             var runDir = GetArgValue(args, "--run-dir", "");
             var reason = GetArgValue(args, "--reason", "manual-cli");
-            var result = FrameScopeDiagnostics.GenerateReport(config, Root, dataRoot, reason, runDir);
+            var result = FrameScopeDiagnostics.GenerateReport(config, Root, dataRoot, reason, runDir,
+                GetArgValue(args, "--diagnostic-output-root", null));
             WriteFrameScopeLog("diagnostic-report-generated path=" + result.MarkdownPath);
             return File.Exists(result.MarkdownPath) && File.Exists(result.JsonPath) ? 0 : 2;
         }

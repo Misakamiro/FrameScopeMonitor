@@ -4,6 +4,27 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 
+public sealed class FrameScopeWorkerRestartPolicy
+{
+    private sealed class FailureState { public int Count; public DateTime RetryAt; }
+    private readonly Dictionary<string, FailureState> failures = new Dictionary<string, FailureState>(StringComparer.OrdinalIgnoreCase);
+
+    public void RecordExit(string target, TimeSpan lifetime, DateTime now)
+    {
+        if (lifetime.TotalSeconds >= 5) { Reset(target); return; }
+        FailureState state;
+        if (!failures.TryGetValue(target, out state)) failures[target] = state = new FailureState();
+        state.Count = Math.Min(3, state.Count + 1);
+        if (state.Count >= 3) state.RetryAt = now.AddSeconds(5);
+    }
+    public bool CanStart(string target, DateTime now)
+    {
+        FailureState state;
+        return !failures.TryGetValue(target, out state) || now >= state.RetryAt;
+    }
+    public void Reset(string target) { failures.Remove(target); }
+}
+
 public static class FrameScopeTargetLifecycle
 {
     public const int DefaultAliasQuiescenceMilliseconds = 2000;

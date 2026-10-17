@@ -30,9 +30,10 @@ function initial(): PreviewState {
       low01Fps: index < 2 ? 94 : null, frameTimeMs: index < 2 ? 6.94 : null, samples: [], simulated: true,
     })),
     config: { captureDurationSeconds: 20, sampleIntervalMs: 1000, pollIntervalMs: 1000,
-      autoStart: false, autoOpenReport: false, detailedLogging: false, diagnosticLogging: false,
+      autoStart: true, autoStartOverlay: false, startMinimized: false,
+      autoOpenReport: false, detailedLogging: false, diagnosticLogging: false,
       outputDirectory: "PreviewData/reports", theme: "system" },
-    monitor: { phase: "idle", targetId: null, elapsedSeconds: 0, startedAt: null, reportId: null, error: null, samples: [], reportPercent: null, reportEtaSeconds: null },
+    monitor: { phase: "idle", targetId: null, activeTargets: [], elapsedSeconds: 0, startedAt: null, reportId: null, error: null, samples: [], reportPercent: null, reportEtaSeconds: null },
     activeGpuIndex: 0, overlay: { enabled: false, dragMode: false, settings: structuredClone(defaultOverlay) },
     hotkey: "Shift+F10", hotkeysEnabled: true, overlayHotkeyEnabled: true,
   };
@@ -73,6 +74,7 @@ function finishReport(next: PreviewState) {
   // Keep browser mode bounded: each report drags its samples along.
   if (next.reports.length > 50) next.reports.length = 50;
   next.monitor.phase = "completed";
+  next.monitor.activeTargets = [];
   next.monitor.reportId = report.id;
 }
 function tick() {
@@ -91,7 +93,10 @@ function tick() {
     const monitor = next.monitor;
     if (monitor.phase === "waiting") {
       if (next.scenario === "failure") { monitor.phase = "error"; monitor.error = "Simulated：采样器启动失败"; }
-      else monitor.phase = "capturing";
+      else {
+        const target = next.targets.find(target => target.enabled);
+        if (target) { monitor.phase = "capturing"; monitor.targetId = target.id; monitor.activeTargets = [target.name]; }
+      }
     } else if (monitor.phase === "capturing") {
       monitor.elapsedSeconds++;
       const data = overlayFixture(next);
@@ -108,19 +113,25 @@ function tick() {
 
 let desktopSyncBusy = false;
 let targetsSynced = false;
+export function isTargetsSynced(): boolean { return targetsSynced; }
 // Watcher CompletedRuns when the current capture began; used to tell a real
 // finished run (report regenerated) from an abnormally exited watcher.
 let completedRunsBaseline: number | null = null;
+let desktopStopRequested = false;
 
 function mapBackendReport(raw: any): PreviewReport {
   const kind = ["full", "partial", "diagnostic", "error"].includes(raw?.kind) ? raw.kind : "full";
   return {
     id: String(raw?.id ?? ""), kind,
     targetId: String(raw?.processName ?? ""), targetName: String(raw?.targetName ?? ""),
-    createdAt: String(raw?.createdAt ?? ""), durationSeconds: Number(raw?.durationSeconds ?? 0),
+    createdAt: String(raw?.createdAt ?? ""), durationSeconds: typeof raw?.durationSeconds === "number" && Number.isFinite(raw.durationSeconds) && raw.durationSeconds >= 0 ? raw.durationSeconds : null,
     averageFps: raw?.averageFps ?? null, low1Fps: raw?.low1Fps ?? null,
     low01Fps: raw?.low01Fps ?? null, frameTimeMs: raw?.frameTimeMs ?? null,
     samples: [], simulated: false, runDir: raw?.runDir,
+    artifactStatus: String(raw?.artifactStatus ?? "incomplete"),
+    artifactError: String(raw?.artifactError ?? ""),
+    canOpenReport: raw?.canOpenReport === true,
+    canRegenerate: raw?.canRegenerate === true,
   };
 }
 
@@ -128,12 +139,37 @@ async function syncDesktopMonitor(): Promise<void> {
   if (desktopSyncBusy) return;
   desktopSyncBusy = true;
   try {
-    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; targetName?: string; completedRuns?: number; reportPercent?: number; reportEtaSeconds?: number }>("monitor_status");
+    const status = await invoke<{ running: boolean; phase: string; elapsedSeconds?: number; targetName?: string; targetNames?: string[]; completedRuns?: number; reportPercent?: number; reportEtaSeconds?: number; error?: string }>("monitor_status");
     mutatePreview(next => {
       const monitor = next.monitor;
+      monitor.activeTargets = status.running
+        ? (Array.isArray(status.targetNames) ? status.targetNames.filter(name => typeof name === "string" && name.trim())
+          : status.phase === "capturing" && status.targetName ? [status.targetName] : []) : [];
       // The backend watcher is the source of truth for capture state; local
       // phases only add the "completed + refresh reports" edge.
-      if (status.phase === "capturing") {
+      if (status.phase === "error" && !status.running) {
+        monitor.phase = "error";
+        monitor.error = status.error || "自动启动监控失败";
+      } else if (status.phase === "stopped") {
+        if (desktopStopRequested || ["waiting", "capturing", "stopping", "generating"].includes(monitor.phase)
+          || (monitor.phase === "error" && completedRunsBaseline != null)) {
+          const hadNewReport = (status.completedRuns ?? 0) > (completedRunsBaseline ?? status.completedRuns ?? 0);
+          monitor.phase = status.error ? "error" : hadNewReport ? "completed" : "idle";
+          monitor.error = status.error || null;
+          completedRunsBaseline = null;
+          desktopStopRequested = false;
+          void refreshDesktopReports();
+        }
+      } else if (status.phase === "stopping") {
+        desktopStopRequested = true;
+        monitor.phase = "stopping";
+        if (completedRunsBaseline == null && typeof status.completedRuns === "number") {
+          completedRunsBaseline = status.completedRuns;
+        }
+      } else if (desktopStopRequested && ["capturing", "waiting"].includes(status.phase)) {
+        // A poll begun before monitor_stop may complete after its acknowledgement.
+        // Do not overwrite the pending drain with an older capture snapshot.
+      } else if (status.phase === "capturing") {
         if (monitor.phase !== "capturing") {
           monitor.phase = "capturing";
           monitor.startedAt = monitor.startedAt ?? new Date().toISOString();
@@ -175,7 +211,9 @@ async function syncDesktopMonitor(): Promise<void> {
         if (completedRunsBaseline == null && typeof status.completedRuns === "number") {
           completedRunsBaseline = status.completedRuns;
         }
-      } else if (["waiting", "capturing", "stopping", "generating"].includes(monitor.phase)) {
+      } else if (["waiting", "capturing", "stopping", "generating"].includes(monitor.phase)
+        || (monitor.phase === "error" && completedRunsBaseline != null
+          && (status.completedRuns ?? 0) > completedRunsBaseline)) {
         // Watcher gone or idle: the run ended. A report means a real finished
         // run; no new report means the pipeline died abnormally.
         void refreshDesktopReports();
@@ -183,17 +221,23 @@ async function syncDesktopMonitor(): Promise<void> {
         const hadNewReport = typeof status.completedRuns === "number" && status.completedRuns > base;
         monitor.phase = hadNewReport ? "completed" : "error";
         monitor.error = hadNewReport ? null : "采集进程异常退出，未能生成报告";
-        completedRunsBaseline = null;
+        // An idle snapshot can precede the watcher's final count. Retain the
+        // capture baseline until completion so a later result can reconcile.
+        if (hadNewReport) completedRunsBaseline = null;
+        desktopStopRequested = false;
       }
     });
-  } catch { /* backend not deployed: keep whatever local phase is running. */ }
+  } catch { /* An unavailable status read is not evidence that capture exited. */ }
   finally { desktopSyncBusy = false; }
 }
 
+let reportsRequestGeneration = 0;
 export async function refreshDesktopReports(): Promise<void> {
   if (!isDesktop()) return;
+  const generation = ++reportsRequestGeneration;
   try {
     const payload = await backendInvoke<{ reports: any[] }>("reports_list");
+    if (generation !== reportsRequestGeneration) return;
     const mapped = (payload.reports ?? []).map(mapBackendReport).filter(report => report.id);
     mutatePreview(next => { next.reports = mapped; });
   } catch (error) { console.error("reports_list failed", error); }
@@ -204,7 +248,8 @@ let configSyncRetryTimer: ReturnType<typeof setTimeout> | undefined;
 async function syncConfigFromBackend(): Promise<void> {
   try {
     const payload = await backendInvoke<{ config: { sampleIntervalMs?: number; pollIntervalMs?: number;
-      autoOpenReport?: boolean; detailedLogging?: boolean; diagnosticLogging?: boolean } }>("config_read");
+      autoOpenReport?: boolean; autoStart?: boolean; autoStartOverlay?: boolean; startMinimized?: boolean;
+      detailedLogging?: boolean; diagnosticLogging?: boolean } }>("config_read");
     configSynced = true;
     const cfg = payload.config ?? {};
     mutatePreview(next => {
@@ -215,6 +260,9 @@ async function syncConfigFromBackend(): Promise<void> {
       if (Number.isFinite(cfg.sampleIntervalMs) && (cfg.sampleIntervalMs ?? 0) > 0) next.config.sampleIntervalMs = cfg.sampleIntervalMs!;
       if (Number.isFinite(cfg.pollIntervalMs) && (cfg.pollIntervalMs ?? 0) > 0) next.config.pollIntervalMs = cfg.pollIntervalMs!;
       if (typeof cfg.autoOpenReport === "boolean") next.config.autoOpenReport = cfg.autoOpenReport;
+      if (typeof cfg.autoStart === "boolean") next.config.autoStart = cfg.autoStart;
+      if (typeof cfg.autoStartOverlay === "boolean") next.config.autoStartOverlay = cfg.autoStartOverlay;
+      if (typeof cfg.startMinimized === "boolean") next.config.startMinimized = cfg.startMinimized;
       if (typeof cfg.detailedLogging === "boolean") next.config.detailedLogging = cfg.detailedLogging;
       if (typeof cfg.diagnosticLogging === "boolean") next.config.diagnosticLogging = cfg.diagnosticLogging;
     });
@@ -234,14 +282,19 @@ function nextTargetId(): string {
   return `target-${Date.now()}-${targetIdCounter}`;
 }
 let targetsSyncRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let targetsSaveQueue: Promise<void> = Promise.resolve();
+let targetsSaveGeneration = 0;
+let targetsSaveError: string | null = null;
+export function getTargetsSaveError(): string | null { return targetsSaveError; }
+export function resetTargetSyncForTests() { targetsSynced = false; targetsSaveQueue = Promise.resolve(); targetsSaveGeneration = 0; targetsSaveError = null; }
 async function syncTargetsFromBackend(): Promise<void> {
   try {
     const payload = await invoke<{ targets: any[] }>("targets_get");
     // Only a successful read lifts the guard: marking synced up front would
     // let a later edit persist a stale local table over the real config.
+    const targets = payload.targets as PreviewState["targets"];
+    if (!Array.isArray(targets)) throw new Error("targets_get returned an invalid target list");
     targetsSynced = true;
-    const targets = (payload.targets ?? []) as PreviewState["targets"];
-    if (!Array.isArray(targets) || !targets.length) return;
     mutatePreview(next => {
       next.targets = targets;
       if (!next.targets.some(t => t.id === next.selectedTargetId)) {
@@ -258,14 +311,36 @@ async function syncTargetsFromBackend(): Promise<void> {
   }
 }
 
-function persistTargetsToBackend(): void {
+async function persistTargetsToBackend(): Promise<void> {
   // Before the first successful sync, state.targets may be a stale localStorage
   // table (or the hardcoded initial pair); saving it would silently overwrite
   // the real backend config. Surface nothing else — the retry loop lifts the
   // guard, after which edits flow through normally.
-  if (!targetsSynced) return;
-  void backendInvoke("targets_save", { targets: state.targets })
-    .catch(error => console.error("targets_save failed", error));
+  if (isDesktop() && !targetsSynced) throw new Error("正在同步已保存目标，请稍后再试");
+  const generation = ++targetsSaveGeneration;
+  const snapshot = structuredClone(state.targets);
+  if (!isDesktop()) return;
+  let resolveSave: (() => void) | undefined;
+  let rejectSave: ((error: unknown) => void) | undefined;
+  const completion = new Promise<void>((resolve, reject) => { resolveSave = resolve; rejectSave = reject; });
+  targetsSaveQueue = targetsSaveQueue.then(async () => {
+    targetsSaveError = null;
+    const payload = await backendInvoke<{ targets?: PreviewState["targets"] }>("targets_save", { targets: snapshot });
+    if (generation !== targetsSaveGeneration) { resolveSave?.(); return; }
+    const saved = Array.isArray(payload.targets) ? payload.targets : snapshot;
+    mutatePreview(next => {
+      next.targets = saved;
+      if (!next.targets.some(t => t.id === next.selectedTargetId)) {
+        next.selectedTargetId = next.targets.find(t => t.enabled)?.id ?? next.targets[0]?.id ?? null;
+      }
+    });
+    resolveSave?.();
+  }).catch(error => {
+    targetsSaveError = error instanceof Error ? error.message : String(error);
+    console.error("targets_save failed", error);
+    rejectSave?.(error);
+  });
+  await completion;
 }
 export function startPreviewRuntime(): () => void {
   users++;
@@ -298,6 +373,9 @@ export function startPreviewRuntime(): () => void {
 export function monitorBusy(): boolean {
   return ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase);
 }
+export function targetEditingBlocked(): boolean {
+  return ["capturing", "stopping", "generating"].includes(state.monitor.phase);
+}
 const busy = monitorBusy;
 export async function previewAction<K extends PreviewAction>(action: K, payload?: PreviewActionPayloads[K]): Promise<void> {
   const p = payload as any;
@@ -313,7 +391,7 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
     return;
   }
   if (action.startsWith("target.")) {
-    if (busy()) throw new Error("采集中不能修改目标");
+    if (targetEditingBlocked()) throw new Error("采集或生成报告期间不能修改目标，请先停止监控");
     const existing = state.targets.find(t => t.id === p?.id);
     if (action !== "target.add" && !existing) throw new Error("目标不存在");
     if (action === "target.add" || action === "target.update") {
@@ -321,36 +399,58 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
       const executable = (p.executable ?? existing?.executable ?? "").trim();
       if (!name || !/^[^\\/:*?"<>|]+\.exe$/i.test(executable)) throw new Error("请输入名称和有效的 .exe 进程名");
       if (state.targets.some(t => t.id !== existing?.id && t.executable.toLowerCase() === executable.toLowerCase())) throw new Error("进程名已存在");
+      const before = structuredClone(state.targets);
+      const previousSelection = state.selectedTargetId;
       mutatePreview(next => {
         if (existing) Object.assign(next.targets.find(t => t.id === existing.id)!, p, { name, executable });
         else next.targets.push({ id: nextTargetId(), name, executable, enabled: p.enabled ?? true });
       });
-      persistTargetsToBackend();
-    } else if (action === "target.remove") mutatePreview(next => {
-      next.targets = next.targets.filter(t => t.id !== p.id);
-      if (next.selectedTargetId === p.id) next.selectedTargetId = next.targets[0]?.id ?? null;
-    });
+      try {
+        await persistTargetsToBackend();
+      } catch (error) {
+        mutatePreview(next => { next.targets = before; next.selectedTargetId = previousSelection; });
+        throw error;
+      }
+    } else if (action === "target.remove") {
+      const previousTargets = structuredClone(state.targets);
+      const previousSelection = state.selectedTargetId;
+      mutatePreview(next => {
+        next.targets = next.targets.filter(t => t.id !== p.id);
+        if (next.selectedTargetId === p.id) next.selectedTargetId = next.targets[0]?.id ?? null;
+      });
+      try {
+        await persistTargetsToBackend();
+      } catch (error) {
+        mutatePreview(next => { next.targets = previousTargets; next.selectedTargetId = previousSelection; });
+        throw error;
+      }
+      return;
+    }
     else if (action === "target.select") mutatePreview(next => { next.selectedTargetId = p.id; });
     else throw new Error(`Unsupported preview action: ${action}`);
-    if (action === "target.remove") persistTargetsToBackend();
     return;
   }
   if (action === "monitor.start") {
     if (busy()) throw new Error("模拟监控已经启动");
-    const target = state.targets.find(t => t.id === (p?.targetId ?? state.selectedTargetId));
-    if (!target?.enabled) throw new Error("请先选择已启用目标");
+    const target = state.targets.find(t => t.enabled);
     // The real watcher must be up before the UI flips to "waiting"; its
     // failures (missing exe, disabled target) surface verbatim.
-    if (isDesktop()) await backendInvoke("monitor_start", { targetId: target.executable });
-    mutatePreview(next => { next.monitor = { ...initial().monitor, phase: "waiting", targetId: target.id, startedAt: new Date().toISOString() }; });
+    if (isDesktop()) await backendInvoke("monitor_start");
+    desktopStopRequested = false;
+    completedRunsBaseline = null;
+    mutatePreview(next => { next.monitor = { ...initial().monitor, phase: "waiting", targetId: isDesktop() ? null : target?.id ?? null, startedAt: new Date().toISOString() }; });
     return;
   }
   if (action === "monitor.stop") {
     if (!["waiting", "capturing"].includes(state.monitor.phase)) throw new Error("没有正在运行的模拟采集");
     if (isDesktop()) {
-      // Real stop kills the pipeline tree; there is no report to finalize.
-      await backendInvoke("monitor_stop");
-      mutatePreview(next => { next.monitor = { ...initial().monitor, phase: "idle" }; });
+      const result = await backendInvoke<{ status: string; completedRuns?: number }>("monitor_stop");
+      if (result.status !== "stopping") throw new Error("停止请求未被接受");
+      desktopStopRequested = true;
+      if (completedRunsBaseline == null && typeof result.completedRuns === "number") {
+        completedRunsBaseline = result.completedRuns;
+      }
+      mutatePreview(next => { next.monitor.phase = "stopping"; });
     } else {
       mutatePreview(next => { next.monitor.phase = "stopping"; });
     }
@@ -377,6 +477,9 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
         sampleIntervalMs: cfg.sampleIntervalMs,
         pollIntervalMs: cfg.pollIntervalMs,
         autoOpenReport: cfg.autoOpenReport,
+        autoStart: cfg.autoStart,
+        autoStartOverlay: cfg.autoStartOverlay,
+        startMinimized: cfg.startMinimized,
         detailedLogging: cfg.detailedLogging,
         diagnosticLogging: cfg.diagnosticLogging,
       } });
@@ -387,7 +490,21 @@ export async function previewAction<K extends PreviewAction>(action: K, payload?
   if (action.startsWith("report.")) {
     const report = state.reports.find(r => r.id === p?.id);
     if (!report) throw new Error("报告不存在");
-    if (action === "report.remove") { mutatePreview(next => { next.reports = next.reports.filter(r => r.id !== p.id); }); return; }
+    if (action === "report.delete" || action === "report.remove") {
+      if (report.operation === "regenerating" || report.operation === "diagnosing") throw new Error("报告正在处理，请完成后再删除");
+      if (state.monitor.reportId === report.id && busy()) throw new Error("正在采集或生成的报告不能删除");
+      if (isDesktop()) {
+        const result = await backendInvoke<{ status: string; id: string }>("report_delete", { id: report.id });
+        if (result.status !== "recycled" || result.id !== report.id) throw new Error("未确认报告已移入回收站");
+        reportsRequestGeneration++;
+      }
+      mutatePreview(next => {
+        next.reports = next.reports.filter(r => r.id !== report.id);
+        if (next.monitor.reportId === report.id) next.monitor.reportId = null;
+      });
+      if (isDesktop()) await refreshDesktopReports();
+      return;
+    }
     if (action === "report.regenerate") {
       const current = state.reports.find(r => r.id === p.id);
       if (!current) throw new Error("报告不存在");

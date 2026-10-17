@@ -19,6 +19,11 @@ public sealed class FrameScopePresentMonPlan
 
 public static class FrameScopeCapturePlanner
 {
+    public static bool ShouldRecoverStalledCapture(long elapsedMs, long? sourceAgeMs, bool attempted)
+    {
+        return !attempted && (sourceAgeMs.HasValue ? sourceAgeMs.Value >= 2000 : elapsedMs >= 8000);
+    }
+
     public static List<string> BuildTargetProcessBaseNames(string processNames, string displayName)
     {
         List<string> result = new List<string>();
@@ -53,7 +58,9 @@ public static class FrameScopeCapturePlanner
         string outputFile,
         string sessionName,
         bool timedCapture,
-        int captureSeconds)
+        int captureSeconds,
+        bool streamCsv = false,
+        bool runtimeOnly = false)
     {
         List<string> aliases = processBaseNames == null
             ? new List<string>()
@@ -81,9 +88,13 @@ public static class FrameScopeCapturePlanner
             plan.Arguments.Add(plan.CaptureTarget);
         }
 
+        if (streamCsv) plan.Arguments.Add("--output_stdout");
+        else plan.Arguments.AddRange(new[] { "--output_file", outputFile ?? "" });
+        // The v2 runtime-only CSV can count two rows per application Present.
+        // v1 preserves one application submission interval per row.
+        if (runtimeOnly) plan.Arguments.AddRange(new[] { "--v1_metrics", "--no_track_gpu", "--no_track_input", "--no_track_display" });
         plan.Arguments.AddRange(new[]
         {
-            "--output_file", outputFile ?? "",
             "--date_time",
             "--terminate_on_proc_exit",
             "--no_console_stats",

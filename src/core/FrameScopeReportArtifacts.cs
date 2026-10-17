@@ -19,11 +19,18 @@ internal sealed class FrameScopeReportArtifactState
     internal string ManifestInputFingerprint = "";
     internal string CurrentInputFingerprint = "";
     internal bool InputFingerprintMatches;
+    internal int FingerprintVersion;
+    internal string ArtifactStatus = "incomplete";
+    internal bool LegacyReadable;
+    internal string ReportKind = "error";
+    internal double? DurationSeconds;
     internal string Error = "";
+
+    internal bool IsReadable { get { return IsComplete || ArtifactStatus == "legacy-readable"; } }
 
     internal bool IsComplete
     {
-        get { return HtmlExists && DataExists && ManifestValid && PathsMatchRun && InputFingerprintMatches; }
+        get { return HtmlExists && DataExists && ManifestValid && PathsMatchRun && InputFingerprintMatches && !LegacyReadable; }
     }
 }
 
@@ -44,7 +51,11 @@ internal static class FrameScopeReportArtifacts
     {
         "presentmon.csv",
         "process-samples.csv",
-        "system-samples.csv"
+        "system-samples.csv",
+        "hardware-samples.csv",
+        "cpu-core-samples.csv",
+        "cpu-voltage-samples.csv",
+        "cpu-vid-samples.csv"
     };
 
     internal static FrameScopeReportArtifactState Inspect(string runDirectory)
@@ -68,6 +79,7 @@ internal static class FrameScopeReportArtifacts
                 ? finalCharts
                 : Path.GetFullPath(generatedDirectory);
             state.RunDirectory = run;
+            state.DurationSeconds = ReadDuration(run, null);
             state.HtmlPath = Path.Combine(finalCharts, ReportFileName);
             state.DataPath = Path.Combine(finalCharts, DataFileName);
             state.ManifestPath = Path.Combine(actualCharts, ManifestFileName);
@@ -104,6 +116,10 @@ internal static class FrameScopeReportArtifacts
                 return state;
             }
 
+            state.DurationSeconds = ReadDuration(run, manifest);
+            string kind = ReadString(manifest, "reportKind");
+            if (kind == "full" || kind == "partial" || kind == "diagnostic" || kind == "error") state.ReportKind = kind;
+            else state.ReportKind = ReadInt(manifest, "frames") > 0 ? "partial" : (HasUsableMonitorData(run) ? "diagnostic" : "error");
             string manifestReport = ReadString(manifest, "report");
             string manifestData = ReadString(manifest, "data");
             state.ManifestValid = manifest != null &&
@@ -127,18 +143,31 @@ internal static class FrameScopeReportArtifacts
                 return state;
             }
 
+            state.FingerprintVersion = ReadInt(manifest, "inputFingerprintVersion");
+            if (state.FingerprintVersion > 2 || state.FingerprintVersion < 0) { state.Error = "Unsupported input fingerprint version."; return state; }
             state.ManifestInputFingerprint = ReadString(manifest, InputFingerprintFieldName);
-            FrameScopeReportInputFingerprint currentFingerprint = CaptureInputFingerprint(run);
+            bool hasFingerprint = !string.IsNullOrWhiteSpace(state.ManifestInputFingerprint);
+            int inspectVersion = state.FingerprintVersion <= 1 ? 1 : 2;
+            FrameScopeReportInputFingerprint currentFingerprint = CaptureInputFingerprint(run, inspectVersion);
             state.CurrentInputFingerprint = currentFingerprint.Value;
-            state.InputFingerprintMatches = currentFingerprint.Stable &&
-                !string.IsNullOrWhiteSpace(state.ManifestInputFingerprint) &&
+            state.InputFingerprintMatches = currentFingerprint.Stable && hasFingerprint &&
                 string.Equals(state.ManifestInputFingerprint, currentFingerprint.Value, StringComparison.OrdinalIgnoreCase);
-            if (!state.InputFingerprintMatches)
+            state.LegacyReadable = state.FingerprintVersion <= 1;
+            if (state.InputFingerprintMatches && !state.LegacyReadable) state.ArtifactStatus = "complete";
+            else if (state.LegacyReadable && currentFingerprint.Stable && (state.InputFingerprintMatches || !hasFingerprint))
             {
+                state.ArtifactStatus = "legacy-readable";
+                state.Error = "Report is readable, but its input fingerprint does not cover the current versioned CSV contract.";
+                return state;
+            }
+            else if (!currentFingerprint.Stable || (hasFingerprint && !state.InputFingerprintMatches))
+            {
+                state.ArtifactStatus = "inputs-changed";
                 state.Error = "Report input fingerprint does not match the current monitor CSV inputs.";
                 return state;
             }
 
+            if (!hasFingerprint && !state.LegacyReadable) state.Error = "Report input fingerprint is missing.";
             return state;
         }
         catch (Exception ex)
@@ -150,13 +179,18 @@ internal static class FrameScopeReportArtifacts
 
     internal static FrameScopeReportInputFingerprint CaptureInputFingerprint(string runDirectory)
     {
+        return CaptureInputFingerprint(runDirectory, 2);
+    }
+
+    internal static FrameScopeReportInputFingerprint CaptureInputFingerprint(string runDirectory, int version)
+    {
         string run = Path.GetFullPath(runDirectory ?? "");
-        string first = BuildInputSnapshot(run);
-        string second = BuildInputSnapshot(run);
+        string first = BuildInputSnapshot(run, version);
+        string second = BuildInputSnapshot(run, version);
         return new FrameScopeReportInputFingerprint
         {
             Value = HashSnapshot(second),
-            Stable = string.Equals(first, second, StringComparison.Ordinal)
+            Stable = first.IndexOf("|error|", StringComparison.Ordinal) < 0 && string.Equals(first, second, StringComparison.Ordinal)
         };
     }
 
@@ -177,17 +211,17 @@ internal static class FrameScopeReportArtifacts
         {
             using (var reader = new StreamReader(path, Encoding.UTF8, true))
             {
-                bool headerSeen = false;
+                string header = reader.ReadLine();
+                if (header == null) return false;
+                List<string> headers = ParseCsvFields(header);
+                int timeIndex = headers.FindIndex(h => h.Equals("Time", StringComparison.OrdinalIgnoreCase) || h.Equals("TimeInDateTime", StringComparison.OrdinalIgnoreCase) || h.Equals("TimeInSeconds", StringComparison.OrdinalIgnoreCase));
+                if (timeIndex < 0) return false;
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
-                    if (string.IsNullOrWhiteSpace(line)) continue;
-                    if (!headerSeen)
-                    {
-                        headerSeen = true;
-                        continue;
-                    }
-                    return true;
+                    List<string> fields = ParseCsvFields(line);
+                    DateTime time;
+                    if (fields.Count == headers.Count && DateTime.TryParse(fields[timeIndex], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out time)) return true;
                 }
             }
         }
@@ -205,12 +239,36 @@ internal static class FrameScopeReportArtifacts
             : "";
     }
 
-    private static string BuildInputSnapshot(string runDirectory)
+    private static List<string> ParseCsvFields(string line)
+    {
+        var fields = new List<string>();
+        var text = new StringBuilder();
+        bool quoted = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c == '"')
+            {
+                if (quoted && i + 1 < line.Length && line[i + 1] == '"') { text.Append('"'); i++; }
+                else quoted = !quoted;
+            }
+            else if (c == ',' && !quoted) { fields.Add(text.ToString().Trim()); text.Length = 0; }
+            else text.Append(c);
+        }
+        if (quoted) return new List<string>();
+        fields.Add(text.ToString().Trim());
+        return fields;
+    }
+
+    private static string BuildInputSnapshot(string runDirectory, int version)
     {
         StringBuilder value = new StringBuilder();
         foreach (string name in MonitorCsvNames)
         {
             string path = Path.Combine(runDirectory, name);
+            if (version <= 1 && name.StartsWith("cpu-", StringComparison.OrdinalIgnoreCase)) continue;
+            // Preserve fingerprints of legacy runs which never recorded hardware samples.
+            if (version <= 1 && name == "hardware-samples.csv" && !File.Exists(path)) continue;
             value.Append(name).Append('|');
             try
             {
@@ -224,7 +282,12 @@ internal static class FrameScopeReportArtifacts
                 {
                     value.Append(file.Length.ToString(CultureInfo.InvariantCulture))
                         .Append('|')
-                        .Append(file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));
+                        .Append(file.LastWriteTimeUtc.Ticks.ToString(CultureInfo.InvariantCulture));                    if (version >= 2)
+                    {
+                        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                        using (SHA256 hash = SHA256.Create())
+                            value.Append('|').Append(BitConverter.ToString(hash.ComputeHash(stream)).Replace("-", "").ToLowerInvariant());
+                    }
                 }
             }
             catch (Exception ex)
@@ -234,6 +297,65 @@ internal static class FrameScopeReportArtifacts
             value.Append('\n');
         }
         return value.ToString();
+    }
+
+    internal static double? ReadDuration(string run, Dictionary<string, object> manifest)
+    {
+        object raw;
+        double seconds;
+        if (manifest != null && manifest.TryGetValue("durationSeconds", out raw) && raw != null &&
+            double.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) &&
+            !double.IsNaN(seconds) && !double.IsInfinity(seconds) && seconds > 0) return seconds;
+        foreach (string name in new[] { "summary.json", "status.json" })
+        {
+            try
+            {
+                var map = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(run, name), Encoding.UTF8));
+                DateTime start, end;
+                if (DateTime.TryParse(ReadString(map, "StartTime"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out start) &&
+                    DateTime.TryParse(ReadString(map, "EndTime"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out end) && end.ToUniversalTime() > start.ToUniversalTime())
+                    return (end.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds;
+            }
+            catch (IOException) { }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+        }
+        DateTime? first = null, last = null;
+        foreach (string name in MonitorCsvNames)
+        {
+            string path = Path.Combine(run, name);
+            if (!File.Exists(path)) continue;
+            try
+            {
+                using (var reader = new StreamReader(path, Encoding.UTF8, true))
+                {
+                    string header = reader.ReadLine();
+                    if (header == null) continue;
+                    List<string> headers = ParseCsvFields(header);
+                    int index = headers.FindIndex(h => h.Equals("Time", StringComparison.OrdinalIgnoreCase) || h.Equals("TimeInDateTime", StringComparison.OrdinalIgnoreCase) || h.Equals("TimeInSeconds", StringComparison.OrdinalIgnoreCase));
+                    if (index < 0) continue;
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        List<string> values = ParseCsvFields(line);
+                        DateTime time;
+                        if (values.Count != headers.Count || !DateTime.TryParse(values[index], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out time)) continue;
+                        time = time.ToUniversalTime();
+                        if (!first.HasValue || time < first.Value) first = time;
+                        if (!last.HasValue || time > last.Value) last = time;
+                    }
+                }
+            }
+            catch (IOException) { }
+        }
+        return first.HasValue && last.HasValue && last.Value > first.Value ? (double?)(last.Value - first.Value).TotalSeconds : null;
+    }
+
+    private static int ReadInt(Dictionary<string, object> map, string key)
+    {
+        object value;
+        int parsed;
+        return map != null && map.TryGetValue(key, out value) && value != null && Int32.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed) ? parsed : 0;
     }
 
     private static string HashSnapshot(string snapshot)

@@ -31,6 +31,7 @@ public static class FrameScopeSingleInstanceLaunchGuardTests
 
     private static void WorkerAndDiagnosticLaunchesBypassUiGuard()
     {
+        AssertFalse(FrameScopeNativeMonitor.IsInteractiveUiLaunchForTest(new[] { "--stop-owned-background", "--config", "fixture.json" }), "stop CLI must bypass UI single-instance lock");
         AssertFalse(FrameScopeNativeMonitor.IsInteractiveUiLaunchForTest(new[] { "--watcher" }), "--watcher must bypass UI single-instance lock");
         AssertFalse(FrameScopeNativeMonitor.IsInteractiveUiLaunchForTest(new[] { "--monitor-session" }), "--monitor-session must bypass UI single-instance lock");
         AssertFalse(FrameScopeNativeMonitor.IsInteractiveUiLaunchForTest(new[] { "--MonitorProcessRole", "monitor-session-worker" }), "--MonitorProcessRole diagnostic role must bypass UI single-instance lock");

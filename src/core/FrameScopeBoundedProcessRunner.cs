@@ -91,10 +91,13 @@ internal static class FrameScopeBoundedProcessRunner
                 }
             }
 
-            try { if (!process.HasExited) process.WaitForExit(5000); }
+            int cleanupBudget = Math.Max(0, totalTimeoutMs - (int)Math.Min(Int32.MaxValue, timer.ElapsedMilliseconds));
+            try { if (!process.HasExited) process.WaitForExit(cleanupBudget); }
             catch { }
-            JoinDrain(outputThread, 5000);
-            JoinDrain(errorThread, 5000);
+            cleanupBudget = Math.Max(0, totalTimeoutMs - (int)Math.Min(Int32.MaxValue, timer.ElapsedMilliseconds));
+            JoinDrain(outputThread, cleanupBudget);
+            cleanupBudget = Math.Max(0, totalTimeoutMs - (int)Math.Min(Int32.MaxValue, timer.ElapsedMilliseconds));
+            JoinDrain(errorThread, cleanupBudget);
             try { if (process.HasExited) result.ExitCode = process.ExitCode; }
             catch { }
         }

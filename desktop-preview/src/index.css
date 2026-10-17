@@ -31,15 +31,6 @@
   font-display: swap;
 }
 
-/* 思源宋体 Heavy（沉浸式歌词专用） */
-@font-face {
-  font-family: "NotoSerifSC-900";
-  src: url("/fonts/NotoSerifSC-900.woff2") format("woff2");
-  font-weight: 900;
-  font-style: normal;
-  font-display: swap;
-}
-
 :root {
   font-family: var(--app-font-family, "Sinter-Regular"), Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
@@ -84,10 +75,40 @@ body {
   height: 100vh;
 }
 
+/* 独立竖排窗口先于 React 首次绘制设置标记，主题切换也不能涂满文档。 */
+html[data-overlay-window="vertical"],
+html[data-overlay-window="vertical"] body,
+html[data-overlay-window="vertical"] #root {
+  background: transparent !important;
+}
+
 [data-backdrop-filter] {
   transform: translateZ(0);
   /* backface-visibility: hidden 已删除 —— 它让被强制提升的合成层圆角走
      无抗锯齿的 mask 裁剪路径（问题 1 圆角毛刺的根因），与层提升本身无关 */
+}
+
+@keyframes framescope-crossfade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+::view-transition-group(root) {
+  animation-duration: 0.18s;
+}
+
+::view-transition-old(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+::view-transition-new(root) {
+  animation: framescope-crossfade-in 0.18s ease-out both;
+  mix-blend-mode: normal;
+}
+
+::view-transition {
+  pointer-events: none;
 }
 
 /* 页面切换动画期间的 backdrop-filter 处理（Round 8 重定）：
@@ -385,4 +406,3 @@ input.lyrics-vol-slider::-webkit-slider-thumb {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   cursor: pointer;
 }
-

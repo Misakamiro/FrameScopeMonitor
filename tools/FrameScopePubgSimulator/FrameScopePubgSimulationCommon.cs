@@ -53,13 +53,19 @@ public static class FrameScopePubgSimulationCommon
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("CSV path is empty.", "path");
         string dir = Path.GetDirectoryName(Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(false)))
+        {
+            WritePresentMonCsv(writer, scenario, rows);
+        }
+    }
+
+    public static void WritePresentMonCsv(TextWriter writer, string scenario, int rows)
+    {
 
         string mode = (scenario ?? "stable").Trim().ToLowerInvariant();
         int count = mode == "no-data" ? 0 : Math.Max(1, rows);
         DateTime start = DateTime.Now;
 
-        using (StreamWriter writer = new StreamWriter(path, false, new UTF8Encoding(false)))
-        {
             writer.WriteLine("Application,ProcessID,SwapChainAddress,PresentMode,AllowsTearing,TimeInDateTime,MsBetweenPresents");
             for (int i = 0; i < count; i++)
             {
@@ -71,7 +77,6 @@ public static class FrameScopePubgSimulationCommon
                 writer.Write(",");
                 writer.WriteLine(frameMs.ToString("0.###", CultureInfo.InvariantCulture));
             }
-        }
     }
 
     public static string GetArgValue(string[] args, string name, string fallback)

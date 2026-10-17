@@ -47,6 +47,7 @@ describe("isolated preview runtime", () => {
     await expect(invoke("set_active_gpu_index", { index: 4 })).rejects.toThrow();
   });
 
+
   it("represents unavailable metrics as null and omits unavailable raw sensor rows", async () => {
     await previewAction("scenario.set", "missing-sensors");
     expect(await invoke("get_overlay_hardware_data")).toMatchObject({ cpu_temp: null, gpu_power: null });
@@ -57,6 +58,16 @@ describe("isolated preview runtime", () => {
     expect(await invoke("get_overlay_hardware_data")).toMatchObject({ fps: null, cpu_usage: null, gpu_sensors: [] });
     await previewAction("scenario.set", "failure");
     await expect(invoke("get_hardware")).rejects.toThrow("Simulated");
+  });
+
+  it("keeps overlay switches independent of idle and waiting monitoring", async () => {
+    for (const phase of ["idle", "waiting"] as const) {
+      if (phase === "waiting") await previewAction("monitor.start");
+      await invoke("start_overlay_panel");
+      expect(getPreviewState().monitor.phase).toBe(phase);
+      await invoke("stop_overlay_panel");
+      expect(getPreviewState().monitor.phase).toBe(phase);
+    }
   });
 
   it("runs one main timer through all monitor phases and generates a simulated report", async () => {
@@ -86,11 +97,23 @@ describe("isolated preview runtime", () => {
     await previewAction("target.select", { id: target.id });
     await previewAction("target.update", { id: target.id, enabled: false });
     expect(getPreviewState().selectedTargetId).toBe(target.id);
-    await expect(previewAction("monitor.start")).rejects.toThrow();
     await previewAction("target.remove", { id: target.id });
+    await previewAction("monitor.start");
+    expect(getPreviewState().monitor.phase).toBe("waiting");
     await expect(previewAction("config.update", { captureDurationSeconds: -1 })).rejects.toThrow();
     expect(listener).toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it("allows target management while monitoring waits for a game", async () => {
+    await previewAction("monitor.start");
+    await previewAction("target.add", { name: "Naraka", executable: "NarakaBladepoint.exe" });
+    const target = getPreviewState().targets.at(-1)!;
+    await previewAction("target.update", { id: target.id, enabled: false });
+    expect(getPreviewState().targets.at(-1)?.enabled).toBe(false);
+    await previewAction("target.remove", { id: target.id });
+    expect(getPreviewState().targets.some(item => item.id === target.id)).toBe(false);
+    expect(getPreviewState().monitor.phase).toBe("waiting");
   });
 
   it("supports early stop and explicit failure without manufacturing a report", async () => {

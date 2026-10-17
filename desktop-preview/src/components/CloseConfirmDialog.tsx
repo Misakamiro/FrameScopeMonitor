@@ -13,6 +13,7 @@ import { LiquidGlassCard } from "./special/liquid-glass-card";
 import { LiquidGlassButton } from "./special/liquid-glass-button";
 
 interface CloseConfirmDialogProps {
+  exitError?: string | null;
   isOpen: boolean;
   onClose: () => void;
   onCloseApp: (savePreference: boolean) => void;
@@ -20,6 +21,7 @@ interface CloseConfirmDialogProps {
 }
 
 export function CloseConfirmDialog({
+  exitError,
   isOpen,
   onClose,
   onCloseApp,
@@ -95,6 +97,7 @@ export function CloseConfirmDialog({
                 <Text fontSize="sm" color={textColor} textAlign="center">
                   {t("closeDialog.message")}
                 </Text>
+                {exitError && <Text fontSize="sm" color="red.400" role="alert">{exitError}</Text>}
 
                 <HStack spacing={3} justify="center">
                   <LiquidGlassButton

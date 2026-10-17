@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=icons/icon.ico");
     // requireAdministrator: the ETW frame capture, LibreHardwareMonitor
     // driver-backed sensors and the PawnIO driver all need an elevated
     // process; child processes (hardware service, watcher) inherit the token.

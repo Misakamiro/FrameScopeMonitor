@@ -14,6 +14,7 @@ internal static partial class FrameScopeNativeMonitor
         try
         {
             ReportCompletionKeepsTopLevelAndNestedSummaryInSync();
+            FinalResultOverridesStaleProgressRetryFlag();
             Console.WriteLine("FrameScopeReportStatusTests: PASS");
             return 0;
         }
@@ -120,6 +121,33 @@ internal static partial class FrameScopeNativeMonitor
 
     private static void WriteFrameScopeLog(string message)
     {
+    }
+
+    private static void FinalResultOverridesStaleProgressRetryFlag()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-status-stale-progress-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string progress = Path.Combine(dir, "report-progress.json");
+            FrameScopeReportProgress.Write(progress, "Completed", 100, "old attempt", DateTime.Now, null, false);
+            ReportGenerationResult result = new ReportGenerationResult
+            {
+                ProgressPath = progress,
+                ReportHtml = Path.Combine(dir, "charts", "report.html"),
+                ExitCode = -1,
+                CanRetry = true,
+                Error = "new attempt failed",
+                ReportKind = "error"
+            };
+            Dictionary<string, object> status = UpdateStatusAfterReportGeneration(dir, null, result, 0);
+            Dictionary<string, object> summary = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(dir, "summary.json")));
+            Dictionary<string, object> reports = (Dictionary<string, object>)summary["Reports"];
+            AssertEqual(true, Convert.ToBoolean(status["ReportCanRetry"]), "final result must override stale progress retry flag");
+            AssertEqual(true, Convert.ToBoolean(summary["ReportCanRetry"]), "summary final retry flag");
+            AssertEqual(summary["ReportCanRetry"], reports["CanRetry"], "top-level and nested retry agree");
+        }
+        finally { Directory.Delete(dir, true); }
     }
 
     private static void AssertEqual<T>(T expected, T actual, string label)

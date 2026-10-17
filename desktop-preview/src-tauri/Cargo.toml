@@ -7,6 +7,9 @@ license = "GPL-3.0"
 
 [workspace]
 
+[features]
+uiaccess-acceptance = []
+
 [lib]
 name = "framescope_ui_preview"
 path = "src/lib.rs"
@@ -30,6 +33,7 @@ sha2 = "0.10"
 sysinfo = "0.30"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_UI_Shell"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
@@ -39,11 +43,15 @@ windows-sys = { version = "0.59", features = [
   "Win32_Security",
   "Win32_Storage_FileSystem",
   "Win32_System_IO",
+  "Win32_System_Environment",
+  "Win32_System_SystemInformation",
   "Win32_System_JobObjects",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Pipes",
   "Win32_System_Threading",
   "Win32_System_Registry",
   "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_HiDpi",
   "Win32_System_LibraryLoader"
 ] }
 
@@ -52,3 +60,4 @@ windows-sys = { version = "0.59", features = [
 # See vendor/tao/src/platform_impl/windows/window.rs "PATCH(framescope)".
 [patch.crates-io]
 tao = { path = "vendor/tao" }
+wry = { path = "vendor/wry" }

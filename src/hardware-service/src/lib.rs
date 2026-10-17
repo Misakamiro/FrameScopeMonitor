@@ -8,13 +8,14 @@ use provider::ResidentProvider;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 const MIN_INTERVAL_MS: u64 = 250;
 const MAX_INTERVAL_MS: u64 = 5000;
-// 100ms（10Hz）：瞬时 FPS 窗口在 300FPS 下仅 ~200ms，1Hz 节流会让 OSD 读数
-// 最多糊 1 秒（采集链重写后的配套调整；ETW 事件本身仍是事件驱动零轮询）。
-const DEFAULT_THROTTLE_MS: u64 = 100;
+// Only the physical hardware read is throttled. fps_sample() is evaluated on
+// every overlay request independently of this cache (the host polls at 10Hz).
+const DEFAULT_THROTTLE_MS: u64 = 1000;
 
 #[derive(Debug, Deserialize)]
 pub struct Request {
@@ -59,11 +60,46 @@ impl Default for ServiceState {
 /// throttle window, and the resident provider child outlive any single client.
 struct ResidentState {
     provider: Mutex<ResidentProvider>,
-    last_payload: Mutex<Option<serde_json::Value>>,
-    last_real_read: Mutex<Option<Instant>>,
-    overlay_cache: Mutex<Option<(overlay::OverlayData, Instant)>>,
+    last_payload: Mutex<Option<(serde_json::Value, Instant)>>,
+    overlay_cache: Mutex<Option<OverlayCache>>,
     active_gpu: AtomicUsize,
     throttle: Mutex<Duration>,
+}
+
+struct OverlayCache {
+    data: overlay::OverlayData,
+    last_real: HashMap<String, Instant>,
+}
+
+fn aggregate_overlay_sample(cache: &mut Option<OverlayCache>, mut data: overlay::OverlayData,
+    observed_at: Option<Instant>, now: Instant) -> overlay::OverlayData {
+    if observed_at.map(|time| now.saturating_duration_since(time) <= Duration::from_secs(1)) != Some(true) {
+        overlay::clear_hardware_values(&mut data);
+    }
+    let mut last_real = cache.as_ref().map(|c| c.last_real.clone()).unwrap_or_default();
+    if let Some(time) = observed_at {
+        // Cached provider payloads keep their original observation time across all consumers.
+        overlay::record_observed_fields(&data, time, &mut last_real);
+    }
+    if let Some(previous) = cache.as_mut() {
+        overlay::merge_overlay_with_ttl(&mut data, &previous.data, now, &last_real,
+            Duration::from_secs(1));
+    }
+    last_real.retain(|_, time| now.saturating_duration_since(*time) <= Duration::from_secs(1));
+    *cache = Some(OverlayCache { data: data.clone(), last_real });
+    data
+}
+
+fn aggregate_overlay_failure(cache: &mut Option<OverlayCache>, requested: usize, now: Instant) -> overlay::OverlayData {
+    let mut missing = overlay::OverlayData::default();
+    if let Some(previous) = cache.as_ref() {
+        // Keep identities so each GPU can expire independently; retain no cached numbers as new observations.
+        missing.gpu_sensors = previous.data.gpu_sensors.clone();
+        missing.active_gpu_index = requested.min(missing.gpu_sensors.len().saturating_sub(1));
+        missing.cpu_core_clocks.resize(previous.data.cpu_core_clocks.len(), None);
+        missing.cpu_core_voltages.resize(previous.data.cpu_core_voltages.len(), None);
+    }
+    aggregate_overlay_sample(cache, missing, None, now)
 }
 
 static RESIDENT: OnceLock<ResidentState> = OnceLock::new();
@@ -72,7 +108,6 @@ fn resident() -> &'static ResidentState {
     RESIDENT.get_or_init(|| ResidentState {
         provider: Mutex::new(ResidentProvider::new()),
         last_payload: Mutex::new(None),
-        last_real_read: Mutex::new(None),
         overlay_cache: Mutex::new(None),
         active_gpu: AtomicUsize::new(0),
         throttle: Mutex::new(Duration::from_millis(DEFAULT_THROTTLE_MS)),
@@ -87,26 +122,54 @@ fn ping_sample() -> Option<u32> {
 // The ETW FPS monitor (NexBox game_fps port) starts lazily on the first
 // overlay request; without admin rights the session start fails and the
 // values stay null (fail-closed).
-static FPS_STARTED: AtomicBool = AtomicBool::new(false);
-static FPS_LAST_ATTEMPT_MS: AtomicU64 = AtomicU64::new(0);
+struct FpsStartGate {
+    last_attempt: AtomicU64,
+}
 
-fn fps_sample() -> (Option<f64>, Option<f64>, Option<f64>) {
-    // Retry a failed start on a 5s throttle instead of latching forever: the
-    // first attempt often runs before elevation, and FPS_ACTIVE only flips
-    // once the session is really up.
-    if !FPS_STARTED.load(Ordering::SeqCst) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        if now.saturating_sub(FPS_LAST_ATTEMPT_MS.load(Ordering::SeqCst)) >= 5_000 {
-            FPS_LAST_ATTEMPT_MS.store(now, Ordering::SeqCst);
-            game_fps::start_fps_monitor();
-            if game_fps::fps_monitor_active() {
-                FPS_STARTED.store(true, Ordering::SeqCst);
-            }
+static FPS_START: FpsStartGate = FpsStartGate {
+    last_attempt: AtomicU64::new(0),
+};
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static FPS_LIFECYCLE: Mutex<()> = Mutex::new(());
+
+pub fn shutdown_service() -> Result<(), String> {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    {
+        let _lifecycle = FPS_LIFECYCLE.lock().unwrap_or_else(|p| p.into_inner());
+        game_fps::stop_fps_monitor();
+    }
+    if let Some(resident) = RESIDENT.get() {
+        resident.provider.lock().unwrap_or_else(|p| p.into_inner()).kill()?;
+    }
+    Ok(())
+}
+
+impl FpsStartGate {
+    fn ensure(&self, now: u64, active: impl Fn() -> bool, start: impl FnOnce()) {
+        if active() {
+            return;
+        }
+        let last = self.last_attempt.load(Ordering::SeqCst);
+        if now.saturating_sub(last) >= 5_000
+            && self.last_attempt.compare_exchange(last, now, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+        {
+            start();
         }
     }
+}
+
+fn fps_sample() -> (Option<f64>, Option<f64>, Option<f64>) {
+    let _lifecycle = FPS_LIFECYCLE.lock().unwrap_or_else(|p| p.into_inner());
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return (None, None, None);
+    }
+    // Recheck the worker each time: start sets active before ETW initialization,
+    // and asynchronous initialization or a later session failure can clear it.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    FPS_START.ensure(now, game_fps::fps_monitor_active, game_fps::start_fps_monitor);
     (
         game_fps::get_cached_fps().map(f64::from),
         game_fps::get_cached_1low_fps().map(f64::from),
@@ -121,6 +184,9 @@ pub fn dispatch(request: Request) -> serde_json::Value {
 
 pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_json::Value {
     let id = request.id.clone();
+    if SHUTTING_DOWN.load(Ordering::SeqCst) && request.method != "stop" {
+        return error_response(id, "service_shutting_down");
+    }
     let response = match request.method.as_str() {
         "handshake" => serde_json::json!({
             "protocol": "framescope-hardware-service/1",
@@ -203,7 +269,9 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
         "restart_provider" => {
             // force_reset also clears the suspended flag, so a manual restart
             // recovers from consecutive-failure give-up.
-            resident().provider.lock().unwrap().force_reset();
+            let mut provider = resident().provider.lock().unwrap();
+            if SHUTTING_DOWN.load(Ordering::SeqCst) { return error_response(id, "service_shutting_down"); }
+            if let Err(error) = provider.force_reset() { return error_response(id, &error); }
             serde_json::json!({ "status": "restarting" })
         }
         "start" => {
@@ -212,7 +280,8 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
         }
         "stop" => {
             state.running = false;
-            serde_json::json!({ "status": "stopped" })
+            if let Err(error) = shutdown_service() { return error_response(id, &error); }
+            serde_json::json!({ "status": "stopped", "shutdownComplete": true })
         }
         _ => return error_response(id, "unsupported_method"),
     };
@@ -223,28 +292,26 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
 /// One snapshot from the resident provider, throttled: repeated calls inside
 /// the sampling interval reuse the last payload instead of re-reading LHM.
 fn read_snapshot(state: &ServiceState) -> Result<serde_json::Value, String> {
-    let res = resident();
-    res.provider
-        .lock()
-        .unwrap()
-        .set_helper(state.lhm_helper_path.clone());
+    read_snapshot_with_observation(state).map(|(payload, _)| payload)
+}
 
+fn read_snapshot_with_observation(state: &ServiceState) -> Result<(serde_json::Value, Instant), String> {
+    let res = resident();
+    // Serialize cache check/read/publication with provider requests: a payload and its
+    // actual observation time are one snapshot, including get_sensors/get_snapshot reads.
+    let mut provider = res.provider.lock().unwrap();
+    if SHUTTING_DOWN.load(Ordering::SeqCst) { return Err("service_shutting_down".into()); }
+    provider.set_helper(state.lhm_helper_path.clone())?;
     let throttle = *res.throttle.lock().unwrap();
-    {
-        let payload = res.last_payload.lock().unwrap();
-        if let Some(payload) = payload.as_ref() {
-            if let Some(last) = *res.last_real_read.lock().unwrap() {
-                if last.elapsed() < throttle {
-                    return Ok(payload.clone());
-                }
-            }
+    if let Some((payload, observed_at)) = res.last_payload.lock().unwrap().as_ref() {
+        if observed_at.elapsed() < throttle {
+            return Ok((payload.clone(), *observed_at));
         }
     }
-
-    let payload = res.provider.lock().unwrap().read()?;
-    *res.last_payload.lock().unwrap() = Some(payload.clone());
-    *res.last_real_read.lock().unwrap() = Some(Instant::now());
-    Ok(payload)
+    let payload = provider.read()?;
+    let observed_at = Instant::now();
+    *res.last_payload.lock().unwrap() = Some((payload.clone(), observed_at));
+    Ok((payload, observed_at))
 }
 
 fn capture_snapshot(state: &ServiceState, method: &str) -> serde_json::Value {
@@ -253,44 +320,54 @@ fn capture_snapshot(state: &ServiceState, method: &str) -> serde_json::Value {
     }
     match read_snapshot(state) {
         Ok(value) => value,
-        Err(error) => unavailable_with_error(method, error),
+        Err(error) => {
+            let mut value = unavailable_with_error(method, error);
+            value["providerState"] = resident().provider.lock().unwrap().diagnostics();
+            value
+        },
     }
 }
 
 /// Aggregated overlay snapshot. Carry-forward (field-level OR merge against
-/// the previous snapshot) is only applied while the previous sample is fresh
-/// (≤5s old) — without that bound a retired sensor or an exited game would
+/// the previous snapshot) is only applied while each actual observation is fresh
+/// (≤1s old) — without that bound a retired sensor or an exited game would
 /// keep serving its last value forever. Stale/failing paths return nulls
 /// (fail-closed), never synthetic numbers.
 fn overlay_data_response(state: &ServiceState) -> serde_json::Value {
-    // 1s（对齐 tubatools 的 2s 无帧归零）：5s 的 carry-forward 会让停帧后读数糊 5 秒
-    const OVERLAY_FRESH: Duration = Duration::from_secs(1);
     let res = resident();
-    let data = match read_snapshot(state) {
-        Ok(payload) => {
+    let data = match read_snapshot_with_observation(state) {
+        Ok((payload, observed_at)) => {
             let requested = res.active_gpu.load(Ordering::Relaxed);
-            let mut data =
-                overlay::build_overlay_data(&payload, fps_sample(), ping_sample(), requested);
-            let mut cache = res.overlay_cache.lock().unwrap();
-            if let Some((old, at)) = cache.as_ref() {
-                if at.elapsed() <= OVERLAY_FRESH {
-                    overlay::merge_overlay(&mut data, old);
-                }
-            }
-            *cache = Some((data.clone(), Instant::now()));
-            data
+            let data = overlay::build_overlay_data(&payload, fps_sample(), ping_sample(), requested);
+            aggregate_overlay_sample(&mut res.overlay_cache.lock().unwrap(), data, Some(observed_at), Instant::now())
         }
         Err(error) => {
             eprintln!("framescope-hardware-service: overlay read failed: {error}");
-            let cached = res.overlay_cache.lock().unwrap().clone();
-            match cached {
-                // Serve the last good snapshot only while it is fresh.
-                Some((old, at)) if at.elapsed() <= OVERLAY_FRESH => old,
-                _ => overlay::OverlayData::default(),
-            }
+            aggregate_overlay_failure(&mut res.overlay_cache.lock().unwrap(),
+                res.active_gpu.load(Ordering::Relaxed), Instant::now())
         }
     };
-    serde_json::to_value(&data).unwrap_or(serde_json::Value::Null)
+    let mut value = serde_json::to_value(&data).unwrap_or(serde_json::Value::Null);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("target_pid".into(), serde_json::json!(game_fps::current_target_pid()));
+        object.insert("timestamp_ms".into(), serde_json::json!(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_millis() as u64));
+    }
+    value
+}
+
+#[cfg(test)]
+fn publish_inprocess_snapshot(path: &std::path::Path, value: &serde_json::Value) -> std::io::Result<()> {
+    // The DLL accepts at most 4096 bytes. Sensor arrays belong to the main UI;
+    // forwarding them here can make an otherwise valid snapshot unreadable.
+    let compact = serde_json::json!({
+        "target_pid": value["target_pid"], "timestamp_ms": value["timestamp_ms"],
+        "fps": value["fps"], "fps_1low": value["fps_1low"], "fps_01low": value["fps_01low"],
+    });
+    let temp = path.with_extension("json.tmp");
+    std::fs::write(&temp, serde_json::to_vec(&compact)?)?;
+    std::fs::rename(temp, path)
 }
 
 fn memory_status_response(state: &ServiceState) -> serde_json::Value {
@@ -371,8 +448,8 @@ fn static_hardware_response(state: &ServiceState) -> serde_json::Value {
     let res = resident();
     let result = {
         let mut provider = res.provider.lock().unwrap();
-        provider.set_helper(state.lhm_helper_path.clone());
-        provider.send_raw("{\"cmd\":\"static\"}")
+        if SHUTTING_DOWN.load(Ordering::SeqCst) { Err("service_shutting_down".into()) }
+        else { provider.set_helper(state.lhm_helper_path.clone()).and_then(|_| provider.send_raw("{\"cmd\":\"static\"}")) }
     };
     match result {
         Ok(value) => {
@@ -411,13 +488,8 @@ fn static_hardware_response(state: &ServiceState) -> serde_json::Value {
 /// current GPU temperature/usage and CPU load inline, so overlay them in.
 fn merge_live_into_static(hardware: &mut serde_json::Value, overlay: &serde_json::Value) {
     if let Some(obj) = hardware.as_object_mut() {
-        if let (Some(cpu), Some(usage)) = (
-            obj.get_mut("cpu").and_then(|v| v.as_object_mut()),
-            overlay.get("cpu_usage"),
-        ) {
-            if !usage.is_null() {
-                cpu.insert("load_percentage".into(), usage.clone());
-            }
+        if let Some(cpu) = obj.get_mut("cpu").and_then(|v| v.as_object_mut()) {
+            cpu.insert("load_percentage".into(), overlay.get("cpu_usage").cloned().unwrap_or(serde_json::Value::Null));
         }
         if let Some(gpus) = obj.get_mut("gpu").and_then(|v| v.as_array_mut()) {
             let sensors = overlay
@@ -425,18 +497,29 @@ fn merge_live_into_static(hardware: &mut serde_json::Value, overlay: &serde_json
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            for (index, gpu) in gpus.iter_mut().enumerate() {
+            let mut static_names = HashMap::new();
+            for gpu in gpus.iter() {
+                let name = gpu.get("name").and_then(|v| v.as_str()).unwrap_or("").to_ascii_lowercase();
+                *static_names.entry(name).or_insert(0usize) += 1;
+            }
+            for gpu in gpus.iter_mut() {
                 let name = gpu.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                let sensor = sensors
-                    .iter()
-                    .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(name))
-                    .or_else(|| sensors.get(index));
-                if let (Some(gpu_obj), Some(sensor)) = (gpu.as_object_mut(), sensor) {
+                let identifier = gpu.get("identifier").and_then(|v| v.as_str()).filter(|id| !id.is_empty());
+                let matches: Vec<_> = sensors.iter().filter(|sensor| {
+                    if let Some(id) = identifier {
+                        sensor.get("identifier").and_then(|v| v.as_str())
+                            .map(|other| id.eq_ignore_ascii_case(other)).unwrap_or(false)
+                    } else {
+                        !name.is_empty() && static_names.get(&name.to_ascii_lowercase()) == Some(&1)
+                            && sensor.get("name").and_then(|v| v.as_str())
+                                .map(|other| name.eq_ignore_ascii_case(other)).unwrap_or(false)
+                    }
+                }).collect();
+                let sensor = if matches.len() == 1 { Some(matches[0]) } else { None };
+                if let Some(gpu_obj) = gpu.as_object_mut() {
                     for key in ["temperature", "usage"] {
-                        let value = sensor.get(key).cloned().unwrap_or(serde_json::Value::Null);
-                        if !value.is_null() {
-                            gpu_obj.insert(key.to_string(), value);
-                        }
+                        let value = sensor.and_then(|s| s.get(key)).cloned().unwrap_or(serde_json::Value::Null);
+                        gpu_obj.insert(key.to_string(), value);
                     }
                 }
             }
@@ -476,8 +559,11 @@ fn capture_overlay_metrics(data_root: &str) -> serde_json::Value {
         }
     };
     let average = frame_times.iter().sum::<f64>() / frame_times.len() as f64;
-    let low_1 = slow_average(&frame_times, 0.01);
-    let low_01 = slow_average(&frame_times, 0.001);
+    // Do not expose a single startup frame as a percentile. The live tracker
+    // uses the same minimum sample gates (100 / 900) and reports unavailable
+    // until the corresponding window has enough data.
+    let low_1 = slow_average(&frame_times, 0.01, 100);
+    let low_01 = slow_average(&frame_times, 0.001, 900);
     serde_json::json!({
         "availability": "available",
         "capturedAt": captured_at,
@@ -486,8 +572,8 @@ fn capture_overlay_metrics(data_root: &str) -> serde_json::Value {
         "frameCount": frame_times.len(),
         "fps": round(1000.0 / average, 2),
         "frameTimeMs": round(average, 3),
-        "fps_1low": round(1000.0 / low_1, 2),
-        "fps_01low": round(1000.0 / low_01, 2),
+        "fps_1low": low_1.map(|v| round(1000.0 / v, 2)),
+        "fps_01low": low_01.map(|v| round(1000.0 / v, 2)),
         "errors": []
     })
 }
@@ -602,11 +688,14 @@ fn split_csv(line: &str) -> Vec<String> {
     fields
 }
 
-fn slow_average(values: &[f64], fraction: f64) -> f64 {
+fn slow_average(values: &[f64], fraction: f64, minimum_samples: usize) -> Option<f64> {
+    if values.len() < minimum_samples {
+        return None;
+    }
     let count = ((values.len() as f64 * fraction).ceil() as usize).max(1);
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    sorted.iter().take(count).sum::<f64>() / count as f64
+    Some(sorted.iter().take(count).sum::<f64>() / count as f64)
 }
 
 fn round(value: f64, digits: i32) -> f64 {
@@ -625,7 +714,11 @@ fn unavailable_payload(method: &str) -> serde_json::Value {
 fn unavailable_with_error(method: &str, error: String) -> serde_json::Value {
     let mut value = unavailable_payload(method);
     if let Some(errors) = value.get_mut("errors").and_then(|v| v.as_array_mut()) {
-        errors[0] = serde_json::json!(error);
+        if let Some(first) = errors.first_mut() {
+            *first = serde_json::json!(error);
+        } else {
+            errors.push(serde_json::json!(error));
+        }
     }
     value
 }
@@ -645,6 +738,287 @@ fn chrono_like_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "uses an isolated fake provider and process-wide sampling cache; run alone"]
+    fn fast_overlay_refresh_reuses_hardware_but_refreshes_frame_values() {
+        let helper = std::env::var("FRAMESCOPE_PROVIDER_TEST_HELPER").expect("isolated fake provider");
+        let state = ServiceState { lhm_helper_path: Some(helper), ..Default::default() };
+        let (first, observed_at) = read_snapshot_with_observation(&state).unwrap();
+        let mut cache = None;
+        for tick in 0..9 {
+            std::thread::sleep(Duration::from_millis(100));
+            let (payload, time) = read_snapshot_with_observation(&state).unwrap();
+            assert_eq!(payload["readCount"], first["readCount"], "10Hz overlay requests must not trigger 10Hz physical hardware reads");
+            assert_eq!(time, observed_at, "cache reuse cannot renew hardware observation age");
+            let data = overlay::build_overlay_data(&payload, (Some(100.0 + tick as f64), None, None), None, 0);
+            let result = aggregate_overlay_sample(&mut cache, data, Some(time), Instant::now());
+            assert_eq!(result.fps, Some(100.0 + tick as f64));
+            assert_eq!(result.cpu_temp, Some(60.0));
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        let (next, next_time) = read_snapshot_with_observation(&state).unwrap();
+        assert_eq!(next["readCount"].as_u64(), first["readCount"].as_u64().map(|n| n + 1));
+        assert!(next_time > observed_at);
+        resident().provider.lock().unwrap().kill().unwrap();
+    }
+
+    #[test]
+    #[ignore = "isolated shutdown gate test mutates the service singleton; run alone"]
+    fn queued_provider_request_cannot_restart_after_shutdown() {
+        let path = std::env::var("FRAMESCOPE_PROVIDER_TEST_HELPER").expect("isolated fake provider path");
+        let res = resident();
+        let mut provider = res.provider.lock().unwrap();
+        provider.kill().unwrap();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let queued = barrier.clone();
+        let helper = path.clone();
+        let reader = std::thread::spawn(move || {
+            let state = ServiceState { lhm_helper_path: Some(helper), ..Default::default() };
+            queued.wait();
+            read_snapshot_with_observation(&state)
+        });
+        barrier.wait();
+        // The reader cannot acquire the provider mutex until shutdown has been published.
+        SHUTTING_DOWN.store(true, Ordering::SeqCst);
+        drop(provider);
+        let result = reader.join().unwrap();
+        let state = ServiceState { lhm_helper_path: Some(path), ..Default::default() };
+        let static_result = static_hardware_response(&state);
+        let remained_stopped = res.provider.lock().unwrap().proc_is_stopped();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        assert!(result.unwrap_err().contains("service_shutting_down"));
+        assert!(static_result["hardware"].is_null());
+        assert!(remained_stopped, "previously accepted calls cannot spawn a new provider after shutdown");
+    }
+
+    #[test]
+    fn missing_live_cpu_usage_clears_cached_static_load() {
+        for overlay in [serde_json::json!({"cpu_usage": null}), serde_json::json!({})] {
+            let mut hardware = serde_json::json!({"cpu": {"load_percentage": 44.0}});
+            merge_live_into_static(&mut hardware, &overlay);
+            assert!(hardware["cpu"]["load_percentage"].is_null());
+        }
+    }
+
+#[test] fn ttl_review_static_projection_respects_gpu_identifiers() {
+ let mut hardware = serde_json::json!({"gpu":[{"name":"Same GPU", "identifier":"gpu-A"},{"name":"Same GPU","identifier":"gpu-B"}]});
+ let overlay = serde_json::json!({"gpu_sensors":[{"name":"Same GPU", "identifier":"gpu-A","temperature":61.0,"usage":30.0},{"name":"Same GPU", "identifier":"gpu-B","temperature":82.0,"usage":70.0}]});
+ merge_live_into_static(&mut hardware, &overlay);
+ assert_eq!(hardware["gpu"][1]["temperature"], serde_json::json!(82.0));
+}
+#[test] fn ttl_review_unidentified_gpu_does_not_borrow_identified_same_name_device() {
+ let payload = serde_json::json!({"sensors":[{"hardware":"Same GPU", "identifier":"gpu-A","hardwareType":"Gpu", "name":"GPU Core", "sensorType":"Temperature","value":82.0},{"hardware":"Same GPU", "identifier":"","hardwareType":"Gpu", "name":"GPU Core", "sensorType":"Load","value":30.0}]});
+ let data = overlay::build_overlay_data(&payload, (None,None,None), None, 1);
+ assert_eq!(data.gpu_sensors.len(),2);
+ assert_eq!(data.gpu_temp,None);
+}
+#[test] fn ttl_review_first_overlay_from_fresh_shared_provider_cache_remains_available() {
+ // A prior get_sensors/get_snapshot request observed this payload 250 ms earlier.
+ let now = Instant::now();
+ let payload = serde_json::json!({"dynamic":{"cpuTemperature":{"value":61.0}}});
+ let data = overlay::build_overlay_data(&payload,(None,None,None),None,0);
+ let observed_at = now - Duration::from_millis(250);
+ let mut cache = None;
+ let result = aggregate_overlay_sample(&mut cache,data.clone(),Some(observed_at), now);
+ assert_eq!(result.cpu_temp,Some(61.0));
+ let expired = aggregate_overlay_sample(&mut cache,data,Some(observed_at), now + Duration::from_millis(751));
+ assert_eq!(expired.cpu_temp,None);
+}
+
+#[test] fn ttl_review_wmi_same_name_without_correlated_identity_is_unavailable() {
+ let mut hardware = serde_json::json!({"gpu":[{"name":"Same GPU","device_id":"VideoController1","pnp_device_id":"PCI-A"},{"name":"Same GPU","device_id":"VideoController2","pnp_device_id":"PCI-B"}]});
+ let overlay = serde_json::json!({"gpu_sensors":[{"name":"Same GPU","identifier":"/gpu-nvidia/0","temperature":61.0},{"name":"Same GPU","identifier":"/gpu-nvidia/1","temperature":82.0}]});
+ merge_live_into_static(&mut hardware, &overlay);
+ assert!(hardware["gpu"][0]["temperature"].is_null());
+ assert!(hardware["gpu"][1]["temperature"].is_null());
+}
+
+    #[test]
+    fn ttl_review_unique_wmi_name_maps_and_unknown_identity_does_not_guess_index() {
+        let overlay = serde_json::json!({"gpu_sensors":[
+            {"name":"Unique GPU", "identifier":"gpu-A", "temperature":61.0,"usage":30.0},
+            {"name":"Other GPU", "identifier":"gpu-B", "temperature":82.0,"usage":70.0}
+        ]});
+        let mut hardware = serde_json::json!({"gpu":[
+            {"name":"Unique GPU", "device_id":"VideoController1","pnp_device_id":"PCI-A"},
+            {"name":"Other GPU", "identifier":"unmatched", "temperature":99.0}
+        ]});
+        merge_live_into_static(&mut hardware, &overlay);
+        assert_eq!(hardware["gpu"][0]["temperature"], 61.0);
+        assert!(hardware["gpu"][1]["temperature"].is_null());
+        assert!(hardware["gpu"][1]["usage"].is_null());
+    }
+
+    #[test]
+    fn ttl_provider_payload_aggregation_expires_without_changing_live_fps_or_ping() {
+        let now = Instant::now();
+        let mut cache = None;
+        let payload = serde_json::json!({"dynamic":{"cpuTemperature":{"value":60.0}}, "sensors":[
+            {"hardware":"Same model","identifier":"gpu-A","hardwareType":"Gpu","name":"GPU Core","sensorType":"Temperature","value":70.0},
+            {"hardware":"Same model","identifier":"gpu-B","hardwareType":"Gpu","name":"GPU Core","sensorType":"Temperature","value":50.0}
+        ]});
+        let first = overlay::build_overlay_data(&payload, (Some(144.0), Some(100.0), Some(80.0)), Some(12), 0);
+        let first = aggregate_overlay_sample(&mut cache, first, Some(now), now);
+        assert_eq!(first.cpu_temp, Some(60.0));
+        assert_eq!(first.gpu_temp, Some(70.0));
+        let repeated = overlay::build_overlay_data(&payload, (Some(120.0), Some(90.0), Some(70.0)), Some(13), 1);
+        let expired = aggregate_overlay_sample(&mut cache, repeated, Some(now), now + Duration::from_millis(1001));
+        assert_eq!(expired.cpu_temp, None);
+        assert_eq!(expired.gpu_temp, None);
+        assert!(expired.gpu_sensors.iter().all(|gpu| gpu.temperature.is_none()));
+        assert_eq!((expired.fps, expired.fps_1low, expired.fps_01low), (Some(120.0), Some(90.0), Some(70.0)));
+        assert_eq!(expired.game_ping, Some(13));
+    }
+
+    #[test]
+    fn ttl_failure_expires_each_field_from_its_real_observation() {
+        let now = Instant::now();
+        let mut cache = None;
+        aggregate_overlay_sample(&mut cache, overlay::OverlayData {
+            cpu_temp: Some(60.0), cpu_usage: Some(40.0), cpu_core_clocks: vec![Some(4200.0)],
+            ..Default::default()
+        }, Some(now), now);
+        aggregate_overlay_sample(&mut cache, overlay::OverlayData {
+            cpu_usage: Some(70.0), ..Default::default()
+        }, Some(now + Duration::from_millis(900)), now + Duration::from_millis(900));
+        let failure = aggregate_overlay_failure(&mut cache, 0, now + Duration::from_millis(1001));
+        assert_eq!(failure.cpu_temp, None);
+        assert_eq!(failure.cpu_core_clocks, vec![None]);
+        assert_eq!(failure.cpu_usage, Some(70.0));
+        let expired = aggregate_overlay_failure(&mut cache, 0, now + Duration::from_millis(1901));
+        assert_eq!(expired.cpu_usage, None);
+    }
+
+    #[test]
+    fn ttl_single_field_recovery_does_not_restore_other_expired_fields() {
+        let now = Instant::now();
+        let mut cache = None;
+        aggregate_overlay_sample(&mut cache, overlay::OverlayData {
+            cpu_temp: Some(60.0), cpu_usage: Some(40.0), ..Default::default()
+        }, Some(now), now);
+        let recovered = aggregate_overlay_sample(&mut cache, overlay::OverlayData {
+            cpu_temp: Some(65.0), ..Default::default()
+        }, Some(now + Duration::from_millis(1100)), now + Duration::from_millis(1100));
+        assert_eq!(recovered.cpu_temp, Some(65.0));
+        assert_eq!(recovered.cpu_usage, None);
+    }
+
+    #[test]
+    fn ttl_gpu_switch_uses_selected_identity_and_never_previous_gpu_fields() {
+        let now = Instant::now();
+        let mut cache = None;
+        let topology = || vec![
+            overlay::GpuSensorData { identifier: "gpu-A".into(), name: "Identical name".into(), ..Default::default() },
+            overlay::GpuSensorData { identifier: "gpu-B".into(), name: "Identical name".into(), ..Default::default() },
+        ];
+        let mut initial = overlay::OverlayData { gpu_sensors: topology(), ..Default::default() };
+        initial.gpu_sensors[0].temperature = Some(70.0);
+        initial.gpu_sensors[0].power = Some(200.0);
+        initial.gpu_sensors[1].temperature = Some(50.0);
+        aggregate_overlay_sample(&mut cache, initial, Some(now), now);
+        let switched = aggregate_overlay_sample(&mut cache, overlay::OverlayData {
+            gpu_sensors: topology(), active_gpu_index: 1, ..Default::default()
+        }, Some(now + Duration::from_millis(500)), now + Duration::from_millis(500));
+        assert_eq!(switched.gpu_temp, Some(50.0));
+        assert_eq!(switched.gpu_power, None);
+        assert_eq!(switched.gpu_sensors[0].temperature, Some(70.0));
+        let failed = aggregate_overlay_failure(&mut cache, 1, now + Duration::from_millis(1001));
+        assert_eq!(failed.gpu_temp, None);
+        assert_eq!(failed.gpu_sensors[0].temperature, None);
+        assert_eq!(failed.gpu_sensors[1].temperature, None);
+    }
+
+    #[test]
+    fn ttl_missing_fields_do_not_renew_from_inheritance() {
+        let now = Instant::now();
+        let mut cache = None;
+        let sample = overlay::OverlayData { cpu_temp: Some(60.0), cpu_usage: Some(40.0), ..Default::default() };
+        aggregate_overlay_sample(&mut cache, sample, Some(now), now);
+        let inherited = aggregate_overlay_sample(&mut cache, overlay::OverlayData::default(), Some(now + Duration::from_millis(900)), now + Duration::from_millis(900));
+        assert_eq!(inherited.cpu_temp, Some(60.0));
+        let expired = aggregate_overlay_sample(&mut cache, overlay::OverlayData::default(), Some(now + Duration::from_millis(1001)), now + Duration::from_millis(1001));
+        assert_eq!(expired.cpu_temp, None);
+    }
+
+    #[test]
+    fn ttl_repeated_throttled_payload_is_not_a_new_observation() {
+        let now = Instant::now();
+        let mut cache = None;
+        let sample = overlay::OverlayData { cpu_temp: Some(60.0), ..Default::default() };
+        aggregate_overlay_sample(&mut cache, sample.clone(), Some(now), now);
+        let expired = aggregate_overlay_sample(&mut cache, sample, Some(now), now + Duration::from_millis(1001));
+        assert_eq!(expired.cpu_temp, None);
+    }
+
+    #[test]
+    fn inprocess_snapshot_replaces_existing_and_excludes_sensor_arrays() {
+        let dir = std::env::temp_dir().join(format!("framescope-snapshot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("42.json");
+        for timestamp in [1000, 1250] {
+            let value = serde_json::json!({"target_pid":42,"timestamp_ms":timestamp,
+                "fps":144,"fps_1low":59.8,"fps_01low":29.3,"sensors":"x".repeat(20000)});
+            publish_inprocess_snapshot(&path, &value).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(bytes.len() < 4096);
+            let decoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(decoded["timestamp_ms"], timestamp);
+            assert_eq!(decoded["fps_1low"], 59.8);
+            assert!(decoded.get("sensors").is_none());
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn pipe_audit_fps_retries_after_asynchronous_start_failure() {
+        let gate = FpsStartGate {
+            last_attempt: AtomicU64::new(0),
+        };
+        let active = AtomicBool::new(false);
+        let attempts = AtomicUsize::new(0);
+        let start = || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            active.store(true, Ordering::SeqCst);
+        };
+        gate.ensure(10_000, || active.load(Ordering::SeqCst), start);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        // start_fps_monitor sets active before the ETW worker can fail.
+        std::thread::scope(|scope| {
+            scope.spawn(|| active.store(false, Ordering::SeqCst)).join().unwrap();
+        });
+        gate.ensure(14_999, || active.load(Ordering::SeqCst), start);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "retry throttle must hold");
+        gate.ensure(15_000, || active.load(Ordering::SeqCst), start);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "failed worker latched FPS startup forever");
+        gate.ensure(30_000, || active.load(Ordering::SeqCst), start);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "healthy worker must not restart");
+    }
+
+    #[test]
+    fn pipe_audit_concurrent_fps_failures_only_attempt_once_per_retry_window() {
+        let gate = FpsStartGate { last_attempt: AtomicU64::new(0) };
+        let attempts = AtomicUsize::new(0);
+        for now in [10_000, 15_000] {
+            let barrier = std::sync::Barrier::new(16);
+            std::thread::scope(|scope| {
+                for _ in 0..16 {
+                    let barrier = &barrier;
+                    let gate = &gate;
+                    let attempts = &attempts;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        gate.ensure(now, || false, || {
+                            attempts.fetch_add(1, Ordering::SeqCst);
+                        });
+                    });
+                }
+            });
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn supported_methods_fail_closed_without_fake_values() {
@@ -742,8 +1116,8 @@ mod tests {
         assert_eq!(response["result"]["frameCount"], 3);
         assert_eq!(response["result"]["fps"], 50.0);
         assert_eq!(response["result"]["frameTimeMs"], 20.0);
-        assert_eq!(response["result"]["fps_1low"], 33.33);
-        assert_eq!(response["result"]["fps_01low"], 33.33);
+        assert_eq!(response["result"]["fps_1low"], serde_json::Value::Null);
+        assert_eq!(response["result"]["fps_01low"], serde_json::Value::Null);
         let _ = std::fs::remove_dir_all(root);
     }
 

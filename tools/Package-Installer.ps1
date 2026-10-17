@@ -1,37 +1,46 @@
-# Builds the self-contained FrameScope NSIS installer.
+﻿# Builds the self-contained FrameScope NSIS installer.
 #
-# Pipeline: stop processes -> build.ps1 (C# chain + hardware service) ->
+# Pipeline: build.ps1 (C# chain + hardware service) ->
 # stage the backend chain into src-tauri/resources -> npm run build ->
 # tauri build (NSIS bundle) -> verify fresh timestamps (a stale exe means
 # vite succeeded but the link failed with exit 0 - the known silent trap).
 #
-# -StageOnly: run steps 1-3 only (stop + build.ps1 + stage resources) and
-# exit before the frontend/NSIS build. The native installer pipeline
+# -StageOnly: build backend AND current frontend/host, skipping only NSIS.
+# The native installer pipeline
 # (desktop-preview/installer/build-installer.ps1) reuses this to prepare the
 # payload without building the NSIS bundle.
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
-    [switch]$StageOnly
+    [switch]$StageOnly,
+    [string]$OutputDirectory,
+    [string]$CandidateHostTransformScript
 )
 
 $ErrorActionPreference = 'Stop'
+if ($OutputDirectory) {
+    & (Join-Path $RepoRoot 'tools\Build-IsolatedInstaller.ps1') -RepoRoot $RepoRoot -OutputDirectory $OutputDirectory -StageOnly:$StageOnly -PackageOnly -CandidateHostTransformScript $CandidateHostTransformScript
+    return
+}
+if ($CandidateHostTransformScript) {
+    $inventoryPath = Join-Path (Split-Path -Parent $RepoRoot) 'snapshot-inputs.json'
+    if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) { throw 'Candidate host transforms require OutputDirectory isolation' }
+    $inventory = Get-Content -LiteralPath $inventoryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([IO.Path]::GetFullPath($RepoRoot) -ne [IO.Path]::GetFullPath($inventory.snapshotRoot)) { throw 'Candidate transform snapshot root mismatch' }
+}
 $previewDir = Join-Path $RepoRoot 'desktop-preview'
 $targetDir = Join-Path $previewDir 'src-tauri\target\release'
 $resourcesDir = Join-Path $previewDir 'src-tauri\resources'
 
-Write-Host '== [1/6] Stopping FrameScope processes =='
-foreach ($name in @('FrameScope', 'framescope-ui-preview', 'FrameScopeMonitor', 'FrameScopeHardwareService',
-        'FrameScopeHardwareProvider', 'FrameScopeProcessSampler', 'FrameScopeSystemSampler',
-        'PresentMon-2.4.1-x64')) {
-    Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}
-Start-Sleep -Milliseconds 500
+Write-Host '== [1/6] Build only; running applications are never stopped =='
+. (Join-Path $RepoRoot 'desktop-preview\installer\pack-payload.ps1') -RepoRoot $RepoRoot -FunctionsOnly
+$inputsBefore = Get-PayloadInputs -Root $RepoRoot
 
 Write-Host '== [2/6] Building the C# chain and hardware service (build.ps1) =='
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'build.ps1')
 if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed with exit code $LASTEXITCODE" }
 
 Write-Host '== [3/6] Staging the backend chain into bundle resources =='
+Assert-PayloadPath -Path $resourcesDir -Root $RepoRoot
 if (Test-Path -LiteralPath $resourcesDir) { Remove-Item -LiteralPath $resourcesDir -Recurse -Force }
 $backendDir = Join-Path $resourcesDir 'backend'
 $toolsDir = Join-Path $backendDir 'tools'
@@ -47,13 +56,13 @@ $files = @(
     'FrameScopeProcessSampler.exe',
     'FrameScopeSystemSampler.exe',
     'FrameScopeReportGenerator.exe',
-    'PRIVACY.md'
+    'FrameScopeUninstaller.exe',
+    'PRIVACY.md',
+    'THIRD-PARTY-NOTICES.md'
 )
-$lock = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'dependencies.lock.json') | ConvertFrom-Json
+$lock = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $RepoRoot 'dependencies.lock.json') | ConvertFrom-Json
 foreach ($property in $lock.runtimeFiles.PSObject.Properties) {
-    if ($property.Name -notlike 'Microsoft.Web.*' -and $property.Name -ne 'WebView2Loader.dll') {
-        $files += $property.Name
-    }
+    $files += $property.Name
 }
 foreach ($file in $files) {
     $source = Join-Path $RepoRoot $file
@@ -62,9 +71,8 @@ foreach ($file in $files) {
     }
     Copy-Item -LiteralPath $source -Destination (Join-Path $backendDir $file) -Force
 }
-$presentMon = Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'tools') -Filter 'PresentMon*.exe' -File |
-    Select-Object -First 1
-if ($null -eq $presentMon) { throw 'PresentMon exe was not found under repo tools\' }
+$presentMon = Get-Item -LiteralPath (Join-Path $RepoRoot $lock.presentMon.file)
+if ((Get-FileHash -LiteralPath $presentMon.FullName).Hash -ne $lock.presentMon.sha256) { throw 'PresentMon hash does not match dependency lock' }
 Copy-Item -LiteralPath $presentMon.FullName -Destination (Join-Path $toolsDir $presentMon.Name) -Force
 $font = Join-Path $previewDir 'public\fonts\MiSansVF.ttf'
 if (Test-Path -LiteralPath $font) {
@@ -107,10 +115,7 @@ if (Test-Path -LiteralPath $captureDiagnostics -PathType Leaf) {
 }
 Write-Host ("Staged {0} backend files + PresentMon + font + licenses + PawnIO" -f $files.Count)
 
-if ($StageOnly) {
-    Write-Host 'StageOnly: stopping before the frontend/NSIS build (resources are ready for packaging)'
-    exit 0
-}
+Copy-Item -LiteralPath (Join-Path $RepoRoot 'packaging\README-FrameScopeMonitor.txt') -Destination $backendDir -Force
 
 Write-Host '== [4/6] Building the frontend (npm run build) =='
 Push-Location $previewDir
@@ -120,24 +125,49 @@ try {
 } finally { Pop-Location }
 
 Write-Host '== [5/6] Building the NSIS installer (tauri build) =='
+& (Join-Path $RepoRoot 'tools\Verify-IsolatedBuildStage.ps1') -RepoRoot $RepoRoot
 Push-Location $previewDir
 try {
-    & npx tauri build
+    if ($StageOnly) { & npx tauri build --no-bundle --ci }
+    else { & npx tauri build --ci }
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
 } finally { Pop-Location }
 
 Write-Host '== [6/6] Verifying build outputs =='
-# Iron rule: tauri build reports exit 0 even when the final link fails while
-# the exe is locked; only a fresh timestamp proves the binary is new. With
-# mainBinaryName=FrameScope the renamed copy lands beside the crate bin.
-$candidates = @('FrameScope.exe', 'framescope-ui-preview.exe') | ForEach-Object { Join-Path $targetDir $_ }
-$fresh = @( $candidates | Where-Object { (Test-Path -LiteralPath $_ -PathType Leaf) -and (((Get-Date) - (Get-Item -LiteralPath $_).LastWriteTime).TotalMinutes -le 10) } )
-if (-not $fresh) {
-    throw "No fresh host executable in $targetDir (checked FrameScope.exe / framescope-ui-preview.exe) - the link likely failed silently"
+# Cargo checks source freshness even when the final artifact is incremental.
+Push-Location (Join-Path $previewDir 'src-tauri')
+try {
+    $messages = @(& cargo build --release --locked --features tauri/custom-protocol --message-format=json-render-diagnostics)
+    if ($LASTEXITCODE -ne 0) { throw 'Host cargo verification failed' }
+    $decoded = @($messages | ForEach-Object { $_ | ConvertFrom-Json })
+    if (-not @($decoded | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'tauri' -and $_.features -contains 'custom-protocol' }).Count) {
+        throw 'Cargo did not build Tauri in production protocol mode'
+    }
+    $artifacts = @($decoded | ForEach-Object {
+        $message = $_
+        if ($message.reason -eq 'compiler-artifact' -and $message.target.name -eq 'framescope-ui-preview' -and $message.executable) { $message }
+    })
+    if ($artifacts.Count -ne 1) { throw 'Cargo did not identify exactly one main host executable' }
+    Copy-VerifiedHost -Source $artifacts[0].executable -Destination (Join-Path $targetDir 'FrameScope.exe')
+} finally { Pop-Location }
+# All host transforms (manifest/signing) must precede this marker and receipt.
+# A later transform invalidates both; this entry deliberately has no refresh bypass.
+Write-HostCapabilities -Root $RepoRoot
+$hostTransform = $null
+if ($CandidateHostTransformScript) { $hostTransform = Invoke-CandidateHostTransform -Root $RepoRoot -Script $CandidateHostTransformScript }
+$inputsAfter = Get-PayloadInputs -Root $RepoRoot
+if (($inputsBefore | ConvertTo-Json -Depth 5 -Compress) -cne ($inputsAfter | ConvertTo-Json -Depth 5 -Compress)) {
+    throw 'Sources changed during build; rebuild before packaging'
+}
+$receipt = [ordered]@{ inputs = @($inputsAfter); files = @(Get-PayloadFiles -Root $RepoRoot); hostTransform = $hostTransform }
+$receipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $targetDir 'payload-build-receipt.json') -Encoding UTF8
+if ($StageOnly) {
+    Write-Host 'StageOnly: current backend, frontend and host verified; NSIS skipped'
+    return
 }
 $bundleDir = Join-Path $targetDir 'bundle\nsis'
 $installer = Get-ChildItem -LiteralPath $bundleDir -Filter '*.exe' -File -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if ($null -eq $installer) { throw "No installer produced under $bundleDir" }
 Write-Host ("Installer ready: {0}" -f $installer.FullName)
-Write-Host ("Host binary: {0} (written {1})" -f $fresh[0], (Get-Item -LiteralPath $fresh[0]).LastWriteTime)
+Write-Host ("Host binary verified: {0}" -f (Join-Path $targetDir 'FrameScope.exe'))

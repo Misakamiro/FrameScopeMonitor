@@ -9,6 +9,7 @@ using System.Web.Script.Serialization;
 
 internal static partial class FrameScopeReportGenerator
 {
+    public const string ReportInspectionProtocol = "framescope-report-inspection/1";
     private const string Brand = "FrameScope";
     private static readonly string[] Colors = new[]
     {
@@ -19,6 +20,64 @@ internal static partial class FrameScopeReportGenerator
 
     private static int Main(string[] args)
     {
+        if (args != null && args.Any(a => a.Equals("--inspect-reports", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            try
+            {
+                string list = GetArgValue(args, "--run-list", "");
+                if (string.IsNullOrWhiteSpace(list)) throw new ArgumentException("--run-list is required.");
+                string[] runs = File.ReadAllLines(Path.GetFullPath(list), Encoding.UTF8);
+                if (runs.Length > 50) throw new ArgumentException("--run-list exceeds the 50-run limit.");
+                var results = new List<Dictionary<string, object>>();
+                foreach (string raw in runs)
+                {
+                    string run = (raw ?? "").Trim();
+                    if (run.Length == 0) continue;
+                    try
+                    {
+                        FrameScopeReportArtifactState state = FrameScopeReportArtifacts.Inspect(Path.GetFullPath(run));
+                        FrameScopeReportInputFingerprint currentInput = FrameScopeReportArtifacts.CaptureInputFingerprint(state.RunDirectory, 2);
+                        results.Add(new Dictionary<string, object>
+                        {
+                            { "runDir", state.RunDirectory }, { "artifactStatus", state.ArtifactStatus },
+                            { "isComplete", state.IsComplete }, { "legacyReadable", state.LegacyReadable },
+                            { "fingerprintVersion", state.FingerprintVersion },
+                            { "manifestInputFingerprint", state.ManifestInputFingerprint },
+                            { "currentInputFingerprintVersion", 2 }, { "currentInputFingerprint", currentInput.Value }, { "currentInputFingerprintStable", currentInput.Stable },
+                            { "inputFingerprintMatches", state.InputFingerprintMatches }, { "error", state.Error ?? "" },
+                            { "reportKind", state.ReportKind }, { "durationSeconds", state.DurationSeconds }, { "canOpen", state.IsReadable }, { "canRegenerate", FrameScopeReportArtifacts.HasUsableMonitorData(state.RunDirectory) }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        results.Add(new Dictionary<string, object> { { "runDir", run }, { "artifactStatus", "incomplete" }, { "reportKind", "error" }, { "durationSeconds", null }, { "error", ex.Message }, { "canOpen", false }, { "canRegenerate", false } });
+                    }
+                }
+                Console.WriteLine(CreateArtifactJsonSerializer().Serialize(new Dictionary<string, object> { { "protocol", ReportInspectionProtocol }, { "status", "inspected" }, { "count", results.Count }, { "reports", results } }));
+                return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 2; }
+        }
+        if (args != null && args.Any(a => a.Equals("--inspect-report", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.OutputEncoding = new UTF8Encoding(false);
+            try
+            {
+                string runDir = GetArgValue(args, "--run-dir", "");
+                if (string.IsNullOrWhiteSpace(runDir)) throw new ArgumentException("--run-dir is required.");
+                FrameScopeReportArtifactState state = FrameScopeReportArtifacts.Inspect(Path.GetFullPath(runDir));
+                Console.WriteLine(CreateArtifactJsonSerializer().Serialize(new Dictionary<string, object>
+                {
+                    { "protocol", ReportInspectionProtocol }, { "runDir", state.RunDirectory }, { "artifactStatus", state.ArtifactStatus },
+                    { "isComplete", state.IsComplete }, { "legacyReadable", state.LegacyReadable },
+                    { "inputFingerprintMatches", state.InputFingerprintMatches }, { "error", state.Error ?? "" },
+                    { "reportKind", state.ReportKind }, { "durationSeconds", state.DurationSeconds }, { "canOpen", state.IsReadable }, { "canRegenerate", FrameScopeReportArtifacts.HasUsableMonitorData(state.RunDirectory) }
+                }));
+                return 0;
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 2; }
+        }
         string progressPath = args == null ? "" : GetArgValue(args, "--progress", "");
         string requestedInputFingerprint = args == null ? "" : GetArgValue(args, "--input-fingerprint", "");
         try
@@ -29,25 +88,79 @@ internal static partial class FrameScopeReportGenerator
         }
         catch (Exception ex)
         {
-            if (!string.IsNullOrWhiteSpace(progressPath))
-            {
-                try { FrameScopeReportProgress.Write(progressPath, "生成失败", 100, ex.Message, DateTime.Now, ex.Message, true); }
-                catch { }
-            }
             Console.Error.WriteLine(ex.ToString());
             return 1;
         }
     }
 
+    private sealed class ReportOperationBusyException : InvalidOperationException {
+        public ReportOperationBusyException() : base("记录正在处理，不能同时生成或删除报告") { }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(Microsoft.Win32.SafeHandles.SafeFileHandle handle, StringBuilder path, uint size, uint flags);
+
+    private static string CanonicalReportRun(string runDir) {
+        using (var handle = CreateFileW(Path.GetFullPath(runDir), 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+            if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception();
+            var path = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+            if (length == 0 || length >= path.Capacity) throw new System.ComponentModel.Win32Exception();
+            string result = path.ToString();
+            return result.StartsWith(@"\\?\", StringComparison.Ordinal) ? result.Substring(4) : result;
+        }
+    }
+
     private static void Generate(string runDir, string progressPath, string requestedInputFingerprint)
     {
+        string normalized = CanonicalReportRun(runDir).TrimEnd('\\', '/');
+        char[] chars = normalized.ToCharArray();
+        for (int i = 0; i < chars.Length; i++) if (chars[i] >= 'a' && chars[i] <= 'z') chars[i] = (char)(chars[i] - 32);
+        string lockName;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            lockName = "Local\\FrameScopeReportOperation-" + BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(new string(chars)))).Replace("-", "").ToLowerInvariant();
+        using (var operationLock = new System.Threading.Mutex(false, lockName)) {
+        bool acquired;
+        try { acquired = operationLock.WaitOne(0); } catch (System.Threading.AbandonedMutexException) { acquired = true; }
+        if (!acquired) throw new ReportOperationBusyException();
+        try {
         string inputFingerprint = string.IsNullOrWhiteSpace(requestedInputFingerprint)
-            ? FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value
+            ? FrameScopeReportArtifacts.CaptureInputFingerprint(runDir, 2).Value
             : requestedInputFingerprint;
         FrameScopeReportPublisher.Publish(runDir, delegate(string outputDirectory)
         {
             GenerateArtifacts(runDir, progressPath, outputDirectory, inputFingerprint);
         });
+        } catch (Exception ex) {
+            if (!string.IsNullOrWhiteSpace(progressPath) && Directory.Exists(runDir)) {
+                try { FrameScopeReportProgress.Write(progressPath, "生成失败", 100, ex.Message, DateTime.Now, ex.Message, true); }
+                catch { }
+            }
+            throw;
+        } finally { operationLock.ReleaseMutex(); }
+        }
+    }
+
+    private static double? ReadRecordedCaptureDuration(string runDir)
+    {
+        foreach (string name in new[] { "summary.json", "status.json" })
+        {
+            try
+            {
+                var map = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(runDir, name), Encoding.UTF8));
+                object first, last; DateTime start, end;
+                if (map != null && map.TryGetValue("StartTime", out first) && map.TryGetValue("EndTime", out last) &&
+                    DateTime.TryParse(Convert.ToString(first), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out start) &&
+                    DateTime.TryParse(Convert.ToString(last), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out end) && end.ToUniversalTime() > start.ToUniversalTime())
+                    return (end.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds;
+            }
+            catch (IOException) { }
+            catch (ArgumentException) { }
+            catch (InvalidOperationException) { }
+        }
+        return null;
     }
 
     private static void GenerateArtifacts(string runDir, string progressPath, string chartsDir, string inputFingerprint)
@@ -63,27 +176,28 @@ internal static partial class FrameScopeReportGenerator
         int overlayMergedRows = MergeHardwareOverlaySamples(systemRows, Path.Combine(runDir, "hardware-samples.csv"));
         string processPath = Path.Combine(runDir, "process-samples.csv");
         int timeShiftHours;
-        bool framesFromHardwareSamples = false;
-        List<KeyValuePair<DateTime, double>> framesSource = present.Frames;
-        if (framesSource.Count == 0)
-        {
-            // The Fps column lives in hardware-samples.csv (the recorder's
-            // overlay snapshot), not in system-samples.csv.
-            List<SystemRow> hardwareRows = ReadSystem(Path.Combine(runDir, "hardware-samples.csv"));
-            framesSource = SynthesizeFramesFromHardwareSamples(hardwareRows);
-            framesFromHardwareSamples = framesSource.Count > 0;
-        }
-        List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(framesSource, systemRows, out timeShiftHours);
+        List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(present.Frames, systemRows, out timeShiftHours);
+        List<SystemRow> fpsSampleRows = frames.Count == 0
+            ? ReadSystem(Path.Combine(runDir, "hardware-samples.csv"))
+            : new List<SystemRow>();
+        List<double> fpsSamples = fpsSampleRows.Where(r => r.Fps.HasValue && r.Fps.Value >= 0).Select(r => r.Fps.Value).ToList();
+        bool hasFpsSamples = fpsSamples.Count > 0;
         WriteProgress(progressPath, "处理数据", 20, "对齐帧时间和系统采样时间线", progressStart, null, false);
 
         DateTime start;
         DateTime end;
+        bool hasTrustedTime = true;
         DateTime processStart;
         DateTime processEnd;
         if (frames.Count > 0)
         {
             start = frames[0].Key;
             end = frames[frames.Count - 1].Key;
+        }
+        else if (hasFpsSamples)
+        {
+            start = fpsSampleRows[0].Time;
+            end = fpsSampleRows[fpsSampleRows.Count - 1].Time;
         }
         else if (systemRows.Count > 0)
         {
@@ -97,17 +211,21 @@ internal static partial class FrameScopeReportGenerator
         }
         else
         {
-            start = end = DateTime.Now;
+            hasTrustedTime = false;
+            start = end = DateTime.MinValue;
         }
 
-        int durationSeconds = Math.Max(1, (int)Math.Round((end - start).TotalSeconds));
+        if (hasTrustedTime && end <= start) hasTrustedTime = false;
+        double? durationSeconds = ReadRecordedCaptureDuration(runDir) ?? (hasTrustedTime ? (double?)((end - start).TotalSeconds) : FrameScopeReportArtifacts.ReadDuration(runDir, null));
         Dictionary<string, object> hardware = LoadHardware();
         Dictionary<string, string> metadata = LoadRunMetadata(runDir);
         Dictionary<string, object> captureDiagnostics = LoadCaptureDiagnostics(runDir);
         // H3 tail: make the overlay merge visible in the report so a silent
         // zero (column drift, missing file) is diagnosable from the artifact.
         captureDiagnostics["OverlayMergedRows"] = overlayMergedRows;
-        captureDiagnostics["FramesFromHardwareSamples"] = framesFromHardwareSamples;
+        captureDiagnostics["FramesFromHardwareSamples"] = false;
+        captureDiagnostics["FpsSampleCount"] = fpsSamples.Count;
+        captureDiagnostics["FpsSampleTargetVerified"] = false;
         FrameScopeSamplerEvidence processSampler = LoadSamplerEvidence(runDir, "ProcessSampler", "process-samples.csv", new[] { "Time", "ProcessName" });
         FrameScopeSamplerEvidence systemSampler = LoadSamplerEvidence(runDir, "SystemSampler", "system-samples.csv", new[] { "Time" });
         FrameScopeRunContract.AddStatusFields(captureDiagnostics, "ProcessSampler", processSampler);
@@ -126,7 +244,7 @@ internal static partial class FrameScopeReportGenerator
         ProcessMatrixResult process = ReadProcessMatrix(processPath, start, targetProcess);
         int processSampleCount = process.SamplingInstantCount;
         int systemSampleCount = systemRows.Count;
-        string reportKind = FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);
+        string reportKind = hasFpsSamples ? "diagnostic" : FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);
         Dictionary<string, object> systemSeries = SeriesFromSystem(systemRows, start, totalMemoryMb);
         Dictionary<string, object> cpuCoreCharts = ReadCpuCoreCharts(runDir, start, cpuCoreTelemetry);
 
@@ -139,9 +257,17 @@ internal static partial class FrameScopeReportGenerator
             { "minInstant", frameSummary.Count > 0 ? Round(1000.0 / frameSummary.MaxMs, 3) : null },
             { "maxInstant", frameSummary.Count > 0 ? Round(1000.0 / frameSummary.MinMs, 3) : null },
             { "maxFrameMs", frameSummary.Count > 0 ? Round(frameSummary.MaxMs, 3) : null },
-            { "framesOver20", frameSummary.FramesOver20 },
-            { "framesOver33", frameSummary.FramesOver33 },
-            { "framesOver100", frameSummary.FramesOver100 }
+            { "framesOver20", frameSummary.Count > 0 ? (object)frameSummary.FramesOver20 : null },
+            { "framesOver33", frameSummary.Count > 0 ? (object)frameSummary.FramesOver33 : null },
+            { "framesOver100", frameSummary.Count > 0 ? (object)frameSummary.FramesOver100 : null }
+        };
+        Dictionary<string, object> fpsSampleStats = new Dictionary<string, object>
+        {
+            { "count", fpsSamples.Count },
+            { "aggregation", "arithmetic-mean-of-samples" },
+            { "average", Round(AverageOrNull(fpsSamples), 2) },
+            { "minimum", hasFpsSamples ? Round(fpsSamples.Min(), 2) : null },
+            { "maximum", Round(MaxOrNull(fpsSamples), 2) }
         };
 
         List<double> vramTotalValues = systemRows.Where(r => r.VramTotalMiB.HasValue).Select(r => r.VramTotalMiB.Value / 1024.0).ToList();
@@ -172,14 +298,17 @@ internal static partial class FrameScopeReportGenerator
         };
 
         WriteProgress(progressPath, "降采样", 55, "计算 FPS、1% Low、0.1% Low 和图表序列", progressStart, null, false);
-        Dictionary<string, object> fps = BuildBucketedFps(frames, start, 1.0, 2.0);
+        Dictionary<string, object> fps = hasFpsSamples
+            ? BuildSampledFps(fpsSampleRows, start)
+            : BuildBucketedFps(frames, start, 1.0, 2.0);
+        fps["source"] = hasFpsSamples ? "etw-fps-sampled" : (frames.Count > 0 ? "presentmon" : "none");
         Dictionary<string, object> notes = new Dictionary<string, object>
         {
             { "frameDataCaptured", frames.Count > 0 },
             { "cpuFrequencyCaptured", ListHasValue(((Dictionary<string, object>)((Dictionary<string, object>)systemSeries["perf"]))["cpuFreq"]) },
             { "presentMonSelectionMode", present.Diagnostics.ContainsKey("selectionMode") ? present.Diagnostics["selectionMode"] : null },
-            { "frameCaptureStatus", framesFromHardwareSamples ? "etw-fps-sampled" : (captureDiagnostics.ContainsKey("FrameCaptureStatus") ? captureDiagnostics["FrameCaptureStatus"] : (frames.Count > 0 ? "captured" : "no-frame-data")) },
-            { "frameCaptureMessage", framesFromHardwareSamples ? "PresentMon was denied by anti-cheat; the FPS series was rebuilt from the resident ETW FPS samples (1 Hz)." : (captureDiagnostics.ContainsKey("FrameCaptureMessage") ? captureDiagnostics["FrameCaptureMessage"] : "") },
+            { "frameCaptureStatus", hasFpsSamples ? "etw-fps-sampled" : (captureDiagnostics.ContainsKey("FrameCaptureStatus") ? captureDiagnostics["FrameCaptureStatus"] : (frames.Count > 0 ? "captured" : "no-frame-data")) },
+            { "frameCaptureMessage", hasFpsSamples ? "No valid PresentMon frames were captured. Resident ETW FPS samples provide a diagnostic trend and an arithmetic sample mean, not per-frame statistics. Sample target identity was not recorded." : (captureDiagnostics.ContainsKey("FrameCaptureMessage") ? captureDiagnostics["FrameCaptureMessage"] : "") },
             { "generator", "native-csharp" }
         };
 
@@ -192,22 +321,25 @@ internal static partial class FrameScopeReportGenerator
                     { "dir", runDir },
                     { "startLabel", start.ToString("yyyy-MM-dd HH:mm:ss") },
                     { "endLabel", end.ToString("yyyy-MM-dd HH:mm:ss") },
-                    { "durationLabel", FormatDuration(durationSeconds) },
+                    { "durationSeconds", durationSeconds },
+                    { "durationLabel", durationSeconds.HasValue ? FormatDuration((int)Math.Round(durationSeconds.Value)) : "不可用" },
                     { "timeShiftHours", timeShiftHours }
                 }
             },
             { "target", new Dictionary<string, object> { { "processName", targetProcess }, { "displayName", targetDisplayName } } },
             { "hardware", hardware },
             { "hardwareDerived", new Dictionary<string, object> { { "totalMemoryGb", Round(totalMemoryGb, 2) }, { "vramTotalGb", Round(vramTotalGb, 2) } } },
-            { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "processSamples", processSampleCount }, { "processes", process.Names.Count }, { "systemSamples", systemSampleCount } } },
+            { "counts", new Dictionary<string, object> { { "frames", frames.Count }, { "hasFrameData", frames.Count > 0 }, { "fpsSamples", fpsSamples.Count }, { "processSamples", processSampleCount }, { "processes", process.Names.Count }, { "systemSamples", systemSampleCount } } },
             { "presentMon", present.Diagnostics },
             { "frameStats", frameStats },
+            { "fpsSampleStats", fpsSampleStats },
             { "systemStats", systemStats },
             { "fps", fps },
             { "system", systemSeries },
             { "cpuCore", cpuCoreCharts["frequency"] },
             { "cpuVoltage", cpuCoreCharts["voltage"] },
             { "cpuVid", cpuCoreCharts["vid"] },
+            { "cpuOsdVoltage", ReadCpuOsdVoltageChart(runDir, start) },
             { "process", new Dictionary<string, object> { { "t", process.Times }, { "names", process.Names }, { "codec", process.Codec }, { "cpu", process.Cpu }, { "mem", process.Mem }, { "stats", process.Stats } } },
             { "capture", captureDiagnostics },
             { "notes", notes }
@@ -233,12 +365,17 @@ internal static partial class FrameScopeReportGenerator
             { "targetDisplayName", targetDisplayName },
             { "targetProcessName", targetProcess },
             { "frames", frames.Count },
+            { "fpsSamples", fpsSamples.Count },
+            { "fpsSource", fps["source"] },
+            { "fpsSampleStats", fpsSampleStats },
             { "rawPresentMonRows", GetDiagnostic(present.Diagnostics, "rawRows") },
             { "validPresentMonRows", GetDiagnostic(present.Diagnostics, "validRows") },
             { "presentMonSelectionMode", GetDiagnostic(present.Diagnostics, "selectionMode") },
             { "presentMonSelectedTrack", GetDiagnostic(present.Diagnostics, "selectedTrack") },
             { "hasFrameData", frames.Count > 0 },
             { "reportKind", reportKind },
+            { "durationSeconds", durationSeconds },
+            { "inputFingerprintVersion", 2 },
             { FrameScopeReportArtifacts.InputFingerprintFieldName, inputFingerprint },
             { "processes", process.Names.Count },
             { "processSamples", processSampleCount },
@@ -310,7 +447,7 @@ internal static partial class FrameScopeReportGenerator
 
     internal static void GenerateForTests(string runDir)
     {
-        Generate(runDir, "", FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value);
+        Generate(runDir, "", FrameScopeReportArtifacts.CaptureInputFingerprint(runDir, 2).Value);
     }
 
     private static void AddSamplerManifestFields(Dictionary<string, object> manifest, string prefix, FrameScopeSamplerEvidence evidence)

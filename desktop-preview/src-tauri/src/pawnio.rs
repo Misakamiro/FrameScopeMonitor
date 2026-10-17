@@ -73,55 +73,64 @@ fn setup_package() -> Option<std::path::PathBuf> {
 }
 
 pub fn install() -> Result<Value, String> {
-    // Stop the sampling service first: the driver load while LibreHardwareMonitor
-    // is polling full sensor sets is what crashed the WebView2 renderer (the
-    // "black window" report). The next service call respawns it fresh.
-    stop_sampling_service();
-    let (installed, version) = read_registry();
-    if installed {
-        return Ok(json!({"result": "already_installed", "version": version}));
+    driver_operation(true, read_registry, setup_package, crate::hardware_service::begin_maintenance, run_elevated)
+}
+
+pub fn uninstall() -> Result<Value, String> {
+    driver_operation(false, read_registry, setup_package, crate::hardware_service::begin_maintenance, run_elevated)
+}
+
+fn driver_operation<L>(
+    install: bool,
+    detect: impl Fn() -> (bool, String),
+    package: impl FnOnce() -> Option<std::path::PathBuf>,
+    maintenance: impl FnOnce() -> Result<L, String>,
+    run: impl FnOnce(&std::path::Path, &[&str]) -> Result<(), String>,
+) -> Result<Value, String> {
+    let (installed, version) = detect();
+    if installed == install {
+        return Ok(if install {
+            json!({"result": "already_installed", "version": version})
+        } else { json!({"result": "already_uninstalled"}) });
     }
-    let package = setup_package().ok_or_else(|| {
-        "PawnIO 安装包未随当前构建分发：请将官方 PawnIO_setup.exe 放置到程序目录 dependencies\\PawnIO\\ 后重试".to_string()
-    })?;
-    run_elevated(&package, &["-install", "-silent"])?;
-    let (installed, version) = read_registry();
-    if !installed {
-        return Err("PawnIO 安装程序已运行，但注册表中未检测到安装记录".into());
+    let package = package().ok_or_else(||
+        "PawnIO 安装包未随当前构建分发：无法定位程序目录 dependencies\\PawnIO\\PawnIO_setup.exe".to_string())?;
+    let _maintenance = maintenance()?;
+    run(&package, &[if install { "-install" } else { "-uninstall" }, "-silent"])?;
+    let (installed, version) = detect();
+    if installed != install {
+        return Err("PawnIO 安装程序已运行，但检测结果与请求不一致".into());
     }
     Ok(json!({"result": "success", "version": version}))
 }
 
-pub fn uninstall() -> Result<Value, String> {
-    stop_sampling_service();
-    let (installed, version) = read_registry();
-    if !installed {
-        return Ok(json!({"result": "already_uninstalled"}));
-    }
-    let _ = version;
-    let package = setup_package().ok_or_else(|| {
-        "PawnIO 安装包未随当前构建分发：无法定位卸载程序".to_string()
-    })?;
-    run_elevated(&package, &["-uninstall", "-silent"])?;
-    Ok(json!({"result": "success"}))
-}
-
-/// Kills the hardware service and its provider child so the driver load does
-/// not race the 1 Hz sensor polling. Callers reconnect lazily afterwards.
-fn stop_sampling_service() {
-    use std::process::{Command, Stdio};
-    for name in ["FrameScopeHardwareService.exe", "FrameScopeHardwareProvider.exe"] {
-        let mut command = Command::new("taskkill");
-        command.arg("/F").arg("/IM").arg(name);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn no_op_never_touches_package_or_service() {
+        for installed in [false, true] {
+            let result = driver_operation::<()>(installed, || (installed, "test".into()),
+                || panic!("no-op must not look up package"),
+                || panic!("no-op must not stop service"),
+                |_, _| panic!("no-op must not run setup")).unwrap();
+            assert_eq!(result["result"], if installed { "already_installed" } else { "already_uninstalled" });
         }
-        let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
+    }
+    #[test]
+    fn setup_failure_releases_maintenance_lease() {
+        use std::cell::Cell;
+        struct Lease<'a>(&'a Cell<bool>);
+        impl Drop for Lease<'_> { fn drop(&mut self) { self.0.set(false); } }
+        let held = Cell::new(false);
+        let result = driver_operation(true, || (false, String::new()),
+            || Some(std::path::PathBuf::from("fake-package")),
+            || { held.set(true); Ok(Lease(&held)) },
+            |_, _| { assert!(held.get()); Err("injected setup failure".into()) });
+        assert!(result.is_err());
+        assert!(!held.get());
     }
 }
-
 /// Runs the driver setup and waits for it to finish. The main app carries a
 /// requireAdministrator manifest, so the child inherits the already-elevated
 /// token — spawn the setup directly instead of going through a PowerShell

@@ -273,7 +273,7 @@ internal sealed partial class FrameScopeWebBridge
                 RunDirExists = true,
                 ReportSizeBytes = reportInfo == null ? 0 : reportInfo.Length,
                 LastWriteTime = reportInfo == null ? Directory.GetLastWriteTime(fullRunDir).ToString("O", CultureInfo.InvariantCulture) : reportInfo.LastWriteTime.ToString("O", CultureInfo.InvariantCulture),
-                ReportKind = ReadString(status, "ReportKind"),
+                ReportKind = artifacts.ReportKind,
                 FrameCount = ReadInt(status, "ReportFrameCount", 0),
                 HasFrameData = ReadBool(status, "ReportHasFrameData", false),
                 ProcessSamplerStatus = ReadString(status, "ProcessSamplerStatus"),
@@ -285,6 +285,11 @@ internal sealed partial class FrameScopeWebBridge
                 ReportGenerationTimedOut = ReadBool(status, "ReportGenerationTimedOut", false),
                 ReportCanRetry = ReadBool(status, "ReportCanRetry", false),
                 ReportGenerationExitCode = ReadInt(status, "ReportGenerationExitCode", -1),
+                DurationSeconds = artifacts.DurationSeconds,
+                ArtifactStatus = artifacts.ArtifactStatus,
+                ArtifactError = artifacts.Error,
+                CanOpenReport = artifacts.IsReadable,
+                CanRegenerate = FrameScopeReportArtifacts.HasUsableMonitorData(fullRunDir),
                 SortTimeUtc = sortTime
             };
         }
@@ -330,9 +335,9 @@ internal sealed partial class FrameScopeWebBridge
         foreach (FrameScopeWebReportEntry candidate in LoadReports())
         {
             if (!string.Equals(candidate.ReportId, reportId, StringComparison.OrdinalIgnoreCase)) continue;
-            if (requireReportHtml && !candidate.ReportExists)
+            if (requireReportHtml && !candidate.CanOpenReport)
             {
-                return "The selected report HTML does not exist.";
+                return "The selected report artifacts are incomplete or its inputs have changed.";
             }
             entry = candidate;
             return "";
@@ -435,6 +440,11 @@ internal sealed partial class FrameScopeWebBridge
         public bool ReportGenerationTimedOut;
         public bool ReportCanRetry;
         public int ReportGenerationExitCode = -1;
+        public double? DurationSeconds;
+        public string ArtifactStatus = "incomplete";
+        public string ArtifactError = "";
+        public bool CanOpenReport;
+        public bool CanRegenerate;
         public DateTime SortTimeUtc;
 
         public Dictionary<string, object> ToPayload()
@@ -450,9 +460,9 @@ internal sealed partial class FrameScopeWebBridge
                 { "monitorExitCode", MonitorExitCode },
                 { "reportExists", ReportExists },
                 { "runDirExists", RunDirExists },
-                { "canOpenReport", ReportExists },
+                { "canOpenReport", CanOpenReport },
                 { "canOpenDirectory", RunDirExists },
-                { "canRegenerate", RunDirExists },
+                { "canRegenerate", CanRegenerate },
                 { "reportSizeBytes", ReportSizeBytes },
                 { "lastWriteTime", LastWriteTime },
                 { "reportKind", ReportKind },
@@ -466,7 +476,10 @@ internal sealed partial class FrameScopeWebBridge
                 { "reportGenerationEndedAt", ReportGenerationEndedAt },
                 { "reportGenerationTimedOut", ReportGenerationTimedOut },
                 { "reportCanRetry", ReportCanRetry },
-                { "reportGenerationExitCode", ReportGenerationExitCode }
+                { "reportGenerationExitCode", ReportGenerationExitCode },
+                { "durationSeconds", DurationSeconds },
+                { "artifactStatus", ArtifactStatus },
+                { "artifactError", ArtifactError }
             };
         }
     }

@@ -199,15 +199,7 @@ internal static partial class FrameScopeReportGenerator
 
     private static double? LowFpsFromSortedFrameMs(List<double> sortedFrameMs, double fraction)
     {
-        if (sortedFrameMs == null || sortedFrameMs.Count == 0) return null;
-        int count = Math.Max(1, (int)Math.Ceiling(sortedFrameMs.Count * fraction));
-        double sum = 0;
-        for (int i = sortedFrameMs.Count - 1, taken = 0; i >= 0 && taken < count; i--, taken++)
-        {
-            sum += sortedFrameMs[i];
-        }
-        double averageMs = sum / count;
-        return averageMs > 0 ? 1000.0 / averageMs : (double?)null;
+        return FrameScopeLiveFrameStats.LowFromSorted(sortedFrameMs, fraction);
     }
 
     private static double? AverageOrNull(List<double> values)

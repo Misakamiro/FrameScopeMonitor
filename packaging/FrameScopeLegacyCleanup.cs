@@ -19,10 +19,14 @@ internal static class FrameScopeLegacyCleanup
     private static string logPath;
     private static CleanupForm form;
     private static bool dryRun;
+    private static string processRoot;
 
     [STAThread]
     private static void Main(string[] args)
     {
+        processRoot = GetArgValue(args, "--root:") ?? GetArgValue(args, "/root:");
+        if (string.IsNullOrWhiteSpace(processRoot)) processRoot = AppDomain.CurrentDomain.BaseDirectory;
+        processRoot = FrameScopeInstallationShutdown.NormalizeRoot(processRoot);
         dryRun = HasArg(args, "/dry-run") || HasArg(args, "--dry-run") || HasArg(args, "/preview") || HasArg(args, "--preview");
         bool quiet = HasArg(args, "/quiet") || HasArg(args, "--quiet");
         bool deleteData = !HasArg(args, "/keep-data") && !HasArg(args, "--keep-data");
@@ -58,7 +62,7 @@ internal static class FrameScopeLegacyCleanup
         string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
         string appDir = Path.Combine(localAppData, "FrameScopeMonitor");
 
-        plan.Processes.AddRange(FindFrameScopeProcesses());
+        plan.Processes.AddRange(FindFrameScopeProcesses(processRoot ?? FrameScopeInstallationShutdown.NormalizeRoot(AppDomain.CurrentDomain.BaseDirectory)));
         plan.RegistryKeys.AddRange(FindUninstallRegistryKeys());
         plan.RegistryValues.AddRange(FindStartupRegistryValues());
         plan.Shortcuts.AddRange(FindShortcuts());
@@ -87,30 +91,10 @@ internal static class FrameScopeLegacyCleanup
         Log("FrameScope legacy cleanup started. dryRun=" + dryRun + " deleteData=" + deleteData);
         LogPlan(plan);
 
-        RunStep("停止 FrameScope / PresentMon / 旧版 PowerShell 监测进程", progress, () =>
+        RunStep("正常停止指定目录的 FrameScope 进程", progress, () =>
         {
-            foreach (ProcessInfo proc in plan.Processes)
-            {
-                if (dryRun)
-                {
-                    Log("[DRY-RUN] would stop process: " + proc);
-                    continue;
-                }
-
-                try
-                {
-                    Process target = Process.GetProcessById(proc.ProcessId);
-                    target.Kill();
-                    target.WaitForExit(3000);
-                    Log("stopped process: " + proc);
-                }
-                catch (Exception ex)
-                {
-                    Log("process stop skipped: " + proc + " error=" + ex.Message);
-                }
-            }
+            StopPlan(plan, dryRun, processRoot, new FrameScopeInstallationShutdown.WindowsEnvironment());
         });
-
         RunStep("删除旧版计划任务", progress, () =>
         {
             foreach (string task in plan.ScheduledTasks)
@@ -201,6 +185,23 @@ internal static class FrameScopeLegacyCleanup
         if (progress != null) progress("清理完成。日志已写入：" + logPath);
     }
 
+    internal static void StopPlan(CleanupPlan plan, bool preview, string root, FrameScopeInstallationShutdown.Environment environment)
+    {
+        if (preview)
+        {
+            foreach (ProcessInfo proc in plan.Processes) Log("[DRY-RUN] would request verified shutdown: " + proc);
+            return;
+        }
+        // Preserve the original deletion plan. Every directory it may remove must be idle;
+        // only the explicitly selected process root is authorized to receive stop requests.
+
+        foreach (string directory in plan.ProgramDirectories)
+            if (!FrameScopeWatcherShutdown.SamePath(directory, root) && environment.Capture(directory).Count != 0)
+                throw new InvalidOperationException("Another legacy directory has running processes; cleanup cancelled: " + directory);
+        string warning = FrameScopeInstallationShutdown.Stop(root, environment);
+        if (!string.IsNullOrEmpty(warning)) Log("shutdown-warning=" + warning);
+    }
+
     private static void RunStep(string title, Action<string> progress, Action action)
     {
         if (progress != null) progress(title + "...");
@@ -226,84 +227,14 @@ internal static class FrameScopeLegacyCleanup
         foreach (string item in plan.DataDirectories) Log("  dataDir " + item);
     }
 
-    private static List<ProcessInfo> FindFrameScopeProcesses()
+    internal static List<ProcessInfo> FindFrameScopeProcesses(string root)
     {
         var result = new List<ProcessInfo>();
-        int currentPid = Process.GetCurrentProcess().Id;
-        string[] directNames =
-        {
-            "FrameScopeMonitor",
-            "FrameScopeReportGenerator",
-            "FrameScopeProcessSampler",
-            "FrameScopeSystemSampler",
-            "FrameScopeUninstaller",
-            "FrameScopeLegacyCleanup",
-            "FrameScopeMonitor-LegacyCleanup",
-            "PresentMon-2.4.1-x64"
-        };
-
-        foreach (string name in directNames)
-        {
-            foreach (Process proc in Process.GetProcessesByName(name))
-            {
-                try
-                {
-                    if (proc.Id == currentPid) continue;
-                    AddProcess(result, proc.Id, proc.ProcessName, SafeMainModule(proc), "");
-                }
-                catch { }
-            }
-        }
-
-        try
-        {
-            using (var searcher = new ManagementObjectSearcher(
-                "SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process WHERE Name='powershell.exe' OR Name='pwsh.exe' OR Name='cmd.exe' OR Name='python.exe' OR Name='pythonw.exe'"))
-            {
-                foreach (ManagementObject obj in searcher.Get())
-                {
-                    int pid = Convert.ToInt32(obj["ProcessId"]);
-                    if (pid == currentPid) continue;
-                    string name = Convert.ToString(obj["Name"]) ?? "";
-                    string exe = Convert.ToString(obj["ExecutablePath"]) ?? "";
-                    string cmd = Convert.ToString(obj["CommandLine"]) ?? "";
-                    string haystack = (exe + "\n" + cmd).ToLowerInvariant();
-                    if (haystack.Contains("framescope-watcher") ||
-                        haystack.Contains("monitor-cs2-highfreq") ||
-                        haystack.Contains("generate-cs2-framescope") ||
-                        haystack.Contains("framescope-runs") ||
-                        haystack.Contains("\\appdata\\local\\framescopemonitor\\runtime\\python") ||
-                        haystack.Contains("\\appdata\\local\\framescopemonitor\\frameScopewatcher.ps1".ToLowerInvariant()) ||
-                        haystack.Contains("\\appdata\\local\\framescopemonitor\\monitor-cs2-highfreq.ps1"))
-                    {
-                        AddProcess(result, pid, name, exe, cmd);
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Log("process WMI scan failed: " + ex.Message);
-        }
-
+        foreach (var identity in new FrameScopeInstallationShutdown.WindowsEnvironment().Capture(FrameScopeInstallationShutdown.NormalizeRoot(root)))
+            result.Add(new ProcessInfo { ProcessId = identity.Pid, StartTime = identity.StartTime, Name = System.IO.Path.GetFileName(identity.ExecutablePath),
+                Path = identity.ExecutablePath, CommandLine = identity.CommandLine });
         return result;
     }
-
-    private static void AddProcess(List<ProcessInfo> result, int pid, string name, string path, string commandLine)
-    {
-        foreach (ProcessInfo existing in result)
-        {
-            if (existing.ProcessId == pid) return;
-        }
-        result.Add(new ProcessInfo { ProcessId = pid, Name = name ?? "", Path = path ?? "", CommandLine = commandLine ?? "" });
-    }
-
-    private static string SafeMainModule(Process proc)
-    {
-        try { return proc.MainModule == null ? "" : proc.MainModule.FileName; }
-        catch { return ""; }
-    }
-
     private static List<RegistryKeyRef> FindUninstallRegistryKeys()
     {
         var result = new List<RegistryKeyRef>();
@@ -782,6 +713,7 @@ internal static class FrameScopeLegacyCleanup
     internal sealed class ProcessInfo
     {
         public int ProcessId;
+        public long StartTime;
         public string Name;
         public string Path;
         public string CommandLine;

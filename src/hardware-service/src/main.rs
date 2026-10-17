@@ -24,7 +24,13 @@ fn main() {
         #[cfg(windows)]
         {
             let seconds = pair[1].parse::<u64>().unwrap_or(12);
-            std::process::exit(framescope_hardware_service::game_fps::run_etw_diag(seconds));
+            let target_pid = args.windows(2)
+                .find(|pair| pair[0] == "--target-pid")
+                .and_then(|pair| pair[1].parse::<u32>().ok());
+            let frame_csv = args.windows(2)
+                .find(|pair| pair[0] == "--frame-csv")
+                .map(|pair| pair[1].as_str());
+            std::process::exit(framescope_hardware_service::game_fps::run_etw_diag(seconds, target_pid, frame_csv));
         }
         #[cfg(not(windows))]
         {
@@ -86,7 +92,7 @@ fn run_stdio(helper: Option<String>) {
         };
         writeln!(stdout, "{}", response).ok();
         stdout.flush().ok();
-        if should_stop {
+        if should_stop && response["ok"] == true {
             break;
         }
     }
@@ -112,9 +118,12 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     const PIPE_TYPE_MESSAGE: Dword = 0x00000004;
     const PIPE_READMODE_MESSAGE: Dword = 0x00000002;
     const PIPE_WAIT: Dword = 0x00000000;
+    const PIPE_NOWAIT: Dword = 0x00000001;
     const PIPE_UNLIMITED_INSTANCES: Dword = 255;
     const FILE_FLAG_FIRST_PIPE_INSTANCE: Dword = 0x0008_0000;
     const ERROR_PIPE_CONNECTED: i32 = 535;
+    const ERROR_PIPE_LISTENING: i32 = 536;
+    const ERROR_NO_DATA: i32 = 232;
     const ERROR_ACCESS_DENIED: i32 = 5;
 
     // Pipeline ACL: the default DACL let any same-user (non-elevated)
@@ -160,6 +169,9 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
             security: *mut std::ffi::c_void,
         ) -> Handle;
         fn ConnectNamedPipe(pipe: Handle, overlapped: *mut std::ffi::c_void) -> Bool;
+        fn SetNamedPipeHandleState(
+            pipe: Handle, mode: *const Dword, max_collection: *const Dword, timeout: *const Dword,
+        ) -> Bool;
         fn DisconnectNamedPipe(pipe: Handle) -> Bool;
         fn CloseHandle(handle: Handle) -> Bool;
         fn FlushFileBuffers(file: Handle) -> Bool;
@@ -208,7 +220,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
     // with ERROR_ACCESS_DENIED (which would be misread as "redundant spawn").
     let mut first_instance = true;
 
-    loop {
+    'accept: loop {
         let open_mode = if first_instance {
             first_instance = false;
             PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE
@@ -226,7 +238,7 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
             CreateNamedPipeW(
                 wide.as_ptr(),
                 open_mode,
-                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
                 PIPE_UNLIMITED_INSTANCES,
                 65536,
                 65536,
@@ -248,20 +260,29 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
             }
             return Err(error);
         }
-        if unsafe { ConnectNamedPipe(handle, null_mut()) } == 0 {
-            // A client may connect between CreateNamedPipeW and ConnectNamedPipe.
-            // ERROR_PIPE_CONNECTED (535) is a successful connection in that race.
+        // Only accept is polled; restore blocking mode before session I/O.
+        // With NOWAIT, a nonzero return only makes an instance available.
+        // ERROR_PIPE_CONNECTED is the actual connection acknowledgement.
+        while !global_stop.load(Ordering::SeqCst) {
+            let available = unsafe { ConnectNamedPipe(handle, null_mut()) } != 0;
             let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED) {
+            if !available && error.raw_os_error() == Some(ERROR_PIPE_CONNECTED) {
+                break;
+            }
+            if !available && error.raw_os_error() != Some(ERROR_PIPE_LISTENING) {
                 unsafe {
                     DisconnectNamedPipe(handle);
                     CloseHandle(handle);
                 }
+                if error.raw_os_error() == Some(ERROR_NO_DATA) {
+                    continue 'accept;
+                }
                 if global_stop.load(Ordering::SeqCst) {
-                    break;
+                    break 'accept;
                 }
                 return Err(error);
             }
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
         if global_stop.load(Ordering::SeqCst) {
             unsafe {
@@ -269,6 +290,15 @@ fn run_named_pipe(pipe_name: &str, helper: Option<String>) -> io::Result<()> {
                 CloseHandle(handle);
             }
             break;
+        }
+        let mode = PIPE_READMODE_MESSAGE | PIPE_WAIT;
+        if unsafe { SetNamedPipeHandleState(handle, &mode, std::ptr::null(), std::ptr::null()) } == 0 {
+            let error = io::Error::last_os_error();
+            unsafe {
+                DisconnectNamedPipe(handle);
+                CloseHandle(handle);
+            }
+            return Err(error);
         }
         if active_sessions.load(Ordering::SeqCst) >= MAX_SESSIONS {
             // Overloaded: shed this connection instead of spawning another
@@ -384,15 +414,11 @@ fn serve_session(
             .map(|line| line.trim_matches('\0').trim_matches('\u{feff}').trim())
             .filter(|line| !line.is_empty())
         {
+            let mut should_stop = false;
             let response = match serde_json::from_str::<Request>(line) {
                 Ok(request) => {
-                    let should_stop = request.method == "stop";
-                    let value =
-                        framescope_hardware_service::dispatch_with_state(request, &mut state);
-                    if should_stop {
-                        stop_flag.store(true, Ordering::SeqCst);
-                    }
-                    value
+                    should_stop = request.method == "stop";
+                    framescope_hardware_service::dispatch_with_state(request, &mut state)
                 }
                 Err(error) => {
                     serde_json::json!({"id":"","ok":false,"result":null,"error":error.to_string()})
@@ -400,22 +426,30 @@ fn serve_session(
             };
             let bytes = format!("{}\n", response);
             let mut written = 0;
-            if unsafe {
-                WriteFile(
-                    handle,
-                    bytes.as_ptr(),
-                    bytes.len() as Dword,
-                    &mut written,
-                    std::ptr::null_mut(),
-                )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
+            let reply_result = (|| {
+                if unsafe {
+                    WriteFile(
+                        handle,
+                        bytes.as_ptr(),
+                        bytes.len() as Dword,
+                        &mut written,
+                        std::ptr::null_mut(),
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                // Drain the reply before waking accept, but do not lose an
+                // accepted stop when the client disconnects during delivery.
+                if unsafe { FlushFileBuffers(handle) } == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            })();
+            if should_stop && response["ok"] == true {
+                stop_flag.store(true, Ordering::SeqCst);
             }
-            // Ensure a terminal stop response is visible to the client before closing the pipe.
-            if unsafe { FlushFileBuffers(handle) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
+            reply_result?;
             if stop_flag.load(Ordering::SeqCst) {
                 return Ok(());
             }

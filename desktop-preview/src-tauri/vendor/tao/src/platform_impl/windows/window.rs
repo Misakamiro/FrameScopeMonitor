@@ -1251,7 +1251,45 @@ unsafe fn init<T: 'static>(
       (w, h)
     };
 
-    let handle = CreateWindowExW(
+    // PATCH(framescope): only the original overlay may use the UIAccess band.
+    // Ordinary hosts retain the upstream window creation path.
+    #[link(name = "advapi32")]
+    extern "system" {
+      fn OpenProcessToken(process: *mut std::ffi::c_void, access: u32, token: *mut *mut std::ffi::c_void) -> i32;
+      fn GetTokenInformation(token: *mut std::ffi::c_void, class: i32, buffer: *mut u32, length: u32, needed: *mut u32) -> i32;
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+      fn GetCurrentProcess() -> *mut std::ffi::c_void;
+      fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+    }
+    let mut uiaccess = 0u32;
+    if attributes.title == "FrameScope UI Preview - Overlay" {
+      let mut token = std::ptr::null_mut();
+      if OpenProcessToken(GetCurrentProcess(), 8, &mut token) != 0 {
+        let mut needed = 0;
+        let _ = GetTokenInformation(token, 26, &mut uiaccess, 4, &mut needed);
+        CloseHandle(token);
+      }
+    }
+    let handle = if uiaccess == 1 {
+      type CreateInBand = unsafe extern "system" fn(u32, *const u16, *const u16, u32, i32, i32, i32, i32,
+        *mut std::ffi::c_void, *mut std::ffi::c_void, *mut std::ffi::c_void, *mut std::ffi::c_void, u32) -> *mut std::ffi::c_void;
+      let module = GetModuleHandleW(windows::core::w!("user32.dll"))?;
+      let address = GetProcAddress(module, windows::core::PCSTR(b"CreateWindowInBand\0".as_ptr()))
+        .ok_or_else(windows::core::Error::from_win32)?;
+      let create: CreateInBand = std::mem::transmute(address);
+      let parameter = Box::into_raw(Box::new(window_flags));
+      let raw = create(ex_style.0, class_name.as_ptr(), title.as_ptr(), style.0,
+        position.0, position.1, adjusted_size.0, adjusted_size.1,
+        parent.map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+        pl_attribs.menu.map(|h| h.0).unwrap_or(std::ptr::null_mut()),
+        GetModuleHandleW(PCWSTR::null())?.0, parameter as _, 2);
+      if raw.is_null() {
+        return Err(os_error!(OsError::IoError(io::Error::last_os_error())));
+      }
+      HWND(raw)
+    } else { CreateWindowExW(
       ex_style,
       PCWSTR::from_raw(class_name.as_ptr()),
       PCWSTR::from_raw(title.as_ptr()),
@@ -1264,7 +1302,7 @@ unsafe fn init<T: 'static>(
       pl_attribs.menu,
       GetModuleHandleW(PCWSTR::null()).map(Into::into).ok(),
       Some(Box::into_raw(Box::new(window_flags)) as _),
-    )?;
+    )? };
 
     if !IsWindow(Some(handle)).as_bool() {
       return Err(os_error!(OsError::IoError(io::Error::last_os_error())));

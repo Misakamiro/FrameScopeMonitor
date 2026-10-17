@@ -15,6 +15,14 @@ internal sealed partial class FrameScopeWebBridge
     private string SaveConfig(FrameScopeWebBridgeRequest request)
     {
         ValidateConfigPath();
+        using (FrameScopeConfigStore.AcquireMutationLock(options.ConfigPath))
+        {
+            return SaveConfigLocked(request);
+        }
+    }
+
+    private string SaveConfigLocked(FrameScopeWebBridgeRequest request)
+    {
         if (request.Payload.ContainsKey("path") || request.Payload.ContainsKey("configPath"))
         {
             return ErrorResponse(request.RequestId, "path_not_allowed", "config.save always writes the host-validated FrameScope config path.");
@@ -27,6 +35,9 @@ internal sealed partial class FrameScopeWebBridge
         }
 
         FrameScopeConfig config = DecodeConfig(configValue);
+        // Settings sends a complete draft, including targets captured before
+        // another targets.save. Only the targets endpoint edits that list.
+        config.Targets = FrameScopeConfigStore.Load(options.ConfigPath).Targets;
         ValidateConfigDataRoot(config);
         FrameScopeConfigStore.Save(options.ConfigPath, config);
         FrameScopeConfig reloaded = FrameScopeConfigStore.Load(options.ConfigPath);
@@ -57,7 +68,7 @@ internal sealed partial class FrameScopeWebBridge
     private FrameScopeConfig DecodeConfig(object value)
     {
         string serialized = json.Serialize(value);
-        FrameScopeConfig config = json.Deserialize<FrameScopeConfig>(serialized);
+        FrameScopeConfig config = FrameScopeConfigStore.Deserialize(serialized);
         if (config == null) throw new InvalidOperationException("Config payload is empty.");
         FrameScopeConfigStore.Normalize(config);
         return config;

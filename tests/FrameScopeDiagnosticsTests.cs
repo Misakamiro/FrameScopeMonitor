@@ -13,6 +13,10 @@ public static class FrameScopeDiagnosticsTests
     {
         try
         {
+            var parameters = typeof(FrameScopeDiagnostics).GetMethod("GenerateReport").GetParameters();
+            AssertEqual(7, parameters.Length, "isolated diagnostic API parameter count");
+            AssertTrue(parameters[5].IsOptional && parameters[6].IsOptional, "production callers keep optional defaults");
+            RetentionUsesExplicitRoot();
             ConfigNormalizesDiagnosticSettings();
             RedactsUserAndSecrets();
             GeneratesDiagnosticReportWithRequiredSections();
@@ -20,6 +24,7 @@ public static class FrameScopeDiagnosticsTests
             GeneratesDiagnosticReportWithPresentMonEtwAccessDeniedFields();
             LatestRunDiscoverySkipsNoisyDataRootDirectories();
             CleanupDeletesOldArtifactsAndEnforcesSizeLimit();
+            DiagnosticDirectoryNamesUseNonce();
             Console.WriteLine("FrameScopeDiagnosticsTests: PASS");
             return 0;
         }
@@ -28,6 +33,42 @@ public static class FrameScopeDiagnosticsTests
             Console.Error.WriteLine(ex.GetType().FullName + ": " + ex.Message);
             return 1;
         }
+    }
+
+    private static void DiagnosticDirectoryNamesUseNonce()
+    {
+        var method = typeof(FrameScopeDiagnostics).GetMethod("BuildDiagnosticDirectoryName", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        AssertTrue(method != null, "diagnostic directory naming helper exists");
+        string first = (string)method.Invoke(null, new object[] { new DateTime(2026, 10, 14, 12, 34, 56), new Guid("11111111-1111-1111-1111-111111111111") });
+        string second = (string)method.Invoke(null, new object[] { new DateTime(2026, 10, 14, 12, 34, 56), new Guid("22222222-2222-2222-2222-222222222222") });
+        AssertTrue(first.StartsWith("diagnostic-20261014-123456-", StringComparison.Ordinal), "diagnostic name retains timestamp");
+        AssertTrue(!string.Equals(first, second, StringComparison.Ordinal), "diagnostic names include nonce");
+        AssertTrue(first.EndsWith("11111111111111111111111111111111", StringComparison.Ordinal), "diagnostic name uses compact GUID");
+    }
+
+    private static void RetentionUsesExplicitRoot()
+    {
+        var method = typeof(FrameScopeDiagnostics).GetMethod("ApplyRetentionPolicy");
+        AssertEqual(4, method.GetParameters().Length, "retention supports an isolated root and observer");
+        string root = Path.Combine(Path.GetTempPath(), "framescope-retention-isolation-" + Guid.NewGuid().ToString("N"));
+        string output = Path.Combine(root, "diagnostics");
+        Directory.CreateDirectory(output);
+        try
+        {
+            string old = Path.Combine(output, "old.json");
+            File.WriteAllText(old, "fixture");
+            File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddDays(-30));
+            int observed = 0;
+            Action<string> observer = delegate(string path) {
+                AssertEqual(Path.GetFullPath(output), path, "retention observes only the fixture output");
+                AssertTrue(!string.Equals(path, FrameScopeDiagnostics.DefaultDiagnosticRoot, StringComparison.OrdinalIgnoreCase), "retention never selects production diagnostics");
+                observed++;
+            };
+            method.Invoke(null, new object[] { root, new FrameScopeConfig(), output, observer });
+            AssertEqual(1, observed, "retention cleanup observed once");
+            AssertTrue(!File.Exists(old), "retention cleans its isolated old fixture");
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     private static void ConfigNormalizesDiagnosticSettings()
@@ -119,7 +160,7 @@ public static class FrameScopeDiagnosticsTests
             };
             FrameScopeConfigStore.Normalize(config);
 
-            FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, "unit-test", runDir);
+            FrameScopeDiagnosticReportResult result = GenerateIsolatedReport(config, appRoot, dataRoot, "unit-test", runDir, Path.Combine(dir, "diagnostics"));
             string markdown = File.ReadAllText(result.MarkdownPath, Encoding.UTF8);
             string json = File.ReadAllText(result.JsonPath, Encoding.UTF8);
             Dictionary<string, object> report = Json.Deserialize<Dictionary<string, object>>(json);
@@ -213,7 +254,7 @@ public static class FrameScopeDiagnosticsTests
             };
             FrameScopeConfigStore.Normalize(config);
 
-            FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, "unit-test-access-denied", runDir);
+            FrameScopeDiagnosticReportResult result = GenerateIsolatedReport(config, appRoot, dataRoot, "unit-test-access-denied", runDir, Path.Combine(dir, "diagnostics"));
             string markdown = File.ReadAllText(result.MarkdownPath, Encoding.UTF8);
             string json = File.ReadAllText(result.JsonPath, Encoding.UTF8);
 
@@ -265,7 +306,7 @@ public static class FrameScopeDiagnosticsTests
             };
             FrameScopeConfigStore.Normalize(config);
 
-            FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, "unit-test-noise", "");
+            FrameScopeDiagnosticReportResult result = GenerateIsolatedReport(config, appRoot, dataRoot, "unit-test-noise", "", Path.Combine(dir, "diagnostics"));
             string json = File.ReadAllText(result.JsonPath, Encoding.UTF8);
 
             AssertTrue(json.Contains("Clean.exe"), "latest run should come from clean data root run");
@@ -309,6 +350,21 @@ public static class FrameScopeDiagnosticsTests
             try { Directory.Delete(dir, true); }
             catch { }
         }
+    }
+
+    private static FrameScopeDiagnosticReportResult GenerateIsolatedReport(FrameScopeConfig config, string appRoot, string dataRoot, string reason, string runDir, string outputRoot)
+    {
+        var cleanupRoots = new List<string>();
+        FrameScopeDiagnosticReportResult result = FrameScopeDiagnostics.GenerateReport(config, appRoot, dataRoot, reason, runDir,
+            outputRoot, delegate(string path) {
+                cleanupRoots.Add(path);
+                AssertEqual(Path.GetFullPath(outputRoot), path, "cleanup stays in isolated TEMP root");
+                AssertTrue(!string.Equals(path, FrameScopeDiagnostics.DefaultDiagnosticRoot, StringComparison.OrdinalIgnoreCase), "cleanup must not touch production diagnostics");
+            });
+        AssertEqual(2, cleanupRoots.Count, "both retention passes observed");
+        AssertTrue(result.DirectoryPath.StartsWith(Path.GetFullPath(outputRoot) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase), "report stays in isolated TEMP root");
+        Console.WriteLine("Isolated diagnostic output and both cleanup passes: " + outputRoot);
+        return result;
     }
 
     private static long TotalBytes(string dir)

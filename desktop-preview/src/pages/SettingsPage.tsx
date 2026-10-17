@@ -38,6 +38,7 @@ import { CustomColorPicker } from "@/components/special/custom-color-picker";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { LiquidGlassButton } from "@/components/special/liquid-glass-button";
 import { LiquidGlassMenuItem } from "@/components/special/liquid-glass-menu-item";
+import { useLiquidGlassRefraction } from "@/components/special/liquid-glass-svg-filter";
 import { ThemeSwitch } from "@/components/special/theme-switch";
 import { CustomSelect } from "@/components/special/custom-select";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -152,9 +153,13 @@ function GeneralSettings() {
   const { t } = useTranslation();
   const toast = useDynamicIsland("settings");
   const { config, getContrastTextColor } = useThemeColor();
-  const { liquidGlassEnabled, liquidGlassBlur } = useBackground();
-  // 模糊立即生效：页面切换动画期间的 backdrop-filter 关闭由 .page-animating 类统一处理
+  const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode } = useBackground();
+  const isReal = liquidGlassEnabled && liquidGlassMode === "real";
+  const { svgSupported } = useLiquidGlassRefraction(isReal);
+  // 分段控件跟随玻璃模式，滤镜放在底层以保留根元素的圆角裁剪。
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
+  const segmentedBackdropFilter = isReal ? "none" : (liquidGlassEnabled ? `blur(${effectiveBlur}px) saturate(160%)` : "blur(14px)");
+  const edgeFilter = svgSupported ? "url(#nexbox-liquid-glass-filter)" : "none";
 
   const [closeBehavior, setCloseBehavior] = useState<string>(() => {
     const stored = localStorage.getItem("nexbox_close_behavior");
@@ -337,19 +342,47 @@ function GeneralSettings() {
                 </Text>
               </Box>
               <HStack
+                className={isReal ? "real-liquid-glass" : undefined}
                 spacing={1}
                 p={1}
                 borderRadius="xl"
                 border="1px solid"
-                borderColor={segmentedControlBorder}
-                bg={segmentedControlBg}
-                boxShadow={segmentedControlShadow}
-                backdropFilter={liquidGlassEnabled ? `blur(${effectiveBlur}px) saturate(160%)` : "blur(14px)"}
-                transition="backdrop-filter 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
+                borderColor={isReal ? "rgba(255,255,255,0.06)" : segmentedControlBorder}
+                bg={isReal ? "transparent" : segmentedControlBg}
+                boxShadow={isReal ? undefined : segmentedControlShadow}
+                sx={{
+                  "::before": {
+                    content: '""',
+                    position: "absolute",
+                    inset: 0,
+                    zIndex: -1,
+                    borderRadius: "inherit",
+                    backdropFilter: segmentedBackdropFilter,
+                    WebkitBackdropFilter: segmentedBackdropFilter,
+                    transition: "backdrop-filter 0.45s",
+                  },
+                }}
                 position="relative"
                 overflow="hidden"
+                zIndex={0}
               >
-                {liquidGlassEnabled && (
+                {isReal && svgSupported && (
+                  <>
+                    <Box position="absolute" top={0} left={0} w="100%" h="10px" zIndex={0}
+                      backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+                      bg="transparent" pointerEvents="none" />
+                    <Box position="absolute" bottom={0} left={0} w="100%" h="10px" zIndex={0}
+                      backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+                      bg="transparent" pointerEvents="none" />
+                    <Box position="absolute" left={0} top={0} w="10px" h="100%" zIndex={0}
+                      backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+                      bg="transparent" pointerEvents="none" />
+                    <Box position="absolute" right={0} top={0} w="10px" h="100%" zIndex={0}
+                      backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
+                      bg="transparent" pointerEvents="none" />
+                  </>
+                )}
+                {liquidGlassEnabled && !isReal && (
                   <Box
                     position="absolute"
                     inset="0"
@@ -364,7 +397,7 @@ function GeneralSettings() {
                   pointerEvents="none"
                   borderRadius="inherit"
                   boxShadow={`inset 0 1px 0 rgba(255,255,255,0.28), inset 0 0 0 1px ${segmentedContainerGlow}`}
-                  opacity={liquidGlassEnabled ? 1 : 0.72}
+                  opacity={isReal ? 0 : (liquidGlassEnabled ? 1 : 0.72)}
                 />
                 {(["slide", "fade", "off"] as const).map((mode) => (
                   <Box
@@ -378,7 +411,7 @@ function GeneralSettings() {
                     border="1px solid"
                     borderColor={pageTransitionMode === mode ? segmentedActiveBorder : "transparent"}
                     bg={pageTransitionMode === mode ? segmentedActiveBg : "transparent"}
-                    color={pageTransitionMode === mode ? segmentedActiveText : subLabelColor}
+                    color={pageTransitionMode === mode ? segmentedActiveText : (isReal ? labelColor : subLabelColor)}
                     fontSize="sm"
                     fontWeight={pageTransitionMode === mode ? "semibold" : "medium"}
                     letterSpacing="0.01em"
@@ -681,12 +714,11 @@ function AppearanceSettings() {
   const labelColor = useColorModeValue("gray.700", "#ffffff");
   const subLabelColor = useColorModeValue("gray.500", "#ffffff");
   const emptySlotBg = useColorModeValue("gray.100", "#1a1a1a");
+  const emptySlotHoverBg = useColorModeValue("gray.200", "#222222");
+  const sliderTrackBg = useColorModeValue("gray.200", "gray.700");
   const emptySlotBorder = useColorModeValue("gray.200", "#333333");
   const activeSlotBorder = useColorModeValue("blue.400", "blue.300");
-  const modeButtonActiveBg = useColorModeValue("blue.500", "blue.400");
   const modeButtonActiveColor = useColorModeValue("gray.800", "white");
-  const modeButtonInactiveBg = useColorModeValue("gray.100", "#1a1a1a");
-  const modeButtonInactiveBorder = useColorModeValue("gray.200", "#333333");
   const glassSectionBorder = useColorModeValue("rgba(0,0,0,0.08)", "rgba(255,255,255,0.08)");
   const toast = useDynamicIsland("settings");
 
@@ -962,7 +994,7 @@ function AppearanceSettings() {
             />
           </HStack>
           {liquidGlassEnabled && (
-            <Box mt={4} pt={3} borderTop="1px solid" borderColor={useColorModeValue("rgba(0,0,0,0.08)", "rgba(255,255,255,0.08)")}>
+            <Box mt={4} pt={3} borderTop="1px solid" borderColor={glassSectionBorder}>
               <HStack justify="space-between" mb={2}>
                 <Text fontSize="sm" color={labelColor}>
                   {t("settings.appearanceSettings.liquidGlassModeLabel")}
@@ -985,7 +1017,7 @@ function AppearanceSettings() {
             </Box>
           )}
           {liquidGlassEnabled && liquidGlassMode === "normal" && (
-            <Box mt={4} pt={3} borderTop="1px solid" borderColor={useColorModeValue("rgba(0,0,0,0.08)", "rgba(255,255,255,0.08)")}>
+            <Box mt={4} pt={3} borderTop="1px solid" borderColor={glassSectionBorder}>
               <HStack justify="space-between" mb={2}>
                 <Text fontSize="sm" color={labelColor}>
                   {t("settings.appearanceSettings.liquidGlassBlurLabel")}
@@ -999,7 +1031,7 @@ function AppearanceSettings() {
                 step={1}
                 onChange={(val) => setLiquidGlassBlur(val)}
               >
-                <SliderTrack bg={useColorModeValue("gray.200", "gray.700")}>
+                <SliderTrack bg={sliderTrackBg}>
                   <SliderFilledTrack bg={getActiveColor()} />
                 </SliderTrack>
                 <SliderThumb />
@@ -1329,7 +1361,7 @@ function AppearanceSettings() {
                             justify="center"
                             cursor="pointer"
                             onClick={handleAddClick}
-                            _hover={{ bg: useColorModeValue("gray.200", "#222222") }}
+                            _hover={{ bg: emptySlotHoverBg }}
                             transition="all 0.2s"
                           >
                             <LuUpload size={18} color={subLabelColor} />
@@ -1395,7 +1427,7 @@ function AppearanceSettings() {
                           justify="center"
                           cursor="pointer"
                           onClick={handleVideoAddClick}
-                          _hover={{ bg: useColorModeValue("gray.200", "#222222") }}
+                          _hover={{ bg: emptySlotHoverBg }}
                           transition="all 0.2s"
                           flexDirection="column"
                           gap={1}
@@ -1518,7 +1550,7 @@ function AppearanceSettings() {
               step={1}
               onChange={(val) => setBackgroundBlur(val)}
             >
-              <SliderTrack bg={useColorModeValue("gray.200", "gray.700")}>
+              <SliderTrack bg={sliderTrackBg}>
                 <SliderFilledTrack bg={getActiveColor()} />
               </SliderTrack>
               <SliderThumb />
@@ -1538,7 +1570,6 @@ export default function SettingsPage() {
   const [activeItem, setActiveItem] = useState("general");
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
-  const { config } = useThemeColor();
   const { jellyBounceEnabled } = useBackground();
   const isFirstRender = useRef(true);
 
@@ -1574,7 +1605,6 @@ export default function SettingsPage() {
       <Box w="180px" flexShrink={0} position="sticky" top={8} alignSelf="flex-start">
         <VStack spacing={0.5} align="stretch">
           {settingItems.map((item) => {
-            const Icon = item.icon;
             const isActive = activeItem === item.id;
 
             return (

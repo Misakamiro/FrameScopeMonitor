@@ -13,12 +13,18 @@ internal static class FrameScopeReportRecoveryTests
     {
         try
         {
+            DefaultFingerprintIsVersionTwo();
+            FingerprintDetectsSameLengthSameTimestampRewrite();
+            LegacyVersionZeroAndDurationInspection();
             HtmlAloneIsIncomplete();
             MissingDataIsIncomplete();
             CorruptManifestIsIncomplete();
             ManifestPathEscapeIsIncomplete();
             CompleteArtifactSetPasses();
+            MissingHardwareCsvPreservesLegacyFingerprint();
             CsvChangeInvalidatesCompleteArtifactSet();
+            HardwareCsvChangeInvalidatesCompleteArtifactSet();
+            HardwareOnlyRunCanBeRecovered();
             MonitorCsvRequiresADataRow();
             RecoveryPolicyHonorsPhaseAndActivity();
             LiveOwnerIdentityBlocksRecovery();
@@ -26,6 +32,7 @@ internal static class FrameScopeReportRecoveryTests
             RecoverySelectionFiltersBeforeApplyingLimits();
             FailedRecoveryAttemptsBecomeExhausted();
             GenerationSuccessRequiresVerifiedStableArtifacts();
+            VersionedFingerprintCoversCpuCsvAndLegacyIsReadable();
             Console.WriteLine("FrameScopeReportRecoveryTests: PASS");
             return 0;
         }
@@ -34,6 +41,81 @@ internal static class FrameScopeReportRecoveryTests
             Console.Error.WriteLine(ex);
             return 1;
         }
+    }
+
+    private static void DefaultFingerprintIsVersionTwo()
+    {
+        string run = CreateRun("default-v2");
+        try { AssertEqual(FrameScopeReportArtifacts.CaptureInputFingerprint(run, 2).Value, FrameScopeReportArtifacts.CaptureInputFingerprint(run).Value, "new input snapshots always use v2"); }
+        finally { DeleteFixture(run); }
+    }
+    private static void FingerprintDetectsSameLengthSameTimestampRewrite()
+    {
+        string run = CreateRun("same-size-rewrite");
+        try
+        {
+            string path = Path.Combine(run, "presentmon.csv");
+            File.WriteAllText(path, "Time,Value\r\n2026-01-01T00:00:00Z,1\r\n");
+            DateTime stamp = File.GetLastWriteTimeUtc(path);
+            string before = FrameScopeReportArtifacts.CaptureInputFingerprint(run, 2).Value;
+            File.WriteAllText(path, "Time,Value\r\n2026-01-01T00:00:00Z,2\r\n");
+            File.SetLastWriteTimeUtc(path, stamp);
+            AssertFalse(before == FrameScopeReportArtifacts.CaptureInputFingerprint(run, 2).Value, "v2 fingerprints cover content, not only metadata");
+        }
+        finally { DeleteFixture(run); }
+    }
+    private static void LegacyVersionZeroAndDurationInspection()
+    {
+        string run = CreateRun("legacy-v0-duration");
+        try
+        {
+            AssertEqual<double?>(null, FrameScopeReportArtifacts.Inspect(run).DurationSeconds, "unknown duration remains null");
+            File.WriteAllText(Path.Combine(run, "system-samples.csv"), "Time,TotalCpuPct\r\n2026-01-01T00:00:00Z,10\r\n2026-01-01T00:00:05Z,11\r\n");
+            AssertEqual<double?>(5, FrameScopeReportArtifacts.Inspect(run).DurationSeconds, "old duration comes from samples");
+            File.WriteAllText(Path.Combine(run, "status.json"), "{\"StartTime\":\"2026-01-01T00:00:00Z\",\"EndTime\":\"2026-01-01T00:00:07Z\"}");
+            AssertEqual<double?>(7, FrameScopeReportArtifacts.Inspect(run).DurationSeconds, "recorded range takes precedence");
+            WriteArtifactSet(run);
+            string path = Path.Combine(run, "charts", FrameScopeReportArtifacts.ManifestFileName);
+            var manifest = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
+            manifest.Remove("inputFingerprintVersion");
+            manifest["inputFingerprint"] = FrameScopeReportArtifacts.CaptureInputFingerprint(run, 1).Value;
+            File.WriteAllText(Path.Combine(run, "cpu-core-samples.csv"), "Time,ActualFrequencyMHz\r\n2026-01-01T00:00:02Z,4200\r\n");
+            File.WriteAllText(path, Json.Serialize(manifest));
+            var state = FrameScopeReportArtifacts.Inspect(run);
+            AssertTrue(state.IsReadable, "unversioned historical report remains readable");
+            AssertFalse(state.IsComplete, "historical report cannot verify current CPU inputs");
+            AssertEqual("legacy-readable", state.ArtifactStatus, "historical status explicit");
+            foreach (string kind in new[] { "full", "partial", "diagnostic", "error" })
+            {
+                manifest["reportKind"] = kind;
+                File.WriteAllText(path, Json.Serialize(manifest));
+                AssertEqual(kind, FrameScopeReportArtifacts.Inspect(run).ReportKind, "all report types supported");
+            }
+        }
+        finally { DeleteFixture(run); }
+    }
+
+    private static void VersionedFingerprintCoversCpuCsvAndLegacyIsReadable()
+    {
+        string run = CreateRun("versioned-fingerprint");
+        try
+        {
+            File.WriteAllText(Path.Combine(run, "cpu-core-samples.csv"), "Time,Core\r\n2026-09-18T00:00:00Z,1\r\n");
+            string v2 = FrameScopeReportArtifacts.CaptureInputFingerprint(run).Value;
+            File.AppendAllText(Path.Combine(run, "cpu-core-samples.csv"), "2026-09-18T00:00:01Z,2\r\n");
+            AssertFalse(string.Equals(v2, FrameScopeReportArtifacts.CaptureInputFingerprint(run).Value, StringComparison.OrdinalIgnoreCase), "CPU CSV changes invalidate v2 fingerprint");
+
+            WriteArtifactSet(run);
+            string manifest = Path.Combine(run, "charts", "framescope-interactive-manifest.json");
+            var map = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(manifest));
+            map["inputFingerprintVersion"] = 1;
+            map["inputFingerprint"] = FrameScopeReportArtifacts.CaptureInputFingerprint(run, 1).Value;
+            File.WriteAllText(manifest, Json.Serialize(map));
+            FrameScopeReportArtifactState state = FrameScopeReportArtifacts.Inspect(run);
+            AssertTrue(state.LegacyReadable, "v1 report is explicitly legacy-readable");
+            AssertFalse(state.IsComplete, "v1 report is not strict complete");
+        }
+        finally { DeleteFixture(run); }
     }
 
     private static void HtmlAloneIsIncomplete()
@@ -123,6 +205,52 @@ internal static class FrameScopeReportRecoveryTests
             AssertFalse(FrameScopeReportArtifacts.HasUsableMonitorData(run), "header-only CSV is not usable");
             File.WriteAllText(Path.Combine(run, "process-samples.csv"), "Time,Pid" + Environment.NewLine + "2026-07-11T00:00:00Z,42" + Environment.NewLine);
             AssertTrue(FrameScopeReportArtifacts.HasUsableMonitorData(run), "a data row is usable");
+        }
+        finally { DeleteFixture(run); }
+    }
+
+    private static void HardwareCsvChangeInvalidatesCompleteArtifactSet()
+    {
+        string run = CreateRun("hardware-fingerprint-change");
+        try
+        {
+            string csv = Path.Combine(run, "hardware-samples.csv");
+            File.WriteAllText(csv, "Time,Fps\r\n2026-09-18T00:00:00Z,60\r\n");
+            WriteArtifactSet(run);
+            AssertTrue(FrameScopeReportArtifacts.Inspect(run).IsComplete, "hardware baseline complete");
+            File.AppendAllText(csv, "2026-09-18T00:00:01Z,30\r\n");
+            AssertFalse(FrameScopeReportArtifacts.Inspect(run).IsComplete, "hardware CSV change must invalidate sampled FPS report");
+        }
+        finally { DeleteFixture(run); }
+    }
+
+    private static void MissingHardwareCsvPreservesLegacyFingerprint()
+    {
+        string run = CreateRun("legacy-fingerprint");
+        try
+        {
+            string snapshot = "presentmon.csv|missing\nprocess-samples.csv|missing\nsystem-samples.csv|missing\n";
+            string expected;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                expected = BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(snapshot))).Replace("-", "").ToLowerInvariant();
+            }
+            AssertEqual(expected, FrameScopeReportArtifacts.CaptureInputFingerprint(run, 1).Value,
+                "runs without hardware CSV retain their legacy fingerprint");
+        }
+        finally { DeleteFixture(run); }
+    }
+
+    private static void HardwareOnlyRunCanBeRecovered()
+    {
+        string run = CreateRun("hardware-only");
+        try
+        {
+            string csv = Path.Combine(run, "hardware-samples.csv");
+            File.WriteAllText(csv, "Time,Fps\r\n");
+            AssertFalse(FrameScopeReportArtifacts.HasUsableMonitorData(run), "hardware header alone is not usable");
+            File.AppendAllText(csv, "2026-09-18T00:00:00Z,60\r\n");
+            AssertTrue(FrameScopeReportArtifacts.HasUsableMonitorData(run), "hardware FPS data must qualify for report recovery");
         }
         finally { DeleteFixture(run); }
     }
@@ -231,6 +359,7 @@ internal static class FrameScopeReportRecoveryTests
             { "report", reportOverride ?? report },
             { "data", dataOverride ?? data },
             { "frames", 1 },
+            { "inputFingerprintVersion", 2 },
             { "inputFingerprint", inputFingerprint }
         }));
     }

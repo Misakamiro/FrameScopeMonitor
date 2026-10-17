@@ -12,11 +12,11 @@ internal static class FrameScopeIconTests
     {
         try
         {
-            string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+            string root = FrameScopeTestPaths.SourceRoot;
             string iconPath = Path.Combine(root, "assets", "icon", "framescope-icon.ico");
-            string appExe = Path.Combine(root, "FrameScopeMonitor.exe");
-            string setupExe = Path.Combine(root, "dist", "FrameScopeMonitor-Setup.exe");
-            string fullSetupExe = Path.Combine(root, "dist", "FrameScopeMonitor-Full-Setup.exe");
+            string appExe = Path.Combine(FrameScopeTestPaths.RuntimeRoot, "FrameScopeMonitor.exe");
+            string setupExe = Path.Combine(FrameScopeTestPaths.RuntimeRoot, "dist", "FrameScopeMonitor-Setup.exe");
+            string fullSetupExe = Path.Combine(FrameScopeTestPaths.RuntimeRoot, "dist", "FrameScopeMonitor-Full-Setup.exe");
 
             IconFileExists(iconPath);
             IconContainsRequiredSizes(iconPath);
@@ -79,7 +79,7 @@ internal static class FrameScopeIconTests
 
     private static void InstallerDisplayIconPathUsesMainExe()
     {
-        string setupSource = File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "packaging", "FrameScopeSetupNative.cs"));
+        string setupSource = File.ReadAllText(Path.Combine(FrameScopeTestPaths.SourceRoot, "packaging", "FrameScopeSetupNative.cs"));
         AssertTrue(setupSource.Contains("key.SetValue(\"DisplayIcon\", exePath, RegistryValueKind.String);"), "Installer must register DisplayIcon against FrameScopeMonitor.exe.");
     }
 

@@ -14,7 +14,7 @@ export interface PreviewReport {
   targetId: string;
   targetName: string;
   createdAt: string;
-  durationSeconds: number;
+  durationSeconds: number | null;
   averageFps: number | null;
   low1Fps: number | null;
   low01Fps: number | null;
@@ -24,6 +24,10 @@ export interface PreviewReport {
   simulated?: boolean;
   /** Real backend reports carry the run directory (for open-directory etc.). */
   runDir?: string;
+  artifactStatus?: string;
+  artifactError?: string;
+  canOpenReport?: boolean;
+  canRegenerate?: boolean;
 }
 export interface PreviewConfig {
   pollIntervalMs: number;
@@ -33,6 +37,8 @@ export interface PreviewConfig {
   captureDurationSeconds: number;
   sampleIntervalMs: number;
   autoStart: boolean;
+  autoStartOverlay: boolean;
+  startMinimized: boolean;
   outputDirectory: string;
   theme: "system" | "light" | "dark";
 }
@@ -48,6 +54,7 @@ export interface PreviewState {
   monitor: {
     phase: MonitorPhase;
     targetId: string | null;
+    activeTargets: string[];
     elapsedSeconds: number;
     startedAt: string | null;
     reportId: string | null;
@@ -70,10 +77,11 @@ export interface PreviewActionPayloads {
   "target.update": { id: string; name?: string; executable?: string; enabled?: boolean };
   "target.remove": { id: string };
   "target.select": { id: string };
-  "monitor.start": { targetId?: string } | undefined;
+  "monitor.start": undefined;
   "monitor.stop": undefined;
   "monitor.reset": undefined;
   "report.remove": { id: string };
+  "report.delete": { id: string };
   "report.regenerate": { id: string };
   "report.diagnose": { id: string };
   "config.update": Partial<PreviewConfig>;

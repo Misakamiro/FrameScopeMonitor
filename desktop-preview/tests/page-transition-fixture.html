@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="icon" href="data:,"></head><body>
+<div id="root"></div>
+<script type="module">
+import React from "react";
+import { createRoot } from "react-dom/client";
+import { usePageLocation } from "../src/components/ui/use-page-location";
+import { useTransitionMode } from "../src/components/ui/animated-page";
+import { store } from "../src/lib/store";
+import "../src/index.css";
+let resolveStore;
+store.get = () => new Promise(resolve => { resolveStore = resolve; });
+window.resolveStore = value => resolveStore(value);
+window.transitions = [];
+document.startViewTransition = callback => {
+  let finish;
+  const transition = { ready: Promise.resolve(), finished: new Promise(resolve => { finish = resolve; }),
+    skipTransition() { this.skipped = true; }, commit: callback, finish: () => finish(), skipped: false };
+  window.transitions.push(transition);
+  return transition;
+};
+function Probe() {
+  const [location, setLocation] = React.useState({ pathname: "/a", key: "a" });
+  const mode = useTransitionMode();
+  const displayed = usePageLocation(location, mode);
+  window.navigate = pathname => setLocation({ pathname, key: pathname });
+  return React.createElement("div", { "data-page-content": "" },
+    React.createElement("aside", { id: "main-sidebar", style: { width: 120, height: 200 } }, "Navigation"),
+    React.createElement("output", { id: "mode" }, mode),
+    React.createElement("output", { id: "path" }, displayed.pathname));
+}
+createRoot(document.getElementById("root")).render(React.createElement(Probe));
+</script></body></html>

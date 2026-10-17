@@ -55,13 +55,14 @@ internal static partial class FrameScopeNativeMonitor
             File.WriteAllText(SamplerFailurePresentMonStopPath(args), DateTime.Now.ToString("o"), Encoding.UTF8);
             return 0;
         }
+        if (HasTestArg(args, "--terminate_existing_session")) return 0;
         if (LooksLikePresentMonInvocation(args) && IsSamplerFailurePresentMonInvocation(args))
         {
             return RunSamplerFailureFakePresentMon(args);
         }
         if (LooksLikePresentMonInvocation(args) && IsSilentNoCsvPresentMonInvocation(args))
         {
-            Console.Out.WriteLine("Started recording.");
+            if (!HasTestArg(args, "--output_stdout")) Console.Out.WriteLine("Started recording.");
             return 0;
         }
         if (LooksLikePresentMonInvocation(args))
@@ -100,6 +101,7 @@ internal static partial class FrameScopeNativeMonitor
         ShortLivedChildStderrWorksAtWindowsPathLimit();
         SamplerEvidenceBuilderUsesStartExitStopAndFileEvidence();
         SamplerExitTimeDeterminesWhetherExitWasEarly();
+        RestartedCsvPreservesPrefixAndRejectsSchemaMismatch();
         MonitorSessionClassifiesShortLivedPresentMonStderr();
         MonitorSessionClassifiesSilentNoCsvPresentMonExitZero();
         MonitorSessionClassifiesEarlySystemSamplerAsPartial();
@@ -454,9 +456,37 @@ internal static partial class FrameScopeNativeMonitor
         AssertEqual(true, IsNativeMonitorSamplerEarlyExit(stopRequestedAt.AddMilliseconds(1), null, false), "exit without owner stop request");
     }
 
+    private static void RestartedCsvPreservesPrefixAndRejectsSchemaMismatch()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-csv-restart-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try {
+            string path = Path.Combine(dir, "frames.csv");
+            const string prefix = "Application,ProcessID\r\ngame.exe,42\r\n";
+            File.WriteAllText(path, prefix, new UTF8Encoding(false));
+            using (var source = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes("Application,ProcessID\r\ngame.exe,43\r\n")))) {
+                var drain = BeginCopyCsvPipe(source, path, true);
+                AssertTrue(drain.Join(3000), "restarted CSV drain completes");
+            }
+            AssertEqual(prefix + "game.exe,43\r\n", File.ReadAllText(path), "restart keeps prefix bytes and skips only the duplicate header");
+            string preserved = File.ReadAllText(path);
+            using (var source = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes("ProcessID,Application\n99,wrong.exe\n")))) {
+                AssertTrue(BeginCopyCsvPipe(source, path, true).Join(3000), "schema failure drain exits");
+            }
+            AssertEqual(preserved, File.ReadAllText(path), "mismatched columns cannot corrupt preserved raw data");
+            AssertTrue(File.ReadAllText(path + ".capture-error.txt").Contains("columns differ"), "schema mismatch is explicit");
+            File.WriteAllText(path, prefix.TrimEnd('\r', '\n'));
+            preserved = File.ReadAllText(path);
+            using (var source = new StreamReader(new MemoryStream(Encoding.UTF8.GetBytes(prefix)))) {
+                AssertTrue(BeginCopyCsvPipe(source, path, true).Join(3000), "partial row failure drain exits");
+            }
+            AssertEqual(preserved, File.ReadAllText(path), "partial original row cannot be joined to a new frame");
+        } finally { Directory.Delete(dir, true); }
+    }
+
     private static void MonitorSessionClassifiesShortLivedPresentMonStderr()
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string monitorExe = Path.Combine(root, "FrameScopeMonitor.exe");
         string processSamplerExe = Path.Combine(root, "FrameScopeProcessSampler.exe");
         string systemSamplerExe = Path.Combine(root, "FrameScopeSystemSampler.exe");
@@ -550,7 +580,7 @@ internal static partial class FrameScopeNativeMonitor
 
     private static void MonitorSessionClassifiesSilentNoCsvPresentMonExitZero()
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string monitorExe = Path.Combine(root, "FrameScopeMonitor.exe");
         string processSamplerExe = Path.Combine(root, "FrameScopeProcessSampler.exe");
         string systemSamplerExe = Path.Combine(root, "FrameScopeSystemSampler.exe");
@@ -608,26 +638,27 @@ internal static partial class FrameScopeNativeMonitor
 
             string runDir = FindNewestDirectory(runRoot);
             AssertTrue(!string.IsNullOrWhiteSpace(runDir), "monitor session run directory");
-            AssertTrue(!File.Exists(Path.Combine(runDir, "presentmon.csv")), "silent fake PresentMon should not create CSV");
-            string stdout = File.ReadAllText(Path.Combine(runDir, "presentmon.stdout.log"), Encoding.UTF8);
+            string csvPath = Path.Combine(runDir, "presentmon.csv");
+            AssertTrue(File.Exists(csvPath), "stdout collector creates its CSV output");
+            AssertEqual(0L, new FileInfo(csvPath).Length, "silent fake PresentMon emits no CSV bytes");
             string stderr = File.ReadAllText(Path.Combine(runDir, "presentmon.stderr.log"), Encoding.UTF8);
-            AssertTrue(stdout.Contains("Started recording"), "silent no-csv stdout");
             AssertEqual("", stderr.Trim(), "silent no-csv stderr");
 
             JavaScriptSerializer serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             Dictionary<string, object> status = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(runDir, "status.json"), Encoding.UTF8));
             Dictionary<string, object> summary = serializer.Deserialize<Dictionary<string, object>>(File.ReadAllText(Path.Combine(runDir, "summary.json"), Encoding.UTF8));
 
-            AssertEqual("presentmon-no-csv-silent", Convert.ToString(status["FrameCaptureStatus"]), "status silent no-csv capture status");
-            AssertEqual("presentmon-no-csv-silent", Convert.ToString(summary["FrameCaptureStatus"]), "summary silent no-csv capture status");
-            AssertEqual("presentmon-no-csv-silent", Convert.ToString(status["PresentMonFailureCategory"]), "status silent no-csv category");
+            AssertEqual("empty-presentmon-csv", Convert.ToString(status["FrameCaptureStatus"]), "status silent stdout capture status");
+            AssertEqual("empty-presentmon-csv", Convert.ToString(summary["FrameCaptureStatus"]), "summary silent stdout capture status");
+            AssertEqual("empty-presentmon-csv", Convert.ToString(status["PresentMonFailureCategory"]), "status silent stdout category");
+            AssertEqual(0L, Convert.ToInt64(status["PresentMonCsvRows"]), "silent stdout never becomes captured frames");
             AssertEqual(false, Convert.ToBoolean(status["PresentMonEtwAccessDenied"]), "status silent no-csv ETW flag");
             AssertEqual(0, Convert.ToInt32(status["PresentMonExitCode"]), "status PresentMon exit code");
             AssertTrue(Convert.ToInt64(status["PresentMonRuntimeMs"]) >= 0, "status PresentMon runtime should be recorded");
             AssertTrue(Convert.ToString(status["PresentMonCsvPath"]).EndsWith("presentmon.csv", StringComparison.OrdinalIgnoreCase), "status CSV path");
             AssertTrue(!String.IsNullOrWhiteSpace(Convert.ToString(status["PresentMonCsvLastCheckTime"])), "status CSV last check time");
             AssertTrue(status.ContainsKey("TargetRunningAtPresentMonExitCheck"), "status target running at PresentMon exit check");
-            AssertTrue(Convert.ToString(status["PresentMonArgs"]).Contains("--output_file"), "status PresentMon args");
+            AssertTrue(Convert.ToString(status["PresentMonArgs"]).Contains("--output_stdout"), "status PresentMon stdout capture args");
             AssertTrue(Convert.ToString(status["FrameCaptureMessage"]).IndexOf("PUBG", StringComparison.OrdinalIgnoreCase) < 0, "silent no-csv message must not mention PUBG");
         }
         finally
@@ -648,7 +679,7 @@ internal static partial class FrameScopeNativeMonitor
 
     private static void MonitorSessionClassifiesEarlySystemSamplerAsPartial()
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string currentExe = Assembly.GetExecutingAssembly().Location;
         string reportGeneratorExe = Path.Combine(root, "FrameScopeReportGenerator.exe");
         AssertTrue(File.Exists(reportGeneratorExe), "FrameScopeReportGenerator.exe exists");
@@ -808,7 +839,7 @@ internal static partial class FrameScopeNativeMonitor
 
     private static string RunSyntheticMonitorSession(string prefix, bool enableCpuCoreTelemetry)
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         return RunSyntheticMonitorSession(prefix, enableCpuCoreTelemetry, Path.Combine(root, "FrameScopeSystemSampler.exe"));
     }
 
@@ -819,7 +850,7 @@ internal static partial class FrameScopeNativeMonitor
 
     private static string RunSyntheticMonitorSession(string prefix, bool enableCpuCoreTelemetry, string systemSamplerExe, bool enableCpuVidTelemetry)
     {
-        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        string root = FrameScopeTestPaths.RuntimeRoot;
         string monitorExe = Path.Combine(root, "FrameScopeMonitor.exe");
         string processSamplerExe = Path.Combine(root, "FrameScopeProcessSampler.exe");
         string currentExe = Assembly.GetExecutingAssembly().Location;
@@ -1065,7 +1096,8 @@ internal static partial class FrameScopeNativeMonitor
     private static int RunSamplerFailureFakePresentMon(string[] args)
     {
         string output = GetTestArg(args, "--output_file", "");
-        if (string.IsNullOrWhiteSpace(output)) return 8;
+        bool outputStdout = HasTestArg(args, "--output_stdout");
+        if (!outputStdout && string.IsNullOrWhiteSpace(output)) return 8;
         string stopPath = SamplerFailurePresentMonStopPath(args);
         try { if (File.Exists(stopPath)) File.Delete(stopPath); }
         catch { }
@@ -1077,8 +1109,16 @@ internal static partial class FrameScopeNativeMonitor
             csv.Append(start.AddMilliseconds(i * 16.667).ToString("o"));
             csv.Append(",16.667,FrameScopeFakeTarget.exe,4242,0x1,Hardware Composed: Independent Flip,true\r\n");
         }
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output)));
-        File.WriteAllText(output, csv.ToString(), Encoding.UTF8);
+        if (outputStdout)
+        {
+            Console.Out.Write(csv.ToString());
+            Console.Out.Flush();
+        }
+        else
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output)));
+            File.WriteAllText(output, csv.ToString(), Encoding.UTF8);
+        }
         DateTime deadline = DateTime.Now.AddSeconds(15);
         while (DateTime.Now < deadline && !File.Exists(stopPath)) Thread.Sleep(50);
         try { if (File.Exists(stopPath)) File.Delete(stopPath); }

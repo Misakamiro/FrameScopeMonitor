@@ -27,6 +27,143 @@ public sealed class FrameScopeSamplerEvidence
 
 public static class FrameScopeRunContract
 {
+    public sealed class CsvRowCounter
+    {
+        private readonly string[] requiredColumns;
+        private readonly byte[] buffer = new byte[65536];
+        private readonly char[] characters = new char[Encoding.UTF8.GetMaxCharCount(65536)];
+        private Decoder decoder = Encoding.UTF8.GetDecoder();
+        private readonly StringBuilder pending = new StringBuilder();
+        private Dictionary<string, int> headers;
+        private string currentPath, identity;
+        private long offset;
+        private int rows;
+        private DateTime lastWrite;
+        private byte[] prefix = new byte[0], tail = new byte[0];
+        public long BytesRead { get; private set; }
+
+        public CsvRowCounter(string[] required) { requiredColumns = (string[])(required ?? new string[0]).Clone(); }
+        public int Poll(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) { Reset(); return 0; }
+                string full = Path.GetFullPath(path);
+                using (var file = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    FileIdentity info;
+                    if (!GetFileInformationByHandle(file.SafeFileHandle, out info)) { Reset(); return 0; }
+                    string nextIdentity = info.VolumeSerial + ":" + info.IndexHigh + ":" + info.IndexLow;
+                    DateTime write = File.GetLastWriteTimeUtc(full);
+                    long end = file.Length;
+                    if (!string.Equals(currentPath, full, StringComparison.OrdinalIgnoreCase) || identity != nextIdentity
+                        || end < offset || (end == offset && write != lastWrite)
+                        || (end > offset && offset > 0 && !AnchorsMatch(file))) Reset();
+                    currentPath = full;
+                    identity = nextIdentity;
+                    lastWrite = write;
+                    file.Position = offset;
+                    while (offset < end)
+                    {
+                        int read = file.Read(buffer, 0, (int)Math.Min(buffer.Length, end - offset));
+                        if (read == 0) break;
+                        offset += read;
+                        BytesRead += read;
+                        int length = decoder.GetChars(buffer, 0, read, characters, 0, false);
+                        for (int i = 0; i < length; i++)
+                        {
+                            if (characters[i] == '\n') { Consume(pending.ToString().TrimEnd('\r')); pending.Length = 0; }
+                            else pending.Append(characters[i]);
+                            if (pending.Length > 1048576) throw new InvalidDataException("CSV row exceeds the monitoring limit");
+                        }
+                    }
+                    if (tail.Length == 0 || offset != end || file.Position != offset)
+                    {
+                        prefix = ReadAnchor(file, 0, (int)Math.Min(128, offset));
+                        tail = ReadAnchor(file, Math.Max(0, offset - 256), (int)Math.Min(256, offset));
+                    }
+                }
+                return rows;
+            }
+            catch (IOException) { Reset(); return 0; }
+            catch (UnauthorizedAccessException) { Reset(); return 0; }
+        }
+        private bool AnchorsMatch(FileStream file)
+        {
+            bool matches = SameBytes(prefix, ReadAnchor(file, 0, prefix.Length))
+                && SameBytes(tail, ReadAnchor(file, offset - tail.Length, tail.Length));
+            // An append is accepted only when the previously consumed bytes at both boundaries remain intact.
+            // Clearing the anchors also refreshes them after reading this append.
+            prefix = tail = new byte[0];
+            return matches;
+        }
+        private byte[] ReadAnchor(FileStream file, long position, int length)
+        {
+            var result = new byte[length];
+            file.Position = position;
+            int read = 0;
+            while (read < length)
+            {
+                int count = file.Read(result, read, length - read);
+                if (count == 0) break;
+                read += count;
+                BytesRead += count;
+            }
+            if (read != length) Array.Resize(ref result, read);
+            return result;
+        }
+        private static bool SameBytes(byte[] left, byte[] right)
+        {
+            if (left.Length != right.Length) return false;
+            for (int i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
+            return true;
+        }
+        private void Consume(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            List<string> fields = ParseCsvLine(line);
+            if (fields == null) return;
+            if (headers == null)
+            {
+                headers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < fields.Count; i++) headers[fields[i].Trim().TrimStart('\uFEFF')] = i;
+                return;
+            }
+            foreach (string column in requiredColumns)
+            {
+                int index;
+                if (string.IsNullOrWhiteSpace(column) || !headers.TryGetValue(column, out index)
+                    || index >= fields.Count || string.IsNullOrWhiteSpace(fields[index])) return;
+                if (string.Equals(column, "Time", StringComparison.OrdinalIgnoreCase))
+                {
+                    DateTime time;
+                    if (!DateTime.TryParse(fields[index], CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.RoundtripKind, out time)) return;
+                }
+            }
+            rows++;
+        }
+        private void Reset()
+        {
+            currentPath = identity = null;
+            offset = 0;
+            rows = 0;
+            headers = null;
+            pending.Length = 0;
+            decoder = Encoding.UTF8.GetDecoder();
+            prefix = tail = new byte[0];
+        }
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct FileIdentity
+        {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+            public uint VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out FileIdentity info);
+    }
+
     public static void AddStatusFields(Dictionary<string, object> target, string prefix, FrameScopeSamplerEvidence evidence)
     {
         if (target == null || evidence == null || string.IsNullOrWhiteSpace(prefix)) return;

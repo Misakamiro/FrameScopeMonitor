@@ -9,12 +9,19 @@ public static class FrameScopeReportManifestTests
 {
     public static int Main()
     {
+        AssertEqual(0, FrameScopeOsdVoltageReportTests.Main(), "OSD voltage source regression");
+        BatchInspectionIsReadOnlyAndReportsCapabilities();
+        CpuTelemetryUsesAbsoluteTimeAndRejectsPrivateElapsed();
         FailedPublicationAfterBackupRestoresPreviousReport();
         InterruptedBackupIsRecovered();
+        HistoricalAndChangedBackupsArePreserved();
+        RecoveryFailurePreservesBackupAndEvidence();
+        RecordedDurationSurvivesRegeneration();
         SuccessfulPublicationCleansStagingDirectories();
         ManifestJsonSurvivesPowerShellDefaultRead();
         AccessDeniedCaptureDiagnosticsFlowIntoManifestAndReportData();
         SilentNoCsvDiagnosticsStayTargetNeutralAndDiagnostic();
+        SampledFallbackDoesNotInventAntiCheatDenial();
         FramesWithFailedSystemSamplerArePartial();
         FramesWithHealthySamplersAreFull();
         ProcessOnlyReportUsesValidProcessTimeRange();
@@ -39,6 +46,81 @@ public static class FrameScopeReportManifestTests
         NoCpuVidSensorUsesChineseReasonAndNoFakeData();
         Console.WriteLine("FrameScopeReportManifestTests: PASS");
         return 0;
+    }
+
+    private static void BatchInspectionIsReadOnlyAndReportsCapabilities()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "framescope-inspect-%-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var runs = new List<string>();
+        try
+        {
+            foreach (string kind in new[] { "full", "partial", "diagnostic", "error" })
+            {
+                string run = Path.Combine(root, kind); Directory.CreateDirectory(run); runs.Add(run);
+                File.WriteAllText(Path.Combine(run, "system-samples.csv"), "Time,TotalCpuPct\r\n2026-01-01T00:00:00Z,10\r\n2026-01-01T00:00:05Z,11\r\n");
+                WritePublisherArtifactSet(run, Path.Combine(run, "charts"), kind);
+                string path = Path.Combine(run, "charts", FrameScopeReportArtifacts.ManifestFileName);
+                var json = new JavaScriptSerializer();
+                var manifest = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(path));
+                manifest["reportKind"] = kind;
+                File.WriteAllText(path, json.Serialize(manifest));
+            }
+            string incomplete = Path.Combine(root, "incomplete"); Directory.CreateDirectory(incomplete); runs.Add(incomplete);
+            string list = Path.Combine(root, "runs.txt"); File.WriteAllLines(list, runs.ToArray(), new UTF8Encoding(false));
+            var before = new Dictionary<string, string>();
+            foreach (string path in Directory.GetFiles(root, "*", SearchOption.AllDirectories)) before[path] = Convert.ToBase64String(File.ReadAllBytes(path));
+            var main = typeof(FrameScopeReportGenerator).GetMethod("Main", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            var output = new StringWriter(); TextWriter original = Console.Out;
+            try { Console.SetOut(output); AssertEqual(0, (int)main.Invoke(null, new object[] { new[] { "--inspect-reports", "--run-list", list } }), "batch inspect exit"); }
+            finally { Console.SetOut(original); }
+            var result = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(output.ToString());
+            AssertEqual(FrameScopeReportGenerator.ReportInspectionProtocol, Convert.ToString(result["protocol"]), "read-only protocol marker");
+            var items = GetObjectList(result, "reports"); AssertEqual(5, items.Count, "all inputs returned");
+            for (int i = 0; i < 4; i++)
+            {
+                var item = (Dictionary<string, object>)items[i];
+                AssertEqual(new[] { "full", "partial", "diagnostic", "error" }[i], Convert.ToString(item["reportKind"]), "report kind unchanged");
+                AssertEqual("complete", Convert.ToString(item["artifactStatus"]), "strict completeness");
+                AssertEqual(true, Convert.ToBoolean(item["canOpen"]), "valid report opens");
+                AssertEqual(true, Convert.ToBoolean(item["canRegenerate"]), "valid raw data can regenerate");
+                AssertEqual(5.0, Convert.ToDouble(item["durationSeconds"]), "trusted sample range");
+            }
+            var missing = (Dictionary<string, object>)items[4];
+            AssertEqual(false, Convert.ToBoolean(missing["canOpen"]), "missing report cannot open");
+            AssertEqual<object>(null, missing["durationSeconds"], "unknown range is null");
+            AssertEqual(before.Count, Directory.GetFiles(root, "*", SearchOption.AllDirectories).Length, "inspection creates no files");
+            foreach (var item in before) AssertEqual(item.Value, Convert.ToBase64String(File.ReadAllBytes(item.Key)), "inspection never mutates inputs");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static void CpuTelemetryUsesAbsoluteTimeAndRejectsPrivateElapsed()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-cpu-time-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            DateTime start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            string time = start.AddSeconds(5).ToString("o");
+            File.WriteAllText(Path.Combine(dir, "cpu-core-samples.csv"), "Time,ElapsedMs,ProcessorGroup,LogicalProcessor,ActualFrequencyMHz\r\n" + time + ",0,0,0,4300\r\n,500,0,0,4200\r\n");
+            File.WriteAllText(Path.Combine(dir, "cpu-voltage-samples.csv"), "Time,ElapsedMs,SensorName,VoltageVolts,Status,SensorIdentifier\r\n" + time + ",0,CPU VCore,1.1,vcore,/mainboard/superio/voltage/0\r\n,500,CPU VCore,1.2,vcore,/mainboard/superio/voltage/0\r\n");
+            File.WriteAllText(Path.Combine(dir, "cpu-vid-samples.csv"), "Time,ElapsedMs,SensorName,ProcessorGroup,LogicalProcessor,CoreIndex,VidVolts,Status,SensorIdentifier\r\n" + time + ",0,Core #1 VID,0,0,0,1.1,core-vid,/intelcpu/0/voltage/0\r\n,500,Core #1 VID,0,0,0,1.2,core-vid,/intelcpu/0/voltage/0\r\n");
+            var method = typeof(FrameScopeReportGenerator).GetMethod("ReadCpuCoreCharts", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            object raw = method.Invoke(null, new object[] { dir, start, new Dictionary<string, object>() });
+            var json = new JavaScriptSerializer();
+            var charts = json.Deserialize<Dictionary<string, object>>(json.Serialize(raw));
+            foreach (string key in new[] { "frequency", "voltage", "vid" })
+            {
+                var chart = GetMap(charts, key);
+                AssertEqual(true, Convert.ToBoolean(chart["available"]), key + " real sample remains available");
+                AssertEqual(1, GetObjectList(chart, "t").Count, key + " private elapsed point omitted");
+                AssertEqual(5.0, Convert.ToDouble(GetObjectList(chart, "t")[0]), key + " sampler starts five seconds after report");
+                AssertEqual(1, Convert.ToInt32(chart["missingAbsoluteTimeRows"]), key + " omitted time evidence");
+                AssertTrue(chart.ContainsKey("timeAlignmentMissingReason"), key + " omitted point reason");
+            }
+        }
+        finally { Directory.Delete(dir, true); }
     }
 
     private static void FailedPublicationAfterBackupRestoresPreviousReport()
@@ -100,6 +182,78 @@ public static class FrameScopeReportManifestTests
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
+    private static void HistoricalAndChangedBackupsArePreserved()
+    {
+        foreach (int version in new[] { 1, 2 })
+        {
+            string dir = Path.Combine(Path.GetTempPath(), "framescope-backup-truth-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string charts = Path.Combine(dir, "charts"), backup = Path.Combine(dir, ".framescope-report-backup-interrupted");
+                WritePublisherArtifactSet(dir, charts, "historical-marker");
+                string manifestPath = Path.Combine(charts, FrameScopeReportArtifacts.ManifestFileName);
+                var json = new JavaScriptSerializer();
+                var manifest = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(manifestPath));
+                manifest["inputFingerprintVersion"] = version;
+                manifest["inputFingerprint"] = FrameScopeReportArtifacts.CaptureInputFingerprint(dir, version).Value;
+                File.WriteAllText(manifestPath, json.Serialize(manifest));
+                if (version == 2) File.WriteAllText(Path.Combine(dir, "cpu-core-samples.csv"), "Time,Value\r\n2026-01-01T00:00:00Z,1\r\n");
+                byte[] expected = File.ReadAllBytes(Path.Combine(charts, FrameScopeReportArtifacts.ReportFileName));
+                Directory.Move(charts, backup);
+                FrameScopeReportPublisher.RecoverInterruptedPublication(dir);
+                AssertTrue(Directory.Exists(charts), "historical backup restored version " + version);
+                AssertEqual(Convert.ToBase64String(expected), Convert.ToBase64String(File.ReadAllBytes(Path.Combine(charts, FrameScopeReportArtifacts.ReportFileName))), "historical bytes retained");
+                AssertEqual(false, FrameScopeReportArtifacts.Inspect(dir).IsComplete, "restoration must not claim current completeness");
+            }
+            finally { Directory.Delete(dir, true); }
+        }
+    }
+
+    private static void RecordedDurationSurvivesRegeneration()
+    {
+        string dir = CreateSamplerClassificationFixture(true, true);
+        try
+        {
+            DateTime start = new DateTime(2026, 7, 11, 10, 0, 0, DateTimeKind.Utc);
+            var json = new JavaScriptSerializer();
+            string statusPath = Path.Combine(dir, "status.json");
+            var status = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(statusPath));
+            status["StartTime"] = start.ToString("o"); status["EndTime"] = start.AddSeconds(60).ToString("o");
+            File.WriteAllText(statusPath, json.Serialize(status));
+            File.WriteAllText(Path.Combine(dir, "presentmon.csv"), "TimeInDateTime,MsBetweenPresents,Application,ProcessID,SwapChainAddress,PresentMode,AllowsTearing\r\n" + start.AddSeconds(5).ToString("o") + ",16.667,game.exe,4242,0x1,Hardware Composed: Independent Flip,true\r\n" + start.AddSeconds(25).ToString("o") + ",16.667,game.exe,4242,0x1,Hardware Composed: Independent Flip,true\r\n");
+            AssertEqual<double?>(60, FrameScopeReportArtifacts.Inspect(dir).DurationSeconds, "old recorded duration");
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            AssertEqual<double?>(60, FrameScopeReportArtifacts.Inspect(dir).DurationSeconds, "regenerated duration retains capture range");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    private static void RecoveryFailurePreservesBackupAndEvidence()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "framescope-recovery-failure-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string charts = Path.Combine(dir, "charts"), backup = Path.Combine(dir, ".framescope-report-backup-preserve");
+            WritePublisherArtifactSet(dir, backup, "preserved-marker");
+            Directory.CreateDirectory(charts); File.WriteAllText(Path.Combine(charts, "original.txt"), "incomplete-original");
+            bool failed = false;
+            try { FrameScopeReportPublisher.RecoverInterruptedPublicationForTests(dir, delegate(string from, string to) { if (from == backup) throw new IOException("injected restore failure"); Directory.Move(from, to); }); }
+            catch (IOException) { failed = true; }
+            AssertTrue(failed, "restoration failure surfaced");
+            AssertTrue(File.ReadAllText(Path.Combine(backup, FrameScopeReportArtifacts.ReportFileName)).Contains("preserved-marker"), "backup retained on failure");
+            AssertEqual("incomplete-original", File.ReadAllText(Path.Combine(charts, "original.txt")), "previous directory restored on failure");
+            AssertTrue(File.ReadAllText(Path.Combine(dir, "report-publication-recovery.log")).Contains("injected restore failure"), "persistent recovery evidence");
+            WritePublisherArtifactSet(dir, charts, "current-marker");
+            File.WriteAllText(Path.Combine(dir, "cpu-core-samples.csv"), "Time,Value\r\n2026-01-01T00:00:00Z,1\r\n");
+            FrameScopeReportPublisher.RecoverInterruptedPublication(dir);
+            AssertTrue(File.ReadAllText(Path.Combine(charts, FrameScopeReportArtifacts.ReportFileName)).Contains("current-marker"), "structurally valid changed charts retained");
+            AssertTrue(Directory.Exists(backup), "unconfirmed old backup retained");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     private static void SuccessfulPublicationCleansStagingDirectories()
     {
         string dir = Path.Combine(Path.GetTempPath(), "framescope-publish-success-tests-" + Guid.NewGuid().ToString("N"));
@@ -131,6 +285,7 @@ public static class FrameScopeReportManifestTests
                 { "report", finalReport },
                 { "data", finalData },
                 { "frames", 1 },
+                { "inputFingerprintVersion", 2 },
                 { FrameScopeReportArtifacts.InputFingerprintFieldName, FrameScopeReportArtifacts.CaptureInputFingerprint(runDir).Value }
             }));
     }
@@ -397,6 +552,22 @@ public static class FrameScopeReportManifestTests
         }
     }
 
+    private static void SampledFallbackDoesNotInventAntiCheatDenial()
+    {
+        string dir = CreateSamplerClassificationFixture(false, true);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "hardware-samples.csv"),
+                "Time,Fps\r\n2026-07-11T10:00:00Z,60\r\n");
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            Dictionary<string, object> manifest = ReadManifest(dir);
+            AssertEqual("etw-fps-sampled", Convert.ToString(manifest["frameCaptureStatus"]), "sampled fallback source");
+            AssertTrue(Convert.ToString(manifest["frameCaptureMessage"]).IndexOf("denied by anti-cheat", StringComparison.OrdinalIgnoreCase) < 0,
+                "fallback without denial evidence must not claim anti-cheat denial");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
     private static void FramesWithHealthySamplersAreFull()
     {
         string dir = CreateSamplerClassificationFixture(true, true);
@@ -520,6 +691,8 @@ public static class FrameScopeReportManifestTests
             AssertEqual(0, Convert.ToInt32(manifest["processSamples"]), "error fixture process rows");
             AssertEqual(0, Convert.ToInt32(manifest["systemSamples"]), "error fixture system rows");
             AssertEqual("error", Convert.ToString(manifest["reportKind"]), "no evidence report kind");
+            AssertEqual<object>(null, manifest["durationSeconds"], "no trusted samples means unavailable duration");
+            AssertEqual<object>(null, GetMap(LoadReportData(Path.Combine(dir, "charts", "framescope-interactive-data.js")), "run")["durationSeconds"], "report data duration is also unavailable");
         }
         finally
         {

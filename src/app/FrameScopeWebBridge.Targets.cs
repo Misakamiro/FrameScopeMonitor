@@ -25,6 +25,14 @@ internal sealed partial class FrameScopeWebBridge
     private string SaveTargets(FrameScopeWebBridgeRequest request)
     {
         ValidateConfigPath();
+        using (FrameScopeConfigStore.AcquireMutationLock(options.ConfigPath))
+        {
+            return SaveTargetsLocked(request);
+        }
+    }
+
+    private string SaveTargetsLocked(FrameScopeWebBridgeRequest request)
+    {
         if (PayloadContainsPathAuthority(request.Payload) || request.Payload.ContainsKey("configPath"))
         {
             return ErrorResponse(request.RequestId, "path_not_allowed", "targets.save only accepts editable target fields, not filesystem authority.");
@@ -36,15 +44,18 @@ internal sealed partial class FrameScopeWebBridge
             return ErrorResponse(request.RequestId, "missing_targets", "targets.save requires payload.targets.");
         }
 
-        FrameScopeConfig existing = FrameScopeConfigStore.Load(options.ConfigPath);
-        List<FrameScopeTarget> targets = DecodeTargets(targetsValue);
-        string dataRoot = request.Payload.ContainsKey("dataRoot") ? ReadString(request.Payload, "dataRoot") : existing.DataRoot;
-        bool openReportOnComplete = ReadBool(request.Payload, "openReportOnComplete", existing.OpenReportOnComplete);
-        FrameScopeConfig merged = FrameScopeConfigStore.BuildConfigFromEditableTargets(existing, dataRoot, openReportOnComplete, targets);
-        ValidateConfigDataRoot(merged);
-        FrameScopeConfigStore.Save(options.ConfigPath, merged);
-
-        FrameScopeConfig reloaded = FrameScopeConfigStore.Load(options.ConfigPath);
+        FrameScopeConfig reloaded;
+        using (FrameScopeConfigStore.AcquireMutationLock(options.ConfigPath))
+        {
+            FrameScopeConfig existing = FrameScopeConfigStore.Load(options.ConfigPath);
+            List<FrameScopeTarget> targets = DecodeTargets(targetsValue);
+            string dataRoot = request.Payload.ContainsKey("dataRoot") ? ReadString(request.Payload, "dataRoot") : existing.DataRoot;
+            bool openReportOnComplete = ReadBool(request.Payload, "openReportOnComplete", existing.OpenReportOnComplete);
+            FrameScopeConfig merged = FrameScopeConfigStore.BuildConfigFromEditableTargets(existing, dataRoot, openReportOnComplete, targets);
+            ValidateConfigDataRoot(merged);
+            FrameScopeConfigStore.Save(options.ConfigPath, merged);
+            reloaded = FrameScopeConfigStore.Load(options.ConfigPath);
+        }
         PublishEvent("event.status", new Dictionary<string, object>
         {
             { "status", "targets.saved" },

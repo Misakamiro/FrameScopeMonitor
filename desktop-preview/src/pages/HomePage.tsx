@@ -1,5 +1,4 @@
 import { Box, Text, Flex, HStack, VStack, Button, Badge, Progress, SimpleGrid } from "@chakra-ui/react";
-import { CustomSelect } from "@/components/special/custom-select";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { useNavigate } from "react-router-dom";
 import {
@@ -144,6 +143,11 @@ export default function HomePage() {
   const stopping = ["stopping", "generating"].includes(state.monitor.phase);
   const latestReport = state.reports[0];
   const floatBtn = useFloatingButtonStyle();
+  const generating = state.monitor.phase === "generating";
+  const reportPercent = state.monitor.reportPercent;
+  const hasReportProgress = reportPercent != null && Number.isFinite(reportPercent) && reportPercent >= 0 && reportPercent <= 100;
+  const reportEtaSeconds = state.monitor.reportEtaSeconds;
+  const hasReportEta = reportEtaSeconds != null && Number.isFinite(reportEtaSeconds) && reportEtaSeconds > 0;
   // 根容器不能加 overflowX hidden，否则会成为 sticky 的滚动容器使其失效
   return <Box pt={8} pr={4} pb={4} pl={4} minH="calc(100vh - 120px)" position="relative">
     <Flex gap={6} align="flex-start">
@@ -180,32 +184,30 @@ export default function HomePage() {
                 <Box flex={1} />
                 <Badge colorScheme={state.monitor.phase === "error" ? "red" : busy ? "green" : "gray"}>{phaseLabels[state.monitor.phase]}</Badge>
               </HStack>
-              <CustomSelect ariaLabel="当前监控目标" width="100%" placeholder="选择目标" disabled={busy}
-                value={state.selectedTargetId ?? ""}
-                onChange={value => void run("target.select", { id: value })}
-                options={state.targets.map(target => ({ value: target.id, label: target.name, badge: target.enabled ? undefined : "未启用", badgeColorScheme: "gray" }))} />
+              <Box role="status" aria-label="当前监控游戏" px={3} py={2} borderRadius="md" bg="whiteAlpha.100">
+                <Text fontSize="sm">{state.monitor.activeTargets.length ? state.monitor.activeTargets.join("、") : "未启动游戏"}</Text>
+              </Box>
               <HStack spacing={2}>
-                <Button leftIcon={<Play size={14} />} colorScheme="teal" size="sm" isDisabled={busy || !state.selectedTargetId}
+                <Button leftIcon={<Play size={14} />} colorScheme="teal" size="sm" isDisabled={busy}
                   isLoading={pending} onClick={() => void run("monitor.start")}>启动监控</Button>
                 <Button leftIcon={<Square size={14} />} size="sm" isDisabled={!busy || stopping} onClick={() => void run("monitor.stop")}>停止</Button>
                 <Button variant="ghost" size="sm" onClick={() => navigate("/targets")}>管理目标</Button>
               </HStack>
-              {busy && (
+              {generating && hasReportProgress && (
                 <Progress
                   size="xs"
                   colorScheme="teal"
-                  // 进度条语义 = 报告合成进度：仅 generating 相位显示真实百分比
-                  // （C# report-progress.json 转发值）；其余 busy 阶段保持空进度
-                  // 条且不跑动（启动监控阶段的假进度/读秒已按需求移除）。
-                  value={state.monitor.phase === "generating" ? state.monitor.reportPercent ?? 0 : 0}
+                  value={reportPercent}
                 />
               )}
               <HStack fontSize="sm" spacing={2} opacity={0.85}>
-                {state.monitor.phase === "generating" && state.monitor.reportEtaSeconds != null && (
-                  <Text>预计还需 {state.monitor.reportEtaSeconds} 秒</Text>
-                )}
-                {state.monitor.phase === "generating" && state.monitor.reportEtaSeconds != null && <Text opacity={0.6}>·</Text>}
-                <Text>{phaseLabels[state.monitor.phase]}</Text>
+                {generating ? (
+                  <>
+                    <Text>{hasReportProgress ? phaseLabels[state.monitor.phase] : "正在准备报告"}</Text>
+                    <Text opacity={0.6}>·</Text>
+                    <Text>{hasReportEta ? `预计还需 ${Math.ceil(reportEtaSeconds)} 秒` : "正在估算"}</Text>
+                  </>
+                ) : <Text>{phaseLabels[state.monitor.phase]}</Text>}
               </HStack>
               <ActionError message={error || state.monitor.error || ""} />
             </VStack>

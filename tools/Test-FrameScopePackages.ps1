@@ -394,8 +394,9 @@ try {
     $releaseRoot = Join-Path $temp 'release-zip'
     Expand-ZipSafe -ZipPath (Join-Path $dist 'FrameScopeMonitor-Installer.zip') -Destination $releaseRoot
     $releaseFiles = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -File)
-    Assert-Equal 4 $releaseFiles.Count 'release ZIP file count'
-    $requiredReleaseNames = @('FrameScopeMonitor-Setup.exe', 'FrameScopeMonitor-Full-Setup.exe', 'FrameScopeMonitor-LegacyCleanup.exe', 'README-FrameScopeMonitor.txt')
+    Assert-Equal 7 $releaseFiles.Count 'release ZIP file count'
+    $requiredReleaseNames = @('FrameScopeMonitor-Setup.exe', 'FrameScopeMonitor-Full-Setup.exe', 'FrameScopeMonitor-LegacyCleanup.exe', 'README-FrameScopeMonitor.txt',
+        'FrameScopeMonitor-installer-source/payload.zip', 'FrameScopeMonitor-installer-source/Install-FrameScopeMonitor.ps1', 'FrameScopeMonitor-installer-source/FrameScopeUninstaller.exe')
     $actualReleaseNames = @($releaseFiles | ForEach-Object { Get-RelativePath -BasePath $releaseRoot -Path $_.FullName } | Sort-Object)
     Assert-Equal (($requiredReleaseNames | Sort-Object) -join '|') ($actualReleaseNames -join '|') 'release ZIP file set'
     foreach ($name in $requiredReleaseNames) {

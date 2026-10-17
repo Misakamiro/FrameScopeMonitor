@@ -94,6 +94,9 @@ internal static class FrameScopeSetupNative
 
             var assembly = Assembly.GetExecutingAssembly();
             ValidatePayloadResource(assembly);
+            Update("正在正常停止当前安装目录的 FrameScope Monitor...", 2);
+            string stopWarning = FrameScopeInstallationShutdown.Stop(appDir);
+            if (!string.IsNullOrEmpty(stopWarning)) Log(logPath, "shutdown-warning=" + stopWarning);
             Directory.CreateDirectory(appDir);
             Log(logPath, "install-start dataRoot=" + dataRoot);
             bool hasBundledRuntimeInstaller = HasManifestResource(assembly, WebView2RuntimeInstallerResourceName);
@@ -107,22 +110,6 @@ internal static class FrameScopeSetupNative
             {
                 Log(logPath, "webview2-runtime-missing normal-package");
             }
-            Update("正在停止旧的 FrameScope Monitor 进程...", 2);
-            // R-B5: the resident hardware service + provider also lock files
-            // the install replaces - leaving them alive half-broke upgrades.
-            string[] staleNames =
-            {
-                "FrameScopeMonitor", "FrameScopeHardwareService", "FrameScopeHardwareProvider",
-                "FrameScopeProcessSampler", "FrameScopeSystemSampler", "FrameScopeReportGenerator",
-                "PresentMon-2.4.1-x64"
-            };
-            foreach (var staleName in staleNames)
-            foreach (var proc in Process.GetProcessesByName(staleName))
-            {
-                try { proc.Kill(); proc.WaitForExit(3000); }
-                catch { }
-            }
-
             Update("正在清理旧版组件...", 4);
             CleanStaleComponents(appDir);
 
@@ -192,7 +179,8 @@ internal static class FrameScopeSetupNative
                 UseShellExecute = true
             });
             Thread.Sleep(900);
-            form.Finish(true, "安装完成。软件已安装到：" + appDir + "\r\n数据和报告目录：" + dataRoot);
+            form.Finish(true, "安装完成。软件已安装到：" + appDir + "\r\n数据和报告目录：" + dataRoot +
+                (string.IsNullOrEmpty(stopWarning) ? "" : "\r\n报告收尾警告：" + stopWarning));
         }
         catch (Exception ex)
         {
@@ -536,6 +524,8 @@ internal static class FrameScopeSetupNative
         try
         {
             Directory.CreateDirectory(normalized);
+            using (FrameScopeConfigStore.AcquireMutationLock(configPath))
+            {
             if (File.Exists(configPath))
             {
                 UpdateConfigDataRoot(configPath, normalized);
@@ -545,6 +535,7 @@ internal static class FrameScopeSetupNative
                 FrameScopeConfig config = FrameScopeConfigStore.CreateDefaultConfig();
                 config.DataRoot = normalized;
                 FrameScopeConfigStore.Save(configPath, config);
+            }
             }
         }
         catch { }
@@ -593,6 +584,8 @@ internal static class FrameScopeSetupNative
     {
         try
         {
+            using (FrameScopeConfigStore.AcquireMutationLock(configPath))
+            {
             if (!File.Exists(configPath)) return;
             string text = File.ReadAllText(configPath);
             string replacement = "\"DataRoot\":\"" + JsonEscape(dataRoot) + "\"";
@@ -604,6 +597,7 @@ internal static class FrameScopeSetupNative
             if (!updated.Equals(text, StringComparison.Ordinal))
             {
                 File.WriteAllText(configPath, updated);
+            }
             }
         }
         catch { }

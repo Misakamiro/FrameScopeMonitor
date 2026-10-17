@@ -19,6 +19,7 @@ internal sealed class NativeMonitorSamplerState
     public bool Required;
     public string ExecutablePath = "";
     public string CsvPath = "";
+    public FrameScopeRunContract.CsvRowCounter CsvRows;
     public string StdoutPath = "";
     public string StderrPath = "";
     public string StartError = "";
@@ -100,7 +101,7 @@ internal static partial class FrameScopeNativeMonitor
         return StartNativeMonitorChild(fileName, arguments, workingDirectory, stdoutPath, stderrPath, ProcessPriorityClass.Idle);
     }
 
-    private static Process StartNativeMonitorChild(string fileName, string arguments, string workingDirectory, string stdoutPath, string stderrPath, ProcessPriorityClass priority)
+    private static Process StartNativeMonitorChild(string fileName, string arguments, string workingDirectory, string stdoutPath, string stderrPath, ProcessPriorityClass priority, bool csvOutput = false, bool appendCsv = false)
     {
         var psi = new ProcessStartInfo
         {
@@ -119,7 +120,7 @@ internal static partial class FrameScopeNativeMonitor
             try { process.PriorityClass = priority; }
             catch { }
             var pipeThreads = new List<Thread>();
-            if (!string.IsNullOrWhiteSpace(stdoutPath)) pipeThreads.Add(BeginCopyPipe(process.StandardOutput, stdoutPath));
+            if (!string.IsNullOrWhiteSpace(stdoutPath)) pipeThreads.Add(csvOutput ? BeginCopyCsvPipe(process.StandardOutput, stdoutPath, appendCsv) : BeginCopyPipe(process.StandardOutput, stdoutPath));
             if (!string.IsNullOrWhiteSpace(stderrPath)) pipeThreads.Add(BeginCopyPipe(process.StandardError, stderrPath));
             RegisterNativeMonitorPipeThreads(process, pipeThreads);
         }
@@ -144,6 +145,49 @@ internal static partial class FrameScopeNativeMonitor
             catch { }
             try { WriteBoundedNativeMonitorChildLog(path, rolling.GetText(), NativeMonitorChildLogMaxBytes); }
             catch { }
+        });
+        thread.IsBackground = true;
+        thread.Start();
+        return thread;
+    }
+
+    private static Thread BeginCopyCsvPipe(StreamReader reader, string path, bool append = false)
+    {
+        var thread = new Thread(() => {
+            try {
+                string expectedHeader = null;
+                if (append && File.Exists(path) && new FileInfo(path).Length > 0) {
+                    using (var previous = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+                        previous.Position = previous.Length - 1;
+                        if (previous.ReadByte() != '\n') throw new IOException("Cannot append after an incomplete PresentMon row.");
+                        previous.Position = 0;
+                        using (var headerReader = new StreamReader(previous)) expectedHeader = headerReader.ReadLine();
+                    }
+                }
+                using (var output = new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) {
+                    byte[] buffer = new byte[8192];
+                    var header = new List<byte>();
+                    int count;
+                    while ((count = reader.BaseStream.Read(buffer, 0, buffer.Length)) > 0) {
+                        int start = 0;
+                        if (expectedHeader != null) {
+                            while (start < count && buffer[start] != '\n') {
+                                header.Add(buffer[start++]);
+                                if (header.Count > 65536) throw new IOException("PresentMon header is too large.");
+                            }
+                            if (start == count) continue;
+                            if (Encoding.UTF8.GetString(header.ToArray()).TrimEnd('\r').TrimStart('\uFEFF') != expectedHeader)
+                                throw new IOException("Restarted PresentMon columns differ from the preserved capture.");
+                            expectedHeader = null;
+                            start++;
+                        }
+                        output.Write(buffer, start, count - start);
+                        output.Flush();
+                    }
+                }
+            } catch (Exception error) {
+                try { File.WriteAllText(path + ".capture-error.txt", error.ToString()); } catch { }
+            }
         });
         thread.IsBackground = true;
         thread.Start();
@@ -425,7 +469,7 @@ internal static partial class FrameScopeNativeMonitor
         RecordNativeMonitorSamplerExit(state, false);
     }
 
-    private static FrameScopeSamplerEvidence BuildNativeMonitorSamplerEvidence(NativeMonitorSamplerState state, string[] requiredCsvColumns)
+    private static FrameScopeSamplerEvidence BuildNativeMonitorSamplerEvidence(NativeMonitorSamplerState state, string[] requiredCsvColumns, bool final = true)
     {
         state = state ?? new NativeMonitorSamplerState { Required = true };
         bool csvExists = false;
@@ -437,6 +481,7 @@ internal static partial class FrameScopeNativeMonitor
         }
         catch { }
 
+        if (!final && state.CsvRows == null) state.CsvRows = new FrameScopeRunContract.CsvRowCounter(requiredCsvColumns);
         string errorTail = ReadNativeMonitorSamplerTail(state.StderrPath, 4096);
         if (!string.IsNullOrWhiteSpace(state.StartError))
         {
@@ -462,18 +507,18 @@ internal static partial class FrameScopeNativeMonitor
             CsvPath = state.CsvPath ?? "",
             CsvExists = csvExists,
             CsvBytes = csvBytes,
-            ValidRows = FrameScopeRunContract.CountValidCsvRows(state.CsvPath, requiredCsvColumns),
+            ValidRows = final ? FrameScopeRunContract.CountValidCsvRows(state.CsvPath, requiredCsvColumns) : state.CsvRows.Poll(state.CsvPath),
             ErrorTail = errorTail
         };
         evidence.Status = FrameScopeRunContract.NormalizeSamplerStatus(evidence);
         return evidence;
     }
 
-    private static Dictionary<string, object> BuildNativeMonitorSamplerDiagnostics(NativeMonitorSamplerState processSampler, NativeMonitorSamplerState systemSampler)
+    private static Dictionary<string, object> BuildNativeMonitorSamplerDiagnostics(NativeMonitorSamplerState processSampler, NativeMonitorSamplerState systemSampler, bool final = true)
     {
         Dictionary<string, object> diagnostics = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-        AddNativeMonitorSamplerFields(diagnostics, "ProcessSampler", BuildNativeMonitorSamplerEvidence(processSampler, new[] { "Time", "ProcessName" }));
-        AddNativeMonitorSamplerFields(diagnostics, "SystemSampler", BuildNativeMonitorSamplerEvidence(systemSampler, new[] { "Time" }));
+        AddNativeMonitorSamplerFields(diagnostics, "ProcessSampler", BuildNativeMonitorSamplerEvidence(processSampler, new[] { "Time", "ProcessName" }, final));
+        AddNativeMonitorSamplerFields(diagnostics, "SystemSampler", BuildNativeMonitorSamplerEvidence(systemSampler, new[] { "Time" }, final));
         return diagnostics;
     }
 

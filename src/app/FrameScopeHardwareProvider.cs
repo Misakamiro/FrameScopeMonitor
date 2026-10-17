@@ -18,6 +18,7 @@ internal static class FrameScopeHardwareProvider
     {
         public string hardware = "";
         public string hardwareType = "";
+        public string identifier = null;
         public string subHardware = null;
         public string name = "";
         public string sensorType = "";
@@ -122,20 +123,28 @@ internal static class FrameScopeHardwareProvider
             if (cmd == "exit") break;
             if (cmd == "static")
             {
-                // Full WMI static info: expensive, quasi-constant — cache it.
-                if (_staticCache == null || (DateTime.UtcNow - _staticCacheAt).TotalSeconds > 30)
+                // Inventory enrichment must not block the sensor protocol.
+                if (_staticCacheTask == null && (_staticCache == null || (DateTime.UtcNow - _staticCacheAt).TotalSeconds > 30))
                 {
-                    List<string> staticErrors = new List<string>();
-                    Dictionary<string, object> hardware = BuildStaticFull(staticErrors);
-                    _staticCache = hardware.Count > 0 ? hardware : null;
-                    _staticCacheErrors = staticErrors.ToArray();
+                    _staticCacheTask = System.Threading.Tasks.Task.Factory.StartNew(delegate {
+                        var staticErrors = new List<string>();
+                        try { return Tuple.Create(BuildStaticFull(staticErrors), staticErrors.ToArray()); }
+                        catch (Exception ex) { return Tuple.Create(new Dictionary<string, object>(), new[] { RootMessage(ex) }); }
+                    });
+                }
+                if (_staticCacheTask != null && _staticCacheTask.Wait(1000))
+                {
+                    var result = _staticCacheTask.Result;
+                    _staticCache = result.Item1;
+                    _staticCacheErrors = result.Item2;
                     _staticCacheAt = DateTime.UtcNow;
+                    _staticCacheTask = null;
                 }
                 var staticPayload = new Dictionary<string, object>
                 {
                     { "capturedAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) },
                     { "staticFull", _staticCache },
-                    { "errors", _staticCacheErrors }
+                    { "errors", _staticCache == null ? new[] { "Hardware inventory is still loading; sensor sampling remains available." } : _staticCacheErrors }
                 };
                 stdout.WriteLine(Json.Serialize(staticPayload));
                 continue;
@@ -151,7 +160,7 @@ internal static class FrameScopeHardwareProvider
             {
                 foreach (object hardware in Enumerate(Get(computer, "Hardware")))
                 {
-                    try { ReadHardware(hardware, readings, null); }
+                    try { ReadHardware(hardware, readings, null, errors); }
                     catch (Exception ex) { errors.Add("hardware read failed: " + RootMessage(ex)); }
                 }
             }
@@ -194,7 +203,7 @@ internal static class FrameScopeHardwareProvider
             Set(computer, "IsMemoryEnabled", true); Set(computer, "IsMotherboardEnabled", true);
             Set(computer, "IsStorageEnabled", true); Set(computer, "IsControllerEnabled", true);
             Invoke(computer, "Open");
-            foreach (object hardware in Enumerate(Get(computer, "Hardware"))) ReadHardware(hardware, readings, null);
+            foreach (object hardware in Enumerate(Get(computer, "Hardware"))) ReadHardware(hardware, readings, null, errors);
         }
         catch (Exception ex) { errors.Add(RootMessage(ex)); }
         finally { if (computer != null) { try { Invoke(computer, "Close"); } catch { } } }
@@ -223,29 +232,31 @@ internal static class FrameScopeHardwareProvider
         };
     }
 
-    private static void ReadHardware(object hardware, List<Reading> output, string parent)
+    private static void ReadHardware(object hardware, List<Reading> output, string parent, List<string> errors)
     {
         if (hardware == null) return;
-        try { Invoke(hardware, "Update"); } catch { }
+        bool updated = true;
+        try { Invoke(hardware, "Update"); } catch (Exception ex) { updated = false; if (errors != null) errors.Add("hardware update failed: " + RootMessage(ex)); }
         string hw = StringValue(Get(hardware, "Name"));
         string type = StringValue(Get(hardware, "HardwareType"));
-        foreach (object sensor in Enumerate(Get(hardware, "Sensors")))
+        foreach (object sensor in updated ? Enumerate(Get(hardware, "Sensors")) : Enumerable.Empty<object>())
         {
             double value;
             if (!TryDouble(Get(sensor, "Value"), out value) || Double.IsNaN(value) || Double.IsInfinity(value)) continue;
             output.Add(new Reading
             {
-                hardware = hw, hardwareType = type, subHardware = parent,
+                hardware = hw, hardwareType = type, identifier = StringValue(Get(hardware, "Identifier")), subHardware = parent,
                 name = StringValue(Get(sensor, "Name")), sensorType = StringValue(Get(sensor, "SensorType")),
                 value = value, unit = UnitFor(StringValue(Get(sensor, "SensorType")))
             });
         }
-        foreach (object child in Enumerate(Get(hardware, "SubHardware"))) ReadHardware(child, output, hw);
+        foreach (object child in Enumerate(Get(hardware, "SubHardware"))) ReadHardware(child, output, hw, errors);
     }
 
     private static Dictionary<string, object> _staticCache;
     private static string[] _staticCacheErrors = new string[0];
     private static DateTime _staticCacheAt = DateTime.MinValue;
+    private static System.Threading.Tasks.Task<Tuple<Dictionary<string, object>, string[]>> _staticCacheTask;
 
     private static string WmiGet(System.Management.ManagementObject o, string p)
     {
@@ -702,56 +713,85 @@ internal static class FrameScopeHardwareProvider
     {
         string cpu = readings.Where(r => r.hardwareType.IndexOf("Cpu", StringComparison.OrdinalIgnoreCase) >= 0).Select(r => r.hardware).FirstOrDefault() ?? "";
         string[] gpus = readings.Where(r => r.hardwareType.IndexOf("Gpu", StringComparison.OrdinalIgnoreCase) >= 0).Select(r => r.hardware).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        double? mem = WmiBytes("Win32_ComputerSystem", "TotalPhysicalMemory");
+        var memory = ReadMemoryStatus();
+        double? mem = memory == null ? (double?)null : memory.TotalPhysical / 1073741824d;
         return new Dictionary<string, object>
         {
             { "cpuName", cpu }, { "gpuNames", gpus.Cast<object>().ToArray() }, { "memoryTotalGb", mem },
             { "storageNames", DriveInfo.GetDrives().Where(d => d.IsReady).Select(d => d.Name.TrimEnd('\\')).Cast<object>().ToArray() },
-            { "motherboard", WmiString("Win32_BaseBoard", "Product") }
+            { "motherboard", readings.Where(r => r.hardwareType.IndexOf("SuperIO", StringComparison.OrdinalIgnoreCase) >= 0).Select(r => r.subHardware).FirstOrDefault() ?? "" }
         };
     }
 
     private static Dictionary<string, object> BuildDynamic(List<Reading> rows, string at)
     {
-        Reading cpuLoad = Find(rows, "Load", "CPU Total", "Total");
-        Reading cpuTemp = Find(rows, "Temperature", "Tctl/Tdie", "CPU Package", "Core Average", "CPU Total");
-        Reading cpuClock = Find(rows, "Clock", "Cores (Average)", "CPU Core", "Core Effective Clock", "CPU Clock");
-        Reading cpuPower = Find(rows, "Power", "Package", "CPU Package", "CPU PPT");
-        double? total = WmiBytes("Win32_ComputerSystem", "TotalPhysicalMemory");
-        double? free = WmiBytes("Win32_OperatingSystem", "FreePhysicalMemory");
+        Reading cpuLoad = Find(rows, "Cpu", "Load", "CPU Total", "Total");
+        Reading cpuTemp = Find(rows, "Cpu", "Temperature", "Tctl/Tdie", "CPU Package", "Core Average", "CPU Total");
+        Reading cpuClock = Find(rows, "Cpu", "Clock", "Cores (Average)", "CPU Core", "Core Effective Clock", "CPU Clock");
+        Reading cpuPower = Find(rows, "Cpu", "Power", "Package", "CPU Package", "CPU PPT");
+        var memory = ReadMemoryStatus();
+        double? total = memory == null ? (double?)null : memory.TotalPhysical / 1073741824d;
+        double? free = memory == null ? (double?)null : memory.AvailablePhysical / 1073741824d;
         double? used = total.HasValue && free.HasValue ? Math.Max(0, total.Value - free.Value) : (double?)null;
         List<Dictionary<string, object>> gpu = new List<Dictionary<string, object>>();
-        foreach (string name in rows.Where(r => r.hardwareType.IndexOf("Gpu", StringComparison.OrdinalIgnoreCase) >= 0).Select(r => r.hardware).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var gpuIdentity in rows.Where(r => r.hardwareType.IndexOf("Gpu", StringComparison.OrdinalIgnoreCase) >= 0)
+            .GroupBy(r => String.IsNullOrWhiteSpace(r.identifier) ? "name:" + r.hardware : "id:" + r.identifier, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new { name = g.First().hardware, identifier = g.First().identifier, readings = g.ToList() }))
         {
-            gpu.Add(new Dictionary<string, object> { { "name", name }, { "usage", Metric(Find(rows, "Load", name, "GPU Core"), "%", at) }, { "temperature", Metric(Find(rows, "Temperature", name, "GPU Core", "GPU Hot Spot"), "°C", at) }, { "power", Metric(Find(rows, "Power", name, "GPU Power"), "W", at) } });
+            gpu.Add(new Dictionary<string, object> { { "name", gpuIdentity.name }, { "identifier", gpuIdentity.identifier }, { "usage", Metric(FindGpu(gpuIdentity.readings, gpuIdentity.identifier, "Load", "GPU Core"), "%", at) }, { "temperature", Metric(FindGpu(gpuIdentity.readings, gpuIdentity.identifier, "Temperature", "GPU Core", "GPU Hot Spot"), "°C", at) }, { "power", Metric(FindGpu(gpuIdentity.readings, gpuIdentity.identifier, "Power", "GPU Power"), "W", at) } });
         }
         return new Dictionary<string, object>
         {
             { "cpuUsage", Metric(cpuLoad, "%", at) }, { "cpuTemperature", Metric(cpuTemp, "°C", at) }, { "cpuFrequency", Metric(cpuClock, "MHz", at) }, { "cpuPower", Metric(cpuPower, "W", at) },
-            { "gpu", gpu.Cast<object>().ToArray() }, { "memoryUsedGb", Metric(used, "GB", "framescope-lhm-wmi", at) }, { "memoryTotalGb", Metric(total, "GB", "framescope-lhm-wmi", at) },
+            { "gpu", gpu.Cast<object>().ToArray() }, { "memoryUsedGb", Metric(used, "GB", "GlobalMemoryStatusEx", at) }, { "memoryTotalGb", Metric(total, "GB", "GlobalMemoryStatusEx", at) },
             { "storageUsedGb", Metric(null, "GB", "framescope-lhm", at) }, { "storageTotalGb", Metric(null, "GB", "framescope-lhm", at) }
         };
     }
 
     private static Dictionary<string, object> Metric(Reading r, string unit, string at) { return Metric(r == null ? (double?)null : r.value, unit, r == null ? "framescope-lhm" : "librehardwaremonitor", at); }
     private static Dictionary<string, object> Metric(double? value, string unit, string source, string at) { return new Dictionary<string, object> { { "value", value }, { "unit", unit }, { "source", source }, { "capturedAt", at } }; }
-    private static Dictionary<string, object> ToJson(Reading r) { return new Dictionary<string, object> { { "hardware", r.hardware }, { "hardwareType", r.hardwareType }, { "subHardware", r.subHardware }, { "name", r.name }, { "sensorType", r.sensorType }, { "value", r.value }, { "unit", r.unit } }; }
-    private static Reading Find(List<Reading> rows, params string[] terms)
+    private static Dictionary<string, object> ToJson(Reading r) { return new Dictionary<string, object> { { "hardware", r.hardware }, { "hardwareType", r.hardwareType }, { "identifier", r.identifier }, { "subHardware", r.subHardware }, { "name", r.name }, { "sensorType", r.sensorType }, { "value", r.value }, { "unit", r.unit } }; }
+    private static Reading Find(List<Reading> rows, string hardwareType, params string[] terms)
     {
         if (terms == null || terms.Length == 0) return null;
         string sensorType = terms[0];
         string[] names = terms.Skip(1).ToArray();
-        return rows.FirstOrDefault(r => r.sensorType.IndexOf(sensorType, StringComparison.OrdinalIgnoreCase) >= 0 && names.Any(name => (r.hardware + " " + r.name).IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0))
-            ?? rows.FirstOrDefault(r => r.sensorType.IndexOf(sensorType, StringComparison.OrdinalIgnoreCase) >= 0);
+        return rows.Where(r => r.hardwareType.IndexOf(hardwareType, StringComparison.OrdinalIgnoreCase) >= 0)
+            .Where(r => r.sensorType.IndexOf(sensorType, StringComparison.OrdinalIgnoreCase) >= 0)
+            .Where(r => names.Any(name => r.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0))
+            .OrderBy(r => { int i = Array.FindIndex(names, name => r.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0); return i < 0 ? int.MaxValue : i; })
+            .FirstOrDefault();
+    }
+
+    private static Reading FindGpu(List<Reading> rows, string identifier, params string[] terms)
+    {
+        return Find(rows.Where(r => string.Equals(r.identifier ?? "", identifier ?? "", StringComparison.OrdinalIgnoreCase)).ToList(), "Gpu", terms);
     }
     private static string UnitFor(string type) { if (type.IndexOf("Temperature", StringComparison.OrdinalIgnoreCase) >= 0) return "°C"; if (type.IndexOf("Load", StringComparison.OrdinalIgnoreCase) >= 0) return "%"; if (type.IndexOf("Clock", StringComparison.OrdinalIgnoreCase) >= 0) return "MHz"; if (type.IndexOf("Power", StringComparison.OrdinalIgnoreCase) >= 0) return "W"; if (type.IndexOf("Voltage", StringComparison.OrdinalIgnoreCase) >= 0) return "V"; if (type.IndexOf("Fan", StringComparison.OrdinalIgnoreCase) >= 0) return "RPM"; return null; }
-    private static double? WmiBytes(string cls, string property) { double n; return Double.TryParse(WmiString(cls, property), NumberStyles.Float, CultureInfo.InvariantCulture, out n) ? n / (property.IndexOf("FreePhysicalMemory", StringComparison.OrdinalIgnoreCase) >= 0 ? 1048576d : 1073741824d) : (double?)null; }
-    private static string WmiString(string cls, string property) { try { using (var s = new System.Management.ManagementObjectSearcher("SELECT " + property + " FROM " + cls)) using (var r = s.Get()) foreach (System.Management.ManagementObject o in r) return Convert.ToString(o[property], CultureInfo.InvariantCulture) ?? ""; } catch { } return ""; }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private sealed class MemoryStatus
+    {
+        public uint Length = 64;
+        public uint Load;
+        public ulong TotalPhysical, AvailablePhysical, TotalPageFile, AvailablePageFile, TotalVirtual, AvailableVirtual, AvailableExtendedVirtual;
+    }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx([System.Runtime.InteropServices.In, System.Runtime.InteropServices.Out] MemoryStatus status);
+    private static MemoryStatus ReadMemoryStatus()
+    {
+        var status = new MemoryStatus();
+        return GlobalMemoryStatusEx(status) ? status : null;
+    }
     private static object Get(object o, string p) { if (o == null) return null; PropertyInfo i = o.GetType().GetProperty(p, BindingFlags.Public | BindingFlags.Instance); return i == null ? null : i.GetValue(o, null); }
     private static void Set(object o, string p, bool v) { PropertyInfo i = o.GetType().GetProperty(p, BindingFlags.Public | BindingFlags.Instance); if (i != null && i.CanWrite) i.SetValue(o, v, null); }
     private static object Invoke(object o, string m) { MethodInfo i = o.GetType().GetMethod(m, BindingFlags.Public | BindingFlags.Instance); return i == null ? null : i.Invoke(o, null); }
     private static IEnumerable<object> Enumerate(object value) { var e = value as System.Collections.IEnumerable; if (e == null) yield break; foreach (object item in e) yield return item; }
-    private static bool TryDouble(object value, out double n) { try { n = Convert.ToDouble(value, CultureInfo.InvariantCulture); return true; } catch { n = 0; return false; } }
+    private static bool TryDouble(object value, out double n) {
+        if (value == null) { n = 0; return false; }
+        try { n = Convert.ToDouble(value, CultureInfo.InvariantCulture); return !Double.IsNaN(n) && !Double.IsInfinity(n); }
+        catch { n = 0; return false; }
+    }
     private static string StringValue(object value) { return Convert.ToString(value, CultureInfo.InvariantCulture) ?? ""; }
     private static string Arg(string[] args, string name, string fallback) { for (int i = 0; i + 1 < args.Length; i++) if (String.Equals(args[i], name, StringComparison.OrdinalIgnoreCase)) return args[i + 1]; return fallback; }
     private static string RootMessage(Exception ex) { while (ex is TargetInvocationException && ex.InnerException != null) ex = ex.InnerException; return ex.Message; }

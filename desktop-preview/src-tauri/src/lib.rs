@@ -1,22 +1,53 @@
 ﻿#[cfg(test)]
 mod tests;
 mod backend;
+mod bounded_process;
+mod host_shutdown;
 mod hardware_service;
+mod runtime_uiaccess;
 mod delta_password;
 mod overlay_panel;
 mod pawnio;
+#[cfg(windows)]
+mod window_icons;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 static OVERLAY_OPERATION: Mutex<()> = Mutex::new(());
+static SHUTDOWN_COMPLETE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn request_shutdown(app: &tauri::AppHandle) {
+    if !backend::begin_shutdown() { return; }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _overlay = OVERLAY_OPERATION.lock().unwrap_or_else(|p|p.into_inner());
+        let result = backend::shutdown_owned_monitor()
+            .and_then(|_| stop_windows(&app))
+            .and_then(|_| hardware_service::stop_connected_service());
+        match result {
+            Ok(_) => {
+                SHUTDOWN_COMPLETE.store(true, std::sync::atomic::Ordering::SeqCst);
+                app.exit(0);
+            }
+            Err(error) => {
+                backend::cancel_shutdown();
+                log::warn!("退出已取消: {error}");
+                let _ = app.emit("app-exit-failed", &error);
+                if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
+                use tauri_plugin_dialog::DialogExt;
+                app.dialog().message(error).title("FrameScope 退出已取消").show(|_| {});
+            }
+        }
+    });
+}
 const COMMANDS: &[&str] = &[
     "preview_set_hardware", "open_sensor_monitor", "start_overlay_panel", "stop_overlay_panel",
     "toggle_overlay_panel", "get_overlay_panel_status", "update_overlay_settings", "get_overlay_current_settings",
     "set_overlay_drag_mode", "reset_overlay_position", "open_vertical_overlay", "stop_vertical_overlay",
     "set_vertical_overlay_click_through", "resize_vertical_overlay", "save_vertical_overlay_position",
     "reset_vertical_overlay_position", "vertical_overlay_ready", "minimize_to_tray", "exit_app",
-    "set_overlay_hotkey", "export_hardware_report", "open_report_sample",
+    "get_overlay_hotkey", "set_overlay_hotkey", "export_hardware_report", "open_report_sample",
     // Real hardware data, served by FrameScopeHardwareService over the named pipe.
     "get_hardware", "get_hardware_info", "get_all_sensors", "get_overlay_hardware_data",
     "get_memory_status", "get_disk_status", "is_nvidia_gpu", "set_active_gpu_index",
@@ -25,7 +56,7 @@ const COMMANDS: &[&str] = &[
     // as the C# WebView2 bridge).
     "targets_get", "targets_save", "processes_refresh", "config_save", "config_read",
     "monitor_start", "monitor_stop", "monitor_status",
-    "reports_list", "report_open", "report_open_directory", "report_regenerate",
+    "reports_list", "report_open", "report_open_directory", "report_regenerate", "report_delete",
     // PawnIO driver detection / install / uninstall.
     "check_pawnio_status", "install_pawnio_driver", "uninstall_pawnio_driver",
     "restart_monitor_process",
@@ -35,6 +66,10 @@ const COMMANDS: &[&str] = &[
 fn ensure_allowed(command: &str) -> Result<(), String> {
     if COMMANDS.contains(&command) { Ok(()) } else { Err(format!("Unsupported preview command: {command}")) }
 }
+fn sensor_response_error<'a>(response: &'a Value, fallback: &'a str) -> &'a str {
+    response["errors"].as_array().and_then(|errors| errors.first()).and_then(Value::as_str).unwrap_or(fallback)
+}
+
 fn decode_fixture(value: Value) -> Result<overlay_panel::OverlayHardwareData, String> {
     let object = value.as_object().ok_or("Fixture must be an object")?;
     let defaults = serde_json::to_value(overlay_panel::OverlayHardwareData::default()).unwrap();
@@ -59,15 +94,31 @@ fn open_sensor(app: &tauri::AppHandle) -> Result<(), String> {
         window.show().map_err(|e| e.to_string())?;
         return window.set_focus().map_err(|e| e.to_string());
     }
-    WebviewWindowBuilder::new(app, "sensor-monitor", WebviewUrl::App("sensor-monitor".into()))
+    let mut builder = WebviewWindowBuilder::new(app, "sensor-monitor", WebviewUrl::App("sensor-monitor".into()))
         .title("FrameScope UI Preview - Sensors").inner_size(1000.0, 720.0)
-        .min_inner_size(760.0, 480.0).resizable(true).always_on_top(true)
-        .build().map(|_| ()).map_err(|e| e.to_string())
+        .min_inner_size(760.0, 480.0).resizable(true).always_on_top(true);
+    if let Some(args) = app.config().app.windows.iter().find(|w| w.label == "main")
+        .and_then(|w| w.additional_browser_args.as_deref())
+    {
+        builder = builder.additional_browser_args(args);
+    }
+    builder.build().map(|_| ()).map_err(|e| e.to_string())
 }
 fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
+    backend::ensure_not_closing()?;
     overlay_panel::stop_overlay()?;
     if let Some(window) = app.get_webview_window("vertical-overlay") {
-        return window.show().map_err(|e| e.to_string());
+        if VERTICAL_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+            return window.show().map_err(|e| e.to_string());
+        }
+        let _ = window.destroy();
+        for _ in 0..100 {
+            if app.get_webview_window("vertical-overlay").is_none() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if app.get_webview_window("vertical-overlay").is_some() {
+            return Err("旧竖排悬浮窗尚未销毁".into());
+        }
     }
     let settings = overlay_panel::get_or_init_settings();
     let mut builder = WebviewWindowBuilder::new(app, "vertical-overlay", WebviewUrl::App("vertical-overlay".into()))
@@ -76,15 +127,33 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
         // Windows: undecorated windows default to a DWM shadow, and that shadow
         // forces an opaque compositor backdrop - the transparency slider never
         // reaches the screen without shadow(false) (NexBox upstream does the same).
-        .shadow(false)
+        .shadow(false).focused(false)
         ;
+    // Windows sharing one WebView2 profile must use identical environment arguments.
+    if let Some(args) = app.config().app.windows.iter().find(|w| w.label == "main")
+        .and_then(|w| w.additional_browser_args.as_deref())
+    {
+        builder = builder.additional_browser_args(args);
+    }
     if let (Some(x), Some(y)) = (settings.vertical_position_x, settings.vertical_position_y) {
         builder = builder.position(x as f64, y as f64);
     }
-    let window = builder.build().map_err(|e| e.to_string())?;
+    let built = builder.build();
+    log::info!("UIAccess acceptance: original vertical build {:?}", built.as_ref().map(|window| window.label()));
+    let window = built.map_err(|e| e.to_string())?;
+    let mut ready = false;
+    for _ in 0..200 {
+        if window.hwnd().is_ok() && window.is_visible().unwrap_or(false) { ready = true; break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if !ready {
+        let _ = window.destroy();
+        return Err("竖排悬浮窗初始化失败，请检查 WebView2 日志".into());
+    }
     overlay_set_hit_test_transparent(&window, true);
     #[cfg(windows)]
     apply_vertical_backdrop_kill(&window);
+    VERTICAL_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
 
@@ -153,33 +222,154 @@ fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: 
 /// rgba(17,17,17,opacity/255) and the transparent window lets it through
 /// per-pixel. Only WS_EX_TRANSPARENT is ever toggled on the HWND.
 
+static VERTICAL_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
-    // The GDI window proc updates CURRENT_SETTINGS on WM_EXITSIZEMOVE but
-    // only flags it (POSITION_CHANGED); persist on the next stop so a dragged
-    // position survives restarts instead of being dropped.
-    if overlay_panel::take_position_changed() {
-        let _ = save_native_settings(app);
-    }
+    save_overlay_position(app)?;
+    VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
     overlay_panel::stop_overlay()?;
-    if let Some(window) = app.get_webview_window("vertical-overlay") { window.close().map_err(|e| e.to_string())?; }
+    if let Some(window) = app.get_webview_window("vertical-overlay") {
+        let _ = window.hide();
+        window.destroy().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 fn active(app: &tauri::AppHandle) -> bool {
-    overlay_panel::is_overlay_active() || app.get_webview_window("vertical-overlay").is_some()
+    overlay_panel::is_overlay_active() || (VERTICAL_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
+        && app.get_webview_window("vertical-overlay").map(|window| window.is_visible().unwrap_or(false)).unwrap_or(false))
 }
 fn start_selected(app: &tauri::AppHandle) -> Result<(), String> {
     let settings = overlay_panel::get_or_init_settings();
     if settings.style == "vertical_panel" { open_vertical(app) }
     else {
+        VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(window) = app.get_webview_window("vertical-overlay") { let _ = window.close(); }
         overlay_panel::start_overlay(settings).map(|_| ())
     }
 }
 fn save_native_settings(app: &tauri::AppHandle) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let data = json!({"overlay-settings": overlay_panel::get_or_init_settings()});
-    std::fs::write(dir.join("preview-native-settings.json"), data.to_string()).map_err(|e| e.to_string())
+    let state = app.state::<std::sync::Mutex<NativeHotkeyState>>();
+    let hotkey = state.lock().map_err(|e| e.to_string())?;
+    write_native_settings(&dir.join("preview-native-settings.json"), &hotkey.shortcut,
+        serde_json::to_value(overlay_panel::get_or_init_settings()).map_err(|e| e.to_string())?)
+}
+
+fn settings_with_native_positions(mut settings: overlay_panel::OverlaySettings,
+    current: &overlay_panel::OverlaySettings) -> overlay_panel::OverlaySettings {
+    settings.vertical_position_x = current.vertical_position_x;
+    settings.vertical_position_y = current.vertical_position_y;
+    settings.position_x = current.position_x;
+    settings.position_y = current.position_y;
+    settings
+}
+
+fn save_overlay_position(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("vertical-overlay") {
+        let position = window.outer_position().map_err(|error| error.to_string())?;
+        let mut settings = overlay_panel::CURRENT_SETTINGS.lock().map_err(|error| error.to_string())?;
+        if let Some(settings) = settings.as_mut() {
+            settings.vertical_position_x = Some(position.x);
+            settings.vertical_position_y = Some(position.y);
+        }
+    }
+    save_native_settings(app)?;
+    // Do not acknowledge a pending move until its write has succeeded.
+    let _ = overlay_panel::take_position_changed();
+    Ok(())
+}
+
+fn write_native_settings(path: &std::path::Path, hotkey: &str, settings: Value) -> Result<(), String> {
+    use std::io::Write;
+    static NEXT_WRITE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = path.parent().ok_or("native settings parent missing")?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let temporary = dir.join(format!(".native-settings-{}-{}.tmp", std::process::id(),
+        NEXT_WRITE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true)
+            .open(&temporary).map_err(|e| e.to_string())?;
+        let data = json!({"overlay-settings": settings, "overlay-hotkey": hotkey});
+        file.write_all(data.to_string().as_bytes()).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
+        std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+    result
+}
+
+struct NativeHotkeyState {
+    shortcut: String,
+    registration_error: Option<String>,
+}
+
+fn initialize_native_hotkey<FRegister>(path: &std::path::Path, mut register: FRegister) -> Result<NativeHotkeyState, String>
+where FRegister: FnMut(&str) -> Result<(), String> {
+    let persisted = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Value>(&text).map_err(|e| e.to_string())?
+            .get("overlay-hotkey").and_then(Value::as_str).filter(|key| !key.trim().is_empty())
+            .unwrap_or("Shift+F10").to_string(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "Shift+F10".to_string(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let registration_error = register(&persisted).err()
+        .map(|error| format!("Failed to restore overlay shortcut {persisted}: {error}"));
+    Ok(NativeHotkeyState { shortcut: persisted, registration_error })
+}
+
+#[cfg(test)]
+fn restore_native_hotkey<FRegister>(path: &std::path::Path, register: FRegister) -> Result<String, String>
+where FRegister: FnMut(&str) -> Result<(), String> {
+    let state = initialize_native_hotkey(path, register)?;
+    match state.registration_error { Some(error) => Err(error), None => Ok(state.shortcut) }
+}
+
+fn apply_hotkey_change<FRegister, FUnregister, FSave>(
+    previous: &str,
+    candidate: &str,
+    previous_registered: bool,
+    mut register: FRegister,
+    mut unregister: FUnregister,
+    mut save: FSave,
+) -> Result<String, String>
+where
+    FRegister: FnMut(&str) -> Result<(), String>,
+    FUnregister: FnMut(&str) -> Result<(), String>,
+    FSave: FnMut(&str) -> Result<(), String>,
+{
+    if candidate.trim().is_empty() { return Err("shortcut required".into()); }
+    if previous == candidate && previous_registered { return Ok(previous.to_string()); }
+    register(candidate)?;
+    if let Err(error) = if previous_registered { unregister(previous) } else { Ok(()) } {
+        return match unregister(candidate) {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; candidate shortcut cleanup failed: {rollback}")),
+        };
+    }
+    if let Err(error) = save(candidate) {
+        let restored = if previous_registered { register(previous) } else { Ok(()) };
+        let removed = unregister(candidate);
+        return match (restored, removed) {
+            (Ok(()), Ok(())) => Err(error),
+            (restored, removed) => Err(format!("{error}; shortcut rollback failed: restore={restored:?}, cleanup={removed:?}")),
+        };
+    }
+    Ok(candidate.to_string())
+}
+
+fn change_native_hotkey<FRegister, FUnregister, FSave>(state: &mut NativeHotkeyState, candidate: &str,
+    mut register: FRegister, mut unregister: FUnregister, save: FSave) -> Result<(), String>
+where FRegister: FnMut(&str) -> Result<(), String>, FUnregister: FnMut(&str) -> Result<(), String>,
+    FSave: FnMut(&str) -> Result<(), String> {
+    let registered = std::cell::Cell::new(state.registration_error.is_none());
+    let result = apply_hotkey_change(&state.shortcut, candidate, registered.get(),
+        |key| { let result = register(key); if result.is_ok() && key == state.shortcut { registered.set(true); } result },
+        |key| { let result = unregister(key); if result.is_ok() && key == state.shortcut { registered.set(false); } result }, save);
+    match result {
+        Ok(saved) => { state.shortcut = saved; state.registration_error = None; Ok(()) },
+        Err(error) => { if !registered.get() { state.registration_error = Some(error.clone()); } Err(error) },
+    }
 }
 // Sync command. Window-creating flows are dispatched to worker threads below:
 // creating a webview inside this handler would deadlock the main thread
@@ -189,6 +379,27 @@ fn save_native_settings(app: &tauri::AppHandle) -> Result<(), String> {
 // instead of freezing the window's message pump.
 #[tauri::command]
 async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
+    #[cfg(feature = "uiaccess-acceptance")]
+    if command == "uiaccess_acceptance_gdi" { return Ok(overlay_panel::render_diagnostics()); }
+    if command == "uiaccess_acceptance_window" && cfg!(feature = "uiaccess-acceptance") {
+        #[cfg(windows)]
+        {
+            let window = app.get_webview_window("vertical-overlay").ok_or("original vertical overlay missing")?;
+            let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+            let mut band = 0;
+            let mut rect = windows_sys::Win32::Foundation::RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            unsafe {
+                let module = windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(windows_sys::core::w!("user32.dll"));
+                let address = windows_sys::Win32::System::LibraryLoader::GetProcAddress(module, b"GetWindowBand\0".as_ptr())
+                    .ok_or("GetWindowBand export unavailable")?;
+                let get_band: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> i32 = std::mem::transmute(address);
+                let ok = get_band(hwnd.0 as _, &mut band);
+                windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd.0 as _, &mut rect);
+                return Ok(json!({"hwnd":hwnd.0 as usize,"band":band,"band_ok":ok != 0,
+                    "visible":window.is_visible().unwrap_or(false),"rect":[rect.left,rect.top,rect.right,rect.bottom]}));
+            }
+        }
+    }
     ensure_allowed(&command)?;
     // Creating a webview window from inside the command handler deadlocks the main
     // thread (WebView2 controller init needs the message pump that is currently
@@ -204,7 +415,7 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             let response = hardware_service::call("get_static_hardware", json!({}))?;
             let hardware = response["hardware"].clone();
             if hardware.is_null() {
-                let error = response["errors"].as_array().and_then(|e| e[0].as_str()).unwrap_or("硬件信息不可用");
+                let error = sensor_response_error(&response, "硬件信息不可用");
                 return Err(error.to_string());
             }
             return Ok(hardware);
@@ -212,7 +423,7 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         "get_all_sensors" => {
             let response = hardware_service::call("get_sensors", json!({}))?;
             if response["availability"] == "unavailable" && response["sensors"].as_array().map(|s| s.is_empty()).unwrap_or(true) {
-                let error = response["errors"].as_array().and_then(|e| e[0].as_str()).unwrap_or("传感器数据不可用");
+                let error = sensor_response_error(&response, "传感器数据不可用");
                 return Err(error.to_string());
             }
             return Ok(json!({
@@ -223,7 +434,7 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                 "pawnIo": response["pawnIo"],
             }));
         }
-        "get_overlay_hardware_data" => return hardware_service::call("get_overlay_data", json!({})),
+        "get_overlay_hardware_data" => return hardware_service::call("get_overlay_data", json!({})).map(backend::apply_report_lows),
         "get_memory_status" => return hardware_service::call("get_memory_status", json!({})),
         "get_disk_status" => return hardware_service::call("get_disk_status", json!({})),
         "is_nvidia_gpu" => {
@@ -251,12 +462,15 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             return backend::processes_refresh(query);
         }
         "monitor_start" => {
-            let target_id = args["targetId"].as_str().ok_or("targetId required")?;
-            return backend::monitor_start(target_id);
+            return backend::monitor_start();
         }
         "monitor_stop" => return backend::monitor_stop(),
         "monitor_status" => return backend::monitor_status(),
         "reports_list" => return backend::reports_list(),
+        "report_delete" => {
+            let id = args["id"].as_str().ok_or("id required")?.to_string();
+            return std::thread::spawn(move || backend::report_delete(&id)).join().map_err(|_| "report delete worker failed".to_string())?;
+        }
         "report_open" => {
             let id = args["id"].as_str().ok_or("id required")?;
             return backend::report_open(id);
@@ -384,23 +598,13 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             if settings.font_size < 8 || settings.font_size > 72 || settings.item_width < 30 || settings.item_width > 1000 {
                 return Err("Overlay size outside preview limits".into());
             }
-            // Dragged window positions live in this store, not in the settings
-            // page's React state (which snapshots them at page load). A page
-            // saved before a drag still carries null positions here - never
-            // let those clobber the live ones (measured loss: drag -> move the
-            // opacity slider -> position silently reset).
-            let mut settings = settings;
-            {
-                let current = overlay_panel::get_or_init_settings();
-                if settings.vertical_position_x.is_none() { settings.vertical_position_x = current.vertical_position_x; }
-                if settings.vertical_position_y.is_none() { settings.vertical_position_y = current.vertical_position_y; }
-                if settings.position_x.is_none() { settings.position_x = current.position_x; }
-                if settings.position_y.is_none() { settings.position_y = current.position_y; }
-            }
             // Hold the same operation lock every other start/stop path uses:
             // update_settings tears the overlay down and rebuilds it, and an
             // unserialized rebuild could double-create windows (R-A8).
             let _operation_lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Position changes belong to drag/reset commands. A settings page
+            // can carry old non-null coordinates, including the default 40/80.
+            let mut settings = settings_with_native_positions(settings, &overlay_panel::get_or_init_settings());
             let was_active = active(&app);
             if settings.style == "vertical_panel" {
                 // The vertical panel is a webview that applies the new settings
@@ -455,6 +659,7 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                     // harmless re-store plus a window rebuild.
                 }
                 stop_windows(&app)?;
+                settings = settings_with_native_positions(settings, &overlay_panel::get_or_init_settings());
                 overlay_panel::update_settings(settings.clone())?;
                 save_native_settings(&app)?;
                 if was_active {
@@ -468,6 +673,8 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }
         "set_overlay_drag_mode" => {
             let enabled = args["enabled"].as_bool().ok_or("enabled must be boolean")?;
+            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !enabled { save_overlay_position(&app)?; }
             overlay_panel::set_drag_mode(enabled);
             if let Some(window) = app.get_webview_window("vertical-overlay") {
                 overlay_set_hit_test_transparent(&window, !enabled);
@@ -480,8 +687,11 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             // enabled:false to take input, the panel's mouseup sends
             // enabled:true to give it back. (e1aedfd inverted this and drag
             // mode enabled the pass-through instead.)
+            let enabled = args["enabled"].as_bool().ok_or("enabled must be boolean")?;
+            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(window) = app.get_webview_window("vertical-overlay") {
-                overlay_set_hit_test_transparent(&window, args["enabled"].as_bool().ok_or("enabled must be boolean")?);
+                if enabled { save_overlay_position(&app)?; }
+                overlay_set_hit_test_transparent(&window, enabled);
             }
         }
         "resize_vertical_overlay" => {
@@ -491,11 +701,19 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             }
         }
         "save_vertical_overlay_position" | "reset_vertical_overlay_position" | "reset_overlay_position" => {
+            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let mut settings = overlay_panel::get_or_init_settings();
             let reset = command.starts_with("reset");
             let x = if reset { 40 } else { args["x"].as_i64().ok_or("x required")?.clamp(-32000, 32000) as i32 };
             let y = if reset { 80 } else { args["y"].as_i64().ok_or("y required")?.clamp(-32000, 32000) as i32 };
-            if command == "reset_overlay_position" {
+            if command == "save_vertical_overlay_position" {
+                // Native coordinates win over queued onMoved callbacks. Ignore
+                // callbacks from a window that has already been closed.
+                let Some(window) = app.get_webview_window("vertical-overlay") else { return Ok(Value::Null) };
+                let position = window.outer_position().map_err(|error| error.to_string())?;
+                settings.vertical_position_x = Some(position.x);
+                settings.vertical_position_y = Some(position.y);
+            } else if command == "reset_overlay_position" {
                 settings.position_x = Some(x); settings.position_y = Some(y);
             } else {
                 settings.vertical_position_x = Some(x); settings.vertical_position_y = Some(y);
@@ -515,11 +733,23 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         "set_overlay_hotkey" => {
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
             let shortcut = args["shortcut"].as_str().ok_or("shortcut required")?;
-            app.global_shortcut().unregister_all().map_err(|e| e.to_string())?;
-            app.global_shortcut().register(shortcut).map_err(|e| e.to_string())?;
+            let state = app.state::<std::sync::Mutex<NativeHotkeyState>>();
+            let mut previous = state.lock().map_err(|e| e.to_string())?;
+            let path = app.path().app_data_dir().map_err(|e| e.to_string())?.join("preview-native-settings.json");
+            change_native_hotkey(
+                &mut previous,
+                shortcut,
+                |key| app.global_shortcut().register(key).map_err(|e| e.to_string()),
+                |key| app.global_shortcut().unregister(key).map_err(|e| e.to_string()),
+                |candidate| write_native_settings(&path, candidate,
+                    serde_json::to_value(overlay_panel::get_or_init_settings()).map_err(|e| e.to_string())?),
+            )?;
+        }
+        "get_overlay_hotkey" => {
+            return Ok(Value::String(app.state::<std::sync::Mutex<NativeHotkeyState>>().lock().map_err(|error| error.to_string())?.shortcut.clone()));
         }
         "minimize_to_tray" => app.get_webview_window("main").ok_or("main missing")?.hide().map_err(|e| e.to_string())?,
-        "exit_app" => { stop_windows(&app)?; app.exit(0); }
+        "exit_app" => { request_shutdown(&app); }
         "export_hardware_report" => {
             let path = args["path"].as_str().ok_or("export path required")?;
             if !path.to_ascii_lowercase().ends_with(".html") && !path.to_ascii_lowercase().ends_with(".json") {
@@ -560,6 +790,23 @@ fn system_locale() -> String {
     "zh-CN".into()
 }
 pub fn run() {
+    #[cfg(windows)]
+    {
+        let mut runtime = runtime_uiaccess::windows::NativeRuntime::default();
+        match runtime_uiaccess::bootstrap(&mut runtime, &std::env::args().collect::<Vec<_>>()) {
+            Ok(runtime_uiaccess::Action::Continue) => (),
+            Ok(runtime_uiaccess::Action::Relaunched) => return,
+            Err(error) => {
+                eprintln!("UIAccess startup failed: {error}");
+                use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+                let message: Vec<u16> = format!("UIAccess 启动失败：{error}\n程序没有进入采集或窗口初始化。")
+                    .encode_utf16().chain(Some(0)).collect();
+                let title: Vec<u16> = "FrameScope 启动失败".encode_utf16().chain(Some(0)).collect();
+                unsafe { MessageBoxW(std::ptr::null_mut(), message.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR); }
+                std::process::exit(1);
+            }
+        }
+    }
     // Diagnostics (ETW/permission/pipe failures) used to vanish because no
     // logger was installed; stderr is enough for a desktop app and costs
     // nothing in release.
@@ -569,6 +816,14 @@ pub fn run() {
             metadata.level() <= log::Level::Info
         }
         fn log(&self, record: &log::Record) {
+            #[cfg(feature = "uiaccess-acceptance")]
+            {
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true)
+                    .open(concat!(env!("CARGO_MANIFEST_DIR"), "/../../artifacts/20261010-uiaccess-resume/runtime.log")) {
+                    let _ = writeln!(file, "[{}] {}", record.level(), record.args());
+                }
+            }
             eprintln!("[{}] {}", record.level(), record.args());
         }
         fn flush(&self) {}
@@ -576,11 +831,22 @@ pub fn run() {
     static LOGGER: StderrLogger = StderrLogger;
     let _ = log::set_logger(&LOGGER).map(|_| log::set_max_level(log::LevelFilter::Info));
 
+    let request_exit_only = std::env::args().any(|a|a == "--request-exit");
+    let mut context = tauri::generate_context!();
+    if request_exit_only { context.config_mut().app.windows.clear(); }
     let app = tauri::Builder::default()
         // Must register before other plugins (single-instance docs): a second
         // launch forwards here and dies, so the tray-hidden window comes back
         // to the foreground instead of spawning a twin process (audit F-1).
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a|a == "--request-exit") {
+                if let (Ok(exe), Ok(root)) = (std::env::current_exe(), backend::backend_root()) {
+                    if host_shutdown::same_installation_request(&args, &exe, &root) {
+                        request_shutdown(app);
+                    } else { log::warn!("拒绝来自其他安装目录的退出请求"); }
+                }
+                return;
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
@@ -601,13 +867,34 @@ pub fn run() {
             }
         }).build())
         .invoke_handler(tauri::generate_handler![preview_native])
-        .setup(|app| {
+        .setup(move |app| {
+            // Single-instance forwarding runs before this setup. No matching
+            // host: return a distinct code without creating GUI or providers.
+            if request_exit_only { std::process::exit(3); }
             use tauri::menu::{Menu, MenuItem};
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                window_icons::apply(window.hwnd()?.0)?;
+            }
             // Restore persisted overlay settings (style/items/positions) BEFORE
             // anything can start the panel: this was defined but never called,
             // so every launch reset the overlay to the GDI default style even
             // though the settings file said vertical_panel.
             overlay_panel::try_load_persisted_settings(app.handle());
+            use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            let persisted_hotkey = initialize_native_hotkey(&app.path().app_data_dir()?.join("preview-native-settings.json"),
+                |key| app.global_shortcut().register(key).map_err(|error| error.to_string()))
+                .map_err(std::io::Error::other)?;
+            if let Some(error) = persisted_hotkey.registration_error.as_ref() {
+                log::error!("{error}");
+                let app_handle = app.handle().clone();
+                let message = format!("悬浮窗快捷键注册失败：{error}\n请在设置中选择可用的快捷键。");
+                app.handle().run_on_main_thread(move || {
+                    use tauri_plugin_dialog::DialogExt;
+                    app_handle.dialog().message(message).title("FrameScope 快捷键不可用").show(|_| {});
+                })?;
+            }
+            app.manage(std::sync::Mutex::new(persisted_hotkey));
             let show = MenuItem::with_id(app, "show", "打开 FrameScope", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 FrameScope", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -662,9 +949,37 @@ pub fn run() {
                             let _ = window.set_focus();
                         }
                     }
-                    "quit" => { let _ = stop_windows(app); app.exit(0); }
+                    "quit" => { request_shutdown(app); }
                     _ => {}
                 }).build(app)?;
+            // Window startup preferences run once, after persisted overlay
+            // settings and tray restoration are ready, independently of capture.
+            match backend::startup_preferences() {
+                Ok((auto_overlay, start_minimized)) => {
+                    if start_minimized {
+                        if let Some(window) = app.get_webview_window("main") {
+                            if let Err(error) = window.minimize() { eprintln!("Startup minimize failed: {error}"); }
+                        }
+                    }
+                    if auto_overlay {
+                        let handle = app.handle().clone();
+                        std::thread::spawn(move || {
+                            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|p|p.into_inner());
+                            if let Err(error) = backend::ensure_not_closing().and_then(|_| start_selected(&handle)) {
+                                eprintln!("Automatic overlay start failed: {error}");
+                            }
+                            let _ = handle.emit("overlay-status-changed", active(&handle));
+                        });
+                    }
+                }
+                Err(error) => eprintln!("Window startup preferences unavailable: {error}"),
+            }
+            // Per main-process startup, never a page mount or overlay toggle.
+            std::thread::spawn(|| {
+                if let Err(error) = backend::auto_start_monitor() {
+                    eprintln!("Automatic monitoring start failed: {error}");
+                }
+            });
             // Resident hardware poller (NexBox start_hardware_poller pattern):
             // 10 Hz service reads feed the GDI overlay cache and the vertical
             // overlay event stream, so both overlays show real data without
@@ -683,6 +998,7 @@ pub fn run() {
                     }
                     match hardware_service::call("get_overlay_data", json!({})) {
                         Ok(data) => {
+                            let data = backend::apply_report_lows(data);
                             error_streak = 0;
                             // The GDI panel stores clocks/percent as integers; feed
                             // it a rounded copy while the frontend event keeps the
@@ -745,6 +1061,14 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if window.label() == "main" {
+                #[cfg(windows)]
+                if matches!(event, tauri::WindowEvent::ScaleFactorChanged { .. }) {
+                    if let Ok(hwnd) = window.hwnd() {
+                        if let Err(error) = window_icons::apply(hwnd.0) {
+                            log::warn!("Window icon update failed: {error}");
+                        }
+                    }
+                }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     // The X button and Alt+F4/taskbar closes must behave the
                     // same; the choice lives in framescope-config.json
@@ -764,13 +1088,18 @@ pub fn run() {
                             api.prevent_close();
                             let _ = window.app_handle().emit("main-close-requested", ());
                         }
-                        _ => { let _ = stop_windows(window.app_handle()); window.app_handle().exit(0); }
+                        _ => { api.prevent_close(); request_shutdown(window.app_handle()); }
                     }
                 }
             }
         })
-        .build(tauri::generate_context!()).expect("Unable to build isolated preview");
+        .build(context).expect("Unable to build isolated preview");
     app.run(|app, event| {
-        if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) { let _ = stop_windows(app); }
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            if !SHUTDOWN_COMPLETE.load(std::sync::atomic::Ordering::SeqCst) {
+                api.prevent_exit();
+                request_shutdown(app);
+            }
+        }
     });
 }

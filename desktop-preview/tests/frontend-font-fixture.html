@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Font provider regression fixture</title></head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import { FontProvider, useFont } from "../src/contexts/font-context";
+      import "../src/index.css";
+
+      function Probe() {
+        const { font, fontOptions, setFont, resetToDefault, removeCustomFont } = useFont();
+        return React.createElement("div", null,
+          React.createElement("output", { id: "current-font" }, font),
+          React.createElement("select", {
+            id: "font-options", value: font, onChange: event => setFont(event.target.value),
+          }, fontOptions.map(option => React.createElement("option", {
+            key: option.value, value: option.value,
+          }, option.label))),
+          React.createElement("button", { id: "reset", onClick: resetToDefault }, "Reset"),
+          React.createElement("button", { id: "remove", onClick: () => removeCustomFont(font) }, "Remove"),
+        );
+      }
+      createRoot(document.getElementById("root")).render(
+        React.createElement(FontProvider, null, React.createElement(Probe)),
+      );
+    </script>
+  </body>
+</html>
