@@ -13,7 +13,7 @@ internal static class FrameScopeVersionTests
         try
         {
             string expected = File.ReadAllText(Path.Combine(Root, "VERSION")).Trim();
-            AssertEqual("1.2.1", expected, "local remediation version");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(expected, @"^\d+\.\d+\.\d+(-beta\.\d+)?$")) throw new Exception("Invalid VERSION");
             AssertEqual(expected, FrameScopeProductInfo.Version, "generated product version");
             PackageVersionMatches(expected);
             BuiltAssembliesUseProductVersion(expected);
@@ -51,7 +51,7 @@ internal static class FrameScopeVersionTests
             string path = Path.Combine(FrameScopeTestPaths.RuntimeRoot, name);
             if (!File.Exists(path)) throw new Exception("Missing built assembly: " + name);
             string version = FileVersionInfo.GetVersionInfo(path).FileVersion ?? "";
-            if (!version.StartsWith(expected + ".", StringComparison.Ordinal))
+            if (!version.StartsWith(expected.Split('-')[0] + ".", StringComparison.Ordinal))
             {
                 throw new Exception(name + " version mismatch: " + version);
             }

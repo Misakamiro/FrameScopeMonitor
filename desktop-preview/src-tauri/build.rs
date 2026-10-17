@@ -1,4 +1,7 @@
+#[path = "../../tools/build_version.rs"]
+mod build_version;
 fn main() {
+    build_version::emit("../..");
     println!("cargo:rerun-if-changed=icons/icon.ico");
     // requireAdministrator: the ETW frame capture, LibreHardwareMonitor
     // driver-backed sensors and the PawnIO driver all need an elevated

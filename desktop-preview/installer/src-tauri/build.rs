@@ -1,4 +1,7 @@
+#[path = "../../../tools/build_version.rs"]
+mod build_version;
 fn main() {
+    build_version::emit("../../..");
     // Track the payload so a re-packed zip relinks the installer binary.
     println!("cargo:rerun-if-changed=payload.zip");
 
