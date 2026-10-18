@@ -1,6 +1,6 @@
 [package]
 name = "framescope-ui-preview"
-version = "2.0.0-beta.1"
+version = "2.0.0-beta.2"
 description = "FrameScope - local game performance monitor"
 edition = "2021"
 license = "GPL-3.0"
