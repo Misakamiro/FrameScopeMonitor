@@ -11,6 +11,7 @@ import { monitorBusy } from "@/preview/runtime/state";
 import { useAppStartup } from "@/contexts/app-startup-context";
 import { useFloatingButtonStyle } from "@/hooks/use-floating-button-style";
 import type { HardwareInfo } from "@/lib/hardware";
+import { formatDiskType } from "@/lib/hardware";
 
 interface InfoRow {
   name: string;
@@ -98,7 +99,7 @@ function buildHardwareSections(hardware: HardwareInfo): Array<{
       rows: [
         { name: "型号", value: disk.model || "--" },
         { name: "容量", value: `${disk.size_gb.toFixed(0)} GB` },
-        { name: "类型", value: disk.is_ssd ? "SSD" : "机械硬盘" },
+        { name: "类型", value: formatDiskType(disk) },
         { name: "接口", value: disk.interface_type || "--" },
       ],
     })),

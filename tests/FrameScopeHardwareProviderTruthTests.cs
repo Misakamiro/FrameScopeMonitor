@@ -56,6 +56,7 @@ internal static class FrameScopeHardwareProviderTruthTests
             CpuSelectionUsesClassAndNamePriority();
             GpuSelectionUsesStableHardwareIdentity();
             DynamicAggregationDoesNotBorrowUnmatchedSensors();
+            DiskClassificationUsesDeviceEvidence();
             Console.WriteLine("FrameScopeHardwareProviderTruthTests: PASS");
             return 0;
         }
@@ -73,6 +74,30 @@ internal static class FrameScopeHardwareProviderTruthTests
         }
         object[] zero = { 0d, 123d };
         Check((bool)method.Invoke(null, zero) && (double)zero[1] == 0d, "a real zero remains a valid reading");
+    }
+
+    private static void DiskClassificationUsesDeviceEvidence()
+    {
+        Check(Call("ResolveDiskSolidState", false, "Example SSD", "Fixed hard disk media").Equals(false),
+            "device evidence wins over model text");
+        Check(Call("ResolveDiskSolidState", true, "ZHITAI TiPlus7100 1TB", "Fixed hard disk media").Equals(true),
+            "a solid state disk needs no SSD or NVMe in its model");
+        Check(Call("ResolveDiskSolidState", null, "Unidentified disk", "Fixed hard disk media") == null,
+            "fixed media is not evidence of a rotating disk");
+        Check(Call("ResolveDiskSolidState", null, "Example NVMe", "").Equals(true), "explicit NVMe fallback");
+        Check(Call("ResolveDiskSolidState", null, "Example SSD", "").Equals(true), "explicit SSD fallback");
+        Check(Call("ResolveDiskSolidState", null, "Example HDD", "").Equals(false), "explicit HDD fallback");
+        var descriptor = new byte[12];
+        Array.Copy(BitConverter.GetBytes(12u), 0, descriptor, 0, 4);
+        Array.Copy(BitConverter.GetBytes(12u), 0, descriptor, 4, 4);
+        Check(Call("ParseDiskSolidState", descriptor, 12).Equals(true), "no seek penalty means non-rotating storage");
+        descriptor[8] = 1;
+        Check(Call("ParseDiskSolidState", descriptor, 12).Equals(false), "seek penalty means rotating storage");
+        Check(Call("ParseDiskSolidState", descriptor, 8) == null, "short device reply remains unknown");
+        descriptor[4] = 0;
+        Check(Call("ParseDiskSolidState", descriptor, 12) == null, "missing descriptor size remains unknown");
+        Check(Call("ReadDiskSolidState", @"\\.\FrameScopeMissingDiskFixture") == null,
+            "unavailable devices do not become HDDs or fail hardware inventory");
     }
 
     private static void UpdateFailureDoesNotPublishOldSensorValues()

@@ -20,6 +20,7 @@ import { useAppStartup } from "@/contexts/app-startup-context";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import HardwareDetailModal, { type SpecItem } from "@/components/HardwareDetailModal";
 import type { CpuInfo, GpuInfo, MemoryInfo, MotherboardInfo, DiskDetailInfo, SoundCardInfo, NetworkCardInfo, MonitorInfo } from "@/lib/hardware";
+import { formatDiskType } from "@/lib/hardware";
 import {
   Cpu,
   Monitor,
@@ -535,7 +536,7 @@ export default function HardwarePage() {
       specs.push(
         { label: `${prefix}${t("hardware.model")}`, value: disk.model },
         { label: `${prefix}${t("hardware.capacity")}`, value: `${disk.size_gb.toFixed(1)} GB` },
-        { label: `${prefix}${t("hardware.diskType") || "类型"}`, value: disk.is_ssd ? "SSD" : disk.media_type || "HDD" },
+        { label: `${prefix}${t("hardware.diskType") || "类型"}`, value: formatDiskType(disk) },
         { label: `${prefix}${t("hardware.interfaceType") || "接口"}`, value: disk.interface_type || "--" },
         { label: `${prefix}${t("hardware.serialNumber") || "序列号"}`, value: disk.serial_number || "--" },
         { label: `${prefix}${t("hardware.firmware") || "固件版本"}`, value: disk.firmware_revision || "--" },

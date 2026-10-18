@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -347,6 +348,51 @@ internal static class FrameScopeHardwareProvider
         return new string[0];
     }
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device,
+        uint control, byte[] input, int inputSize, byte[] output, int outputSize, out int returned, IntPtr overlapped);
+
+    private static bool? ReadDiskSolidState(string devicePath)
+    {
+        if (String.IsNullOrWhiteSpace(devicePath)) return null;
+        // Query only: no read/write access and no disk contents are read. Use the
+        // exact Win32_DiskDrive device, avoiding model-based joins across disks.
+        using (var device = CreateFile(devicePath, 0, 3, IntPtr.Zero, 3, 0, IntPtr.Zero))
+        {
+            if (device.IsInvalid) return null;
+            var query = new byte[12]; // STORAGE_PROPERTY_QUERY / PropertyStandardQuery
+            query[0] = 7; // StorageDeviceSeekPenaltyProperty
+            var descriptor = new byte[12]; // DEVICE_SEEK_PENALTY_DESCRIPTOR
+            int returned;
+            if (!DeviceIoControl(device, 0x002D1400, query, query.Length,
+                descriptor, descriptor.Length, out returned, IntPtr.Zero)) return null;
+            return ParseDiskSolidState(descriptor, returned);
+        }
+    }
+
+    private static bool? ParseDiskSolidState(byte[] descriptor, int returned)
+    {
+        if (descriptor == null || returned < 12 || descriptor.Length < 12
+            || BitConverter.ToUInt32(descriptor, 0) < 12 || BitConverter.ToUInt32(descriptor, 4) < 12) return null;
+        return descriptor[8] == 0; // IncursSeekPenalty is a one-byte BOOLEAN.
+    }
+
+    private static bool? ResolveDiskSolidState(bool? deviceResult, string model, string mediaType)
+    {
+        if (deviceResult.HasValue) return deviceResult;
+        string text = (model ?? "") + " " + (mediaType ?? "");
+        if (text.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (text.IndexOf("HDD", StringComparison.OrdinalIgnoreCase) >= 0) return false;
+        // "Fixed hard disk media" describes removability, not rotational media.
+        return null;
+    }
+
     /// Full frontend-facing static hardware info (snake_case contract shared
     /// with the NexBox-derived UI). Every field degrades to null/"" on its own.
     private static Dictionary<string, object> BuildStaticFull(List<string> errors)
@@ -565,9 +611,7 @@ internal static class FrameScopeHardwareProvider
                     double? bytesPerSector = WmiGetDouble(o, "BytesPerSector");
                     string model = WmiGet(o, "Model");
                     string mediaType = WmiGet(o, "MediaType");
-                    bool isSsd = mediaType.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0
-                        || model.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0
-                        || model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool? isSsd = ResolveDiskSolidState(ReadDiskSolidState(WmiGet(o, "DeviceID")), model, mediaType);
                     disks.Add(new Dictionary<string, object>
                     {
                         { "model", model },

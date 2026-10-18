@@ -116,7 +116,11 @@ export interface DiskDetailInfo {
   bytes_per_sector: number | null;
   partitions: number;
   status: string;
-  is_ssd: boolean;
+  is_ssd: boolean | null;
+}
+
+export function formatDiskType(disk: Pick<DiskDetailInfo, "is_ssd">): string {
+  return disk.is_ssd === true ? "SSD" : disk.is_ssd === false ? "机械硬盘" : "未知";
 }
 
 export interface MonitorInfo {
