@@ -44,8 +44,9 @@ foreach ($name in @('GIT_DIR', 'GIT_INDEX_FILE', 'CARGO_TARGET_DIR', 'CARGO_BUIL
     [Environment]::SetEnvironmentVariable($name, (Join-Path $owned 'must-not-write'), 'Process')
 }
 try {
-    $output = Join-Path $owned 'output'
-    & "$source\tools\Build-IsolatedInstaller.ps1" -RepoRoot $source -OutputDirectory $output -SnapshotOnly
+    $storage = Join-Path $owned 'builds'
+    $output = Join-Path $storage 'output'
+    & "$source\tools\Build-IsolatedInstaller.ps1" -RepoRoot $source -OutputDirectory $output -StorageRoot $storage -SnapshotOnly
     $inventoryPath = Join-Path $output 'snapshot-inputs.json'
     $inventoryText = [IO.File]::ReadAllText($inventoryPath, [Text.Encoding]::UTF8)
     [IO.File]::WriteAllText($inventoryPath, $inventoryText, [Text.UTF8Encoding]::new($false))
@@ -181,7 +182,7 @@ try {
     New-Item -ItemType Directory -Path "$source\.cargo" -Force | Out-Null
     [IO.File]::WriteAllText("$source\.cargo\config.toml", '[build]' + [Environment]::NewLine + 'target-dir = "C:/unsafe-external-output"')
     $rejected = $false
-    try { & "$source\tools\Build-IsolatedInstaller.ps1" -RepoRoot $source -OutputDirectory (Join-Path $owned 'redirect-output') -SnapshotOnly } catch {
+    try { & "$source\tools\Build-IsolatedInstaller.ps1" -RepoRoot $source -OutputDirectory (Join-Path $storage 'redirect-output') -StorageRoot $storage -SnapshotOnly } catch {
         if ($_ -notlike '*Output redirection*') { throw }
         $rejected = $true
     }

@@ -6,9 +6,28 @@
     [switch]$SnapshotOnly,
     [switch]$VerifyOnly,
     [switch]$FunctionsOnly,
-    [string]$CandidateHostTransformScript
+    [string]$CandidateHostTransformScript,
+    [string]$StorageRoot = (Join-Path ([IO.Path]::GetPathRoot($RepoRoot)) 'fs-build')
 )
 $ErrorActionPreference = 'Stop'
+
+function Assert-IsolatedBuildStorage([string]$Directory, [string]$StorageRoot, [long]$FreeBytes) {
+    $root = [IO.Path]::GetFullPath($StorageRoot).TrimEnd('\')
+    $output = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+    if (-not $output.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "OutputDirectory must be under the managed build root: $root"
+    }
+    if (-not [IO.Path]::GetDirectoryName($output).Equals($root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Each build must be a direct child of the managed build root'
+    }
+    Assert-PayloadPath -Path $output -Root $root
+    if ($FreeBytes -lt 30GB) { throw 'Build requires at least 30 GiB of free disk space; no output was created' }
+    # Count failed/incomplete directories too: repeated failures must not create
+    # an unlimited collection just because their inventory was never written.
+    if ((Test-Path -LiteralPath $root) -and @(Get-ChildItem -LiteralPath $root -Directory -Force).Count -ge 2) {
+        throw 'At most two retained build directories are allowed; inspect and remove obsolete outputs before retrying. Nothing was deleted automatically.'
+    }
+}
 
 function Get-IsolatedSourceFiles([string]$Root) {
     $gitOutput = Get-PayloadGitOutput ('-C "' + $Root + '" -c core.quotepath=false ls-files --cached --others --exclude-standard')
@@ -120,6 +139,8 @@ if ($VerifyOnly) {
     Assert-IsolatedCargoOutputs -Snapshot (Join-Path $OutputDirectory 'source')
     return
 }
+Assert-IsolatedBuildStorage -Directory $OutputDirectory -StorageRoot $StorageRoot `
+    -FreeBytes ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($OutputDirectory)).AvailableFreeSpace)
 if (Test-Path -LiteralPath $OutputDirectory) { throw 'OutputDirectory must be a new private directory; refusing reuse or overwrite' }
 $sourcePrefix = $RepoRoot.TrimEnd('\') + '\'
 if ($OutputDirectory.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase) -and
