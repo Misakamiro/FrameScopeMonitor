@@ -24,8 +24,9 @@ fn request_shutdown(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         let _overlay = OVERLAY_OPERATION.lock().unwrap_or_else(|p|p.into_inner());
         let result = backend::shutdown_owned_monitor()
-            .and_then(|_| stop_windows(&app))
-            .and_then(|_| hardware_service::stop_connected_service());
+            .map_err(|error| format!("停止监控和报告收尾失败：{error}"))
+            .and_then(|_| stop_windows(&app).map_err(|error| format!("保存悬浮窗设置或关闭悬浮窗失败：{error}")))
+            .and_then(|_| hardware_service::stop_connected_service().map_err(|error| format!("停止硬件服务失败：{error}")));
         match result {
             Ok(_) => {
                 SHUTDOWN_COMPLETE.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -266,15 +267,16 @@ fn settings_with_native_positions(mut settings: overlay_panel::OverlaySettings,
     settings
 }
 
+fn record_vertical_position(position: tauri::PhysicalPosition<i32>) {
+    let mut settings = overlay_panel::CURRENT_SETTINGS.lock().unwrap_or_else(|p|p.into_inner());
+    let settings = settings.get_or_insert_with(Default::default);
+    settings.vertical_position_x = Some(position.x);
+    settings.vertical_position_y = Some(position.y);
+}
+
 fn save_overlay_position(app: &tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("vertical-overlay") {
-        let position = window.outer_position().map_err(|error| error.to_string())?;
-        let mut settings = overlay_panel::CURRENT_SETTINGS.lock().map_err(|error| error.to_string())?;
-        if let Some(settings) = settings.as_mut() {
-            settings.vertical_position_x = Some(position.x);
-            settings.vertical_position_y = Some(position.y);
-        }
-    }
+    // Native move events already captured the coordinates. Querying a closing
+    // WebView here can fail and incorrectly cancel the entire application exit.
     save_native_settings(app)?;
     // Do not acknowledge a pending move until its write has succeeded.
     let _ = overlay_panel::take_position_changed();
@@ -707,18 +709,17 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }
         "save_vertical_overlay_position" | "reset_vertical_overlay_position" | "reset_overlay_position" => {
             let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if command == "save_vertical_overlay_position" {
+                // JS move callbacks may be delayed or arrive after destruction;
+                // persist the latest native event, not their stale coordinates.
+                save_overlay_position(&app)?;
+                return Ok(Value::Null);
+            }
             let mut settings = overlay_panel::get_or_init_settings();
             let reset = command.starts_with("reset");
             let x = if reset { 40 } else { args["x"].as_i64().ok_or("x required")?.clamp(-32000, 32000) as i32 };
             let y = if reset { 80 } else { args["y"].as_i64().ok_or("y required")?.clamp(-32000, 32000) as i32 };
-            if command == "save_vertical_overlay_position" {
-                // Native coordinates win over queued onMoved callbacks. Ignore
-                // callbacks from a window that has already been closed.
-                let Some(window) = app.get_webview_window("vertical-overlay") else { return Ok(Value::Null) };
-                let position = window.outer_position().map_err(|error| error.to_string())?;
-                settings.vertical_position_x = Some(position.x);
-                settings.vertical_position_y = Some(position.y);
-            } else if command == "reset_overlay_position" {
+            if command == "reset_overlay_position" {
                 settings.position_x = Some(x); settings.position_y = Some(y);
             } else {
                 settings.vertical_position_x = Some(x); settings.vertical_position_y = Some(y);
@@ -1067,6 +1068,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "vertical-overlay" {
+                match event {
+                    tauri::WindowEvent::Moved(position) => record_vertical_position(*position),
+                    tauri::WindowEvent::Destroyed => VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst),
+                    _ => {}
+                }
+            }
             if window.label() == "main" {
                 #[cfg(windows)]
                 if matches!(event, tauri::WindowEvent::ScaleFactorChanged { .. }) {
