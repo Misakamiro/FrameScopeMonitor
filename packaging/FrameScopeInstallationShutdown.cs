@@ -2,9 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.ComponentModel;
 using System.IO;
 using System.IO.Pipes;
-using System.Management;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -169,27 +169,88 @@ internal static class FrameScopeInstallationShutdown
                 (command.IndexOf("\"" + root + "\\", StringComparison.OrdinalIgnoreCase) >= 0 || command.IndexOf(" " + root + "\\", StringComparison.OrdinalIgnoreCase) >= 0));
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct UnicodeString { internal ushort Length, MaximumLength; internal IntPtr Buffer; }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryFullProcessImageName(IntPtr process, uint flags, StringBuilder image, ref int length);
+        [DllImport("ntdll.dll")]
+        private static extern int NtQueryInformationProcess(IntPtr process, int kind, IntPtr buffer, int length, out int needed);
+
+        private static string ImagePath(int pid)
+        {
+            IntPtr process = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+            if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            try
+            {
+                var image = new StringBuilder(32768); int length = image.Capacity;
+                if (!QueryFullProcessImageName(process, 0, image, ref length)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                return image.ToString();
+            }
+            finally { CloseHandle(process); }
+        }
+
+        private static string CommandLine(int pid)
+        {
+            IntPtr process = OpenProcess(0x1000, false, pid);
+            if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            IntPtr buffer = IntPtr.Zero;
+            try
+            {
+                int needed;
+                NtQueryInformationProcess(process, 60, IntPtr.Zero, 0, out needed); // ProcessCommandLineInformation
+                int header = Marshal.SizeOf(typeof(UnicodeString));
+                if (needed < header || needed > 131072) throw new InvalidOperationException("Process command line size unavailable.");
+                int capacity = needed;
+                buffer = Marshal.AllocHGlobal(capacity);
+                int status = NtQueryInformationProcess(process, 60, buffer, capacity, out needed);
+                if (status < 0) throw new InvalidOperationException("Process command line query failed: 0x" + status.ToString("X8"));
+                if (needed < header || needed > capacity) throw new InvalidOperationException("Process command line response size is invalid.");
+                var value = (UnicodeString)Marshal.PtrToStructure(buffer, typeof(UnicodeString));
+                if (value.Length == 0) return "";
+                long begin = buffer.ToInt64() + header, end = buffer.ToInt64() + needed;
+                if ((value.Length & 1) != 0 || value.Length > value.MaximumLength || value.Buffer.ToInt64() < begin || value.Buffer.ToInt64() > end - value.Length)
+                    throw new InvalidOperationException("Process command line buffer is invalid.");
+                return Marshal.PtrToStringUni(value.Buffer, value.Length / 2);
+            }
+            finally { if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer); CloseHandle(process); }
+        }
+
         public List<FrameScopeWatcherShutdown.Identity> Capture(string root)
         {
             var result = new List<FrameScopeWatcherShutdown.Identity>();
             int ownPid = Process.GetCurrentProcess().Id;
-            using (var query = new ManagementObjectSearcher("root\\CIMV2", "SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process",
-                new EnumerationOptions { Timeout = TimeSpan.FromSeconds(15) }))
-            foreach (ManagementObject item in query.Get())
+            foreach (Process process in Process.GetProcesses())
             {
-                int pid = Convert.ToInt32(item["ProcessId"]);
-                if (pid == ownPid) continue;
-                string name = Convert.ToString(item["Name"]) ?? "";
-                string path = Convert.ToString(item["ExecutablePath"]) ?? "";
-                string command = Convert.ToString(item["CommandLine"]) ?? "";
-                if (ProductName(name) && string.IsNullOrWhiteSpace(path))
-                    throw new InvalidOperationException("Cannot establish executable identity for product PID " + pid + "; refusing stop.");
-                if (!Selected(root, name, path, command)) continue;
-                var identity = Inspect(pid);
-                if (identity == null) continue;
-                if (!FrameScopeWatcherShutdown.SamePath(identity.ExecutablePath, path)) throw new InvalidOperationException("Process image changed during capture.");
-                identity.CommandLine = command;
-                result.Add(identity);
+                using (process)
+                {
+                    int pid = process.Id;
+                    if (pid == ownPid) continue;
+                    string name;
+                    try { name = process.ProcessName + ".exe"; } catch (InvalidOperationException) { continue; }
+                    bool script = name.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) || name.Equals("pwsh.exe", StringComparison.OrdinalIgnoreCase) ||
+                        name.Equals("python.exe", StringComparison.OrdinalIgnoreCase) || name.Equals("pythonw.exe", StringComparison.OrdinalIgnoreCase) || name.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase);
+                    if (!ProductName(name) && !script) continue;
+                    string path;
+                    try { path = ImagePath(pid); }
+                    catch { if (!ProductName(name)) continue; try { if (process.HasExited) continue; } catch { } throw; }
+                    if (!script && !Within(path, root)) continue;
+                    string command = "";
+                    if (script || name.Equals("FrameScopeMonitor.exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { command = CommandLine(pid); }
+                        catch { if (!Within(path, root)) continue; try { if (process.HasExited) continue; } catch { } throw; }
+                    }
+                    if (!Selected(root, name, path, command)) continue;
+                    var identity = Inspect(pid);
+                    if (identity == null) continue;
+                    if (!FrameScopeWatcherShutdown.SamePath(identity.ExecutablePath, path)) throw new InvalidOperationException("Process image changed during capture.");
+                    identity.CommandLine = command;
+                    result.Add(identity);
+                }
             }
             return result;
         }

@@ -15,6 +15,7 @@ internal static class FrameScopeInstallationShutdownTests
     private static int assertions;
     public static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--fixture-capture") { Console.WriteLine("READY"); Thread.Sleep(3000); return 0; }
         if (args.Length > 0 && args[0] == "--fixture-pipe") return PipeChild(args);
         try
         {
@@ -24,11 +25,32 @@ internal static class FrameScopeInstallationShutdownTests
             fixture = Path.Combine(Path.GetTempPath(), "framescope-shutdown-tests-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(fixture);
             Console.WriteLine("fixture=" + fixture);
-            Selection(); Watchers(); Hosts(); Services(); Legacy(); Pipes(); Reparse();
+            NativeCapture(); Selection(); Watchers(); Hosts(); Services(); Legacy(); Pipes(); Reparse();
             Console.WriteLine("PASS assertions=" + assertions);
             return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+    }
+    private static void NativeCapture()
+    {
+        string root = Path.Combine(fixture, "native 中文 空格");
+        Directory.CreateDirectory(root);
+        string image = Path.Combine(root, "FrameScopeMonitor.exe");
+        File.Copy(Assembly.GetExecutingAssembly().Location, image);
+        using (var child = Process.Start(new ProcessStartInfo(image, "--fixture-capture \"中文 空格 & %\"")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true }))
+        {
+            try
+            {
+                Check(child.StandardOutput.ReadLine() == "READY", "native capture fixture ready");
+                var processes = new FrameScopeInstallationShutdown.WindowsEnvironment().Capture(root);
+                var captured = processes.Find(p => p.Pid == child.Id);
+                Check(captured != null && FrameScopeWatcherShutdown.SamePath(captured.ExecutablePath, image), "native process image is scoped to fixture");
+                Check(captured.CommandLine.Contains("中文 空格 & %"), "native capture preserves Unicode command line without WMI");
+                Check(!child.HasExited, "capture does not stop the fixture producer");
+            }
+            finally { Check(child.WaitForExit(5000), "capture fixture exits by itself"); }
+        }
     }
 
     private static void Check(bool condition, string message)
