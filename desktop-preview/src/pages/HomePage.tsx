@@ -11,7 +11,7 @@ import { monitorBusy } from "@/preview/runtime/state";
 import { useAppStartup } from "@/contexts/app-startup-context";
 import { useFloatingButtonStyle } from "@/hooks/use-floating-button-style";
 import type { HardwareInfo } from "@/lib/hardware";
-import { formatDiskType } from "@/lib/hardware";
+import { formatDiskType, formatMemorySpeed } from "@/lib/hardware";
 
 interface InfoRow {
   name: string;
@@ -79,7 +79,7 @@ function buildHardwareSections(hardware: HardwareInfo): Array<{
       icon: MemoryStick, iconColor: "#06b6d4", title: "内存",
       rows: [
         { name: "总容量", value: `${memoryTotal.toFixed(0)} GB` },
-        { name: "频率", value: hardware.memory.length > 0 ? `${hardware.memory[0].speed_mhz} MHz` : "--" },
+        { name: "频率", value: hardware.memory.length > 0 ? formatMemorySpeed(hardware.memory[0]) : "--" },
         { name: "条数", value: `${hardware.memory.length}` },
         ...(hardware.memory[0]?.memory_type ? [{ name: "类型", value: hardware.memory[0].memory_type }] : []),
         ...(hardware.memory[0]?.manufacturer ? [{ name: "厂商", value: hardware.memory[0].manufacturer }] : []),

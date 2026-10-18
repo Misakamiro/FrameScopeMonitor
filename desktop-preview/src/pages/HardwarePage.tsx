@@ -20,7 +20,7 @@ import { useAppStartup } from "@/contexts/app-startup-context";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import HardwareDetailModal, { type SpecItem } from "@/components/HardwareDetailModal";
 import type { CpuInfo, GpuInfo, MemoryInfo, MotherboardInfo, DiskDetailInfo, SoundCardInfo, NetworkCardInfo, MonitorInfo } from "@/lib/hardware";
-import { formatDiskType } from "@/lib/hardware";
+import { formatDiskType, formatMemorySpeed } from "@/lib/hardware";
 import {
   Cpu,
   Monitor,
@@ -416,7 +416,7 @@ export default function HardwarePage() {
   const totalCapacity = hardwareInfo ? hardwareInfo.memory.reduce((sum, mem) => sum + mem.capacity_gb, 0) : 0;
   const memoryDisplayInfo: DisplayInfo[] = hardwareInfo ? [
     { name: t("hardware.totalCapacity"), value: `${totalCapacity.toFixed(0)} GB` },
-    { name: t("hardware.speed"), value: hardwareInfo.memory.length > 0 ? `${hardwareInfo.memory[0].speed_mhz} MHz` : "--" },
+    { name: t("hardware.speed"), value: hardwareInfo.memory.length > 0 ? formatMemorySpeed(hardwareInfo.memory[0]) : "--" },
     { name: t("hardware.count"), value: `${hardwareInfo.memory.length}` },
   ] : [];
 
@@ -506,7 +506,7 @@ export default function HardwarePage() {
         { label: `${prefix}${t("hardware.partNumber")}`, value: mem.part_number },
         { label: `${prefix}${t("hardware.manufacturer")}`, value: mem.manufacturer },
         { label: `${prefix}${t("hardware.capacity")}`, value: `${mem.capacity_gb.toFixed(0)} GB` },
-        { label: `${prefix}${t("hardware.speed")}`, value: `${mem.speed_mhz} MHz` },
+        { label: `${prefix}${t("hardware.speed")}`, value: formatMemorySpeed(mem) },
         { label: `${prefix}${t("hardware.memoryType") || "类型"}`, value: mem.memory_type || "--" },
         { label: `${prefix}${t("hardware.formFactor") || "外形"}`, value: mem.form_factor || "--" },
         { label: `${prefix}${t("hardware.serialNumber") || "序列号"}`, value: mem.serial_number || "--" },

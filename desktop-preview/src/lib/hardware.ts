@@ -71,6 +71,15 @@ export interface MemoryInfo {
   type_detail: string;
 }
 
+export function formatMemorySpeed(memory: Pick<MemoryInfo, "configured_clock_speed" | "speed_mhz">): string {
+  // SMBIOS configured speed reflects the current BIOS setting; module Speed
+  // can describe a different profile. These are data rates, not live clocks.
+  const configured = memory.configured_clock_speed;
+  const speed = configured != null && Number.isFinite(configured) && configured > 0
+    ? configured : memory.speed_mhz;
+  return Number.isFinite(speed) && speed > 0 ? `${speed} MT/s` : "--";
+}
+
 export interface SoundCardInfo {
   name: string;
   manufacturer: string;
