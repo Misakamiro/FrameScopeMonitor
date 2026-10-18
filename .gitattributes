@@ -1,0 +1,3 @@
+# Tauri writes Cargo manifests as LF; keep fresh Windows clones byte-stable.
+desktop-preview/src-tauri/Cargo.toml text eol=lf
+desktop-preview/installer/src-tauri/Cargo.toml text eol=lf
