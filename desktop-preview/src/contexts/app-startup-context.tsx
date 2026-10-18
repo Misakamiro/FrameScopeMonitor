@@ -61,10 +61,15 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
     let scenario = getPreviewState().scenario;
     const mainWindow = isMainWindow();
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // Hardware discovery can remain pending independently of live sensors.
+    // It must never prevent access to the application and its settings.
+    const startupTimer = setTimeout(() => { if (active) setReady(true); }, 2000);
     const refresh = () => {
-      void invoke<HardwareInfo>("get_hardware").then(data => { if (active) { setHardwareInfo(data); setReady(true); } })
+      void invoke<HardwareInfo>("get_hardware").then(data => { if (active) { clearTimeout(startupTimer); setHardwareInfo(data); setReady(true); } })
         .catch(error => {
           if (!active) return;
+          clearTimeout(startupTimer);
+          setReady(true);
           setHardwareInfo(null);
           // Retry instead of pinning the page on "loading" forever - the
           // backend may simply not be up yet.
@@ -72,7 +77,6 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
           // Inventory is built in the background; a pending query or a short
           // collision with the sensor poller must not add eight seconds.
           const pending = /Hardware inventory is still loading|hardware maintenance is active or requests have not drained/.test(String(error));
-          if (!pending) setReady(true);
           retryTimer = setTimeout(() => { if (active) refresh(); }, pending ? 500 : 8000);
         });
     };
@@ -89,7 +93,7 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
       setHotkey(state.hotkey);
       if (scenario !== state.scenario) { scenario = state.scenario; if (mainWindow) refresh(); }
     });
-    return () => { active = false; if (retryTimer) clearTimeout(retryTimer); unsubscribe(); };
+    return () => { active = false; clearTimeout(startupTimer); if (retryTimer) clearTimeout(retryTimer); unsubscribe(); };
   }, []);
   useEffect(() => {
     if (!isMainWindow()) return;

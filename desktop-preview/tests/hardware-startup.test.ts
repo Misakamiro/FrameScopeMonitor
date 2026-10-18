@@ -63,3 +63,20 @@ test("unmount cancels a scheduled inventory retry", async () => {
   expect(fixture.invoke).toHaveBeenCalledTimes(1);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+test("pending inventory does not hold the application on its splash screen", async () => {
+  fixture.invoke.mockRejectedValue("Hardware inventory is still loading; sensor sampling remains available.");
+  mount(); await vi.advanceTimersByTimeAsync(0);
+  expect(fixture.setters[2]).toHaveBeenCalledWith(true);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(fixture.invoke).toHaveBeenCalledTimes(2);
+});
+
+test("an inventory request that never settles cannot block the application shell", async () => {
+  fixture.invoke.mockImplementation(() => new Promise(() => {}));
+  mount(); await vi.advanceTimersByTimeAsync(2000);
+  expect(fixture.setters[2]).toHaveBeenCalledWith(true);
+  expect(fixture.invoke).toHaveBeenCalledTimes(1);
+  cleanup?.(); cleanup = undefined;
+  expect(vi.getTimerCount()).toBe(0);
+});
