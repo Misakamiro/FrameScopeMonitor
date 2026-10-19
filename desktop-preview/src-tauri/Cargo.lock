@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "framescope-ui-preview"
-version = "2.0.0"
+version = "2.0.1-beta.1"
 dependencies = [
  "chrono",
  "framescope-update",
