@@ -12,3 +12,12 @@ foreach($names in @(,($normal+@($full[0])), ,($normal+@('unknown.exe')), ,($norm
     if(-not $rejected){throw 'Incomplete or unexpected full release files accepted'}
 }
 Write-Output 'Full installer release asset policy: PASS'
+$scratch=Join-Path ([IO.Path]::GetTempPath()) ('framescope-release-verify-'+[guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $scratch | Out-Null
+[IO.File]::WriteAllText((Join-Path $scratch 'verified-copy.txt'),'fixture')
+Remove-VerifiedReleaseDownload $scratch
+if(Test-Path -LiteralPath $scratch){throw 'Successful verification copy was not cleaned'}
+$rejected=$false
+try{Remove-VerifiedReleaseDownload $RepoRoot}catch{$rejected=$true}
+if(-not $rejected){throw 'Non-temporary source directory accepted for cleanup'}
+Write-Output 'Verified release cache cleanup bounds: PASS'

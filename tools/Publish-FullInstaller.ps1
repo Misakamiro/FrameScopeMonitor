@@ -40,4 +40,5 @@ if($release.body -notlike ('*'+$full.installer.name+'*')){
     [IO.File]::WriteAllText($notes,$text,[Text.UTF8Encoding]::new($false))
     Invoke-ReleaseCommand gh @('release','edit',$tag,'--repo',$script:FrameScopeRepository,'--notes-file',$notes) | Out-Null
 }
+Remove-VerifiedReleaseDownload $download
 Write-Output "Published authenticated full installer: $url"

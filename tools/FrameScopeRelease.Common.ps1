@@ -71,7 +71,21 @@ function Test-RemoteRelease([string]$Directory,[string]$PublicKey,[string]$Signe
     if($actual.git_sha -cne $expected.git_sha -or $actual.version -cne $expected.version){throw 'Remote signed release differs from local candidate'}
     if($names.Count -eq 6){Test-FullReleaseFiles $download $actual $PublicKey $Signer | Out-Null}
     foreach($name in $names){if((Get-FileHash -LiteralPath (Join-Path $download $name)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $Directory $name)).Hash){throw "Remote file differs: $name"}}
+    Remove-VerifiedReleaseDownload $download
     return $release
+}
+
+function Remove-VerifiedReleaseDownload([string]$Directory) {
+    # Only successful, flat verification copies are disposable; failure evidence remains.
+    $temp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $path=(Resolve-Path -LiteralPath $Directory).Path.TrimEnd('\')
+    if([IO.Path]::GetDirectoryName($path) -ine $temp -or
+       [IO.Path]::GetFileName($path) -notmatch '^framescope-(release-verify|full-publish)-[a-f0-9]{32}$'){throw 'Unexpected verification cache path'}
+    $items=@(Get-ChildItem -LiteralPath $path -Force)
+    if((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint -or
+       @($items | Where-Object {$_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)}).Count){throw 'Unexpected verification cache contents'}
+    try{foreach($file in $items){Remove-Item -LiteralPath $file.FullName -Force};Remove-Item -LiteralPath $path -Force}
+    catch{Write-Warning "Verified release cache cleanup pending: $path ($($_.Exception.Message))"}
 }
 
 function Get-ReleaseAssetNames([string]$Version,[string[]]$Actual) {
