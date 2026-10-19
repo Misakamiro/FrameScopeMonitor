@@ -1,6 +1,6 @@
 {
   "name": "framescope-ui-preview",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "license": "GPL-3.0",

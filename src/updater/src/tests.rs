@@ -23,6 +23,9 @@ fn channel_selection_obeys_semver_and_never_silently_downgrades() {
     assert!(!eligible("2.0.0-beta.1", "2.0.0", false, false, None));
     assert!(eligible("2.0.0-beta.10", "2.0.0-beta.2", true, false, None));
     assert!(eligible("2.0.0", "2.0.0-beta.10", true, false, None));
+    assert!(eligible("2.0.0", "2.0.0-beta.2", true, false, None));
+    assert!(eligible("2.0.0", "2.0.0-beta.2", false, false, None));
+    assert!(!eligible("2.0.0-beta.2", "2.0.0", true, false, None));
     assert!(!eligible("2.0.0", "2.1.0-beta.1", false, false, None));
     assert!(eligible("2.0.0", "2.1.0-beta.1", false, true, None));
     assert!(!eligible("1.2.0", "2.0.0-beta.1", true, true, None));

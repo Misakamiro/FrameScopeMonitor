@@ -1,6 +1,6 @@
 [package]
 name = "framescope-installer"
-version = "2.0.0-beta.2"
+version = "2.0.0"
 description = "FrameScope Installer"
 edition = "2021"
 

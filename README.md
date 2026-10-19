@@ -22,15 +22,17 @@ FrameScope Monitor 是面向 Windows 游戏的本地性能监测与诊断工具�
 
 ## 安装
 
-构建后会在 `dist/` 生成两种安装包：
+当前正式版为 **2.0.0**，适用于 Windows x64：
 
-- `FrameScopeMonitor-Setup.exe`：标准安装包，适用于已安装 WebView2 Runtime 的系统。
-- `FrameScopeMonitor-Full-Setup.exe`：包含 WebView2 Runtime 离线安装程序。
+- [下载 FrameScope 2.0.0 安装包](https://github.com/Misakamiro/FrameScopeMonitor/releases/download/v2.0.0/FrameScope_2.0.0_x64-setup.exe)
+- [发行说明与历史版本](https://github.com/Misakamiro/FrameScopeMonitor/releases)
+
+2.0 用户可在软件“关于／更新”中检查、下载并安装后续版本。测试版用户也可以直接升级到正式版；“包含测试版”控制是否接收测试发行。1.x 用户需要先手动安装一次 2.0。启动软件时需要确认正常的 Windows UAC 提权提示。
 
 默认安装目录：
 
 ```text
-%LOCALAPPDATA%\FrameScopeMonitor
+%ProgramFiles%\FrameScope
 ```
 
 默认数据与报告目录：
