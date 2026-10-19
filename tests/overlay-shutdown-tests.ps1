@@ -21,7 +21,8 @@ static FAIL_SAVE: AtomicBool = AtomicBool::new(false);
 static SAVED: Mutex<Option<Settings>> = Mutex::new(None);
 static VERTICAL_ACTIVE: AtomicBool = AtomicBool::new(true);
 #[derive(Clone,Default,Debug,PartialEq)]
-struct Settings { position_x:Option<i32>,position_y:Option<i32>,vertical_position_x:Option<i32>,vertical_position_y:Option<i32> }
+struct Settings { position_x:Option<i32>,position_y:Option<i32>,vertical_position_x:Option<i32>,vertical_position_y:Option<i32>,vertical_position_reference:Option<overlay_position::PositionReference> }
+mod overlay_position { #[derive(Clone,Default,Debug,PartialEq)] pub struct PositionReference; }
 mod tauri {
     #[derive(Clone,Copy)] pub enum Kind { Missing,Alive,Closed }
     pub struct AppHandle { pub kind:Kind }
@@ -51,7 +52,7 @@ fn reset(){
     CALLS.clear_poison();SAVED.clear_poison();overlay_panel::CURRENT_SETTINGS.clear_poison();
     CALLS.lock().unwrap().clear();FAIL_SAVE.store(false,Ordering::SeqCst);VERTICAL_ACTIVE.store(true,Ordering::SeqCst);
     *SAVED.lock().unwrap()=None;
-    *overlay_panel::CURRENT_SETTINGS.lock().unwrap()=Some(Settings{position_x:Some(-1500),position_y:Some(270),vertical_position_x:Some(620),vertical_position_y:Some(-130)});
+    *overlay_panel::CURRENT_SETTINGS.lock().unwrap()=Some(Settings{position_x:Some(-1500),position_y:Some(270),vertical_position_x:Some(620),vertical_position_y:Some(-130),vertical_position_reference:None});
 }
 #[test] fn closed_webview_cannot_cancel_position_persistence(){
     let _guard=SERIAL.lock().unwrap_or_else(|p|p.into_inner());reset();
@@ -87,10 +88,10 @@ fn reset(){
 #[cfg(has_native_move_cache)]
 #[test] fn latest_native_move_survives_a_stale_frontend_and_closed_webview(){
     let _guard=SERIAL.lock().unwrap_or_else(|p|p.into_inner());reset();
-    record_vertical_position(tauri::PhysicalPosition{x:20,y:40});
-    record_vertical_position(tauri::PhysicalPosition{x:-1820,y:105});
+    record_vertical_position(tauri::PhysicalPosition{x:20,y:40},Default::default());
+    record_vertical_position(tauri::PhysicalPosition{x:-1820,y:105},Default::default());
     save_overlay_position(&tauri::AppHandle{kind:tauri::Kind::Closed}).unwrap();
-    assert_eq!(*SAVED.lock().unwrap(),Some(Settings{position_x:Some(-1500),position_y:Some(270),vertical_position_x:Some(-1820),vertical_position_y:Some(105)}));
+    assert_eq!(*SAVED.lock().unwrap(),Some(Settings{position_x:Some(-1500),position_y:Some(270),vertical_position_x:Some(-1820),vertical_position_y:Some(105),vertical_position_reference:Some(Default::default())}));
 }
 '@
 try{

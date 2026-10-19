@@ -8,6 +8,11 @@ mod runtime_uiaccess;
 mod updater;
 mod delta_password;
 mod overlay_panel;
+mod overlay_position;
+#[cfg(windows)]
+mod overlay_display;
+#[cfg(windows)]
+mod vertical_overlay_position;
 mod pawnio;
 #[cfg(windows)]
 mod window_icons;
@@ -124,13 +129,15 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     let settings = overlay_panel::get_or_init_settings();
+    #[cfg(windows)]
+    vertical_overlay_position::prepare();
     let mut builder = WebviewWindowBuilder::new(app, "vertical-overlay", WebviewUrl::App("vertical-overlay".into()))
         .title("FrameScope UI Preview - Overlay").inner_size(240.0, 420.0)
         .decorations(false).transparent(true).always_on_top(true).skip_taskbar(true).resizable(false)
         // Windows: undecorated windows default to a DWM shadow, and that shadow
         // forces an opaque compositor backdrop - the transparency slider never
         // reaches the screen without shadow(false) (NexBox upstream does the same).
-        .shadow(false).focused(false)
+        .shadow(false).focused(false).visible(false)
         ;
     // Windows sharing one WebView2 profile must use identical environment arguments.
     if let Some(args) = app.config().app.windows.iter().find(|w| w.label == "main")
@@ -138,21 +145,34 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     {
         builder = builder.additional_browser_args(args);
     }
-    if let (Some(x), Some(y)) = (settings.vertical_position_x, settings.vertical_position_y) {
-        builder = builder.position(x as f64, y as f64);
-    }
     let built = builder.build();
     log::info!("UIAccess acceptance: original vertical build {:?}", built.as_ref().map(|window| window.label()));
     let window = built.map_err(|e| e.to_string())?;
     let mut ready = false;
     for _ in 0..200 {
-        if window.hwnd().is_ok() && window.is_visible().unwrap_or(false) { ready = true; break; }
+        if window.hwnd().is_ok() { ready = true; break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     if !ready {
         let _ = window.destroy();
         return Err("竖排悬浮窗初始化失败，请检查 WebView2 日志".into());
     }
+    #[cfg(windows)]
+    if let Err(error)=vertical_overlay_position::install(&window) {
+        let _=window.destroy();
+        return Err(error);
+    }
+    if let (Some(x),Some(y))=(settings.vertical_position_x,settings.vertical_position_y) {
+        window.set_position(tauri::PhysicalPosition::new(x,y)).map_err(|e|e.to_string())?;
+    }
+    #[cfg(windows)]
+    {
+        let owned=window.clone();
+        window.run_on_main_thread(move || {
+            if let Ok(hwnd)=owned.hwnd() { unsafe { vertical_overlay_position::reconcile(hwnd.0 as _); } }
+        }).map_err(|e|e.to_string())?;
+    }
+    window.show().map_err(|e|e.to_string())?;
     overlay_set_hit_test_transparent(&window, true);
     #[cfg(windows)]
     apply_vertical_backdrop_kill(&window);
@@ -264,14 +284,17 @@ fn settings_with_native_positions(mut settings: overlay_panel::OverlaySettings,
     settings.vertical_position_y = current.vertical_position_y;
     settings.position_x = current.position_x;
     settings.position_y = current.position_y;
+    settings.position_reference = current.position_reference.clone();
+    settings.vertical_position_reference = current.vertical_position_reference.clone();
     settings
 }
 
-fn record_vertical_position(position: tauri::PhysicalPosition<i32>) {
+fn record_vertical_position(position: tauri::PhysicalPosition<i32>, reference: overlay_position::PositionReference) {
     let mut settings = overlay_panel::CURRENT_SETTINGS.lock().unwrap_or_else(|p|p.into_inner());
     let settings = settings.get_or_insert_with(Default::default);
     settings.vertical_position_x = Some(position.x);
     settings.vertical_position_y = Some(position.y);
+    settings.vertical_position_reference = Some(reference);
 }
 
 fn save_overlay_position(app: &tauri::AppHandle) -> Result<(), String> {
@@ -705,6 +728,8 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             let height = args["height"].as_f64().ok_or("height must be a number")?.clamp(40.0, 1600.0);
             if let Some(window) = app.get_webview_window("vertical-overlay") {
                 window.set_size(tauri::LogicalSize::new(overlay_panel::get_or_init_settings().item_width as f64, height)).map_err(|e| e.to_string())?;
+                #[cfg(windows)]
+                window.run_on_main_thread(vertical_overlay_position::layout_ready).map_err(|e|e.to_string())?;
             }
         }
         "save_vertical_overlay_position" | "reset_vertical_overlay_position" | "reset_overlay_position" => {
@@ -721,8 +746,10 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             let y = if reset { 80 } else { args["y"].as_i64().ok_or("y required")?.clamp(-32000, 32000) as i32 };
             if command == "reset_overlay_position" {
                 settings.position_x = Some(x); settings.position_y = Some(y);
+                settings.position_reference = None;
             } else {
                 settings.vertical_position_x = Some(x); settings.vertical_position_y = Some(y);
+                settings.vertical_position_reference = None;
                 if reset {
                     if let Some(window) = app.get_webview_window("vertical-overlay") {
                         window.set_position(tauri::PhysicalPosition::new(x, y)).map_err(|e| e.to_string())?;
@@ -1046,31 +1073,28 @@ pub fn run() {
                 if let Some(window) = topmost_handle.get_webview_window("vertical-overlay") {
                     if window.is_visible().unwrap_or(false) {
                         #[cfg(windows)]
-                        if let Ok(hwnd) = window.hwnd() {
-                            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-                            };
-                            unsafe {
-                                SetWindowPos(
-                                    hwnd.0 as _,
-                                    HWND_TOPMOST,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                                );
-                            }
+                        {
+                            let owned=window.clone();
+                            let _=window.run_on_main_thread(move || {
+                                if let Ok(hwnd)=owned.hwnd() {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                                    unsafe {
+                                        vertical_overlay_position::reconcile(hwnd.0 as _);
+                                        SetWindowPos(hwnd.0 as _,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+                                    }
+                                }
+                            });
                         }
                     }
                 }
+                #[cfg(windows)]
+                vertical_overlay_position::persist_pending(&topmost_handle);
             });
             Ok(())
         })
         .on_window_event(|window, event| {
             if window.label() == "vertical-overlay" {
                 match event {
-                    tauri::WindowEvent::Moved(position) => record_vertical_position(*position),
                     tauri::WindowEvent::Destroyed => VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst),
                     _ => {}
                 }

@@ -11,10 +11,13 @@ fn dragged_positions_survive_stale_settings_save_and_restart() {
         let mut dragged = crate::overlay_panel::OverlaySettings::default();
         dragged.position_x = Some(-1500); dragged.position_y = Some(270);
         dragged.vertical_position_x = Some(620); dragged.vertical_position_y = Some(-130);
+        dragged.position_reference=Some(crate::overlay_position::PositionReference{monitor:"display1".into(),left:-1920,top:0,width:1920,height:1080,window_width:400,window_height:100});
+        dragged.vertical_position_reference=Some(crate::overlay_position::PositionReference{monitor:"display2".into(),left:0,top:-1080,width:2560,height:1440,window_width:240,window_height:420});
         crate::write_native_settings(&path, "Shift+F10", serde_json::to_value(&dragged).unwrap()).unwrap();
         let mut stale = dragged.clone();
         stale.position_x = Some(40); stale.position_y = Some(80);
         stale.vertical_position_x = Some(40); stale.vertical_position_y = Some(80);
+        stale.position_reference=None; stale.vertical_position_reference=None;
         stale.style = style.to_string(); stale.opacity = 99;
         let saved = crate::settings_with_native_positions(stale, &dragged);
         crate::write_native_settings(&path, "Shift+F10", serde_json::to_value(saved).unwrap()).unwrap();
@@ -22,6 +25,8 @@ fn dragged_positions_survive_stale_settings_save_and_restart() {
         let restored: crate::overlay_panel::OverlaySettings = serde_json::from_value(file["overlay-settings"].clone()).unwrap();
         assert_eq!((restored.position_x, restored.position_y), (Some(-1500), Some(270)), "{style}");
         assert_eq!((restored.vertical_position_x, restored.vertical_position_y), (Some(620), Some(-130)), "{style}");
+        assert_eq!(restored.position_reference,dragged.position_reference);
+        assert_eq!(restored.vertical_position_reference,dragged.vertical_position_reference);
         assert_eq!(restored.opacity, 99);
         assert_eq!(restored.style, style);
         assert_eq!(file["overlay-hotkey"], "Shift+F10");
@@ -348,4 +353,16 @@ fn host_source_does_not_link_production_services() {
     let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
     assert_eq!(config["identifier"], "com.framescope.ui-preview");
     assert_eq!(config["app"]["windows"][0]["width"], 1230);
+}
+
+#[test]
+fn legacy_overlay_settings_without_references_still_load() {
+    let mut value=serde_json::to_value(crate::overlay_panel::OverlaySettings::default()).unwrap();
+    value.as_object_mut().unwrap().remove("position_reference");
+    value.as_object_mut().unwrap().remove("vertical_position_reference");
+    value["position_x"]=json!(2100); value["position_y"]=json!(120);
+    let settings:crate::overlay_panel::OverlaySettings=serde_json::from_value(value).unwrap();
+    assert!(settings.position_reference.is_none());
+    assert!(settings.vertical_position_reference.is_none());
+    assert_eq!(settings.position_x,Some(2100));
 }

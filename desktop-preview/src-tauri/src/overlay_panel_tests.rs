@@ -275,3 +275,45 @@ fn osd_layout_drag_messages_gate_repaint_without_creating_a_window() {
         assert!(!IN_SIZE_MOVE.load(super::super::Ordering::SeqCst));
     }
 }
+
+#[test]
+fn manual_reference_survives_rendering_resolution_and_style_changes() {
+    for style in ["default","dynamic_island"] {
+        let mut settings=crate::overlay_panel::OverlaySettings::default();
+        settings.style=style.into(); settings.position_x=Some(2100); settings.position_y=Some(120);
+        settings.position_reference=Some(crate::overlay_position::PositionReference{monitor:"test".into(),left:0,top:0,width:2560,height:1440,window_width:400,window_height:120});
+        let expected=[(2100,120),(1478,87),(856,76),(2100,120)];
+        for ((w,h),(x,y)) in [(2560,1440),(1920,1080),(1280,960),(2560,1440)].into_iter().zip(expected) {
+            let point=fitted_position(&settings,area(w,h),400,120);
+            assert_eq!((point.x,point.y),(x,y),"{style}");
+            remember_position_reference(&settings,area(w,h),400,120);
+            assert_eq!((settings.position_x,settings.position_y),(Some(2100),Some(120)));
+        }
+    }
+}
+
+#[test]
+fn legacy_render_adopts_a_reference_without_overwriting_saved_coordinates() {
+    let _guard=crate::overlay_panel::POSITION_TEST_LOCK.lock().unwrap();
+    let before=crate::overlay_panel::CURRENT_SETTINGS.lock().unwrap().clone();
+    let display=crate::overlay_display::resolve((0,0),None);
+    let mut settings=crate::overlay_panel::OverlaySettings::default();
+    settings.position_x=Some(display.area.left+100); settings.position_y=Some(display.area.top+100);
+    *crate::overlay_panel::CURRENT_SETTINGS.lock().unwrap()=Some(settings.clone());
+    remember_position_reference(&settings,display.area,200,100);
+    let saved=crate::overlay_panel::get_or_init_settings();
+    assert!(saved.position_reference.is_some());
+    assert_eq!(saved.position_x,settings.position_x);
+    assert_eq!(saved.position_y,settings.position_y);
+    let tiny=RECT{left:display.area.left,top:display.area.top,right:display.area.left+220,bottom:display.area.top+120};
+    let fitted=fitted_position(&saved,tiny,200,100);
+    remember_position_reference(&saved,tiny,200,100);
+    assert_eq!(crate::overlay_panel::get_or_init_settings().position_reference,saved.position_reference);
+    assert_eq!(crate::overlay_panel::get_or_init_settings().position_x,settings.position_x);
+    assert!(fitted.x<=tiny.right-200);
+    *crate::overlay_panel::CURRENT_SETTINGS.lock().unwrap()=Some(settings.clone());
+    remember_position_reference(&settings,tiny,200,100);
+    assert!(crate::overlay_panel::get_or_init_settings().position_reference.is_none());
+    assert_eq!(crate::overlay_panel::get_or_init_settings().position_x,settings.position_x);
+    *crate::overlay_panel::CURRENT_SETTINGS.lock().unwrap()=before;
+}
