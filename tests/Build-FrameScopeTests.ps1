@@ -55,6 +55,10 @@ Invoke-TestBuild `
     -Sources @('tests\FrameScopeJsonFileTests.cs')
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeFullInstallerTests.exe' `
+    -Sources @('packaging\FrameScopeFullInstaller.Core.cs', 'tests\FrameScopeFullInstallerTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeHardwareProviderTruthTests.exe' `
     -References @('System.Web.Extensions.dll', 'System.Management.dll') `
     -MainType 'FrameScopeHardwareProviderTruthTests' `
