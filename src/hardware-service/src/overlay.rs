@@ -117,6 +117,27 @@ fn dynamic_value(snapshot: &Value, key: &str) -> Option<f64> {
         .and_then(Value::as_f64)
 }
 
+fn disk_temperature(rows: &[SensorRow<'_>]) -> Option<f64> {
+    // Select the drive's primary/composite reading before comparing drives.
+    // Numbered, controller, NAND, hot-spot and threshold channels are distinct
+    // measurements and must not replace the temperature advertised by SMART.
+    let mut drives: HashMap<&str, (u8, f64)> = HashMap::new();
+    for row in rows.iter().filter(|r| contains(r.hardware_type, "storage") && r.sensor_type.eq_ignore_ascii_case("Temperature")) {
+        let priority = match row.name.trim().to_ascii_lowercase().as_str() {
+            "composite temperature" | "temperature (composite)" | "drive temperature (composite)" | "composite" => 0,
+            "temperature" | "drive temperature" => 1,
+            "hdd temperature" | "ssd temperature" => 2,
+            _ => continue,
+        };
+        if !row.value.is_finite() { continue; }
+        let key=if row.identifier.is_empty() { row.hardware } else { row.identifier };
+        drives.entry(key).and_modify(|current| {
+            if priority < current.0 || (priority == current.0 && row.value > current.1) { *current=(priority,row.value); }
+        }).or_insert((priority,row.value));
+    }
+    drives.values().map(|(_,value)|*value).max_by(f64::total_cmp)
+}
+
 fn find_sensor<'a>(
     rows: &'a [SensorRow<'a>],
     sensor_type: &str,
@@ -262,17 +283,7 @@ pub fn build_overlay_data(
         (Some(used), Some(total)) if total > 0.0 => Some((used / total * 100.0).clamp(0.0, 100.0)),
         _ => None,
     };
-    // Unlike the fan/temperature hints above, storage has no misattribution
-    // risk - every storage "Temperature" sensor belongs to some drive - so
-    // strict name hints ("Drive"/"SSD") only served to miss most NVMe models.
-    // The overlay shows a single disk temp: report the hottest drive.
-    let ssd_temp = rows
-        .iter()
-        .filter(|row| {
-            contains(row.sensor_type, "Temperature") && contains(row.hardware_type, "storage")
-        })
-        .map(|row| row.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let ssd_temp = disk_temperature(&rows);
 
     // Actual core-rail voltage as measured by the board's SuperIO sensor.
     // LibreHardwareMonitor's per-core AMD "VID" sensors are scaled with the
@@ -523,6 +534,26 @@ mod tests {
         assert_eq!(data.active_gpu_index, 0);
         assert_eq!(data.gpu_temp, Some(71.0));
         assert_eq!(data.gpu_vram_used, Some(8.0));
+    }
+
+    #[test]
+    fn disk_temperature_uses_composite_instead_of_hotspot_or_secondary_sensors() {
+        let snapshot=serde_json::json!({"sensors":[
+            {"hardware":"NVMe A","identifier":"/nvme/0","hardwareType":"Storage","name":"Temperature","sensorType":"Temperature","value":43.0},
+            {"hardware":"NVMe A","identifier":"/nvme/0","hardwareType":"Storage","name":"Temperature 1","sensorType":"Temperature","value":89.0},
+            {"hardware":"NVMe A","identifier":"/nvme/0","hardwareType":"Storage","name":"Controller Hot Spot","sensorType":"Temperature","value":97.0},
+            {"hardware":"NVMe B","identifier":"/nvme/1","hardwareType":"Storage","name":"Composite Temperature","sensorType":"Temperature","value":48.0},
+            {"hardware":"NVMe B","identifier":"/nvme/1","hardwareType":"Storage","name":"Temperature 2","sensorType":"Temperature","value":92.0}
+        ]});
+        assert_eq!(build_overlay_data(&snapshot,(None,None,None),None,0).ssd_temp,Some(48.0));
+    }
+
+    #[test]
+    fn disk_secondary_or_threshold_temperature_is_not_a_primary_temperature() {
+        for name in ["Temperature 1","NAND Temperature","Controller Temperature","Hot Spot","Critical Temperature","Warning Composite Temperature"] {
+            let snapshot=serde_json::json!({"sensors":[{"hardware":"NVMe","hardwareType":"Storage","name":name,"sensorType":"Temperature","value":89.0}]});
+            assert_eq!(build_overlay_data(&snapshot,(None,None,None),None,0).ssd_temp,None,"{name}");
+        }
     }
 
     #[test]
