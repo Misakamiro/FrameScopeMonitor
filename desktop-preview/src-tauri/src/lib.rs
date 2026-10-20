@@ -172,10 +172,10 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
             if let Ok(hwnd)=owned.hwnd() { unsafe { vertical_overlay_position::reconcile(hwnd.0 as _); } }
         }).map_err(|e|e.to_string())?;
     }
-    window.show().map_err(|e|e.to_string())?;
     overlay_set_hit_test_transparent(&window, true);
     #[cfg(windows)]
     apply_vertical_backdrop_kill(&window);
+    window.show().map_err(|e|e.to_string())?;
     VERTICAL_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
@@ -222,13 +222,16 @@ fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: 
         unsafe {
             let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
             let next = if transparent {
-                // alpha 255 = no visual fade, pass-through only
-                SetLayeredWindowAttributes(hwnd.0 as _, 0, 255, LWA_ALPHA);
                 ex | WS_EX_LAYERED as i32 | WS_EX_TRANSPARENT as i32
             } else {
                 ex & !(WS_EX_LAYERED as i32) & !(WS_EX_TRANSPARENT as i32)
             };
             SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, next);
+            if transparent {
+                // WS_EX_LAYERED must exist before initializing its alpha.
+                // Keep text opacity unchanged; only the DOM plate is faded.
+                SetLayeredWindowAttributes(hwnd.0 as _, 0, 255, LWA_ALPHA);
+            }
         }
     }
 }

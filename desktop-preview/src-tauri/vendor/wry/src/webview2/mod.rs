@@ -7,7 +7,7 @@ mod util;
 
 use std::{
   borrow::Cow, cell::RefCell, collections::HashSet, fmt::Write, fs, path::PathBuf, rc::Rc,
-  sync::mpsc,
+  sync::{atomic::{AtomicUsize, Ordering}, mpsc},
 };
 
 use dpi::{PhysicalPosition, PhysicalSize};
@@ -39,6 +39,7 @@ type EventRegistrationToken = i64;
 const PARENT_SUBCLASS_ID: u32 = WM_USER + 0x64;
 const PARENT_DESTROY_MESSAGE: u32 = WM_USER + 0x65;
 const MAIN_THREAD_DISPATCHER_SUBCLASS_ID: u32 = WM_USER + 0x66;
+static NEXT_COMPOSITION_MOUSE_ID: AtomicUsize = AtomicUsize::new(1);
 static EXEC_MSG_ID: Lazy<u32> = Lazy::new(|| unsafe { RegisterWindowMessageA(s!("Wry::ExecMsg")) });
 
 impl From<webview2_com::Error> for Error {
@@ -67,10 +68,18 @@ pub(crate) struct InnerWebView {
   drag_drop_controller: Option<DragDropController>,
   // Keep the visual tree alive for HWND-free rendering in the UIAccess band.
   _composition: Option<(IDCompositionDevice, IDCompositionTarget, IDCompositionVisual)>,
+  // UIAccess top-level alpha belongs to the no-redirection host, not its
+  // ordinary child HWND (whose redirected backing can remain opaque).
+  composition_on_parent: bool,
+  composition_mouse_id: Option<usize>,
 }
 
 impl Drop for InnerWebView {
   fn drop(&mut self) {
+    if let Some(id) = self.composition_mouse_id {
+      let host = if self.composition_on_parent { *self.parent.borrow() } else { self.hwnd };
+      unsafe { Self::detach_composition_mouse(host, id); }
+    }
     let _ = unsafe { self.controller.Close() };
     if self.is_child {
       let _ = unsafe { DestroyWindow(self.hwnd) };
@@ -144,13 +153,20 @@ impl InnerWebView {
         let _ = get_band(parent.0, &mut band);
       }
     }
+    let composition_on_parent = band == 2 && attributes.transparent && !is_child;
+    let composition_hwnd = if composition_on_parent { parent } else { hwnd };
+    if composition_on_parent {
+      // Keep the container for Wry's dispatch/bounds bookkeeping, but do not
+      // composite its opaque redirection surface beneath the WebView visual.
+      unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
+    }
     let (controller, composition) = if band == 2 {
       let (tx, rx) = mpsc::channel();
       let handler = CreateCoreWebView2CompositionControllerCompletedHandler::create(Box::new(move |error, controller| {
         let result = error.and_then(|_| controller.ok_or_else(|| windows::core::Error::from(E_POINTER).into()));
         tx.send(result).map_err(|_| windows::core::Error::from(E_UNEXPECTED))
       }));
-      unsafe { env.cast::<ICoreWebView2Environment3>()?.CreateCoreWebView2CompositionController(hwnd, &handler)?; }
+      unsafe { env.cast::<ICoreWebView2Environment3>()?.CreateCoreWebView2CompositionController(composition_hwnd, &handler)?; }
       let composition_controller = webview2_com::wait_with_pump(rx)??;
       let controller = composition_controller.cast::<ICoreWebView2Controller>()?;
       let resources = unsafe {
@@ -158,34 +174,13 @@ impl InnerWebView {
           controller.cast::<ICoreWebView2Controller2>()?.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR { R:r, G:g, B:b, A:if a == 0 { 0 } else { 255 } })?;
         }
         let device: IDCompositionDevice = DCompositionCreateDevice(None::<&windows::Win32::Graphics::Dxgi::IDXGIDevice>)?;
-        let target = device.CreateTargetForHwnd(hwnd, true)?;
+        let target = device.CreateTargetForHwnd(composition_hwnd, true)?;
         let visual = device.CreateVisual()?;
         target.SetRoot(&visual)?;
         composition_controller.SetRootVisualTarget(&visual)?;
         device.Commit()?;
         (device, target, visual)
       };
-      unsafe extern "system" fn composition_mouse(
-        hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, id: usize, data: usize,
-      ) -> LRESULT {
-        if message == WM_NCDESTROY {
-          let _ = RemoveWindowSubclass(hwnd, Some(composition_mouse), id);
-          drop(Box::from_raw(data as *mut ICoreWebView2CompositionController));
-        } else if matches!(message, WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP) {
-          let composition = &*(data as *const ICoreWebView2CompositionController);
-          let point = POINT { x: (lparam.0 as u16 as i16) as i32, y: ((lparam.0 >> 16) as u16 as i16) as i32 };
-          let _ = composition.SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND(message as i32),
-            COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS(wparam.0 as i32), 0, point);
-        }
-        DefSubclassProc(hwnd, message, wparam, lparam)
-      }
-      unsafe {
-        let data = Box::into_raw(Box::new(composition_controller)) as usize;
-        if !SetWindowSubclass(hwnd, Some(composition_mouse), WM_USER as usize + 0x67, data).as_bool() {
-          drop(Box::from_raw(data as *mut ICoreWebView2CompositionController));
-          return Err(windows::core::Error::from_win32().into());
-        }
-      }
       (controller, Some(resources))
     } else {
       (Self::create_controller(hwnd, &env, attributes.incognito, background_color)?, None)
@@ -211,7 +206,7 @@ impl InnerWebView {
       DragDropController::new(hwnd, handler)
     });
 
-    let w = Self {
+    let mut w = Self {
       id,
       parent: RefCell::new(parent),
       hwnd,
@@ -221,6 +216,8 @@ impl InnerWebView {
       env,
       drag_drop_controller,
       _composition: composition,
+      composition_on_parent,
+      composition_mouse_id: None,
     };
 
     if is_child {
@@ -229,7 +226,45 @@ impl InnerWebView {
       w.resize_to_parent()?;
     }
 
+    if w._composition.is_some() {
+      let composition_controller = w.controller.cast::<ICoreWebView2CompositionController>()?;
+      w.composition_mouse_id = Some(unsafe { Self::attach_composition_mouse(composition_hwnd, composition_controller)? });
+    }
     Ok(w)
+  }
+
+  unsafe extern "system" fn composition_mouse(
+    hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, id: usize, data: usize,
+  ) -> LRESULT {
+    if message == WM_NCDESTROY {
+      if RemoveWindowSubclass(hwnd, Some(Self::composition_mouse), id).as_bool() && data != 0 {
+        drop(Box::from_raw(data as *mut ICoreWebView2CompositionController));
+      }
+    } else if matches!(message, WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_LBUTTONUP) {
+      let composition = &*(data as *const ICoreWebView2CompositionController);
+      let point = POINT { x: (lparam.0 as u16 as i16) as i32, y: ((lparam.0 >> 16) as u16 as i16) as i32 };
+      let _ = composition.SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND(message as i32),
+        COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS(wparam.0 as i32), 0, point);
+    }
+    DefSubclassProc(hwnd, message, wparam, lparam)
+  }
+
+  unsafe fn attach_composition_mouse(hwnd: HWND, controller: ICoreWebView2CompositionController) -> Result<usize> {
+    let id = NEXT_COMPOSITION_MOUSE_ID.fetch_add(1, Ordering::Relaxed);
+    let data = Box::into_raw(Box::new(controller)) as usize;
+    if !SetWindowSubclass(hwnd, Some(Self::composition_mouse), id, data).as_bool() {
+      drop(Box::from_raw(data as *mut ICoreWebView2CompositionController));
+      return Err(windows::core::Error::from_win32().into());
+    }
+    Ok(id)
+  }
+
+  unsafe fn detach_composition_mouse(hwnd: HWND, id: usize) {
+    let mut data = 0;
+    if GetWindowSubclass(hwnd, Some(Self::composition_mouse), id, &mut data).as_bool()
+      && RemoveWindowSubclass(hwnd, Some(Self::composition_mouse), id).as_bool() && data != 0 {
+      drop(Box::from_raw(data as *mut ICoreWebView2CompositionController));
+    }
   }
 
   #[inline]
@@ -1291,8 +1326,11 @@ impl InnerWebView {
             bottom: height,
           });
 
+          // A composition controller may be parented directly to this host.
+          // Only reposition a distinct child, never the host in its own WM_SIZE.
+          let parent_hwnd = hwnd;
           let mut hwnd = HWND::default();
-          if (*controller).ParentWindow(&mut hwnd).is_ok() {
+          if (*controller).ParentWindow(&mut hwnd).is_ok() && hwnd != parent_hwnd {
             let _ = SetWindowPos(
               hwnd,
               None,
@@ -1531,13 +1569,15 @@ impl InnerWebView {
 
   pub fn set_visible(&self, visible: bool) -> Result<()> {
     unsafe {
-      let _ = ShowWindow(
-        self.hwnd,
-        match visible {
-          true => SW_SHOW,
-          false => SW_HIDE,
-        },
-      );
+      if !self.composition_on_parent {
+        let _ = ShowWindow(
+          self.hwnd,
+          match visible {
+            true => SW_SHOW,
+            false => SW_HIDE,
+          },
+        );
+      }
 
       self.controller.SetIsVisible(visible)?;
     }
@@ -1744,6 +1784,9 @@ impl InnerWebView {
   }
 
   pub fn reparent(&self, parent: isize) -> Result<()> {
+    // This visual tree and input hook are owned by the top-level host. A
+    // child-window reparent cannot transfer that DirectComposition target.
+    if self.composition_on_parent { return Err(Error::UnsupportedWindowHandle); }
     let parent = HWND(parent as _);
 
     unsafe {
