@@ -1,4 +1,4 @@
-# Read-only, bounded window diagnostics. No ETW sessions, input, elevation,
+﻿# Read-only, bounded window diagnostics. No ETW sessions, input, elevation,
 # application launches, configuration writes, or changes to window styles.
 param(
     [ValidateRange(1,30)][int]$Samples=10,
@@ -101,15 +101,28 @@ for($index=0;$index -lt $Samples;$index++) {
     $frames.Add([FrameScopeOverlayVisibility]::Capture())
     if($index+1 -lt $Samples){Start-Sleep -Seconds $IntervalSeconds}
 }
+$configurationReadErrors=New-Object 'Collections.Generic.List[object]'
+function Read-DiagnosticJson([string]$Path) {
+    try {
+        if(Test-Path -LiteralPath $Path -PathType Leaf) {
+            Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        }
+    } catch {
+        $configurationReadErrors.Add([pscustomobject]@{path=$Path;error=$_.Exception.Message})
+        return $null
+    }
+}
 $builds=@()
 foreach($image in @($frames[0].processes)) {
     if($image.name -eq 'FrameScope' -and $image.image) {
         $file=Join-Path (Split-Path -Parent $image.image) 'FrameScopeBuildInfo.json'
-        if(Test-Path -LiteralPath $file){$builds+=@{image=$image.image;build=(Get-Content -LiteralPath $file -Raw | ConvertFrom-Json)}}
+        $build=Read-DiagnosticJson $file
+        if($null -ne $build){$builds+=@{image=$image.image;build=$build}}
     }
 }
 $settingsFile=Join-Path $env:APPDATA 'com.framescope.ui-preview/preview-native-settings.json'
 $settings=$null
-if(Test-Path -LiteralPath $settingsFile){$settings=(Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json).'overlay-settings' | Select-Object style,opacity,position_x,position_y,vertical_position_x,vertical_position_y,position_reference,vertical_position_reference}
-[ordered]@{schema=1;readOnly=$true;builds=$builds;overlaySettings=$settings;frames=@($frames.ToArray())} | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
+$savedSettings=Read-DiagnosticJson $settingsFile
+if($null -ne $savedSettings){$settings=$savedSettings.'overlay-settings' | Select-Object style,opacity,position_x,position_y,vertical_position_x,vertical_position_y,position_reference,vertical_position_reference}
+[ordered]@{schema=1;collectorVersion=2;readOnly=$true;builds=$builds;overlaySettings=$settings;configurationReadErrors=@($configurationReadErrors.ToArray());frames=@($frames.ToArray())} | ConvertTo-Json -Depth 14 | Set-Content -LiteralPath $OutputPath -Encoding UTF8
 Write-Output "诊断记录已保存：$OutputPath"
