@@ -261,7 +261,7 @@ impl InnerWebView {
 
   unsafe fn detach_composition_mouse(hwnd: HWND, id: usize) {
     let mut data = 0;
-    if GetWindowSubclass(hwnd, Some(Self::composition_mouse), id, &mut data).as_bool()
+    if GetWindowSubclass(hwnd, Some(Self::composition_mouse), id, Some(&mut data)).as_bool()
       && RemoveWindowSubclass(hwnd, Some(Self::composition_mouse), id).as_bool() && data != 0 {
       drop(Box::from_raw(data as *mut ICoreWebView2CompositionController));
     }
