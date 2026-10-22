@@ -20,6 +20,21 @@ internal static class FrameScopeHardwareServiceClient
     private const int ConnectTimeoutMs = 800;
     private const int ReadTimeoutMs = 4000;
     private static int _requestSequence;
+    private static volatile bool exiting;
+
+    static FrameScopeHardwareServiceClient()
+    {
+        AppDomain.CurrentDomain.ProcessExit += delegate { exiting = true; };
+        AppDomain.CurrentDomain.DomainUnload += delegate { exiting = true; };
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    internal static bool MayStartService(bool processExiting, bool systemShuttingDown)
+    {
+        return !processExiting && !systemShuttingDown;
+    }
 
     /// Returns the raw `result` JSON for get_overlay_data, or null when the
     /// service is unavailable. Never throws.
@@ -89,6 +104,7 @@ internal static class FrameScopeHardwareServiceClient
 
     public static void EnsureServiceRunning()
     {
+        if (!MayStartService(exiting, GetSystemMetrics(0x2000) != 0)) return; // SM_SHUTTINGDOWN
         using (var lease = MaintenanceLease.TryAcquire(AppDomain.CurrentDomain.BaseDirectory))
         {
         if (lease == null) return;
@@ -110,6 +126,7 @@ internal static class FrameScopeHardwareServiceClient
             var service = Path.Combine(root, "FrameScopeHardwareService.exe");
             var helper = Path.Combine(root, "FrameScopeHardwareProvider.exe");
             if (!File.Exists(service) || !File.Exists(helper)) return;
+            if (!MayStartService(exiting, GetSystemMetrics(0x2000) != 0)) return;
             var start = new ProcessStartInfo
             {
                 FileName = service,

@@ -61,6 +61,72 @@ pub struct OverlayData {
     pub present_mode: Option<String>,
 }
 
+#[derive(Default)]
+pub struct GpuSelection {
+    preferred: Option<GpuSensorData>,
+    manual_index: Option<usize>,
+    manual: bool,
+}
+
+impl GpuSelection {
+    pub fn request(&mut self, index: usize, current: &[GpuSensorData]) {
+        self.manual = true;
+        self.preferred = current.get(index).cloned();
+        self.manual_index = self.preferred.is_none().then_some(index);
+    }
+
+    pub fn apply(&mut self, data: &mut OverlayData) {
+        if let Some(index) = self.manual_index {
+            if let Some(gpu) = data.gpu_sensors.get(index) {
+                self.preferred = Some(gpu.clone());
+                self.manual_index = None;
+            } else {
+                data.active_gpu_index = index;
+            }
+        }
+        if !self.manual {
+            // Dedicated-memory capacity is a default preference, not a load
+            // race. Keep the preferred identity through missing/idle samples.
+            if let Some(best) = data.gpu_sensors.iter().max_by(|a, b|
+                a.vram_total.unwrap_or(0.0).total_cmp(&b.vram_total.unwrap_or(0.0))) {
+                if self.preferred.as_ref().map_or(true, |old|
+                    best.vram_total.unwrap_or(0.0) > old.vram_total.unwrap_or(0.0)) {
+                    self.preferred = Some(best.clone());
+                }
+            }
+        }
+        if let Some(preferred) = &self.preferred {
+            let index = data.gpu_sensors.iter().position(|gpu| same_gpu(gpu, preferred))
+                .unwrap_or_else(|| {
+                    data.gpu_sensors.push(GpuSensorData { name: preferred.name.clone(),
+                        identifier: preferred.identifier.clone(), hardware_type: preferred.hardware_type.clone(),
+                        ..Default::default() });
+                    data.gpu_sensors.len() - 1
+                });
+            data.active_gpu_index = index;
+        }
+        project_gpu(data);
+    }
+}
+
+fn same_gpu(a: &GpuSensorData, b: &GpuSensorData) -> bool {
+    if !a.identifier.is_empty() { a.identifier.eq_ignore_ascii_case(&b.identifier) }
+    else { b.identifier.is_empty() && a.name.eq_ignore_ascii_case(&b.name) }
+}
+
+fn project_gpu(data: &mut OverlayData) {
+    let gpu = data.gpu_sensors.get(data.active_gpu_index);
+    data.gpu_temp = gpu.and_then(|g| g.temperature);
+    data.gpu_usage = gpu.and_then(|g| g.usage);
+    data.gpu_fan_speed = gpu.and_then(|g| g.fan_speed);
+    data.gpu_power = gpu.and_then(|g| g.power);
+    data.gpu_clock = gpu.and_then(|g| g.clock);
+    data.gpu_voltage = gpu.and_then(|g| g.voltage);
+    data.gpu_memory_clock = gpu.and_then(|g| g.memory_clock);
+    data.gpu_vram_used = gpu.and_then(|g| g.vram_used);
+    data.gpu_vram_total = gpu.and_then(|g| g.vram_total);
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SensorRow<'a> {
     hardware: &'a str,
@@ -470,17 +536,54 @@ pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Ins
     }
     // Top-level GPU fields are a projection of the selected identity's independently aged values.
     // No timestamp or number from the previously selected GPU can enter this projection.
-    if let Some(gpu) = new.gpu_sensors.get(new.active_gpu_index) {
-        new.gpu_temp = gpu.temperature; new.gpu_usage = gpu.usage; new.gpu_fan_speed = gpu.fan_speed;
-        new.gpu_power = gpu.power; new.gpu_clock = gpu.clock; new.gpu_voltage = gpu.voltage;
-        new.gpu_memory_clock = gpu.memory_clock; new.gpu_vram_used = gpu.vram_used; new.gpu_vram_total = gpu.vram_total;
-    }
+    project_gpu(new);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn selection_prefers_dedicated_capacity_and_pins_identity_across_reorder_and_gaps() {
+        let integrated = GpuSensorData { name: "AMD Radeon 780M".into(), identifier: "/amd/0".into(),
+            vram_total: Some(0.5), usage: Some(0.0), ..Default::default() };
+        let discrete = GpuSensorData { name: "NVIDIA GeForce".into(), identifier: "/nvidia/0".into(),
+            vram_total: Some(8.0), usage: Some(65.0), ..Default::default() };
+        let mut selection = GpuSelection::default();
+        for topology in [vec![integrated.clone(), discrete.clone()], vec![discrete.clone(), integrated.clone()]] {
+            let mut data = OverlayData { gpu_sensors: topology, ..Default::default() };
+            selection.apply(&mut data);
+            assert_eq!(data.gpu_usage, Some(65.0));
+            assert_eq!(data.gpu_sensors[data.active_gpu_index].identifier, discrete.identifier);
+        }
+        let mut missing = OverlayData { gpu_sensors: vec![integrated.clone()], ..Default::default() };
+        selection.apply(&mut missing);
+        assert_eq!(missing.gpu_usage, None);
+        assert_eq!(missing.gpu_sensors[missing.active_gpu_index].identifier, discrete.identifier);
+        selection.request(0, &missing.gpu_sensors);
+        let mut restored = OverlayData { gpu_sensors: vec![discrete, integrated], ..Default::default() };
+        selection.apply(&mut restored);
+        assert_eq!(restored.active_gpu_index, 1);
+        assert_eq!(restored.gpu_usage, Some(0.0));
+    }
+
+    #[test]
+    fn later_discrete_gpu_replaces_automatic_integrated_default_but_not_manual_choice() {
+        let integrated = GpuSensorData { name: "Intel UHD".into(), identifier: "/intel/0".into(),
+            vram_total: Some(0.25), ..Default::default() };
+        let discrete = GpuSensorData { name: "AMD Radeon RX".into(), identifier: "/amd/0".into(),
+            vram_total: Some(12.0), ..Default::default() };
+        let mut selection = GpuSelection::default();
+        let mut data = OverlayData { gpu_sensors: vec![integrated], ..Default::default() };
+        selection.apply(&mut data);
+        data.gpu_sensors.push(discrete);
+        selection.apply(&mut data);
+        assert_eq!(data.active_gpu_index, 1);
+        selection.request(0, &data.gpu_sensors);
+        selection.apply(&mut data);
+        assert_eq!(data.active_gpu_index, 0);
+    }
 
     fn sample_snapshot() -> Value {
         json!({

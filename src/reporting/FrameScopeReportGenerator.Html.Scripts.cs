@@ -33,7 +33,7 @@ function lineWidth(si){const mode=readMode.value;if(view==='process')return mode
 function seriesAlpha(si){const mode=readMode.value;if(view==='process')return mode==='trend'?(si<PROCESS_TOP_N?.78:.22):(si<PROCESS_TOP_N?.66:.2);if(view==='cpuCore'||view==='cpuVoltage'||view==='cpuVid')return si===0?1:.78;return si===0?.96:.78}
 function hexToRgb(color){const m=String(color||'').match(/^#?([0-9a-f]{6})$/i);if(!m)return{r:0,g:157,b:255};const n=parseInt(m[1],16);return{r:(n>>16)&255,g:(n>>8)&255,b:n&255}}
 function rgba(color,a){const c=hexToRgb(color);return `rgba(${c.r},${c.g},${c.b},${a})`}
-function clearOverlay(){octx.clearRect(0,0,overlay.width,overlay.height)}
+function clearOverlay(){octx.save();octx.setTransform(1,0,0,1,0,0);octx.clearRect(0,0,overlay.width,overlay.height);octx.restore()}
 function applyWidth(){const scale=Number(widthScale.value)||1;widthText.textContent=scale.toFixed(2)+'x';const base=chartScroll.clientWidth||900,minWidth=Math.min(900,base);chartBox.style.width=Math.max(minWidth,Math.round(base*scale))+'px';renderCache.clear();resizeCanvas()}
 function resizeCanvas(){const r=chartBox.getBoundingClientRect(),d=window.devicePixelRatio||1;canvas.width=overlay.width=Math.max(1,Math.round(r.width*d));canvas.height=overlay.height=Math.max(1,Math.round(r.height*d));ctx.setTransform(d,0,0,d,0,0);octx.setTransform(d,0,0,d,0,0);renderCache.clear();draw()}
 function chartDims(){const r=chartBox.getBoundingClientRect();return{w:r.width,h:r.height,pw:r.width-PAD.l-PAD.r,ph:r.height-PAD.t-PAD.b}}

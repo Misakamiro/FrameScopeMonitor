@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn exit_gate_blocks_cold_service_start_and_cancel_restores_availability() {
+    prevent_new_connections();
+    let result = spawn_service(std::path::Path::new("missing-service.exe"), std::path::Path::new("missing-provider.exe"));
+    assert!(result.unwrap_err().contains("shutdown"));
+    cancel_shutdown();
+    assert!(*SPAWN_GATE.lock().unwrap());
+    assert!(!HALTING.load(Ordering::SeqCst));
+    assert!(!poller_paused());
+}
+
+#[test]
 fn ordinary_request_waits_for_another_reader_instead_of_reporting_maintenance() {
     let root = std::env::temp_dir().join(format!("framescope-read-queue-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

@@ -16,7 +16,7 @@ export function UpdateSettings(){
       {([["startup_check","启动时检查更新"],["include_beta","包含测试版"],["accelerated","使用 GitHub 加速下载"]] as const).map(([key,label])=><HStack key={key} justify="space-between">
         <Text>{label}</Text><Switch aria-label={label} isDisabled={busy} isChecked={state.preferences[key]} onChange={e=>run("update_preferences",{...state.preferences,[key]:e.target.checked})}/>
       </HStack>)}
-      <Text fontSize="xs" opacity={.7}>只检查和提醒，不自动下载或安装。加速使用第三方 gh-proxy.org；失败时回退 GitHub 原站。关闭测试版不会自动降级。</Text>
+      <Text fontSize="xs" opacity={.7}>只检查和提醒，不自动下载或安装。开启加速后，会比较 GitHub 原站与第三方 gh-proxy.org 的实际下载速度，持续低速或失败时切换线路。请求遵循系统代理。关闭测试版不会自动降级。</Text>
     </>}
     <HStack><Button isDisabled={!isDesktop()||busy} onClick={()=>run("update_check")}>检查更新</Button>
       {snapshot?.build.channel==="beta"&&<Button isDisabled={busy} onClick={()=>run("update_check",{return_stable:true})}>查找可返回的正式版</Button>}

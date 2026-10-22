@@ -3,10 +3,14 @@ pub mod optimization;
 pub mod overlay;
 pub mod ping;
 pub mod provider;
+#[path = "../../core/windows_shutdown.rs"]
+mod windows_shutdown;
 
 use provider::ResidentProvider;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -62,7 +66,7 @@ struct ResidentState {
     provider: Mutex<ResidentProvider>,
     last_payload: Mutex<Option<(serde_json::Value, Instant)>>,
     overlay_cache: Mutex<Option<OverlayCache>>,
-    active_gpu: AtomicUsize,
+    active_gpu: Mutex<overlay::GpuSelection>,
     throttle: Mutex<Duration>,
 }
 
@@ -109,7 +113,7 @@ fn resident() -> &'static ResidentState {
         provider: Mutex::new(ResidentProvider::new()),
         last_payload: Mutex::new(None),
         overlay_cache: Mutex::new(None),
-        active_gpu: AtomicUsize::new(0),
+        active_gpu: Mutex::new(overlay::GpuSelection::default()),
         throttle: Mutex::new(Duration::from_millis(DEFAULT_THROTTLE_MS)),
     })
 }
@@ -253,7 +257,10 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
             let index = request.params.get("index").and_then(|v| v.as_u64());
             match index {
                 Some(value) => {
-                    resident().active_gpu.store(value as usize, Ordering::Relaxed);
+                    let res = resident();
+                    let current = res.overlay_cache.lock().unwrap().as_ref()
+                        .map(|cache| cache.data.gpu_sensors.clone()).unwrap_or_default();
+                    res.active_gpu.lock().unwrap().request(value as usize, &current);
                     serde_json::json!({ "status": "accepted", "activeGpuIndex": value })
                 }
                 None => return error_response(id, "invalid_gpu_index"),
@@ -263,7 +270,7 @@ pub fn dispatch_with_state(request: Request, state: &mut ServiceState) -> serde_
             let res = resident();
             *res.last_payload.lock().unwrap() = None;
             *res.overlay_cache.lock().unwrap() = None;
-            res.active_gpu.store(0, Ordering::Relaxed);
+            *res.active_gpu.lock().unwrap() = overlay::GpuSelection::default();
             serde_json::json!({ "status": "cleared" })
         }
         "restart_provider" => {
@@ -337,14 +344,15 @@ fn overlay_data_response(state: &ServiceState) -> serde_json::Value {
     let res = resident();
     let data = match read_snapshot_with_observation(state) {
         Ok((payload, observed_at)) => {
-            let requested = res.active_gpu.load(Ordering::Relaxed);
-            let data = overlay::build_overlay_data(&payload, fps_sample(), ping_sample(), requested);
+            let mut data = overlay::build_overlay_data(&payload, fps_sample(), ping_sample(), 0);
+            res.active_gpu.lock().unwrap().apply(&mut data);
             aggregate_overlay_sample(&mut res.overlay_cache.lock().unwrap(), data, Some(observed_at), Instant::now())
         }
         Err(error) => {
             eprintln!("framescope-hardware-service: overlay read failed: {error}");
-            aggregate_overlay_failure(&mut res.overlay_cache.lock().unwrap(),
-                res.active_gpu.load(Ordering::Relaxed), Instant::now())
+            let mut cache = res.overlay_cache.lock().unwrap();
+            let requested = cache.as_ref().map(|c| c.data.active_gpu_index).unwrap_or(0);
+            aggregate_overlay_failure(&mut cache, requested, Instant::now())
         }
     };
     let mut value = serde_json::to_value(&data).unwrap_or(serde_json::Value::Null);
@@ -738,6 +746,28 @@ fn chrono_like_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_selected_discrete_gpu_ages_out_without_borrowing_integrated_values() {
+        let now = Instant::now();
+        let integrated = overlay::GpuSensorData { name: "iGPU".into(), identifier: "/igpu/0".into(),
+            usage: Some(0.0), vram_total: Some(0.5), ..Default::default() };
+        let discrete = overlay::GpuSensorData { name: "dGPU".into(), identifier: "/dgpu/0".into(),
+            usage: Some(65.0), vram_total: Some(8.0), ..Default::default() };
+        let mut selection = overlay::GpuSelection::default();
+        let mut cache = None;
+        let mut first = overlay::OverlayData { gpu_sensors: vec![integrated.clone(), discrete], ..Default::default() };
+        selection.apply(&mut first);
+        aggregate_overlay_sample(&mut cache, first, Some(now), now);
+        for (millis, expected) in [(500, Some(65.0)), (1100, None)] {
+            let time = now + Duration::from_millis(millis);
+            let mut missing = overlay::OverlayData { gpu_sensors: vec![integrated.clone()], ..Default::default() };
+            selection.apply(&mut missing);
+            let result = aggregate_overlay_sample(&mut cache, missing, Some(time), time);
+            assert_eq!(result.gpu_usage, expected);
+            assert_eq!(result.gpu_sensors[result.active_gpu_index].identifier, "/dgpu/0");
+        }
+    }
 
     #[test]
     #[ignore = "uses an isolated fake provider and process-wide sampling cache; run alone"]

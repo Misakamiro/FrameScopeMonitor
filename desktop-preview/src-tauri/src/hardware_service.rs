@@ -214,6 +214,17 @@ struct PipeClient {
 static CLIENT: Mutex<Option<PipeClient>> = Mutex::new(None);
 static HALTING: AtomicBool = AtomicBool::new(false);
 static LAST_SPAWN: Mutex<Option<Instant>> = Mutex::new(None);
+static SPAWN_GATE: Mutex<bool> = Mutex::new(true);
+
+pub fn prevent_new_connections() {
+    *SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner()) = false;
+}
+
+pub fn cancel_shutdown() {
+    HALTING.store(false, Ordering::SeqCst);
+    set_poller_paused(false);
+    *SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner()) = true;
+}
 
 /// `FRAMESCOPE_BACKEND_DIR` overrides the directory holding
 /// FrameScopeHardwareService.exe / FrameScopeHardwareProvider.exe; otherwise
@@ -233,6 +244,12 @@ fn backend_paths() -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
 }
 
 fn spawn_service(service: &std::path::Path, helper: &std::path::Path) -> Result<(), String> {
+    // Serialize the final spawn decision with exit initiation. Existing pipe
+    // clients remain available for the recorder/report drain.
+    let allowed = SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    if !crate::windows_shutdown::may_start_process(!*allowed, crate::windows_shutdown::system_shutting_down()) {
+        return Err("hardware process start refused during shutdown".into());
+    }
     {
         let last = LAST_SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(last) = *last {
@@ -261,10 +278,9 @@ fn spawn_service(service: &std::path::Path, helper: &std::path::Path) -> Result<
     }
     // A spawn racing a healthy instance just exits with a pipe-name clash;
     // either way the connect loop below settles it.
-    if let Ok(child) = command.spawn() {
-        #[cfg(windows)]
-        kill_child_when_host_dies(&child);
-    }
+    let child = command.spawn().map_err(|error| format!("hardware service spawn failed: {error}"))?;
+    #[cfg(windows)]
+    kill_child_when_host_dies(&child);
     Ok(())
 }
 
@@ -570,6 +586,9 @@ fn call_with_client(
 }
 
 fn connect_service() -> Result<PipeClient, String> {
+    if !*SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner()) {
+        return Err("hardware client is draining for shutdown".into());
+    }
     let (service, helper) = backend_paths()?;
     spawn_service(&service, &helper)?;
     let mut last_error = String::new();

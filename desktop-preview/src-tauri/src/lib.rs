@@ -4,6 +4,8 @@ mod backend;
 mod bounded_process;
 mod host_shutdown;
 mod hardware_service;
+#[path = "../../../src/core/windows_shutdown.rs"]
+mod windows_shutdown;
 mod runtime_uiaccess;
 mod updater;
 mod delta_password;
@@ -25,6 +27,7 @@ static SHUTDOWN_COMPLETE: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 
 fn request_shutdown(app: &tauri::AppHandle) {
     if !backend::begin_shutdown() { return; }
+    hardware_service::prevent_new_connections();
     let app = app.clone();
     std::thread::spawn(move || {
         let _overlay = OVERLAY_OPERATION.lock().unwrap_or_else(|p|p.into_inner());
@@ -39,6 +42,7 @@ fn request_shutdown(app: &tauri::AppHandle) {
             }
             Err(error) => {
                 backend::cancel_shutdown();
+                hardware_service::cancel_shutdown();
                 log::warn!("退出已取消: {error}");
                 let _ = app.emit("app-exit-failed", &error);
                 if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
@@ -62,7 +66,7 @@ const COMMANDS: &[&str] = &[
     "clear_hardware_data", "get_system_locale", "get_system_username",
     // Real capture pipeline (FrameScopeMonitor.exe chain, same file contracts
     // as the C# WebView2 bridge).
-    "targets_get", "targets_save", "processes_refresh", "config_save", "config_read",
+    "targets_get", "targets_save", "processes_refresh", "config_save", "config_read", "autostart_get", "autostart_set",
     "monitor_start", "monitor_stop", "monitor_status",
     "reports_list", "report_open", "report_open_directory", "report_regenerate", "report_delete",
     // PawnIO driver detection / install / uninstall.
@@ -431,6 +435,15 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }
     }
     ensure_allowed(&command)?;
+    if command == "autostart_get" || command == "autostart_set" {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let state = if command == "autostart_set" {
+                framescope_update::autostart::set(&exe, args["enabled"].as_bool().ok_or("enabled required")?)?
+            } else { framescope_update::autostart::state(&exe)? };
+            serde_json::to_value(state).map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?;
+    }
     if command == "build_info" || command.starts_with("update_") && command != "update_overlay_settings" {
         return updater::command(app,command,args).await;
     }
@@ -870,6 +883,16 @@ pub fn run() {
     let request_exit_only = std::env::args().any(|a|a == "--request-exit");
     let mut context = tauri::generate_context!();
     if request_exit_only { context.config_mut().app.windows.clear(); }
+    // Decide visibility before Tauri creates the window; hiding in setup flashes
+    // the main interface during logon. StartMinimized is a legacy config key.
+    let startup = backend::startup_preferences();
+    let tray_start = std::env::args().any(|a| a == "--autostart")
+        || startup.as_ref().map(|(_, tray)| *tray).unwrap_or(false);
+    if tray_start {
+        for window in &mut context.config_mut().app.windows {
+            if window.label == "main" { window.visible = false; }
+        }
+    }
     let app = tauri::Builder::default()
         // Must register before other plugins (single-instance docs): a second
         // launch forwards here and dies, so the tray-hidden window comes back
@@ -883,6 +906,7 @@ pub fn run() {
                 }
                 return;
             }
+            if args.iter().any(|a| a == "--autostart") { return; }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
@@ -993,12 +1017,7 @@ pub fn run() {
             // Window startup preferences run once, after persisted overlay
             // settings and tray restoration are ready, independently of capture.
             match backend::startup_preferences() {
-                Ok((auto_overlay, start_minimized)) => {
-                    if start_minimized {
-                        if let Some(window) = app.get_webview_window("main") {
-                            if let Err(error) = window.minimize() { eprintln!("Startup minimize failed: {error}"); }
-                        }
-                    }
+                Ok((auto_overlay, _)) => {
                     if auto_overlay {
                         let handle = app.handle().clone();
                         std::thread::spawn(move || {

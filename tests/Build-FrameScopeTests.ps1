@@ -51,6 +51,11 @@ function Invoke-TestBuild {
 }
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeHardwareShutdownTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\monitoring\FrameScopeHardwareServiceClient.cs', 'tests\FrameScopeHardwareShutdownTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeJsonFileTests.exe' `
     -Sources @('tests\FrameScopeJsonFileTests.cs')
 
