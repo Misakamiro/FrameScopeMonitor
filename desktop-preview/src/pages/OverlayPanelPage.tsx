@@ -154,9 +154,11 @@ const BUILTIN_CHINESE_FONTS = [
 ];
 
 function SettingCard({
+  id,
   title,
   children,
 }: {
+  id?: string;
   title: string;
   children: React.ReactNode;
 }) {
@@ -167,7 +169,7 @@ function SettingCard({
 
   if (liquidGlassEnabled) {
     return (
-      <LiquidGlassCard p={5}>
+      <LiquidGlassCard id={id} p={5}>
         <VStack align="stretch" spacing={4}>
           <Text fontWeight="medium" color={headerColor}>{title}</Text>
           {children}
@@ -177,7 +179,7 @@ function SettingCard({
   }
 
   return (
-    <Box bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
+    <Box id={id} bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
       <VStack align="stretch" spacing={4}>
         <Text fontWeight="medium" color={headerColor}>{title}</Text>
         {children}
@@ -614,7 +616,7 @@ export default function OverlayPanelPage() {
   };
 
   return (
-    <Box pt={8} pb={8}>
+    <Box id="search-overlay" pt={8} pb={8}>
       <HStack justify="space-between" mb={6}>
         <HStack>
           <IconButton
@@ -663,7 +665,7 @@ export default function OverlayPanelPage() {
       </HStack>
 
       <VStack align="stretch" spacing={5}>
-        <SettingCard title={t("overlayPanel.enableOverlay") || "启用悬浮框"}>
+        <SettingCard id="search-overlay-enable" title={t("overlayPanel.enableOverlay") || "启用悬浮框"}>
           <HStack justify="space-between" wrap="wrap" spacing={4}>
             <HStack>
               <Icon as={isEnabled ? Eye : EyeOff} boxSize={5} color={isEnabled ? "green.400" : "gray.400"} />
@@ -747,7 +749,7 @@ export default function OverlayPanelPage() {
           </HStack>
         </SettingCard>
 
-        <SettingCard title={t("overlayPanel.displayItems") || "显示项"}>
+        <SettingCard id="search-overlay-items" title={t("overlayPanel.displayItems") || "显示项"}>
           <SimpleGrid columns={2} spacing={4}>
             <Box>
               <Text fontSize="sm" fontWeight="medium" mb={2} color={subTextColor}>
@@ -803,7 +805,7 @@ export default function OverlayPanelPage() {
 
 
 
-        <SettingCard title={t("overlayPanel.appearance") || "外观设置"}>
+        <SettingCard id="search-overlay-appearance" title={t("overlayPanel.appearance") || "外观设置"}>
           <HStack align="start" spacing={6}>
             {/* 左侧：样式选择 */}
             <VStack align="stretch" spacing={2} flex={1}>

@@ -15,6 +15,7 @@ import ReportsPage from "./preview/pages/ReportsPage";
 import { useAppStartup } from "./contexts/app-startup-context";
 import { SplashScreen } from "./components/SplashScreen";
 import { DynamicIslandHost } from "./components/ui/dynamic-island";
+import { SearchTargetFocus } from "./components/ui/search-target-focus";
 
 export default function App() {
   const location = useLocation();
@@ -54,6 +55,7 @@ export default function App() {
         </Box>
       </MainLayout>
       <DynamicIslandHost />
+      <SearchTargetFocus />
     </>
   );
 }

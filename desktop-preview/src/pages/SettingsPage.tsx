@@ -607,7 +607,7 @@ function ThemeColorSettings() {
   };
   
   return (
-    <Box mb={6}>
+    <Box id="search-appearance-theme-color" mb={6}>
       <Text
         fontSize="xs"
         fontWeight="semibold"
@@ -831,7 +831,7 @@ function AppearanceSettings() {
         </LiquidGlassCard>
       </Box>
 
-      <Box mb={6}>
+      <Box id="search-appearance-font" mb={6}>
         <Text
           fontSize="xs"
           fontWeight="semibold"
@@ -955,7 +955,7 @@ function AppearanceSettings() {
         />
       </Box>
 
-      <Box mb={6}>
+      <Box id="search-appearance-glass" mb={6}>
         <Text
           fontSize="xs"
           fontWeight="semibold"
@@ -1103,7 +1103,7 @@ function AppearanceSettings() {
 
       <ThemeColorSettings />
 
-      <Box mb={6}>
+      <Box id="search-appearance-background" mb={6}>
         <Text
           fontSize="xs"
           fontWeight="semibold"
@@ -1567,19 +1567,12 @@ function AppearanceSettings() {
 
 
 export default function SettingsPage() {
-  const [activeItem, setActiveItem] = useState("general");
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const section = searchParams.get("section");
+  const activeItem = settingItems.some(item => item.id === section) ? section! : "general";
   const { t } = useTranslation();
   const { jellyBounceEnabled } = useBackground();
   const isFirstRender = useRef(true);
-
-  // 支持通过 URL ?section=xxx 定位子菜单（如托盘"检查更新"导航到 /settings?section=about）
-  useEffect(() => {
-    const section = searchParams.get("section");
-    if (section && settingItems.some((item) => item.id === section)) {
-      setActiveItem(section);
-    }
-  }, [searchParams]);
 
   // 子菜单切换时触发果冻弹跳动画（跳过首次挂载，避免与路由切换动画重复）
   useEffect(() => {
@@ -1611,7 +1604,12 @@ export default function SettingsPage() {
               <LiquidGlassMenuItem
                 key={item.id}
                 isActive={isActive}
-                onClick={() => setActiveItem(item.id)}
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.set("section", item.id);
+                  next.delete("focus");
+                  setSearchParams(next, { replace: true });
+                }}
                 icon={item.icon}
               >
                 {t(item.labelKey)}
@@ -1624,7 +1622,7 @@ export default function SettingsPage() {
       <Box flex={1}>
         {/* 直接渲染子菜单，不做 motion 动画：opacity/transform 动画会让 backdrop-filter 失效，
             导致液态玻璃卡片在切换时先透明、动画结束后瞬间出现模糊 */}
-        <div key={activeItem} style={{ position: 'relative', zIndex: 1 }}>
+        <div id={`search-settings-${activeItem}`} key={activeItem} style={{ position: 'relative', zIndex: 1 }}>
           {activeItem === "general" && <GeneralSettings />}
           {activeItem === "appearance" && <AppearanceSettings />}
           {activeItem === "preview" && <FrameScopeSettings />}

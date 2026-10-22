@@ -56,7 +56,7 @@ export default function ReportsPage() {
       else setDirectory(true);
     } catch (cause) { setOpenError(String(cause)); }
   };
-  return <Box pt={8}>
+  return <Box id="search-reports" pt={8}>
     <Heading size="lg" mb={6} color={color.text} textShadow={color.shadow}>报告</Heading>
     <HStack spacing={3} mb={5}>
       <Input aria-label="搜索报告" placeholder="搜索游戏报告" value={query} onChange={e => setQuery(e.target.value)} maxW="360px" sx={field.sx} />

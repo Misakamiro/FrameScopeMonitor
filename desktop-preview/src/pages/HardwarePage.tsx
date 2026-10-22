@@ -658,7 +658,7 @@ export default function HardwarePage() {
   };
 
   return (
-    <Box pt={8}>
+    <Box id="search-hardware" pt={8}>
       <HStack justify="space-between" mb={6}>
         <Heading size="lg" color={adaptiveTitle.text} textShadow={adaptiveTitle.shadow}>
           {t("hardware.title")}

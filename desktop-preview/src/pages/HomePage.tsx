@@ -150,7 +150,7 @@ export default function HomePage() {
   const reportEtaSeconds = state.monitor.reportEtaSeconds;
   const hasReportEta = reportEtaSeconds != null && Number.isFinite(reportEtaSeconds) && reportEtaSeconds > 0;
   // 根容器不能加 overflowX hidden，否则会成为 sticky 的滚动容器使其失效
-  return <Box pt={8} pr={4} pb={4} pl={4} minH="calc(100vh - 120px)" position="relative">
+  return <Box id="search-home" pt={8} pr={4} pb={4} pl={4} minH="calc(100vh - 120px)" position="relative">
     <Flex gap={6} align="flex-start">
       <Text fontSize="3xl" fontWeight="bold" color={color.text} textShadow={color.shadow} lineHeight="1.4">FrameScope</Text>
       <Box flex={1} />
