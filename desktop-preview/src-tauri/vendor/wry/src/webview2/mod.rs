@@ -166,7 +166,49 @@ impl InnerWebView {
         let result = error.and_then(|_| controller.ok_or_else(|| windows::core::Error::from(E_POINTER).into()));
         tx.send(result).map_err(|_| windows::core::Error::from(E_UNEXPECTED))
       }));
-      unsafe { env.cast::<ICoreWebView2Environment3>()?.CreateCoreWebView2CompositionController(composition_hwnd, &handler)?; }
+      unsafe {
+        // Supply the background before the browser creates its composition
+        // surfaces, just as the ordinary controller path does below.
+        let mut creation_options = None;
+        if let Some((r, g, b, a)) = background_color {
+          match env.cast::<ICoreWebView2Environment10>() {
+            Ok(env10) => {
+              let options = env10.CreateCoreWebView2ControllerOptions()?;
+              match options.cast::<ICoreWebView2ControllerOptions3>() {
+                Ok(options3) => {
+                  options3.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR {
+                    R: r,
+                    G: g,
+                    B: b,
+                    A: if a == 0 { 0 } else { 255 },
+                  })?;
+                  creation_options = Some((env10, options));
+                }
+                Err(error) if error.code() == E_NOINTERFACE => {
+                  eprintln!("FrameScope composition background: Options3 unavailable ({error:?}); using post-creation background fallback");
+                }
+                Err(error) => return Err(error.into()),
+              }
+            }
+            Err(error) if error.code() == E_NOINTERFACE => {
+              eprintln!("FrameScope composition background: Environment10 unavailable ({error:?}); using post-creation background fallback");
+            }
+            Err(error) => return Err(error.into()),
+          }
+        }
+        if let Some((env10, options)) = creation_options {
+          env10.CreateCoreWebView2CompositionControllerWithOptions(
+            composition_hwnd,
+            &options,
+            &handler,
+          )?;
+          eprintln!("FrameScope composition background: creation options submitted; requested color {background_color:?} (API alpha normalized to 0 or 255)");
+        } else {
+          env
+            .cast::<ICoreWebView2Environment3>()?
+            .CreateCoreWebView2CompositionController(composition_hwnd, &handler)?;
+        }
+      }
       let composition_controller = webview2_com::wait_with_pump(rx)??;
       let controller = composition_controller.cast::<ICoreWebView2Controller>()?;
       let resources = unsafe {
