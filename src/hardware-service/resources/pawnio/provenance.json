@@ -1,0 +1,19 @@
+{
+  "release": "0.2.11",
+  "source": "https://github.com/namazso/PawnIO.Modules/tree/0.2.11",
+  "archiveSha256": "43608cb89bc84247fef1368a139013f7d043e17db6d6c8dfc9b46bf0905a81f4",
+  "files": [
+    {
+      "path": "AMDFamily17.bin",
+      "sha256": "dae74615761b78bdf064dfb3e136252ddcc6fc727d88f14738d0e5800d427a91"
+    },
+    {
+      "path": "IntelMCHBAR.bin",
+      "sha256": "3f82b832d99b4aac37d2a20fdb7c9baa2a3bc0488612c9019c9484eb0e8a6eae"
+    },
+    {
+      "path": "COPYING",
+      "sha256": "1e7e6bae5a5bde32f1ae5a7c37a082d1ab03cf89354f7f936ac40be9e39a6531"
+    }
+  ]
+}

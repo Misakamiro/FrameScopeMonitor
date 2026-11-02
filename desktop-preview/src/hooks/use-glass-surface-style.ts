@@ -5,6 +5,8 @@ import { useBackground } from "@/contexts/background-context";
 
 export interface GlassSurfaceStyle {
   bg: string;
+  color: string;
+  "data-glass-surface": string;
   border: string;
   borderColor: string;
   backdropFilter: string;
@@ -36,6 +38,8 @@ export function useGlassSurfaceStyle(): GlassSurfaceStyle {
   const isReal = liquidGlassEnabled && liquidGlassMode === "real";
   if (!liquidGlassEnabled) {
     return {
+      color: "var(--framescope-surface-fg)",
+      "data-glass-surface": "card",
       bg: fallbackBg,
       border: "1px solid",
       borderColor: fallbackBorder,
@@ -45,7 +49,9 @@ export function useGlassSurfaceStyle(): GlassSurfaceStyle {
   }
   if (isReal) {
     return {
-      bg: "transparent",
+      color: "var(--framescope-surface-fg)",
+      "data-glass-surface": "card",
+      bg: "var(--framescope-real-glass-bg, transparent)",
       border: "1px solid",
       borderColor: realBorder,
       backdropFilter: "none",
@@ -55,6 +61,8 @@ export function useGlassSurfaceStyle(): GlassSurfaceStyle {
   }
   const backdrop = `blur(${liquidGlassBlur}px) saturate(1.3)`;
   return {
+    color: "var(--framescope-surface-fg)",
+    "data-glass-surface": "card",
     bg: glassBg,
     border: "1px solid",
     borderColor: glassBorder,

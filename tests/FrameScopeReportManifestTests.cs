@@ -11,6 +11,8 @@ public static class FrameScopeReportManifestTests
     {
         AssertEqual(0, FrameScopeOsdVoltageReportTests.Main(), "OSD voltage source regression");
         BatchInspectionIsReadOnlyAndReportsCapabilities();
+        HardwareClockAndRecordedMemorySurviveReport();
+        MissingInventoryNeverReadsTodaysMachine();
         CpuTelemetryUsesAbsoluteTimeAndRejectsPrivateElapsed();
         FailedPublicationAfterBackupRestoresPreviousReport();
         InterruptedBackupIsRecovered();
@@ -30,7 +32,7 @@ public static class FrameScopeReportManifestTests
         LegacyMissingOrEmptySampleIndexUsesTimeInstants();
         NoUsableRowsAreError();
         ReportTargetDisplayNamePrefersConfiguredNameAndKeepsProcessName();
-        ReportChartDataUsesBucketedFpsDisplayAndRawFrameStats();
+        ReportChartDataUsesStatisticsV2SamplesAndFilter();
         PresentMonPrimaryHardwareTrackSelectionKeepsRawDiagnostics();
         ProcessChartDataUsesLosslessRleCodec();
         CpuCoreTelemetryFlowsIntoChartDataWithoutFakeVoltage();
@@ -46,6 +48,44 @@ public static class FrameScopeReportManifestTests
         NoCpuVidSensorUsesChineseReasonAndNoFakeData();
         Console.WriteLine("FrameScopeReportManifestTests: PASS");
         return 0;
+    }
+
+    private static void MissingInventoryNeverReadsTodaysMachine()
+    {
+        string dir=Path.Combine(Path.GetTempPath(),"framescope-missing-hardware-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);
+        try {
+            string stamp="2026-10-27T01:00:00+08:00";
+            File.WriteAllText(Path.Combine(dir,"presentmon.csv"),"TimeInDateTime,MsBetweenPresents,Application,ProcessID,SwapChainAddress,PresentMode,AllowsTearing\r\n"+stamp+",10,game.exe,42,0x1,Hardware: Independent Flip,0\r\n2026-10-27T01:00:02+08:00,10,game.exe,42,0x1,Hardware: Independent Flip,0\r\n");
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            var data=LoadReportData(Path.Combine(dir,"charts","framescope-interactive-data.js"));
+            AssertEqual("not-recorded",Convert.ToString(GetMap(data,"hardware")["ConfigurationSource"]),"missing historical snapshot must not query current WMI");
+            File.WriteAllText(Path.Combine(dir,"hardware-inventory.json"),"{\"ConfigurationSource\":\"capture\",\"MemoryDetails\":{\"status\":\"timeout\"},\"MemorySummaryError\":\"采集开始后5秒内未读取到内存运行信息\"}");
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            AssertTrue(FrameScopeReportArtifacts.Inspect(dir).IsComplete,"local report retains timeout diagnostics");
+            File.WriteAllText(Path.Combine(dir,"hardware-inventory.json"),"{\"MemorySummaryError\":\"内存完整摘要超过256字符\"}");
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            AssertTrue(FrameScopeReportArtifacts.Inspect(dir).IsComplete,"local report retains recorded hardware errors");
+        }finally{Directory.Delete(dir,true);}
+    }
+
+    private static void HardwareClockAndRecordedMemorySurviveReport()
+    {
+        string dir=Path.Combine(Path.GetTempPath(),"framescope-recorded-hardware-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);
+        try {
+            DateTime start=new DateTime(2026,10,26,12,0,0,DateTimeKind.Local);
+            File.WriteAllText(Path.Combine(dir,"presentmon.csv"),"TimeInDateTime,MsBetweenPresents,Application,ProcessID,SwapChainAddress,PresentMode,AllowsTearing\r\n"+start.ToString("o")+",10,game.exe,42,0x1,Hardware: Independent Flip,0\r\n"+start.AddSeconds(2).ToString("o")+",10,game.exe,42,0x1,Hardware: Independent Flip,0\r\n");
+            File.WriteAllText(Path.Combine(dir,"system-samples.csv"),"Time,CpuFrequencyMHz,CpuPerformancePct\r\n"+start.ToString("o")+",5000,100\r\n"+start.AddSeconds(2).ToString("o")+",5000,100\r\n");
+            File.WriteAllText(Path.Combine(dir,"hardware-samples.csv"),"Time,CpuClockMHz,CpuCoreClocksMHz\r\n"+start.ToString("o")+",5250.25,5250.25;4200.5\r\n"+start.AddSeconds(2).ToString("o")+",5275.75,5275.75;4220.5\r\n");
+            File.WriteAllText(Path.Combine(dir,"cpu-core-samples.csv"),"Time,ProcessorGroup,LogicalProcessor,ActualFrequencyMHz\r\n"+start.ToString("o")+",0,0,5000\r\n");
+            File.WriteAllText(Path.Combine(dir,"hardware-inventory.json"),"{\"ConfigurationSource\":\"capture\",\"MemorySummary\":\"32GB Kingston CL30/RCDRD36/RCDWR32/RP36/RAS76/CR1T\"}");
+            FrameScopeReportGenerator.GenerateForTests(dir);
+            var data=LoadReportData(Path.Combine(dir,"charts","framescope-interactive-data.js"));
+            var perf=GetMap(GetMap(data,"system"),"perf");
+            AssertTrue(Convert.ToDouble(GetObjectList(perf,"cpuFreq")[0])>5200,"actual hardware core MHz must replace PDH reference");
+            AssertEqual(5000.0,Convert.ToDouble(GetObjectList(perf,"cpuFreqReference")[0]),"system reference remains separately available");
+            AssertEqual("hardware-service-core-clock",Convert.ToString(GetMap(data,"cpuCore")["source"]),"per-core chart must prefer the same hardware source");
+            AssertTrue(Convert.ToString(GetMap(data,"hardware")["MemorySummary"]).Contains("Kingston CL30"),"local report retains capture-time memory");
+        } finally {Directory.Delete(dir,true);}
     }
 
     private static void BatchInspectionIsReadOnlyAndReportsCapabilities()
@@ -836,7 +876,7 @@ public static class FrameScopeReportManifestTests
         }
     }
 
-    private static void ReportChartDataUsesBucketedFpsDisplayAndRawFrameStats()
+    private static void ReportChartDataUsesStatisticsV2SamplesAndFilter()
     {
         string dir = Path.Combine(Path.GetTempPath(), "framescope-fps-display-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -873,7 +913,7 @@ public static class FrameScopeReportManifestTests
 
             AssertEqual(20, Convert.ToInt32(counts["frames"]), "raw frame count preserved");
             AssertEqual(1000, Convert.ToInt32(fps["bucketMs"], CultureInfo.InvariantCulture), "fps chart should use one-second display buckets");
-            AssertEqual(2000, Convert.ToInt32(fps["lowWindowMs"], CultureInfo.InvariantCulture), "fps chart low series should use the existing two-second rolling window");
+            AssertEqual(1000, Convert.ToInt32(fps["lowWindowMs"], CultureInfo.InvariantCulture), "fps and Low share a one-second window");
             AssertEqual(2, GetObjectList(fps, "t").Count, "fps display point count should be bucketed, not raw frame count");
             AssertEqual(2, GetObjectList(fps, "avg").Count, "fps average display series should be bucketed");
             AssertEqual(2, GetObjectList(fps, "low1").Count, "fps 1% low display series should be bucketed");
@@ -882,11 +922,18 @@ public static class FrameScopeReportManifestTests
             AssertEqual(10, Convert.ToInt32(GetObjectList(fps, "samples")[0], CultureInfo.InvariantCulture), "first fps bucket sample count");
             AssertEqual(10, Convert.ToInt32(GetObjectList(fps, "samples")[1], CultureInfo.InvariantCulture), "second fps bucket sample count");
             AssertTrue(!fps.ContainsKey("min"), "fps chart data should not expose a minimum instant/anomaly marker series");
-            AssertEqual(0.0, Convert.ToDouble(GetObjectList(fps, "t")[0], CultureInfo.InvariantCulture), "first bucket timestamp");
-            AssertEqual(1.0, Convert.ToDouble(GetObjectList(fps, "t")[1], CultureInfo.InvariantCulture), "second bucket timestamp");
-            AssertEqual(90.81, Convert.ToDouble(frameStats["average"], CultureInfo.InvariantCulture), "average FPS should use raw frames including high spike frame time");
-            AssertEqual(25.0, Convert.ToDouble(frameStats["low1"], CultureInfo.InvariantCulture), "1% low should use raw slow frames");
-            AssertEqual(25.0, Convert.ToDouble(frameStats["low01"], CultureInfo.InvariantCulture), "0.1% low should use raw slow frames");
+            AssertEqual(1.0, Convert.ToDouble(GetObjectList(fps, "t")[0], CultureInfo.InvariantCulture), "first snapshot timestamp");
+            AssertEqual(1.9, Convert.ToDouble(GetObjectList(fps, "t")[1], CultureInfo.InvariantCulture), "partial tail emitted once");
+            AssertEqual(111, Convert.ToInt32(GetObjectList(fps, "avg")[0]), "first window retains the fast frame");
+            AssertEqual(77, Convert.ToInt32(GetObjectList(fps, "avg")[1]), "tail window retains the slow frame");
+            var rawSummary=GetMap(fps,"rawSummary");
+            AssertEqual(94, Convert.ToInt32(rawSummary["average"]), "raw summary averages the rounded snapshots");
+            AssertEqual(63, Convert.ToInt32(rawSummary["low1"]), "raw Low averages 100 and 25 with plugin rounding");
+            AssertEqual(63, Convert.ToInt32(rawSummary["low01"]), "raw 0.1% Low uses its own valid samples");
+            AssertEqual(null, frameStats["average"], "two-point reference filter may reject every sample");
+            AssertEqual(null, frameStats["low1"], "empty filtered Low remains missing");
+            AssertEqual(null, frameStats["low01"], "empty filtered 0.1% Low remains missing");
+            AssertEqual(2, Convert.ToInt32(GetMap(fps,"filter")["excluded"]), "excluded points remain explained");
             AssertEqual(4000.0, Convert.ToDouble(frameStats["maxInstant"], CultureInfo.InvariantCulture), "max FPS should use raw fastest frame");
         }
         finally
@@ -989,15 +1036,16 @@ public static class FrameScopeReportManifestTests
             Dictionary<string, object> read = FrameScopeReportGenerator.ReadPresentMonForTests(path);
             Dictionary<string, object> diagnostics = GetMap(read, "diagnostics");
 
-            AssertEqual(100, Convert.ToInt32(read["frames"], CultureInfo.InvariantCulture), "selected hardware frame count");
+            AssertEqual(101, Convert.ToInt32(read["frames"], CultureInfo.InvariantCulture), "selected hardware frame count includes the real long frame");
             AssertEqual(132, Convert.ToInt32(diagnostics["rawRows"], CultureInfo.InvariantCulture), "raw PresentMon row count");
             AssertEqual(132, Convert.ToInt32(diagnostics["validRows"], CultureInfo.InvariantCulture), "valid PresentMon row count");
-            AssertEqual(100, Convert.ToInt32(diagnostics["selectedRows"], CultureInfo.InvariantCulture), "selected PresentMon row count");
+            AssertEqual(101, Convert.ToInt32(diagnostics["selectedRows"], CultureInfo.InvariantCulture), "selected PresentMon row count");
             AssertEqual("primary-hardware-track", Convert.ToString(diagnostics["selectionMode"]), "multi-track hardware selection mode");
             AssertEqual(2, Convert.ToInt32(diagnostics["trackCount"], CultureInfo.InvariantCulture), "track count");
             AssertEqual(30, Convert.ToInt32(diagnostics["droppedTrackRows"], CultureInfo.InvariantCulture), "dropped non-primary track rows");
-            AssertEqual(2, Convert.ToInt32(diagnostics["droppedModeRows"], CultureInfo.InvariantCulture), "dropped non-hardware and resume artifact rows");
-            AssertEqual(1, Convert.ToInt32(diagnostics["droppedResumeArtifactRows"], CultureInfo.InvariantCulture), "dropped resume artifact row count");
+            AssertEqual(1, Convert.ToInt32(diagnostics["droppedModeRows"], CultureInfo.InvariantCulture), "dropped non-hardware row");
+            AssertEqual(0, Convert.ToInt32(diagnostics["droppedResumeArtifactRows"], CultureInfo.InvariantCulture), "long frames are no longer discarded");
+            AssertEqual(1, Convert.ToInt32(diagnostics["longFrameRowsRetained"], CultureInfo.InvariantCulture), "retained long-frame diagnostic");
         }
         finally
         {

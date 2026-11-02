@@ -1,33 +1,25 @@
 "use client";
 
-import { Button, useColorModeValue } from "@chakra-ui/react";
+import { Button, type ButtonProps } from "@chakra-ui/react";
 import { useBackground } from "@/contexts/background-context";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { useLiquidGlassRefraction } from "@/components/special/liquid-glass-svg-filter";
+import { LiquidGlassEdges } from "./liquid-glass-card";
 
-interface LiquidGlassButtonProps {
-  children: React.ReactNode;
-  className?: string;
-  [key: string]: any;
-}
+type LiquidGlassButtonProps=ButtonProps;
 
 export function LiquidGlassButton({ children, className, ...props }: LiquidGlassButtonProps) {
   const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode } = useBackground();
   const { getActiveColor, getHoverColor, getContrastTextColor } = useThemeColor();
   const { svgSupported } = useLiquidGlassRefraction(liquidGlassEnabled && liquidGlassMode === "real");
 
-  const glassBorderColor = useColorModeValue("rgba(255,255,255,0.3)", "rgba(255,255,255,0.15)");
   const glassBg = getActiveColor();
 
   // 模糊立即生效：页面切换动画期间的 backdrop-filter 关闭由 .page-animating 类统一处理
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
   const isReal = liquidGlassEnabled && liquidGlassMode === "real";
 
-  const backdropFilter = isReal
-    ? (svgSupported
-        ? `url(#nexbox-liquid-glass-filter) saturate(1.4)`
-        : `saturate(1.4) brightness(1.05)`)
-    : `blur(${effectiveBlur}px)`;
+  const backdropFilter = liquidGlassEnabled && !isReal ? `blur(${effectiveBlur}px)` : "none";
 
   return (
     <Button
@@ -46,10 +38,12 @@ export function LiquidGlassButton({ children, className, ...props }: LiquidGlass
         transition: "border-color 0.45s cubic-bezier(0.4, 0, 0.2, 1), backdrop-filter 0.45s cubic-bezier(0.4, 0, 0.2, 1)",
       }}
       _hover={{
-        bg: getHoverColor(),
+        bg: getActiveColor(),
+        filter: "brightness(0.94)",
       }}
       {...props}
     >
+      {isReal && svgSupported && <LiquidGlassEdges filter="url(#nexbox-liquid-glass-filter)" />}
       {children}
     </Button>
   );

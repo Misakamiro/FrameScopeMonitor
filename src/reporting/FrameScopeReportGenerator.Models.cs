@@ -55,6 +55,8 @@ internal static partial class FrameScopeReportGenerator
         public DateTime Time;
         public double? Cpu;
         public double? CpuFrequency;
+        public bool CpuHardwareClock;
+        public double? CpuReferenceFrequency;
         public double? CpuPerformancePct;
         public double? AvailableMb;
         public double? DiskAvgSecPerTransfer;

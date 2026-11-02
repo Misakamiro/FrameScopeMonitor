@@ -1,5 +1,32 @@
 use super::*;
 #[test]
+fn configured_system_proxy_prefers_origin_and_preserves_both_failure_causes() {
+    let server = Server::start(b"fixture installer");
+    let source = server.source(true);
+    source.origin_first.store(true, Ordering::Relaxed);
+    let mut routes = Vec::new();
+    assert_eq!(source.attempts(&AtomicBool::new(false), |proxy| { routes.push(proxy); Ok(42) }).unwrap(), 42);
+    assert_eq!(routes, vec![false]);
+    routes.clear();
+    let error = source.attempts::<()>(&AtomicBool::new(false), |proxy| {
+        routes.push(proxy); Err(if proxy { "accelerator TLS failure" } else { "origin proxy connection refused" }.into())
+    }).unwrap_err();
+    assert_eq!(routes, vec![false, true]);
+    assert!(error.contains("accelerator TLS failure") && error.contains("origin proxy connection refused"));
+}
+#[test]
+fn failed_accelerator_is_not_retried_for_every_following_resource() {
+    let server = Server::start(b"fixture installer");
+    let source = server.source(true);
+    let cancel = AtomicBool::new(false);
+    let mut routes = Vec::new();
+    source.attempts(&cancel, |proxy| {
+        routes.push(proxy); if proxy { Err("unavailable".into()) } else { Ok(()) }
+    }).unwrap();
+    source.attempts(&cancel, |proxy| { routes.push(proxy); Ok(()) }).unwrap();
+    assert_eq!(routes, vec![true, false, false]);
+}
+#[test]
 fn installation_never_interrupts_capture_report_or_waiting_auto_watcher(){
     for phase in ["capturing","stopping","generating","waiting","unknown"]{assert!(!installation_allowed(phase));}
     for phase in ["idle","stopped","completed"]{assert!(installation_allowed(phase));}
@@ -35,7 +62,7 @@ fn channel_selection_obeys_semver_and_never_silently_downgrades() {
 
 #[test]
 fn manifest_rejects_paths_channel_mismatch_and_inconsistent_identity() {
-    let valid = Manifest { schema: 1, version: "2.0.0-beta.1".into(), channel: "beta".into(),
+    let valid = Manifest { schema: 1, edition: "offline".into(), version: "2.0.0-beta.1".into(), channel: "beta".into(),
         git_sha: "a".repeat(40), platform: "windows-x86_64".into(),
         installer: Package { name: "FrameScope_2.0.0-beta.1_x64-setup.exe".into(), size: 5, sha256: "b".repeat(64) } };
     assert!(valid.validate("v2.0.0-beta.1").is_ok());
@@ -44,6 +71,51 @@ fn manifest_rejects_paths_channel_mismatch_and_inconsistent_identity() {
     bad = valid.clone(); bad.channel = "stable".into();
     assert!(bad.validate("v2.0.0-beta.1").is_err());
     assert!(valid.validate("v2.0.0").is_err());
+    bad = valid.clone(); bad.edition = "unknown".into();
+    assert!(bad.validate("v2.0.0-beta.1").is_err());
+}
+
+#[test]
+fn startup_identity_separates_editions_and_recognizes_legacy_full_builds() {
+    let full=BuildInfo::new("2.0.1-beta.8",&"a".repeat(40)).with_edition("full");
+    assert_eq!(full.resolved_edition(),"full");
+    assert_eq!(BuildInfo::new("2.0.1-beta.7",&"a".repeat(40)).resolved_edition(),"full");
+    let ticket=StartupTicket{nonce:"edition".into(),build:full.clone()};
+    let expected=Path::new("C:/FrameScope/FrameScope.exe");
+    let mut ack=StartupAck{nonce:ticket.nonce.clone(),build:full,executable:expected.into(),pid:1};
+    ack.build.edition="offline".into();
+    assert!(!startup_ack_matches(&ticket,&ack,expected,Some(expected)));
+}
+
+#[test]
+fn github_editions_filter_releases_downloads_and_cached_receipts() {
+    let server=Server::start(b"fixture installer");
+    let offline=server.source(false);
+    let full=server.source(false).with_edition("full").unwrap();
+    let mut manifest=candidate().manifest;
+    assert!(offline.accepts(&manifest));assert!(!full.accepts(&manifest));
+    manifest.edition="full".into();
+    assert!(full.accepts(&manifest));assert!(!offline.accepts(&manifest));
+    assert!(full.check("2.0.0-beta.0",true,false,None,&AtomicBool::new(false)).unwrap().is_empty());
+    let dir=tempfile::tempdir().unwrap();
+    let receipt=offline.download(&candidate(),dir.path(),&AtomicBool::new(false),|_,_|{}).unwrap();
+    assert!(full.verified_cache(dir.path(),&receipt).is_err());
+    assert!(full.download(&candidate(),dir.path(),&AtomicBool::new(false),|_,_|{}).is_err());
+    let mut bad=candidate();bad.manifest_name="../../evil".into();
+    assert!(offline.download(&bad,dir.path(),&AtomicBool::new(false),|_,_|{}).is_err());
+}
+
+#[test]
+fn legacy_testers_can_migrate_but_explicit_editions_stay_isolated() {
+    for version in ["2.0.0","2.0.1-beta.1","2.0.1-beta.2","2.0.1-beta.3","2.0.1-beta.4","2.0.1-beta.7"] {
+        assert!(BuildInfo::new(version,&"a".repeat(40)).can_upgrade_to("full"));
+    }
+    assert!(!BuildInfo::new("2.0.1-beta.3",&"a".repeat(40)).with_edition("offline").can_upgrade_to("full"));
+    assert!(!BuildInfo::new("2.0.1-beta.8",&"a".repeat(40)).can_upgrade_to("full"));
+    let mut manifest=candidate().manifest;
+    manifest.edition="offline".into();manifest.installer.name="FrameScope_2.0.0-beta.1_x64-offline-setup.exe".into();
+    assert!(manifest.validate("v2.0.0-beta.1").is_ok());
+    manifest.edition="full".into();assert!(manifest.validate("v2.0.0-beta.1").is_err());
 }
 
 #[test]
@@ -53,8 +125,45 @@ fn untrusted_manifest_signature_is_rejected_before_deserialization() {
 
 const TEXT: &str = include_str!("../tests/fixtures/release-manifest.json");
 const SIG: &str = include_str!("../tests/fixtures/release-manifest.json.minisig");
+#[test]
+fn environment_proxy_worker() {
+    if std::env::var_os("FRAMESCOPE_TEST_PROXY_CHILD").is_none() { return; }
+    let source = Source::new("http://framescope-proxy-check.invalid".into(), "http://framescope-proxy-check.invalid".into(), None, test_key().into()).unwrap();
+    assert_eq!(source.small("http://framescope-proxy-check.invalid/release-manifest.json", false, &AtomicBool::new(false)).unwrap(), TEXT.as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    source.transfer("http://framescope-proxy-check.invalid/release-manifest.json", &dir.path().join("download"), TEXT.len() as u64, &AtomicBool::new(false), &|_,_|{}).unwrap();
+    assert_eq!(fs::read(dir.path().join("download")).unwrap(), TEXT.as_bytes());
+}
+#[test]
+fn both_metadata_and_download_clients_follow_inherited_proxy_in_isolated_process() {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let mut count = 0;
+        while count < 2 && std::time::Instant::now() < deadline {
+            let Ok((mut socket,_)) = listener.accept() else { std::thread::sleep(Duration::from_millis(10)); continue; };
+            socket.set_nonblocking(false).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut buffer = [0u8; 4096]; let n = socket.read(&mut buffer).unwrap();
+            assert!(String::from_utf8_lossy(&buffer[..n]).starts_with("GET http://framescope-proxy-check.invalid/"));
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", TEXT.len(), TEXT).unwrap();
+            count += 1;
+        }
+        assert_eq!(count, 2);
+    });
+    let result = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::environment_proxy_worker", "--nocapture"])
+        .env("FRAMESCOPE_TEST_PROXY_CHILD", "1").env("HTTP_PROXY", &proxy).env("http_proxy", &proxy)
+        .env("HTTPS_PROXY", &proxy).env("https_proxy", &proxy).env("ALL_PROXY", &proxy).env("all_proxy", &proxy)
+        .env("NO_PROXY", "").env("no_proxy", "").output().unwrap();
+    server.join().unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+}
 fn test_key() -> &'static str { include_str!("../tests/fixtures/test.pub").lines().nth(1).unwrap() }
-fn candidate() -> Candidate { Candidate {id:42,tag:"v2.0.0-beta.1".into(),notes:"fixture".into(),manifest:verify_manifest(TEXT.as_bytes(),SIG,test_key(),"v2.0.0-beta.1").unwrap()} }
+fn candidate() -> Candidate { Candidate {id:42,tag:"v2.0.0-beta.1".into(),notes:"fixture".into(),manifest_name:MANIFEST.into(),manifest:verify_manifest(TEXT.as_bytes(),SIG,test_key(),"v2.0.0-beta.1").unwrap()} }
 
 #[test]
 fn real_minisign_signature_rejects_tampering_and_foreign_key() {

@@ -9,6 +9,35 @@ using System.Web.Script.Serialization;
 
 internal static partial class FrameScopeReportGenerator
 {
+    private static Dictionary<string,object> StatisticsSummary(FrameScopeFrameStatistics.Result result,bool filtered)
+    {
+        FrameScopeFrameStatistics.Values values=filtered?result.Filtered:result.Raw;
+        double? minimum=null,maximum=null;
+        for(int i=0;i<result.Samples.Count;i++) {
+            if(filtered&&!result.Included[i])continue;
+            var value=result.Samples[i].Average;
+            if(value.HasValue){minimum=!minimum.HasValue||value<minimum?value:minimum;maximum=!maximum.HasValue||value>maximum?value:maximum;}
+        }
+        return new Dictionary<string,object>{{"average",values.Average},{"low1",values.Low1},{"low01",values.Low01},{"min",minimum},{"max",maximum}};
+    }
+
+    private static Dictionary<string,object> BuildStatisticsV2(List<KeyValuePair<DateTime,double>> frames,DateTime start)
+    {
+        var input=new List<FrameScopeFrameStatistics.Frame>(frames.Count);
+        foreach(var frame in frames)input.Add(new FrameScopeFrameStatistics.Frame((frame.Key-start).TotalMilliseconds,frame.Value));
+        var statistics=FrameScopeFrameStatistics.Replay(input);
+        var times=new List<double>();var average=new List<double?>();var low1=new List<double?>();var low01=new List<double?>();var counts=new List<int>();
+        foreach(var sample in statistics.Samples){times.Add(sample.TimeMs/1000.0);average.Add(sample.Average);low1.Add(sample.Low1);low01.Add(sample.Low01);counts.Add(sample.Count);}
+        return new Dictionary<string,object>{
+            {"statisticsVersion",FrameScopeFrameStatistics.Version},{"profile","gamepp-lite-v2"},
+            {"bucketMs",1000},{"lowWindowMs",1000},{"updateIntervalMs",100},
+            {"t",times},{"avg",average},{"low1",low1},{"low01",low01},{"samples",counts},{"included",statistics.Included},
+            {"rawSummary",StatisticsSummary(statistics,false)},{"filteredSummary",StatisticsSummary(statistics,true)},
+            {"filter",new Dictionary<string,object>{{"minimum",statistics.MinimumFps},{"maximum",statistics.MaximumFps},
+                {"valid",statistics.ValidSamples},{"retained",statistics.RetainedSamples},{"excluded",statistics.ExcludedSamples},{"missing",statistics.MissingSamples}}}
+        };
+    }
+
     private static List<KeyValuePair<DateTime, double>> AlignPresentMonTime(List<KeyValuePair<DateTime, double>> frames, List<SystemRow> systemRows, out int timeShiftHours)
     {
         timeShiftHours = 0;

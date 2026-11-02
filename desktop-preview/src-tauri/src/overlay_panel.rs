@@ -10,6 +10,8 @@ static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OVERLAY_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 static DRAG_MODE: AtomicBool = AtomicBool::new(false);
 static POSITION_CHANGED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static POSITION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Takes (clears) the drag-moved flag; true means CURRENT_SETTINGS now holds
 /// a window position that has never been persisted.
@@ -118,11 +120,15 @@ pub struct OverlaySettings {
     pub position_x: Option<i32>,
     #[serde(default)]
     pub position_y: Option<i32>,
+    #[serde(default)]
+    pub position_reference: Option<crate::overlay_position::PositionReference>,
     /// 竖排悬浮框独立位置（与 Win32 悬浮框的 position_x/y 解耦，互不影响）
     #[serde(default)]
     pub vertical_position_x: Option<i32>,
     #[serde(default)]
     pub vertical_position_y: Option<i32>,
+    #[serde(default)]
+    pub vertical_position_reference: Option<crate::overlay_position::PositionReference>,
     /// 三角洲密码选中的地图名称列表（空 = 显示全部）
     #[serde(default)]
     pub delta_password_maps: Vec<String>,
@@ -141,8 +147,10 @@ impl Default for OverlaySettings {
             font_color: "#ffffff".to_string(),
             position_x: None,
             position_y: None,
+            position_reference: None,
             vertical_position_x: None,
             vertical_position_y: None,
+            vertical_position_reference: None,
             delta_password_maps: Vec::new(),
         }
     }
@@ -181,7 +189,7 @@ pub struct OverlayHardwareData {
     fps_01low: Option<f64>,
     cpu_usage: Option<u16>,
     cpu_temp: Option<f64>,
-    cpu_clock: Option<u32>,
+    cpu_clock: Option<f64>,
     gpu_temp: Option<f64>,
     gpu_usage: Option<u32>,
     memory_usage: Option<f64>,
@@ -259,7 +267,7 @@ pub static SETTINGS_LOADED_FROM_STORE: std::sync::atomic::AtomicBool = std::sync
 pub struct HoverSnapshot {
     pub cpu_usage: Option<u16>,
     pub cpu_temp: Option<f64>,
-    pub cpu_clock: Option<u32>,
+    pub cpu_clock: Option<f64>,
     pub cpu_fan_speed: Option<u32>,
     pub cpu_voltage: Option<f64>,
     pub cpu_power: Option<f64>,
@@ -460,39 +468,27 @@ mod win32 {
     }
 
     unsafe fn monitor_work_area(settings: &super::OverlaySettings) -> RECT {
-        let hmon = MonitorFromPoint(
-            POINT { x: settings.position_x.unwrap_or(0), y: settings.position_y.unwrap_or(0) },
-            MONITOR_DEFAULTTONEAREST,
-        );
-        let mut info: MONITORINFO = std::mem::zeroed();
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        if !hmon.is_null() && GetMonitorInfoW(hmon, &mut info) != 0 {
-            info.rcWork
-        } else {
-            RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }
-        }
+        crate::overlay_display::resolve((settings.position_x.unwrap_or(0),settings.position_y.unwrap_or(0)),
+            settings.position_reference.as_ref()).area
     }
 
     fn fitted_position(settings: &super::OverlaySettings, area: RECT, width: i32, height: i32) -> POINT {
-        let x = settings.position_x.unwrap_or(area.left + (area.right - area.left - width) / 2);
-        let y = settings.position_y.unwrap_or(area.top + if settings.style == "dynamic_island" { 4 } else { 0 });
-        POINT {
-            x: x.clamp(area.left, (area.right - width).max(area.left)),
-            y: y.clamp(area.top, (area.bottom - height).max(area.top)),
-        }
+        let point = (settings.position_x.unwrap_or(area.left + (area.right - area.left - width) / 2),
+            settings.position_y.unwrap_or(area.top + if settings.style == "dynamic_island" { 4 } else { 0 }));
+        let (x,y) = crate::overlay_position::fit(point, settings.position_reference.as_ref(),
+            (area.left,area.top,area.right-area.left,area.bottom-area.top),(width,height));
+        POINT { x, y }
     }
 
-    fn remember_fitted_position(settings: &super::OverlaySettings, point: POINT) {
-        if settings.position_x.is_none() && settings.position_y.is_none() {
-            return;
-        }
-        if let Some(current) = super::CURRENT_SETTINGS.lock().unwrap().as_mut() {
-            if current.position_x == settings.position_x && current.position_y == settings.position_y
-                && (current.position_x != Some(point.x) || current.position_y != Some(point.y))
-            {
-                current.position_x = Some(point.x);
-                current.position_y = Some(point.y);
-                super::POSITION_CHANGED.store(true, super::Ordering::SeqCst);
+    fn remember_position_reference(settings: &super::OverlaySettings, area: RECT, width: i32, height: i32) {
+        let (Some(x),Some(y))=(settings.position_x,settings.position_y) else { return; };
+        if settings.position_reference.is_some() || !crate::overlay_position::can_adopt((x,y),
+            (area.left,area.top,area.right-area.left,area.bottom-area.top),(width,height)) { return; }
+        let display=crate::overlay_display::resolve((x,y),None);
+        if let Some(current)=super::CURRENT_SETTINGS.lock().unwrap().as_mut() {
+            if current.position_x==Some(x) && current.position_y==Some(y) && current.position_reference.is_none() {
+                current.position_reference=Some(display.reference(width,height));
+                super::POSITION_CHANGED.store(true,super::Ordering::SeqCst);
             }
         }
     }
@@ -782,7 +778,7 @@ mod win32 {
                     items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
                 }
                 "cpu_clock" => {
-                    let val = data.cpu_clock.map(|v| format!("{}MHz", v)).unwrap_or_else(|| "--MHz".to_string());
+                    let val = data.cpu_clock.map(|v| format!("{v:.0}MHz")).unwrap_or_else(|| "--MHz".to_string());
                     items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
                 }
                 "cpu_voltage" => {
@@ -1180,7 +1176,7 @@ mod win32 {
         #[cfg(feature = "uiaccess-acceptance")]
         record_render(hwnd,bits,dib_width,dib_height,settings,updated != 0);
         if updated != 0 {
-            remember_fitted_position(settings, ppt_dst);
+            remember_position_reference(settings, area, dib_width, dib_height);
         }
 
         SelectObject(mem_dc, old_bmp);
@@ -1458,7 +1454,7 @@ mod win32 {
         if ulw_ret == 0 {
             eprintln!("[osd-island] UpdateLayeredWindow failed err={} size={}x{}", GetLastError(), psize.cx, psize.cy);
         } else {
-            remember_fitted_position(settings, ppt_dst);
+            remember_position_reference(settings, area, dib_width, dib_height);
         }
 
         SelectObject(mem_dc, old_bmp);
@@ -1548,13 +1544,16 @@ mod win32 {
                 0
             }
             WM_EXITSIZEMOVE => {
-                IN_SIZE_MOVE.store(false, super::Ordering::SeqCst);
                 // 拖动结束后只保存位置，不退出拖动模式
                 // 退出由前端按钮控制，避免样式切换导致位置重置
                 if super::DRAG_MODE.load(std::sync::atomic::Ordering::SeqCst) {
                     // 获取当前窗口位置
                     let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                    GetWindowRect(hwnd, &mut rect);
+                    if GetWindowRect(hwnd, &mut rect) == 0 {
+                        IN_SIZE_MOVE.store(false, super::Ordering::SeqCst);
+                        return 0;
+                    }
+                    let display=crate::overlay_display::resolve((rect.left+(rect.right-rect.left)/2,rect.top+(rect.bottom-rect.top)/2),None);
 
                     // 保存位置到设置
                     {
@@ -1562,13 +1561,15 @@ mod win32 {
                         if let Some(ref mut settings) = *settings_lock {
                             settings.position_x = Some(rect.left);
                             settings.position_y = Some(rect.top);
+                            settings.position_reference=Some(display.reference(rect.right-rect.left,rect.bottom-rect.top));
                         }
                     }
 
                     // 标记位置已变更
                     super::POSITION_CHANGED.store(true, std::sync::atomic::Ordering::SeqCst);
-                    repaint_overlay(hwnd);
                 }
+                IN_SIZE_MOVE.store(false, super::Ordering::SeqCst);
+                repaint_overlay(hwnd);
                 0
             }
             WM_DESTROY => {
@@ -1745,20 +1746,6 @@ pub fn stop_overlay() -> Result<OverlayResult, String> {
 /// Check if Win32 overlay is active.
 pub fn is_overlay_active() -> bool {
     OVERLAY_ACTIVE.load(Ordering::SeqCst)
-}
-
-pub fn update_settings(settings: OverlaySettings) -> Result<(), String> {
-    // Stop a running GDI panel, store the new settings, and STOP there.
-    // Restarting is the caller's job (start_selected knows the NEW style):
-    // this function used to auto-relaunch the GDI window, which the vertical
-    // switch path then immediately stopped again (GDI->vertical flashed a
-    // full teardown+rebuild) and which made every opacity-slider tick on a
-    // GDI style destroy+recreate the window (visible flicker).
-    let active = is_overlay_active();
-    if active { stop_overlay()?; }
-    *CURRENT_SETTINGS.lock().unwrap() = Some(settings);
-    let _ = active;
-    Ok(())
 }
 
 /// Store new settings WITHOUT touching any running window. Companion to

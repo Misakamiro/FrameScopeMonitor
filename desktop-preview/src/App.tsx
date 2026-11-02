@@ -13,12 +13,15 @@ import SensorMonitorPage from "./pages/SensorMonitorPage";
 import TargetsPage from "./preview/pages/TargetsPage";
 import ReportsPage from "./preview/pages/ReportsPage";
 import { useAppStartup } from "./contexts/app-startup-context";
+import { useBackground } from "./contexts/background-context";
 import { SplashScreen } from "./components/SplashScreen";
 import { DynamicIslandHost } from "./components/ui/dynamic-island";
+import { SearchTargetFocus } from "./components/ui/search-target-focus";
 
 export default function App() {
   const location = useLocation();
   const { isStartupComplete } = useAppStartup();
+  const { backgroundMode } = useBackground();
   const mode = useTransitionMode();
   const pageLocation = usePageLocation(location, mode);
   const isHome = pageLocation.pathname === "/";
@@ -48,12 +51,13 @@ export default function App() {
     <>
       {!isStartupComplete && <SplashScreen />}
       <MainLayout>
-        <Box data-page-content="">
+        <Box data-page-content="" color={backgroundMode === "mr" ? "#e0e0e0" : undefined}>
           {home}
           {pages}
         </Box>
       </MainLayout>
       <DynamicIslandHost />
+      <SearchTargetFocus />
     </>
   );
 }

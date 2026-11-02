@@ -46,3 +46,28 @@ test("one failed subrequest cannot start another cycle while its siblings are pe
   expect(publish).toHaveBeenLastCalledWith(null);
   stop();
 });
+
+function activity(initial=true) {
+  let active=initial;const listeners=new Set<()=>void>();
+  return {getSnapshot:()=>active,subscribe:(listener:()=>void)=>{listeners.add(listener);return()=>{listeners.delete(listener);};},setActive:(value:boolean)=>{active=value;listeners.forEach(listener=>listener());}};
+}
+test("hidden main window does not poll or retain visual expiry timers", async () => {
+  const gate=activity(false),read=vi.fn(async()=>null),publish=vi.fn();
+  const stop=startLiveHardwarePolling(read,publish,gate);
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(read).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
+  gate.setActive(true);await vi.advanceTimersByTimeAsync(0);expect(read).toHaveBeenCalledTimes(3);
+  gate.setActive(false);const published=publish.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(60000);expect(read).toHaveBeenCalledTimes(3);expect(publish.mock.calls.length).toBe(published);expect(vi.getTimerCount()).toBe(0);
+  stop();
+});
+test("hide and restore during one in-flight refresh never overlap or publish the old reply", async () => {
+  const gate=activity(),pending:{resolve:(value:unknown)=>void}[]=[];
+  const read=vi.fn(()=>new Promise(resolve=>pending.push({resolve}))),publish=vi.fn();
+  const stop=startLiveHardwarePolling(read,publish,gate);expect(read).toHaveBeenCalledTimes(3);
+  gate.setActive(false);gate.setActive(true);expect(read).toHaveBeenCalledTimes(3);
+  pending.splice(0).forEach(item=>item.resolve(null));await vi.advanceTimersByTimeAsync(0);
+  expect(publish).not.toHaveBeenCalled();expect(read).toHaveBeenCalledTimes(6);
+  stop();pending.splice(0).forEach(item=>item.resolve(null));await vi.advanceTimersByTimeAsync(5000);
+  expect(publish).not.toHaveBeenCalled();expect(vi.getTimerCount()).toBe(0);
+});

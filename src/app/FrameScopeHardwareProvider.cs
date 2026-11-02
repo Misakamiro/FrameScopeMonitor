@@ -13,6 +13,12 @@ using System.Web.Script.Serialization;
 // The Rust service owns lifecycle/protocol; this process owns the .NET-only DLL.
 internal static class FrameScopeHardwareProvider
 {
+    private static readonly string ProviderVersion=ReadProviderVersion();
+    private static string ReadProviderVersion()
+    {
+        try { return AssemblyName.GetAssemblyName(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"LibreHardwareMonitorLib.dll")).Version.ToString(); }
+        catch { return "unknown"; }
+    }
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
     private sealed class Reading
@@ -176,7 +182,8 @@ internal static class FrameScopeHardwareProvider
                 { "capturedAt", capturedAt }, { "sequence", sequence }, { "availability", availability },
                 { "static", BuildStatic(readings) }, { "dynamic", BuildDynamic(readings, capturedAt) },
                 { "sensors", readings.Select(ToJson).Cast<object>().ToArray() },
-                { "errors", errors.ToArray() }, { "pawnIo", pawnIoStatus }
+                { "errors", errors.ToArray() }, { "pawnIo", pawnIoStatus },
+                { "provider", new Dictionary<string,object>{{"version",ProviderVersion}} }
             };
             stdout.WriteLine(Json.Serialize(payload));
         }
@@ -771,7 +778,7 @@ internal static class FrameScopeHardwareProvider
     {
         Reading cpuLoad = Find(rows, "Cpu", "Load", "CPU Total", "Total");
         Reading cpuTemp = Find(rows, "Cpu", "Temperature", "Tctl/Tdie", "CPU Package", "Core Average", "CPU Total");
-        Reading cpuClock = Find(rows, "Cpu", "Clock", "Cores (Average)", "CPU Core", "Core Effective Clock", "CPU Clock");
+        Reading cpuClock = Find(rows.Where(r=>r.name.IndexOf("Effective",StringComparison.OrdinalIgnoreCase)<0).ToList(), "Cpu", "Clock", "Cores (Average)", "CPU Core", "CPU Clock");
         Reading cpuPower = Find(rows, "Cpu", "Power", "Package", "CPU Package", "CPU PPT");
         var memory = ReadMemoryStatus();
         double? total = memory == null ? (double?)null : memory.TotalPhysical / 1073741824d;

@@ -1,9 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
-const {createRequire} = require('node:module');
 const assert = require('node:assert/strict');
-const {chromium} = createRequire('C:/Users/misakamiro/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/browser-entry.cjs')('playwright');
+const {chromium} = require(require.resolve('playwright', { paths: [process.env.FRAMESCOPE_BROWSER_DEPS || process.cwd()] }));
 
 (async () => {
   const run = path.resolve(process.argv[2]);

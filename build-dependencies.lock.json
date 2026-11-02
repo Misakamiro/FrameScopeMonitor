@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "archiveUrl": "https://github.com/Misakamiro/FrameScopeMonitor/releases/download/v2.1.2/FrameScope_2.1.2_full-client-source.zip",
+  "archiveSha256": "37CFB97B23DC6F9EEAE630BDBEB4744808115C3F7871A1E8D28664CAC181DC0B",
+  "files": [
+    {
+      "file": "packaging/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+      "sha256": "3A08103BED8A3D9AEFDFC9AC10A672EA69605163F2DCB08D76CFD3E0444511C9"
+    },
+    {
+      "file": "packaging/PawnIO_setup.exe",
+      "sha256": "1F519A22E47187F70A1379A48CA604981C4FCF694F4E65B734AAA74A9FBA3032"
+    }
+  ]
+}

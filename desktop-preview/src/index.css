@@ -10,7 +10,7 @@
 @font-face {
   font-family: "MiSans";
   src: url("/fonts/MiSansVF.ttf") format("truetype");
-  font-weight: normal;
+  font-weight: 150 700;
   font-style: normal;
   font-display: swap;
 }
@@ -178,16 +178,16 @@ html[data-overlay-window="vertical"] #root {
     transform: scale(1) translateZ(0);
   }
   18% {
-    transform: scale(1.05) translateZ(0);
+    transform: scale(var(--nexbox-jelly-peak, 1.05)) translateZ(0);
   }
   38% {
-    transform: scale(0.97) translateZ(0);
+    transform: scale(var(--nexbox-jelly-compression, 0.97)) translateZ(0);
   }
   58% {
-    transform: scale(1.02) translateZ(0);
+    transform: scale(var(--nexbox-jelly-settle, 1.02)) translateZ(0);
   }
   76% {
-    transform: scale(0.99) translateZ(0);
+    transform: scale(var(--nexbox-jelly-small, 0.99)) translateZ(0);
   }
   100% {
     transform: scale(1) translateZ(0);
@@ -200,13 +200,13 @@ html[data-overlay-window="vertical"] #root {
     transform: scale(1) translateZ(0);
   }
   22% {
-    transform: scale(1.06) translateZ(0);
+    transform: scale(var(--nexbox-jelly-subtlePeak, 1.06)) translateZ(0);
   }
   48% {
-    transform: scale(0.97) translateZ(0);
+    transform: scale(var(--nexbox-jelly-compression, 0.97)) translateZ(0);
   }
   72% {
-    transform: scale(1.015) translateZ(0);
+    transform: scale(var(--nexbox-jelly-subtleSettle, 1.015)) translateZ(0);
   }
   100% {
     transform: scale(1) translateZ(0);
@@ -216,20 +216,20 @@ html[data-overlay-window="vertical"] #root {
 /* 导航栏外层容器专用（侧边模式，需保留 translateY(-50%) 定位） */
 @keyframes jellyBounceSidebarLeft {
   0%   { transform: translateY(-50%) translateZ(0) scale(1); }
-  18%  { transform: translateY(-50%) translateZ(0) scale(1.05); }
-  38%  { transform: translateY(-50%) translateZ(0) scale(0.97); }
-  58%  { transform: translateY(-50%) translateZ(0) scale(1.02); }
-  76%  { transform: translateY(-50%) translateZ(0) scale(0.99); }
+  18%  { transform: translateY(-50%) translateZ(0) scale(var(--nexbox-jelly-peak, 1.05)); }
+  38%  { transform: translateY(-50%) translateZ(0) scale(var(--nexbox-jelly-compression, 0.97)); }
+  58%  { transform: translateY(-50%) translateZ(0) scale(var(--nexbox-jelly-settle, 1.02)); }
+  76%  { transform: translateY(-50%) translateZ(0) scale(var(--nexbox-jelly-small, 0.99)); }
   100% { transform: translateY(-50%) translateZ(0) scale(1); }
 }
 
 /* 导航栏外层容器专用（顶部模式，需保留 translateX(-50%) 定位） */
 @keyframes jellyBounceSidebarTop {
   0%   { transform: translateX(-50%) translateZ(0) scale(1); }
-  18%  { transform: translateX(-50%) translateZ(0) scale(1.05); }
-  38%  { transform: translateX(-50%) translateZ(0) scale(0.97); }
-  58%  { transform: translateX(-50%) translateZ(0) scale(1.02); }
-  76%  { transform: translateX(-50%) translateZ(0) scale(0.99); }
+  18%  { transform: translateX(-50%) translateZ(0) scale(var(--nexbox-jelly-peak, 1.05)); }
+  38%  { transform: translateX(-50%) translateZ(0) scale(var(--nexbox-jelly-compression, 0.97)); }
+  58%  { transform: translateX(-50%) translateZ(0) scale(var(--nexbox-jelly-settle, 1.02)); }
+  76%  { transform: translateX(-50%) translateZ(0) scale(var(--nexbox-jelly-small, 0.99)); }
   100% { transform: translateX(-50%) translateZ(0) scale(1); }
 }
 
@@ -252,9 +252,7 @@ body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-card.no-bounce {
   animation: none !important;
 }
 
-body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-nav-button {
-  animation: jellyBounceSubtle 0.56s cubic-bezier(0.4, 0, 0.2, 1);
-}
+/* 导航图标随外层弹跳，不再叠加按钮自身的第二次缩放。 */
 
 body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-sidebar-left {
   animation: jellyBounceSidebarLeft 0.62s cubic-bezier(0.4, 0, 0.2, 1);
@@ -265,10 +263,6 @@ body.jelly-bounce-enabled.jelly-bounce-active .jelly-bounce-sidebar-top {
 }
 
 /* 导航栏状态切换时触发（通过 JS 添加 .jelly-bouncing class） */
-body.jelly-bounce-enabled .jelly-bounce-sidebar-content.jelly-bouncing {
-  animation: jellyBounce 0.62s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
 body.jelly-bounce-enabled .jelly-bounce-nav-button.jelly-bouncing {
   animation: jellyBounceSubtle 0.56s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -319,6 +313,23 @@ body.jelly-bounce-enabled .jelly-bounce-sidebar-top.jelly-bouncing {
 }
 
 /* SVG 滤镜容器：隐藏不占空间 */
+[data-glass-material="real"] :is([data-glass-surface="panel"], .chakra-modal__content, .chakra-drawer__content, .chakra-menu__menu-list, .chakra-popover__content) {
+  isolation: isolate;
+  box-shadow: inset 0 0 2px 1px rgba(255,255,255,.18), 0 8px 24px rgba(0,0,0,.12);
+}
+[data-glass-material="real"] :is([data-glass-surface="panel"], .chakra-modal__content, .chakra-drawer__content, .chakra-menu__menu-list, .chakra-popover__content)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 4px;
+  border-radius: inherit;
+  pointer-events: none;
+  backdrop-filter: var(--framescope-edge-filter, none);
+  -webkit-backdrop-filter: var(--framescope-edge-filter, none);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+}
+
 .real-liquid-glass-svg-defs {
   position: absolute;
   width: 0;
@@ -364,7 +375,7 @@ body.jelly-bounce-enabled .jelly-bounce-sidebar-top.jelly-bouncing {
   }
   100% {
     opacity: 1;
-    transform: scale(1.06);
+    transform: scale(var(--nexbox-jelly-subtlePeak, 1.06));
   }
 }
 
@@ -405,4 +416,15 @@ input.lyrics-vol-slider::-webkit-slider-thumb {
   border: 2px solid var(--vol-color);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   cursor: pointer;
+}
+
+/* Only visual animation is paused; the document and error surfaces remain renderable. */
+html[data-main-window-active="false"] *, [data-main-ui-active="false"], [data-main-ui-active="false"] * {
+  animation-play-state: paused !important;
+}
+
+:root {
+ --framescope-control-bg: #edf0f5; --framescope-control-hover: #fff; --framescope-control-border: rgba(40,48,62,.18);
+ --framescope-control-fg: #202633; --framescope-panel-bg: #fafcff; --framescope-surface-filter: none;
+ --framescope-primary: #98ddd0; --framescope-primary-hover: #80cabb; --framescope-primary-fg: #152522;
 }

@@ -3,6 +3,7 @@ internal static partial class FrameScopeReportGenerator
     private static string ReportHtmlStyles()
     {
         return @"  <style>
+    #fpsFilterControl{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}#fpsFilterControl[hidden],#fpsFilterInfo[hidden]{display:none}#fpsFilter{height:auto;margin:0;padding:0;flex:0 0 auto}
     :root{--bg:#030812;--workspace:#06111f;--panel:rgba(8,24,42,.86);--panel2:rgba(12,34,58,.94);--line:rgba(60,132,190,.46);--lineHot:rgba(0,217,255,.92);--text:#f1f7ff;--muted:#afc3d9;--dim:#6f879f;--cyan:#00d9ff;--blue:#147dff;--green:#46ff6a;--yellow:#ffd84a;--purple:#9a5cff;--red:#ff4f78}
     *{box-sizing:border-box} body{margin:0;min-height:100vh;background:linear-gradient(135deg,var(--bg),#050b14 58%,#071321);color:var(--text);font-family:'Segoe UI','Microsoft YaHei UI',Arial,sans-serif;letter-spacing:0}
     .shell{width:min(1900px,calc(100vw - 28px));margin:14px auto;display:grid;grid-template-columns:316px minmax(0,1fr);gap:16px}

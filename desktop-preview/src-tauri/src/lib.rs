@@ -1,13 +1,29 @@
-﻿#[cfg(test)]
+#[cfg(test)]
 mod tests;
 mod backend;
+#[path = "../../../src/core/frame_statistics.rs"]
+mod frame_statistics;
 mod bounded_process;
 mod host_shutdown;
 mod hardware_service;
+#[path = "../../../src/core/windows_shutdown.rs"]
+mod windows_shutdown;
 mod runtime_uiaccess;
 mod updater;
+mod window_activity;
+mod startup_diagnostics;
 mod delta_password;
 mod overlay_panel;
+mod overlay_lifecycle;
+mod overlay_runtime;
+mod overlay_diagnostics;
+#[cfg(all(windows,feature="uiaccess-acceptance"))]
+mod overlay_acceptance;
+mod overlay_position;
+#[cfg(windows)]
+mod overlay_display;
+#[cfg(windows)]
+mod vertical_overlay_position;
 mod pawnio;
 #[cfg(windows)]
 mod window_icons;
@@ -15,17 +31,92 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-static OVERLAY_OPERATION: Mutex<()> = Mutex::new(());
 static SHUTDOWN_COMPLETE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static MAIN_ACTIVITY: Mutex<window_activity::State> = Mutex::new(window_activity::State::new());
+
+fn main_window_activity(window:&tauri::WebviewWindow)->Value {
+    let visible=window.is_visible().unwrap_or(false);
+    let minimized=window.is_minimized().unwrap_or(false);
+    let (visible,minimized,revision)=MAIN_ACTIVITY.lock().unwrap_or_else(|p|p.into_inner())
+        .update(visible,minimized);
+    json!({"visible":visible,"minimized":minimized,"revision":revision})
+}
+fn publish_main_activity(window:&tauri::WebviewWindow) {
+    static LAST_TRACE:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(u64::MAX);
+    let state=main_window_activity(window);
+    if LAST_TRACE.swap(state["revision"].as_u64().unwrap_or(0),std::sync::atomic::Ordering::SeqCst)!=state["revision"].as_u64().unwrap_or(0) {
+        record_startup(window.app_handle(),if state["minimized"]==true{"main-minimized"}else if state["visible"]==true{"main-visible"}else{"main-hidden"});
+    }
+    let _=window.emit("main-window-activity",state);
+}
+fn show_main_window(window:&tauri::WebviewWindow) {
+    let _=window.unminimize();let _=window.show();let _=window.set_focus();publish_main_activity(window);
+}
+fn emit_vertical_data(app:&tauri::AppHandle,data:Value) {
+    if let Some(window)=app.get_webview_window("vertical-overlay") {
+        if window.is_visible().unwrap_or(false) {let _=window.emit("vertical-overlay-data",data);}
+    }
+}
+fn startup_diagnostic_path(app:&tauri::AppHandle)->Result<std::path::PathBuf,String> {
+    Ok(app.path().app_data_dir().map_err(|e|e.to_string())?.join("diagnostics").join(concat!("startup-",env!("FRAMESCOPE_VERSION"),".jsonl")))
+}
+fn record_startup(app:&tauri::AppHandle,phase:&str) {
+    if let Ok(path)=startup_diagnostic_path(app){let _=startup_diagnostics::record(&path,env!("FRAMESCOPE_VERSION"),phase);}
+}
+#[cfg(windows)]
+fn install_webview_failure_handler(app:&tauri::AppHandle) {
+    use webview2_com::{ProcessFailedEventHandler,Microsoft::Web::WebView2::Win32::*};
+    let Some(window)=app.get_webview_window("main") else{return;};
+    let owner=app.clone();
+    let _=window.with_webview(move|platform|{
+        let registered=(||->windows::core::Result<()> {
+            unsafe {
+                let core=platform.controller().CoreWebView2()?;
+                let showing=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let handler=ProcessFailedEventHandler::create(Box::new(move|_,args|{
+                    let Some(args)=args else{return Ok(());};
+                    let mut kind=COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED;
+                    args.ProcessFailedKind(&mut kind)?;
+                    let phase=match kind {
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED=>"browser-failed",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED=>"renderer-failed",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE=>"renderer-unresponsive",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_FRAME_RENDER_PROCESS_EXITED=>"subframe-failed",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_GPU_PROCESS_EXITED=>"gpu-failed",
+                        COREWEBVIEW2_PROCESS_FAILED_KIND_UTILITY_PROCESS_EXITED=>"utility-failed",
+                        _=>"other-process-failed",
+                    };
+                    record_startup(&owner,phase);
+                    if !matches!(phase,"browser-failed"|"renderer-failed"|"renderer-unresponsive")||showing.swap(true,std::sync::atomic::Ordering::SeqCst){return Ok(());}
+                    use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+                    let app=owner.clone();let showing=showing.clone();
+                    if phase=="browser-failed" {
+                        owner.dialog().message("界面浏览器进程已退出，启动诊断已保存在本机。请通过托盘正常退出 FrameScope，等待监测和报告收尾后重新启动；监测数据与设置保留。").title("FrameScope 界面异常").show(move|_|{showing.store(false,std::sync::atomic::Ordering::SeqCst);});
+                        return Ok(());
+                    }
+                    owner.dialog().message("界面渲染进程出现问题，启动诊断已保存在本机，监测数据与设置保留。可尝试重新加载界面；若未恢复，请通过托盘正常退出后再启动。").title("FrameScope 界面异常")
+                        .buttons(MessageDialogButtons::OkCancelCustom("重新加载界面".into(),"暂不操作".into())).show(move|reload|{
+                            showing.store(false,std::sync::atomic::Ordering::SeqCst);
+                            if reload {if let Some(window)=app.get_webview_window("main"){if let Ok(url)=window.url(){let _=window.navigate(url);}}}
+                        });
+                    Ok(())
+                }));
+                let mut token=0;core.add_ProcessFailed(&handler,&mut token)?;
+            }
+            Ok(())
+        })();
+        if registered.is_err(){log::warn!("WebView process diagnostics could not be registered");}
+    });
+}
 
 fn request_shutdown(app: &tauri::AppHandle) {
     if !backend::begin_shutdown() { return; }
+    hardware_service::prevent_new_connections();
     let app = app.clone();
     std::thread::spawn(move || {
-        let _overlay = OVERLAY_OPERATION.lock().unwrap_or_else(|p|p.into_inner());
         let result = backend::shutdown_owned_monitor()
             .map_err(|error| format!("停止监控和报告收尾失败：{error}"))
-            .and_then(|_| stop_windows(&app).map_err(|error| format!("保存悬浮窗设置或关闭悬浮窗失败：{error}")))
+            .and_then(|_| overlay_runtime::request_blocking(app.clone(),overlay_runtime::Action::Stop,overlay_lifecycle::START_BUDGET).map(|_|()).map_err(|error| format!("保存悬浮窗设置或关闭悬浮窗失败：{error}")))
             .and_then(|_| hardware_service::stop_connected_service().map_err(|error| format!("停止硬件服务失败：{error}")));
         match result {
             Ok(_) => {
@@ -34,6 +125,7 @@ fn request_shutdown(app: &tauri::AppHandle) {
             }
             Err(error) => {
                 backend::cancel_shutdown();
+                hardware_service::cancel_shutdown();
                 log::warn!("退出已取消: {error}");
                 let _ = app.emit("app-exit-failed", &error);
                 if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
@@ -50,14 +142,14 @@ const COMMANDS: &[&str] = &[
     "set_overlay_drag_mode", "reset_overlay_position", "open_vertical_overlay", "stop_vertical_overlay",
     "set_vertical_overlay_click_through", "resize_vertical_overlay", "save_vertical_overlay_position",
     "reset_vertical_overlay_position", "vertical_overlay_ready", "minimize_to_tray", "exit_app",
-    "get_overlay_hotkey", "set_overlay_hotkey", "export_hardware_report", "open_report_sample",
+    "get_overlay_hotkey", "set_overlay_hotkey", "export_hardware_report", "open_report_sample", "main_window_activity", "startup_diagnostic", "export_startup_diagnostics",
     // Real hardware data, served by FrameScopeHardwareService over the named pipe.
     "get_hardware", "get_hardware_info", "get_all_sensors", "get_overlay_hardware_data",
     "get_memory_status", "get_disk_status", "is_nvidia_gpu", "set_active_gpu_index",
     "clear_hardware_data", "get_system_locale", "get_system_username",
     // Real capture pipeline (FrameScopeMonitor.exe chain, same file contracts
     // as the C# WebView2 bridge).
-    "targets_get", "targets_save", "processes_refresh", "config_save", "config_read",
+    "targets_get", "targets_save", "processes_refresh", "config_save", "config_read", "autostart_get", "autostart_set",
     "monitor_start", "monitor_stop", "monitor_status",
     "reports_list", "report_open", "report_open_directory", "report_regenerate", "report_delete",
     // PawnIO driver detection / install / uninstall.
@@ -107,16 +199,14 @@ fn open_sensor(app: &tauri::AppHandle) -> Result<(), String> {
     }
     builder.build().map(|_| ()).map_err(|e| e.to_string())
 }
-fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
+fn create_vertical(app: &tauri::AppHandle, generation:u64, deadline:std::time::Instant) -> Result<tauri::WebviewWindow, String> {
     backend::ensure_not_closing()?;
     overlay_panel::stop_overlay()?;
     if let Some(window) = app.get_webview_window("vertical-overlay") {
-        if VERTICAL_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
-            return window.show().map_err(|e| e.to_string());
-        }
         let _ = window.destroy();
-        for _ in 0..100 {
+        for _ in 0..1500 {
             if app.get_webview_window("vertical-overlay").is_none() { break; }
+            if !overlay_runtime::STATE.current(generation)||std::time::Instant::now()>=deadline{return Err("等待旧竖排窗口关闭已取消或超时".into());}
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         if app.get_webview_window("vertical-overlay").is_some() {
@@ -124,13 +214,16 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     let settings = overlay_panel::get_or_init_settings();
+    #[cfg(windows)]
+    vertical_overlay_position::prepare();
     let mut builder = WebviewWindowBuilder::new(app, "vertical-overlay", WebviewUrl::App("vertical-overlay".into()))
         .title("FrameScope UI Preview - Overlay").inner_size(240.0, 420.0)
         .decorations(false).transparent(true).always_on_top(true).skip_taskbar(true).resizable(false)
         // Windows: undecorated windows default to a DWM shadow, and that shadow
         // forces an opaque compositor backdrop - the transparency slider never
         // reaches the screen without shadow(false) (NexBox upstream does the same).
-        .shadow(false).focused(false)
+        .shadow(false).focused(false).focusable(false).visible(false)
+        .initialization_script(format!("Object.defineProperty(window,'__FRAMESCOPE_OVERLAY_GENERATION__',{{value:{generation}}});"))
         ;
     // Windows sharing one WebView2 profile must use identical environment arguments.
     if let Some(args) = app.config().app.windows.iter().find(|w| w.label == "main")
@@ -138,26 +231,54 @@ fn open_vertical(app: &tauri::AppHandle) -> Result<(), String> {
     {
         builder = builder.additional_browser_args(args);
     }
-    if let (Some(x), Some(y)) = (settings.vertical_position_x, settings.vertical_position_y) {
-        builder = builder.position(x as f64, y as f64);
+    if let Some(directory)=app.config().app.windows.iter().find(|w|w.label=="main").and_then(|w|w.data_directory.clone()) {
+        builder=builder.data_directory(directory);
     }
+    overlay_runtime::trace(app,generation,"vertical_panel","webview-build",None);
     let built = builder.build();
     log::info!("UIAccess acceptance: original vertical build {:?}", built.as_ref().map(|window| window.label()));
     let window = built.map_err(|e| e.to_string())?;
+    #[cfg(all(windows,feature="uiaccess-acceptance"))]
+    overlay_acceptance::register_input(&window,generation);
+    window.on_window_event(move|event|{
+        if matches!(event,tauri::WindowEvent::Destroyed)&&overlay_runtime::STATE.closed(generation){VERTICAL_ACTIVE.store(false,std::sync::atomic::Ordering::SeqCst);}
+    });
     let mut ready = false;
-    for _ in 0..200 {
-        if window.hwnd().is_ok() && window.is_visible().unwrap_or(false) { ready = true; break; }
+    for _ in 0..1500 {
+        if !overlay_runtime::STATE.current(generation)||std::time::Instant::now()>=deadline{let _=window.destroy();return Err("竖排窗口创建已取消或超时".into());}
+        if window.hwnd().is_ok() { ready = true; break; }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     if !ready {
         let _ = window.destroy();
         return Err("竖排悬浮窗初始化失败，请检查 WebView2 日志".into());
     }
-    overlay_set_hit_test_transparent(&window, true);
+    #[cfg(windows)]
+    overlay_runtime::trace(app,generation,"vertical_panel","subclass",None);
+    #[cfg(windows)]
+    if let Err(error)=vertical_overlay_position::install(&window,deadline.saturating_duration_since(std::time::Instant::now())) {
+        overlay_runtime::trace(app,generation,"vertical_panel","subclass",Some(&error));
+        let _=window.destroy();
+        return Err(error);
+    }
+    if let (Some(x),Some(y))=(settings.vertical_position_x,settings.vertical_position_y) {
+        overlay_runtime::trace(app,generation,"vertical_panel","position",None);
+        window.set_position(tauri::PhysicalPosition::new(x,y)).map_err(|e|e.to_string())?;
+    }
+    #[cfg(windows)]
+    {
+        let owned=window.clone();
+        window.run_on_main_thread(move || {
+            if let Ok(hwnd)=owned.hwnd() { unsafe { vertical_overlay_position::reconcile(hwnd.0 as _); } }
+        }).map_err(|e|e.to_string())?;
+    }
+    if let Err(error)=overlay_set_hit_test_transparent(&window, true) {
+        let _=window.destroy();return Err(error);
+    }
     #[cfg(windows)]
     apply_vertical_backdrop_kill(&window);
-    VERTICAL_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
-    Ok(())
+    overlay_runtime::trace(app,generation,"vertical_panel","window-created",None);
+    Ok(window)
 }
 
 /// The tao patch (vendor/tao) gives this window WS_EX_NOREDIRECTIONBITMAP for
@@ -193,24 +314,40 @@ fn apply_vertical_backdrop_kill(window: &tauri::WebviewWindow) {
 ///    layered pair composes cleanly - pixel samples are unchanged.
 /// Interactive (drag) mode strips both bits so the panel takes input.
 #[cfg(windows)]
-fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: bool) {
+fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: bool) -> Result<(),String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_ALPHA,
-        WS_EX_LAYERED, WS_EX_TRANSPARENT,
+        GetWindowLongW, SetLayeredWindowAttributes, GWL_EXSTYLE, LWA_ALPHA,
+        WS_EX_LAYERED, WS_EX_TRANSPARENT, WS_EX_NOACTIVATE,
     };
-    if let Ok(hwnd) = window.hwnd() {
-        unsafe {
-            let ex = GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE);
-            let next = if transparent {
-                // alpha 255 = no visual fade, pass-through only
-                SetLayeredWindowAttributes(hwnd.0 as _, 0, 255, LWA_ALPHA);
-                ex | WS_EX_LAYERED as i32 | WS_EX_TRANSPARENT as i32
-            } else {
-                ex & !(WS_EX_LAYERED as i32) & !(WS_EX_TRANSPARENT as i32)
-            };
-            SetWindowLongW(hwnd.0 as _, GWL_EXSTYLE, next);
-        }
-    }
+    let (send,receive)=std::sync::mpsc::sync_channel(1);
+    let owned=window.clone();
+    let deadline=std::time::Instant::now()+overlay_lifecycle::START_BUDGET;
+    window.run_on_main_thread(move||{
+        let result=(||{
+            if std::time::Instant::now()>=deadline{return Err("竖排鼠标穿透设置已超时".into());}
+            // Keep Tao's flags authoritative: show/hide and other state changes
+            // regenerate GWL_EXSTYLE and would erase direct SetWindowLong writes.
+            owned.set_ignore_cursor_events(transparent).map_err(|e|e.to_string())?;
+            owned.set_focusable(!transparent).map_err(|e|e.to_string())?;
+            let hwnd=owned.hwnd().map_err(|e|e.to_string())?;
+            unsafe {
+            if transparent {
+                if SetLayeredWindowAttributes(hwnd.0 as _,0,255,LWA_ALPHA)==0{
+                    return Err(format!("无法初始化竖排鼠标穿透：{}",std::io::Error::last_os_error()));
+                }
+            }
+            let flags=GetWindowLongW(hwnd.0 as _,GWL_EXSTYLE) as u32;
+            let mask=WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE;
+            if flags&mask!=if transparent{mask}else{0}{return Err("竖排鼠标穿透窗口状态不一致".into());}
+            }
+            #[cfg(feature="uiaccess-acceptance")]
+            overlay_acceptance::record_input(&owned,if transparent{"pass-through"}else{"move-mode"});
+            Ok(())
+        })();
+        let _=send.send(result);
+    }).map_err(|e|e.to_string())?;
+    receive.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        .map_err(|_|"竖排鼠标穿透设置超时".to_string())?
 }
 
 /// Window-layer effects (SetLayeredWindowAttributes colorkey/alpha, DWM
@@ -223,32 +360,25 @@ fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: 
 /// - DWM blur-behind draws frost even at zero tint on Win11 24H2.
 /// The plate therefore lives entirely in the DOM: the page paints
 /// rgba(17,17,17,opacity/255) and the transparent window lets it through
-/// per-pixel. Only WS_EX_TRANSPARENT is ever toggled on the HWND.
+/// per-pixel. Native layered alpha stays at 255 for input transparency;
+/// the DOM alone controls the plate opacity, including in interactive mode.
 
 static VERTICAL_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
-    save_overlay_position(app)?;
+    let saved=save_overlay_position(app);
     VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-    overlay_panel::stop_overlay()?;
-    if let Some(window) = app.get_webview_window("vertical-overlay") {
+    let gdi=overlay_panel::stop_overlay();
+    let vertical=if let Some(window) = app.get_webview_window("vertical-overlay") {
         let _ = window.hide();
-        window.destroy().map_err(|e| e.to_string())?;
-    }
+        window.destroy().map_err(|e| e.to_string())
+    }else{Ok(())};
+    saved?;gdi?;vertical?;
     Ok(())
 }
 fn active(app: &tauri::AppHandle) -> bool {
     overlay_panel::is_overlay_active() || (VERTICAL_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
         && app.get_webview_window("vertical-overlay").map(|window| window.is_visible().unwrap_or(false)).unwrap_or(false))
-}
-fn start_selected(app: &tauri::AppHandle) -> Result<(), String> {
-    let settings = overlay_panel::get_or_init_settings();
-    if settings.style == "vertical_panel" { open_vertical(app) }
-    else {
-        VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst);
-        if let Some(window) = app.get_webview_window("vertical-overlay") { let _ = window.close(); }
-        overlay_panel::start_overlay(settings).map(|_| ())
-    }
 }
 fn save_native_settings(app: &tauri::AppHandle) -> Result<(), String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -264,14 +394,20 @@ fn settings_with_native_positions(mut settings: overlay_panel::OverlaySettings,
     settings.vertical_position_y = current.vertical_position_y;
     settings.position_x = current.position_x;
     settings.position_y = current.position_y;
+    settings.position_reference = current.position_reference.clone();
+    settings.vertical_position_reference = current.vertical_position_reference.clone();
     settings
 }
+fn validate_overlay_settings(settings:&overlay_panel::OverlaySettings)->Result<(),String>{
+    if settings.font_size<8||settings.font_size>72||settings.item_width<30||settings.item_width>1000{return Err("Overlay size outside preview limits".into());}Ok(())
+}
 
-fn record_vertical_position(position: tauri::PhysicalPosition<i32>) {
+fn record_vertical_position(position: tauri::PhysicalPosition<i32>, reference: overlay_position::PositionReference) {
     let mut settings = overlay_panel::CURRENT_SETTINGS.lock().unwrap_or_else(|p|p.into_inner());
     let settings = settings.get_or_insert_with(Default::default);
     settings.vertical_position_x = Some(position.x);
     settings.vertical_position_y = Some(position.y);
+    settings.vertical_position_reference = Some(reference);
 }
 
 fn save_overlay_position(app: &tauri::AppHandle) -> Result<(), String> {
@@ -382,7 +518,9 @@ where FRegister: FnMut(&str) -> Result<(), String>, FUnregister: FnMut(&str) -> 
 // PawnIO installer, hardware queries) occupy the async runtime's thread pool
 // instead of freezing the window's message pump.
 #[tauri::command]
-async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
+async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
+    #[cfg(all(windows,feature="uiaccess-acceptance"))]
+    if command=="uiaccess_acceptance_frame" {return overlay_acceptance::receive_frame(&window,args);}
     #[cfg(feature = "uiaccess-acceptance")]
     if command == "uiaccess_acceptance_gdi" { return Ok(overlay_panel::render_diagnostics()); }
     if command == "uiaccess_acceptance_window" && cfg!(feature = "uiaccess-acceptance") {
@@ -405,6 +543,37 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }
     }
     ensure_allowed(&command)?;
+    if command=="startup_diagnostic" {
+        if window.label()!="main"{return Err("Startup diagnostics require the main window".into());}
+        let phase=args["phase"].as_str().filter(|value|startup_diagnostics::allowed_phase(value)).ok_or("Invalid startup phase")?;
+        record_startup(&app,phase);return Ok(Value::Null);
+    }
+    if command=="export_startup_diagnostics" {
+        if window.label()!="main"{return Err("Startup diagnostics require the main window".into());}
+        return tauri::async_runtime::spawn_blocking(move||->Result<Value,String>{
+            use tauri_plugin_dialog::DialogExt;
+            let path=startup_diagnostic_path(&app)?;
+            let text=std::fs::read_to_string(path).unwrap_or_default();
+            let events:Vec<Value>=text.lines().filter_map(|line|serde_json::from_str(line).ok()).collect();
+            let overlay_path=app.path().app_data_dir().map_err(|e|e.to_string())?.join("diagnostics").join(concat!("overlay-",env!("FRAMESCOPE_VERSION"),".jsonl"));
+            let data=json!({"schema":1,"build":updater::build_info(),"events":events,"overlayEvents":overlay_diagnostics::read_events(&overlay_path)});
+            let Some(destination)=app.dialog().file().set_file_name("FrameScope-startup-diagnostics.json").add_filter("JSON",&["json"]).blocking_save_file() else{return Ok(json!({"cancelled":true}));};
+            let destination=destination.into_path().map_err(|_|"Please choose a local file")?;
+            use std::io::Write;
+            let mut output=std::fs::OpenOptions::new().write(true).create_new(true).open(destination).map_err(|_|"请选择新的文件名，以保留现有文件")?;
+            output.write_all(serde_json::to_string_pretty(&data).map_err(|e|e.to_string())?.as_bytes()).map_err(|e|e.to_string())?;
+            Ok(json!({"saved":true}))
+        }).await.map_err(|e|e.to_string())?;
+    }
+    if command == "autostart_get" || command == "autostart_set" {
+        return tauri::async_runtime::spawn_blocking(move || {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            let state = if command == "autostart_set" {
+                framescope_update::autostart::set(&exe, args["enabled"].as_bool().ok_or("enabled required")?)?
+            } else { framescope_update::autostart::state(&exe)? };
+            serde_json::to_value(state).map_err(|e| e.to_string())
+        }).await.map_err(|e| e.to_string())?;
+    }
     if command == "build_info" || command.starts_with("update_") && command != "update_overlay_settings" {
         return updater::command(app,command,args).await;
     }
@@ -549,43 +718,20 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
                 eprintln!("open_report_sample: {e}");
             }
         }),
-        "open_vertical_overlay" => spawn_job(&app, |app| {
-            if let Err(e) = open_vertical(app) { eprintln!("open_vertical_overlay: {e}"); }
-        }),
+        "open_vertical_overlay" => {
+            let mut settings=overlay_panel::get_or_init_settings();settings.style="vertical_panel".into();
+            return overlay_runtime::request(app.clone(),overlay_runtime::Action::Start(Some(settings)),overlay_lifecycle::START_BUDGET).await;
+        }
         "start_overlay_panel" => {
-            // The window-creating flow must run OFF the command thread (iron
-            // rule 2), but the frontend awaits this invoke and reads
-            // result.success to flip the toggle - the old fire-and-forget
-            // spawn_job always resolved to null, so the toggle never moved
-            // even though the panel came up. Bridge the worker's outcome back
-            // through a channel and wait for it.
-            let (tx, rx) = std::sync::mpsc::channel::<Value>();
-            let worker_app = app.clone();
-            std::thread::spawn(move || {
-                let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
-                let payload = match start_selected(&worker_app) {
-                    Ok(_) => json!({ "success": true, "message": "悬浮框已启动" }),
-                    Err(e) => json!({ "success": false, "message": e }),
-                };
-                let _ = worker_app.emit("overlay-status-changed", active(&worker_app));
-                let _ = tx.send(payload);
-            });
-            match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-                Ok(payload) => return Ok(payload),
-                Err(_) => return Err("启动悬浮框超时".into()),
-            }
+            let requested=if args["settings"].is_object(){Some(serde_json::from_value::<overlay_panel::OverlaySettings>(args["settings"].clone()).map_err(|e|e.to_string())?)}else{None};
+            if let Some(settings)=&requested{validate_overlay_settings(settings)?;}
+            let budget=std::time::Duration::from_millis(args["timeout_ms"].as_u64().unwrap_or(15000).clamp(1,15000));
+            return match overlay_runtime::request(app.clone(),overlay_runtime::Action::Start(requested),budget).await {
+                Ok(value)=>Ok(value),Err(error)=>Ok(json!({"success":false,"message":error})),
+            };
         }
-        "stop_overlay_panel" | "stop_vertical_overlay" => {
-            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
-            stop_windows(&app)?;
-            app.emit("overlay-status-changed", false).map_err(|e| e.to_string())?;
-            return Ok(json!({ "success": true, "message": "悬浮框已关闭" }));
-        }
-        "toggle_overlay_panel" => spawn_job(&app, |app| {
-            let _lock = OVERLAY_OPERATION.lock().unwrap();
-            if active(app) { let _ = stop_windows(app); } else { let _ = start_selected(app); }
-            let _ = app.emit("overlay-status-changed", active(app));
-        }),
+        "stop_overlay_panel" | "stop_vertical_overlay" => return overlay_runtime::request(app.clone(),overlay_runtime::Action::Stop,overlay_lifecycle::START_BUDGET).await,
+        "toggle_overlay_panel" => return overlay_runtime::request(app.clone(),overlay_runtime::Action::Toggle,overlay_lifecycle::START_BUDGET).await,
         "get_overlay_panel_status" => return Ok(json!(active(&app))),
         "get_overlay_current_settings" => return serde_json::to_value(overlay_panel::get_or_init_settings()).map_err(|e| e.to_string()),
         "get_delta_passwords" => {
@@ -601,140 +747,13 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         }
         "config_read" => return backend::config_read(),
         "update_overlay_settings" => {
-            let settings: overlay_panel::OverlaySettings = serde_json::from_value(args["settings"].clone()).map_err(|e| e.to_string())?;
-            if settings.font_size < 8 || settings.font_size > 72 || settings.item_width < 30 || settings.item_width > 1000 {
-                return Err("Overlay size outside preview limits".into());
-            }
-            // Hold the same operation lock every other start/stop path uses:
-            // update_settings tears the overlay down and rebuilds it, and an
-            // unserialized rebuild could double-create windows (R-A8).
-            let _operation_lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            // Position changes belong to drag/reset commands. A settings page
-            // can carry old non-null coordinates, including the default 40/80.
-            let mut settings = settings_with_native_positions(settings, &overlay_panel::get_or_init_settings());
-            let was_active = active(&app);
-            if settings.style == "vertical_panel" {
-                // The vertical panel is a webview that applies the new settings
-                // live from the emitted event (and re-measures its size via
-                // resize_vertical_overlay). Tearing the window down here would
-                // race its async destroy and the rebuild would fail with a
-                // duplicate-label error — the panel would just vanish.
-                let was_vertical = overlay_panel::get_or_init_settings().style == "vertical_panel";
-                overlay_panel::update_settings(settings.clone())?;
-                save_native_settings(&app)?;
-                // Plate opacity is pure DOM: the vertical webview applies the
-                // new settings live from the emitted event; the HWND never
-                // needs restyling (see window-layer note above).
-                if was_active && !was_vertical {
-                    // Style switched GDI → vertical: retire the GDI panel and
-                    // open the webview panel (open_vertical stops the GDI one).
-                    spawn_job(&app, |app| {
-                        let _lock = OVERLAY_OPERATION.lock().unwrap();
-                        if let Err(e) = start_selected(app) { eprintln!("update_overlay_settings switch: {e}"); }
-                    });
-                }
-            } else {
-                // Hot path: same GDI style, panel running, and the ONLY
-                // changed field is opacity - repaint in place instead of the
-                // stop+rebuild cycle that made the bar blink on every
-                // slider tick. Any other change (style metrics, items, fonts)
-                // still goes through the full rebuild below.
-                let old = overlay_panel::get_or_init_settings();
-                let same_style = old.style == settings.style;
-                let only_opacity = same_style && {
-                    let mut a = serde_json::to_value(&old).unwrap_or(Value::Null);
-                    let b = serde_json::to_value(&settings).unwrap_or(Value::Null);
-                    if let (Some(a), Some(b)) = (a.as_object_mut(), b.as_object()) {
-                        a.insert("opacity".into(), b.get("opacity").cloned().unwrap_or(Value::Null));
-                        a == b
-                    } else {
-                        false
-                    }
-                };
-                if only_opacity && overlay_panel::is_overlay_active() {
-                    // Persist into the live settings FIRST - the repaint reads
-                    // CURRENT_SETTINGS, and this was the missed half of the hot
-                    // path (opacity slider appeared dead on GDI styles).
-                    overlay_panel::store_settings(settings.clone());
-                    if overlay_panel::request_overlay_repaint() {
-                        save_native_settings(&app)?;
-                        app.emit("vertical-overlay-settings", settings).map_err(|e| e.to_string())?;
-                        return Ok(Value::Null);
-                    }
-                    // repaint post failed (window gone?) - fall through to rebuild;
-                    // store_settings already applied, update_settings below is a
-                    // harmless re-store plus a window rebuild.
-                }
-                stop_windows(&app)?;
-                settings = settings_with_native_positions(settings, &overlay_panel::get_or_init_settings());
-                overlay_panel::update_settings(settings.clone())?;
-                save_native_settings(&app)?;
-                if was_active {
-                    spawn_job(&app, |app| {
-                        let _lock = OVERLAY_OPERATION.lock().unwrap();
-                        if let Err(e) = start_selected(app) { eprintln!("update_overlay_settings restart: {e}"); }
-                    });
-                }
-            }
-            app.emit("vertical-overlay-settings", settings).map_err(|e| e.to_string())?;
+            let settings:overlay_panel::OverlaySettings=serde_json::from_value(args["settings"].clone()).map_err(|e|e.to_string())?;
+            validate_overlay_settings(&settings)?;
+            return overlay_runtime::request(app.clone(),overlay_runtime::Action::Settings(settings),overlay_lifecycle::START_BUDGET).await;
         }
-        "set_overlay_drag_mode" => {
-            let enabled = args["enabled"].as_bool().ok_or("enabled must be boolean")?;
-            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if !enabled { save_overlay_position(&app)?; }
-            overlay_panel::set_drag_mode(enabled);
-            if let Some(window) = app.get_webview_window("vertical-overlay") {
-                overlay_set_hit_test_transparent(&window, !enabled);
-                app.emit("vertical-overlay-drag-mode", enabled).map_err(|e| e.to_string())?;
-            }
-        }
-        "set_vertical_overlay_click_through" => {
-            // Contract (matching the 05606fe/tao-era semantics the frontend is
-            // written against): enabled = click-through ON. Dragging sends
-            // enabled:false to take input, the panel's mouseup sends
-            // enabled:true to give it back. (e1aedfd inverted this and drag
-            // mode enabled the pass-through instead.)
-            let enabled = args["enabled"].as_bool().ok_or("enabled must be boolean")?;
-            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(window) = app.get_webview_window("vertical-overlay") {
-                if enabled { save_overlay_position(&app)?; }
-                overlay_set_hit_test_transparent(&window, enabled);
-            }
-        }
-        "resize_vertical_overlay" => {
-            let height = args["height"].as_f64().ok_or("height must be a number")?.clamp(40.0, 1600.0);
-            if let Some(window) = app.get_webview_window("vertical-overlay") {
-                window.set_size(tauri::LogicalSize::new(overlay_panel::get_or_init_settings().item_width as f64, height)).map_err(|e| e.to_string())?;
-            }
-        }
-        "save_vertical_overlay_position" | "reset_vertical_overlay_position" | "reset_overlay_position" => {
-            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if command == "save_vertical_overlay_position" {
-                // JS move callbacks may be delayed or arrive after destruction;
-                // persist the latest native event, not their stale coordinates.
-                save_overlay_position(&app)?;
-                return Ok(Value::Null);
-            }
-            let mut settings = overlay_panel::get_or_init_settings();
-            let reset = command.starts_with("reset");
-            let x = if reset { 40 } else { args["x"].as_i64().ok_or("x required")?.clamp(-32000, 32000) as i32 };
-            let y = if reset { 80 } else { args["y"].as_i64().ok_or("y required")?.clamp(-32000, 32000) as i32 };
-            if command == "reset_overlay_position" {
-                settings.position_x = Some(x); settings.position_y = Some(y);
-            } else {
-                settings.vertical_position_x = Some(x); settings.vertical_position_y = Some(y);
-                if reset {
-                    if let Some(window) = app.get_webview_window("vertical-overlay") {
-                        window.set_position(tauri::PhysicalPosition::new(x, y)).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-            overlay_panel::update_settings(settings)?;
-            save_native_settings(&app)?;
-        }
-        "vertical_overlay_ready" => {
-            app.emit("vertical-overlay-data", overlay_panel::collect_hardware_data()).map_err(|e| e.to_string())?;
-            app.emit("vertical-overlay-settings", overlay_panel::get_or_init_settings()).map_err(|e| e.to_string())?;
+        "reset_vertical_overlay_position" | "reset_overlay_position" => return overlay_runtime::request(app.clone(),overlay_runtime::Action::Reset(command=="reset_vertical_overlay_position"),overlay_lifecycle::START_BUDGET).await,
+        "set_overlay_drag_mode" | "set_vertical_overlay_click_through" | "resize_vertical_overlay" | "save_vertical_overlay_position" | "vertical_overlay_ready" => {
+            return tauri::async_runtime::spawn_blocking(move||overlay_runtime::auxiliary(window,app,&command,&args)).await.map_err(|e|e.to_string())?;
         }
         "set_overlay_hotkey" => {
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -754,7 +773,14 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
         "get_overlay_hotkey" => {
             return Ok(Value::String(app.state::<std::sync::Mutex<NativeHotkeyState>>().lock().map_err(|error| error.to_string())?.shortcut.clone()));
         }
-        "minimize_to_tray" => app.get_webview_window("main").ok_or("main missing")?.hide().map_err(|e| e.to_string())?,
+        "main_window_activity" => {
+            if window.label()!="main" {return Err("Main window activity is private to the main window".into());}
+            return Ok(main_window_activity(&window));
+        }
+        "minimize_to_tray" => {
+            let main=app.get_webview_window("main").ok_or("main missing")?;
+            main.hide().map_err(|e|e.to_string())?;publish_main_activity(&main);
+        }
         "exit_app" => { request_shutdown(&app); }
         "export_hardware_report" => {
             let path = args["path"].as_str().ok_or("export path required")?;
@@ -772,8 +798,7 @@ async fn preview_native(app: tauri::AppHandle, command: String, args: Value) -> 
             let content = serde_json::to_string_pretty(&json!({
                 "brand": "FrameScope",
                 "generatedAt": chrono::Utc::now().to_rfc3339(),
-                "overlay": overlay,
-                "hardware": hardware,
+                "hardware": hardware_service::sanitized_diagnostic(&hardware.map(Value::Object).unwrap_or(Value::Null),&overlay),
             })).map_err(|e| e.to_string())?;
             std::fs::write(path, content).map_err(|e| e.to_string())?;
             return Ok(json!(path));
@@ -840,6 +865,17 @@ pub fn run() {
     let request_exit_only = std::env::args().any(|a|a == "--request-exit");
     let mut context = tauri::generate_context!();
     if request_exit_only { context.config_mut().app.windows.clear(); }
+    // Decide visibility before Tauri creates the window; hiding in setup flashes
+    // the main interface during logon. StartMinimized is a legacy config key.
+    let startup = backend::startup_preferences();
+    let after_update=std::env::args().any(|a|a=="--framescope-after-update");
+    let tray_start = !after_update && (std::env::args().any(|a| a == "--autostart")
+        || startup.as_ref().map(|(_, tray)| *tray).unwrap_or(false));
+    if tray_start {
+        for window in &mut context.config_mut().app.windows {
+            if window.label == "main" { window.visible = false; }
+        }
+    }
     let app = tauri::Builder::default()
         // Must register before other plugins (single-instance docs): a second
         // launch forwards here and dies, so the tray-hidden window comes back
@@ -853,10 +889,9 @@ pub fn run() {
                 }
                 return;
             }
+            if args.iter().any(|a| a == "--autostart") { return; }
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                show_main_window(&window);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -865,15 +900,20 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _, event| {
             if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                 let app = app.clone();
-                std::thread::spawn(move || {
-                    let _lock = OVERLAY_OPERATION.lock().unwrap();
-                    if active(&app) { let _ = stop_windows(&app); } else { let _ = start_selected(&app); }
-                    let _ = app.emit("overlay-status-changed", active(&app));
+                tauri::async_runtime::spawn(async move {
+                    let _=overlay_runtime::request(app,overlay_runtime::Action::Toggle,overlay_lifecycle::START_BUDGET).await;
                 });
             }
         }).build())
         .invoke_handler(tauri::generate_handler![preview_native])
+        .on_page_load(|webview,payload|{
+            if webview.label()=="main" {
+                record_startup(webview.app_handle(),match payload.event(){tauri::webview::PageLoadEvent::Started=>"navigation-start",tauri::webview::PageLoadEvent::Finished=>"navigation-finished"});
+            }
+        })
         .setup(move |app| {
+            record_startup(app.handle(),"native-start");
+            #[cfg(windows)] install_webview_failure_handler(app.handle());
             app.manage(std::sync::Arc::new(updater::Service::new(app.path().app_data_dir()?.join("updates"))
                 .map_err(std::io::Error::other)?));
             // Single-instance forwarding runs before this setup. No matching
@@ -943,18 +983,14 @@ pub fn run() {
                         ..
                     } = event {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                            show_main_window(&window);
                         }
                     }
                 })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                            show_main_window(&window);
                         }
                     }
                     "quit" => { request_shutdown(app); }
@@ -963,17 +999,11 @@ pub fn run() {
             // Window startup preferences run once, after persisted overlay
             // settings and tray restoration are ready, independently of capture.
             match backend::startup_preferences() {
-                Ok((auto_overlay, start_minimized)) => {
-                    if start_minimized {
-                        if let Some(window) = app.get_webview_window("main") {
-                            if let Err(error) = window.minimize() { eprintln!("Startup minimize failed: {error}"); }
-                        }
-                    }
+                Ok((auto_overlay, _)) => {
                     if auto_overlay {
                         let handle = app.handle().clone();
-                        std::thread::spawn(move || {
-                            let _lock = OVERLAY_OPERATION.lock().unwrap_or_else(|p|p.into_inner());
-                            if let Err(error) = backend::ensure_not_closing().and_then(|_| start_selected(&handle)) {
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(error) = overlay_runtime::request(handle.clone(),overlay_runtime::Action::Start(None),overlay_lifecycle::START_BUDGET).await {
                                 eprintln!("Automatic overlay start failed: {error}");
                             }
                             let _ = handle.emit("overlay-status-changed", active(&handle));
@@ -992,7 +1022,7 @@ pub fn run() {
             // 10 Hz service reads feed the GDI overlay cache and the vertical
             // overlay event stream, so both overlays show real data without
             // any frontend fixture push. 10Hz matches the service-side
-            // throttle (instant FPS window is ~200ms at 300FPS); the GDI
+            // statistics update interval (one-second FPS/Low window); the GDI
             // panel itself repaints on its own slower timer.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -1007,17 +1037,19 @@ pub fn run() {
                     match hardware_service::call("get_overlay_data", json!({})) {
                         Ok(data) => {
                             let data = backend::apply_report_lows(data);
+                            overlay_runtime::publish_raw(data.clone());
                             error_streak = 0;
-                            // The GDI panel stores clocks/percent as integers; feed
+                            // The GDI panel stores some counters as integers; feed
                             // it a rounded copy while the frontend event keeps the
                             // full-precision service snapshot.
                             match decode_fixture(hardware_service::sanitize_for_gdi(data.clone())) {
                                 Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
-                                Err(e) => eprintln!("hardware poller: decode failed: {e}"),
+                                Err(e) => {eprintln!("hardware poller: decode failed: {e}");overlay_runtime::trace(&handle,0,&overlay_panel::get_or_init_settings().style,"decode",Some(&e));},
                             }
-                            let _ = handle.emit("vertical-overlay-data", data);
+                            emit_vertical_data(&handle,data);
                         }
                         Err(e) => {
+                            overlay_runtime::trace(&handle,0,&overlay_panel::get_or_init_settings().style,"transport",Some(&e));
                             error_streak = error_streak.saturating_add(1);
                             eprintln!("hardware poller: {e}");
                             // R-C5: with the service unreachable, the overlays
@@ -1027,11 +1059,12 @@ pub fn run() {
                             // "--" while down.
                             if error_streak == 3 {
                                 let empty = hardware_service::empty_overlay_value();
+                                overlay_runtime::publish_raw(empty.clone());
                                 match decode_fixture(hardware_service::sanitize_for_gdi(empty.clone())) {
                                     Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
                                     Err(e2) => eprintln!("hardware poller: decode failed: {e2}"),
                                 }
-                                let _ = handle.emit("vertical-overlay-data", empty);
+                                emit_vertical_data(&handle,empty);
                             }
                         }
                     }
@@ -1046,36 +1079,32 @@ pub fn run() {
                 if let Some(window) = topmost_handle.get_webview_window("vertical-overlay") {
                     if window.is_visible().unwrap_or(false) {
                         #[cfg(windows)]
-                        if let Ok(hwnd) = window.hwnd() {
-                            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-                            };
-                            unsafe {
-                                SetWindowPos(
-                                    hwnd.0 as _,
-                                    HWND_TOPMOST,
-                                    0,
-                                    0,
-                                    0,
-                                    0,
-                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                                );
-                            }
+                        {
+                            let owned=window.clone();
+                            let _=window.run_on_main_thread(move || {
+                                if let Ok(hwnd)=owned.hwnd() {
+                                    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+                                    unsafe {
+                                        vertical_overlay_position::reconcile(hwnd.0 as _);
+                                        SetWindowPos(hwnd.0 as _,HWND_TOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);
+                                    }
+                                }
+                            });
                         }
                     }
                 }
+                #[cfg(windows)]
+                vertical_overlay_position::persist_pending(&topmost_handle);
             });
+            #[cfg(all(windows,feature="uiaccess-acceptance"))]
+            overlay_acceptance::start(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "vertical-overlay" {
-                match event {
-                    tauri::WindowEvent::Moved(position) => record_vertical_position(*position),
-                    tauri::WindowEvent::Destroyed => VERTICAL_ACTIVE.store(false, std::sync::atomic::Ordering::SeqCst),
-                    _ => {}
-                }
-            }
             if window.label() == "main" {
+                if matches!(event,tauri::WindowEvent::Focused(_)|tauri::WindowEvent::Resized(_)) {
+                    if let Some(main)=window.app_handle().get_webview_window("main") {publish_main_activity(&main);}
+                }
                 #[cfg(windows)]
                 if matches!(event, tauri::WindowEvent::ScaleFactorChanged { .. }) {
                     if let Ok(hwnd) = window.hwnd() {
@@ -1097,6 +1126,7 @@ pub fn run() {
                         "minimize-to-tray" => {
                             api.prevent_close();
                             let _ = window.hide();
+                            if let Some(main)=window.app_handle().get_webview_window("main") {publish_main_activity(&main);}
                         }
                         // Hand the question to the UI's close-confirm dialog.
                         "ask" => {

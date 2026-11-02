@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { motion, useAnimationControls } from "framer-motion";
+import {uiActivity} from '@/lib/ui-activity';
 import { useColorModeValue, Tooltip } from "@chakra-ui/react";
 import { useNavigate } from "react-router-dom";
 import { useThemeColor } from "@/contexts/theme-color-context";
@@ -561,12 +562,13 @@ function SemanticIcon({ iconKey }: { iconKey: IconKey }) {
 /* 驱动的平滑波动动画：播放期间跳动，暂停时归零（仅作视觉「音量波动」）。 */
 /* ------------------------------------------------------------------ */
 function useSongLevels(playing: boolean): number[] {
+  const mainUiActive=useSyncExternalStore(uiActivity.subscribe,uiActivity.getSnapshot,uiActivity.getSnapshot);
   const BAR_COUNT = 5;
   const rafRef = useRef<number>(0);
   const [levels, setLevels] = useState<number[]>(() => Array(BAR_COUNT).fill(0));
 
   useEffect(() => {
-    if (!playing) {
+    if (!playing||!mainUiActive) {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = 0;
       setLevels(Array(BAR_COUNT).fill(0));
@@ -590,7 +592,7 @@ function useSongLevels(playing: boolean): number[] {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = 0;
     };
-  }, [playing]);
+  }, [playing,mainUiActive]);
 
   return levels;
 }

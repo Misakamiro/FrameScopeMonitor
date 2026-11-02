@@ -305,14 +305,45 @@ pub(crate) fn required_payload_files() -> Result<Vec<String>, String> {
     Ok(files)
 }
 
+fn ensure_compatible_edition(target:&Path)->Result<(),String> {
+    match fs::read(target.join("FrameScopeBuildInfo.json")) {
+      Ok(bytes)=>{
+        let previous:framescope_update::BuildInfo=serde_json::from_slice(&bytes).map_err(|_|"原安装版型信息无效")?;
+        if !previous.can_upgrade_to(env!("FRAMESCOPE_EDITION")) {
+            return Err("不能跨版型覆盖安装。请先卸载原版本并保留用户数据，再安装所选版型".into());
+        }
+      }
+      Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+      Err(_)=>return Err("原安装版型信息无法读取，未开始安装".into()),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn edition_preflight_rejects_cross_edition_and_invalid_metadata_before_install() {
+    let directory=std::env::temp_dir().join(format!("framescope-edition-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    fs::create_dir(&directory).unwrap();let path=directory.join("FrameScopeBuildInfo.json");
+    assert!(ensure_compatible_edition(&directory).is_ok());
+    let build=framescope_update::BuildInfo::new("2.0.1-beta.8",&"a".repeat(40)).with_edition(env!("FRAMESCOPE_EDITION"));
+    fs::write(&path,serde_json::to_vec(&build).unwrap()).unwrap();
+    assert!(ensure_compatible_edition(&directory).is_ok());
+    let other=if env!("FRAMESCOPE_EDITION")=="full"{"offline"}else{"full"};
+    fs::write(&path,serde_json::to_vec(&build.with_edition(other)).unwrap()).unwrap();
+    assert!(ensure_compatible_edition(&directory).is_err());
+    fs::write(&path,b"broken").unwrap();assert!(ensure_compatible_edition(&directory).is_err());
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn install_shared(target_dir: &str, desktop: bool, autostart: bool, progress: &dyn Fn(u32, &str)) -> Result<(), String> {
     let target = PathBuf::from(target_dir);
-    validate_install_target(&target)?;
+    validate_install_destination(&target)?;
+    ensure_compatible_edition(&target)?;
     let self_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut runtime = crate::installation_system::WindowsRuntime::new(&target, false, desktop, autostart)?;
     if target.join("FrameScopeBuildInfo.json").exists() {
         runtime.keep_previous=true;runtime.preserve_settings=true;
-        runtime.startup_build=Some(framescope_update::BuildInfo::new(env!("FRAMESCOPE_VERSION"),env!("FRAMESCOPE_GIT_SHA")));
+        runtime.startup_build=Some(framescope_update::BuildInfo::new(env!("FRAMESCOPE_VERSION"),env!("FRAMESCOPE_GIT_SHA")).with_edition(env!("FRAMESCOPE_EDITION")));
     } else if let Some(backup)=crate::install_transaction::backup_legacy(&target)? {
         framescope_update::atomic_json(&target.join("FrameScopeLegacyBackup.json"),&serde_json::json!({"archive":backup}))?;
     }
@@ -353,6 +384,7 @@ fn selected_uninstall_root()->Result<PathBuf,String>{
 /// Remove only owned files; preserved data may keep the install directory alive.
 fn perform_uninstall(install_dir: &Path, delete_data: bool) -> Result<(), String> {
     checked_root(install_dir)?;
+    validate_owned_installation(install_dir)?;
     let self_exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut runtime = crate::installation_system::WindowsRuntime::new(install_dir, true, false, false)?;
     let mut deletions = legacy_injected_osd_paths(install_dir);
@@ -396,6 +428,7 @@ fn is_reparse(metadata: &fs::Metadata) -> bool {
 }
 
 fn checked_root(root: &Path) -> Result<PathBuf, String> {
+    validate_install_target(root)?;
     if !root.is_absolute() || root.file_name().is_none()
         || root.components().any(|c| matches!(c, std::path::Component::ParentDir))
     {
@@ -672,6 +705,41 @@ pub(crate) fn validate_install_target(target: &Path) -> Result<(), String> {
             Err(e) => return Err(format!("Cannot inspect installation path {}: {e}", ancestor.display())),
         }
     }
+    fn key(path:&Path)->String {
+        fs::canonicalize(path).unwrap_or_else(|_|path.to_path_buf()).to_string_lossy()
+            .trim_start_matches(r"\\?\").trim_end_matches(['\\','/']).to_lowercase()
+    }
+    let protected=[dirs::home_dir(),dirs::desktop_dir(),dirs::document_dir(),dirs::download_dir(),dirs::data_dir(),dirs::data_local_dir()]
+        .into_iter().flatten().chain(["SystemRoot","ProgramFiles","ProgramFiles(x86)","ProgramData"].into_iter().filter_map(std::env::var_os).map(PathBuf::from));
+    let actual=key(target);
+    if protected.into_iter().any(|path|key(&path)==actual){return Err("不能将磁盘、系统目录或用户共享目录作为安装/卸载目标，请选择专用的 FrameScope 文件夹。".into());}
+    Ok(())
+}
+
+fn validate_owned_installation(target:&Path)->Result<(),String>{
+    validate_install_target(target)?;
+    for name in ["FrameScope.exe","FrameScopeMonitor.exe","FrameScopeHostCapabilities.json"]{
+        let path=target.join(name);validate_install_target(&path)?;
+        if !path.is_file(){return Err("目录缺少可验证的 FrameScope 归属信息，未修改任何文件。".into());}
+    }
+    let marker=target.join("FrameScopeHostCapabilities.json");
+    if fs::metadata(&marker).map_err(|e|e.to_string())?.len()>65536{return Err("Invalid installation identity".into());}
+    let mut bytes=fs::read(marker).map_err(|e|e.to_string())?;
+    if bytes.starts_with(&[0xef,0xbb,0xbf]){bytes.drain(..3);}
+    let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|_|"安装归属信息损坏，未修改任何文件。")?;
+    if value["schema"]!=1||value["requestExitProtocol"]!=1||!value["hostSha256"].as_str().is_some_and(|expected|{
+        crate::install_transaction::hash(&target.join("FrameScope.exe")).is_ok_and(|actual|actual.eq_ignore_ascii_case(expected))
+    }){return Err("安装归属信息与程序不一致，未修改任何文件。".into());}
+    Ok(())
+}
+fn validate_install_destination(target:&Path)->Result<(),String>{
+    validate_install_target(target)?;
+    if target.exists(){
+        if !target.is_dir(){return Err("安装位置必须是专用文件夹。".into());}
+        if fs::read_dir(target).map_err(|e|e.to_string())?.next().transpose().map_err(|e|e.to_string())?.is_some(){
+            validate_owned_installation(target).map_err(|_|"所选文件夹已有非 FrameScope 内容，请选择新的专用文件夹。".to_string())?;
+        }
+    }
     Ok(())
 }
 
@@ -875,6 +943,27 @@ mod install_safety_tests {
         for target in ["relative-install", r"C:\", r"C:\safe\..\escape", r"C:\safe:stream"] {
             assert!(validate_install_target(Path::new(target)).is_err(), "{target}");
         }
+        for target in [dirs::home_dir(),dirs::desktop_dir(),dirs::document_dir(),std::env::var_os("SystemRoot").map(PathBuf::from)].into_iter().flatten(){
+            assert!(validate_install_target(&target).is_err(),"accepted shared system/profile directory: {}",target.display());
+        }
+    }
+
+    #[test]
+    fn dedicated_destination_and_owned_uninstall_preflight_preserve_unrelated_files(){
+        let root=fixture();let shared=root.join("shared");fs::create_dir(&shared).unwrap();
+        let sentinel=shared.join("personal.txt");fs::write(&sentinel,b"unrelated user data").unwrap();
+        assert!(validate_install_destination(&shared).is_err());assert!(validate_owned_installation(&shared).is_err());
+        assert!(validate_install_destination(&shared.join("FrameScope")).is_ok());
+        let empty=root.join("empty-product");fs::create_dir(&empty).unwrap();assert!(validate_install_destination(&empty).is_ok());
+        fs::write(shared.join("FrameScope.exe"),b"old app").unwrap();
+        assert!(validate_install_destination(&shared).is_err(),"one executable name is not ownership proof");
+        fs::write(shared.join("FrameScopeMonitor.exe"),b"old monitor").unwrap();
+        let host_hash=crate::install_transaction::hash(&shared.join("FrameScope.exe")).unwrap();
+        fs::write(shared.join("FrameScopeHostCapabilities.json"),serde_json::to_vec(&serde_json::json!({"schema":1,"requestExitProtocol":1,"hostSha256":host_hash})).unwrap()).unwrap();
+        assert!(validate_install_destination(&shared).is_ok());assert!(validate_owned_installation(&shared).is_ok());
+        fs::write(shared.join("FrameScope.exe"),b"different file").unwrap();
+        assert!(validate_owned_installation(&shared).is_err());
+        assert_eq!(fs::read(sentinel).unwrap(),b"unrelated user data");
     }
 
     #[test]

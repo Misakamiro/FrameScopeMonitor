@@ -27,7 +27,7 @@ export function systemPrefersDark(): boolean {
 }
 
 /** 根据持久化主题模式的解析浅/深，用作首帧初始 colorMode、避免闪烁 */
-function readInitialScheme(): "light" | "dark" {
+export function readInitialScheme(): "light" | "dark" {
   const m = readInitialThemeMode();
   if (m === "light") return "light";
   if (m === "dark") return "dark";
@@ -38,6 +38,9 @@ const config: ThemeConfig = {
   initialColorMode: readInitialScheme(),
   useSystemColorMode: false,
 };
+
+const controlSurface={bg:'var(--framescope-control-bg)',color:'var(--framescope-control-fg)',border:'1px solid',borderColor:'var(--framescope-control-border)',backdropFilter:'var(--framescope-surface-filter)',_placeholder:{color:'var(--framescope-surface-muted)',opacity:1},_hover:{bg:'var(--framescope-control-bg)'},_disabled:{opacity:.45,cursor:'not-allowed'}};
+const panelSurface={bg:'var(--framescope-panel-bg)',color:'var(--framescope-surface-fg)',border:'1px solid',borderColor:'var(--framescope-control-border)',backdropFilter:'var(--framescope-surface-filter)',boxShadow:'0 18px 60px rgba(0,0,0,.18)'};
 
 const theme = extendTheme({
   config,
@@ -63,17 +66,38 @@ const theme = extendTheme({
     global: (props: any) => ({
       body: {
         bg: props.colorMode === 'dark' ? '#000000' : '#f7fafc',
-        color: props.colorMode === 'dark' ? '#e0e0e0' : '#1a202c',
+        color: 'var(--framescope-surface-fg)',
       },
     }),
   },
   components: {
+    Text: {baseStyle:{color:'var(--framescope-surface-fg)'}},
+    Heading: {baseStyle:{color:'var(--framescope-surface-fg)'}},
+    FormLabel: {baseStyle:{color:'var(--framescope-surface-fg)'}},
     Button: {
       baseStyle: {
         borderRadius: "lg",
         fontWeight: "medium",
+        _focusVisible:{outline:'2px solid var(--framescope-primary)',outlineOffset:'2px',boxShadow:'none'},
+      },
+      variants:{
+        solid:(props:{colorScheme?:string})=>props.colorScheme==='red'?{...controlSurface,bg:'red.600',color:'white',borderColor:'red.600',_hover:{bg:'red.700'}}:props.colorScheme&&props.colorScheme!=='gray'?{...controlSurface,bg:'var(--framescope-primary)',color:'var(--framescope-primary-fg)',borderColor:'var(--framescope-primary)',_hover:{bg:'var(--framescope-primary-hover)'}}:controlSurface,
+        primary:{...controlSurface,bg:'var(--framescope-primary)',color:'var(--framescope-primary-fg)',borderColor:'var(--framescope-primary)',_hover:{bg:'var(--framescope-primary-hover)'}},
+        outline:(props:{colorScheme?:string})=>({...controlSurface,bg:'transparent',...(props.colorScheme&&props.colorScheme!=='gray'?{
+          color:props.colorScheme==='red'?'red.500':'var(--framescope-primary)',
+          borderColor:props.colorScheme==='red'?'red.500':'var(--framescope-primary)',
+        }:{})}),
+        ghost:(props:{colorScheme?:string})=>({...controlSurface,bg:'transparent',borderColor:'transparent',...(props.colorScheme==='red'?{color:'red.500'}:{})}),
       },
     },
+    Input:{variants:{outline:{field:{...controlSurface,_focusVisible:{borderColor:'var(--framescope-primary)',boxShadow:'0 0 0 1px var(--framescope-primary)'}}}}},
+    NumberInput:{variants:{outline:{field:{...controlSurface,_focusVisible:{borderColor:'var(--framescope-primary)',boxShadow:'0 0 0 1px var(--framescope-primary)'}}}}},
+    Textarea:{variants:{outline:{...controlSurface,_focusVisible:{borderColor:'var(--framescope-primary)',boxShadow:'0 0 0 1px var(--framescope-primary)'}}}},
+    Select:{variants:{outline:{field:{...controlSurface,'& option':{bg:'var(--framescope-panel-bg)',color:'var(--framescope-surface-fg)'}}}}},
+    Modal:{baseStyle:{overlay:{bg:'rgba(0,0,0,.18)'},dialog:{...panelSurface,borderRadius:'xl'},closeButton:{color:'var(--framescope-control-fg)',borderRadius:'full',_hover:{bg:'var(--framescope-control-hover)'}}}},
+    Drawer:{baseStyle:{overlay:{bg:'rgba(0,0,0,.18)'},dialog:{...panelSurface,borderStartRadius:'xl'},closeButton:{color:'var(--framescope-control-fg)',borderRadius:'full',_hover:{bg:'var(--framescope-control-hover)'}}}},
+    Menu:{baseStyle:{list:{...panelSurface,borderRadius:'xl'},item:{bg:'transparent',_focus:{bg:'var(--framescope-control-hover)'}}}},
+    Popover:{baseStyle:{content:{...panelSurface,borderRadius:'xl'}}},
     Card: {
       baseStyle: {
         container: {
@@ -87,21 +111,21 @@ const theme = extendTheme({
     Tooltip: {
       baseStyle: {
         // 由 BackgroundProvider 通过 CSS 变量驱动：跟随液态玻璃开关与深浅主题
-        bg: "var(--nexbox-tooltip-bg, #ffffff)",
-        color: "var(--nexbox-tooltip-fg, #1a1a1a)",
+        bg: "var(--framescope-panel-bg)",
+        color: "var(--framescope-surface-fg)",
         // 覆盖默认 css var，使箭头颜色与胶囊背景一致
-        "--tooltip-bg": "var(--nexbox-tooltip-bg, #ffffff)",
-        "--tooltip-fg": "var(--nexbox-tooltip-fg, #1a1a1a)",
-        "--popper-arrow-bg": "var(--nexbox-tooltip-bg, #ffffff)",
+        "--tooltip-bg": "var(--framescope-panel-bg)",
+        "--tooltip-fg": "var(--framescope-surface-fg)",
+        "--popper-arrow-bg": "var(--framescope-panel-bg)",
         px: "8px",
         py: "2px",
         borderRadius: "full", // 胶囊全圆角
         fontWeight: "medium",
         fontSize: "xs",
-        backdropFilter: "var(--nexbox-tooltip-blur, none)",
-        WebkitBackdropFilter: "var(--nexbox-tooltip-blur, none)",
+        backdropFilter: "var(--framescope-surface-filter)",
+        WebkitBackdropFilter: "var(--framescope-surface-filter)",
         border: "1px solid",
-        borderColor: "var(--nexbox-tooltip-border, rgba(0,0,0,0.10))",
+        borderColor: "var(--framescope-control-border)",
         maxW: "xs",
         zIndex: "tooltip",
       } as any,

@@ -53,7 +53,10 @@ FrameScope Monitor 使用 React + Vite 前端，并由 C# WebView2 host 加载�
 
 卸载：
 
-  运行 Uninstall-FrameScopeMonitor.cmd 或 FrameScopeUninstaller.exe。
+  从 Windows“已安装的应用”中选择 FrameScope 并卸载，或在同一安装目录执行：
+    "FrameScope Installer.exe" --uninstall
+  FrameScopeUninstaller.exe 是内部正常停止辅助程序，不是用户卸载入口。
+  不要运行旧版本的 FrameScopeUninstaller.exe 卸载或清理数据。
   卸载 FrameScope Monitor 不会删除系统中的 WebView2 Runtime。
   是否删除历史 run 数据由卸载流程单独询问。
 

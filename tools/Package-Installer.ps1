@@ -1,4 +1,4 @@
-﻿# Builds the self-contained FrameScope NSIS installer.
+# Builds the self-contained FrameScope NSIS installer.
 #
 # Pipeline: build.ps1 (C# chain + hardware service) ->
 # stage the backend chain into src-tauri/resources -> npm run build ->
@@ -157,7 +157,10 @@ $version = (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'VERSION')).Trim(
 $sha = $env:FRAMESCOPE_BUILD_SHA
 if (-not $sha) { $sha = (& git -C $RepoRoot rev-parse HEAD) }
 if ($sha -notmatch '^[a-f0-9]{40}$') { throw 'Missing full build SHA' }
-$buildInfo = [ordered]@{version=$version; git_sha=$sha; channel=$(if($version.Contains('-')){'beta'}else{'stable'})}
+$edition=(Get-Content -LiteralPath (Join-Path $RepoRoot 'EDITION') -Raw).Trim()
+if($edition -notin @('offline','full')){throw 'Invalid build edition'}
+if($edition -eq 'full' -and -not $env:FRAMESCOPE_ACCOUNT_ORIGIN){throw 'Full build requires private FRAMESCOPE_ACCOUNT_ORIGIN'}
+$buildInfo = [ordered]@{version=$version; git_sha=$sha; channel=$(if($version.Contains('-')){'beta'}else{'stable'}); edition=$edition}
 [IO.File]::WriteAllText((Join-Path $backendDir 'FrameScopeBuildInfo.json'),($buildInfo | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'packaging/Restore-FrameScope.cmd') -Destination (Join-Path $backendDir 'Restore-FrameScope.cmd')
 $hostTransform = $null

@@ -11,10 +11,13 @@ fn dragged_positions_survive_stale_settings_save_and_restart() {
         let mut dragged = crate::overlay_panel::OverlaySettings::default();
         dragged.position_x = Some(-1500); dragged.position_y = Some(270);
         dragged.vertical_position_x = Some(620); dragged.vertical_position_y = Some(-130);
+        dragged.position_reference=Some(crate::overlay_position::PositionReference{monitor:"display1".into(),left:-1920,top:0,width:1920,height:1080,window_width:400,window_height:100});
+        dragged.vertical_position_reference=Some(crate::overlay_position::PositionReference{monitor:"display2".into(),left:0,top:-1080,width:2560,height:1440,window_width:240,window_height:420});
         crate::write_native_settings(&path, "Shift+F10", serde_json::to_value(&dragged).unwrap()).unwrap();
         let mut stale = dragged.clone();
         stale.position_x = Some(40); stale.position_y = Some(80);
         stale.vertical_position_x = Some(40); stale.vertical_position_y = Some(80);
+        stale.position_reference=None; stale.vertical_position_reference=None;
         stale.style = style.to_string(); stale.opacity = 99;
         let saved = crate::settings_with_native_positions(stale, &dragged);
         crate::write_native_settings(&path, "Shift+F10", serde_json::to_value(saved).unwrap()).unwrap();
@@ -22,6 +25,8 @@ fn dragged_positions_survive_stale_settings_save_and_restart() {
         let restored: crate::overlay_panel::OverlaySettings = serde_json::from_value(file["overlay-settings"].clone()).unwrap();
         assert_eq!((restored.position_x, restored.position_y), (Some(-1500), Some(270)), "{style}");
         assert_eq!((restored.vertical_position_x, restored.vertical_position_y), (Some(620), Some(-130)), "{style}");
+        assert_eq!(restored.position_reference,dragged.position_reference);
+        assert_eq!(restored.vertical_position_reference,dragged.vertical_position_reference);
         assert_eq!(restored.opacity, 99);
         assert_eq!(restored.style, style);
         assert_eq!(file["overlay-hotkey"], "Shift+F10");
@@ -348,4 +353,47 @@ fn host_source_does_not_link_production_services() {
     let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
     assert_eq!(config["identifier"], "com.framescope.ui-preview");
     assert_eq!(config["app"]["windows"][0]["width"], 1230);
+}
+
+#[test]
+fn legacy_overlay_settings_without_references_still_load() {
+    let mut value=serde_json::to_value(crate::overlay_panel::OverlaySettings::default()).unwrap();
+    value.as_object_mut().unwrap().remove("position_reference");
+    value.as_object_mut().unwrap().remove("vertical_position_reference");
+    value["position_x"]=json!(2100); value["position_y"]=json!(120);
+    let settings:crate::overlay_panel::OverlaySettings=serde_json::from_value(value).unwrap();
+    assert!(settings.position_reference.is_none());
+    assert!(settings.vertical_position_reference.is_none());
+    assert_eq!(settings.position_x,Some(2100));
+}
+#[test]
+#[ignore = "requires explicit private hardware service binary; run alone as an OSD release gate"]
+fn production_hardware_snapshot_survives_gdi_projection_and_cache() {
+    use std::{io::Write,process::{Command,Stdio},time::{Duration,Instant}};
+    let path=std::env::var("FRAMESCOPE_CONTRACT_SERVICE_EXE").expect("private service binary required");
+    let mut command=Command::new(path);command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(windows)] {use std::os::windows::process::CommandExt;command.creation_flags(0x08000000);}
+    let mut child=command.spawn().unwrap();
+    {let mut input=child.stdin.take().unwrap();writeln!(input,"{{\"id\":\"osd-contract\",\"method\":\"get_overlay_data\",\"params\":{{}}}}").unwrap();}
+    let until=Instant::now()+Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none(){if Instant::now()>=until{let _=child.kill();panic!("contract service did not exit");}std::thread::sleep(Duration::from_millis(10));}
+    let output=child.wait_with_output().unwrap();assert!(output.status.success());
+    let response:serde_json::Value=serde_json::from_slice(&output.stdout).unwrap();assert_eq!(response["ok"],true);
+    let mut raw=response["result"].clone();assert!(raw.get("cpu_frequency_info").is_some(),"must use the actual production serializer");
+    raw["cpu_clock"]=json!(5275.75);raw["cpu_usage"]=json!(41.5);raw["fps"]=json!(144.25);raw["fps_1low"]=json!(84.125);raw["memory_usage"]=json!(61.25);raw["cpu_voltage"]=json!(1.2345);
+    raw["future_diagnostics"]=json!({"quality":"estimate"});raw["cpu_core_clocks"]=json!([5250.25,5301.25]);
+    raw["gpu_sensors"]=json!([{"name":"QA GPU","hardware_type":"GpuNvidia","identifier":"routing-only","usage":62.5,"clock":1900.5,"extra_quality":"valid"},{"name":"QA GPU 2","hardware_type":"GpuAmd","identifier":"routing-only-2","usage":null,"clock":null}]);raw["active_gpu_index"]=json!(1);
+    let projected=crate::hardware_service::sanitize_for_gdi(raw.clone());
+    let parsed=crate::decode_fixture(projected).expect("production metadata must not reject the entire snapshot");
+    crate::overlay_panel::publish_hardware_data(parsed);
+    let rendered=serde_json::to_value(crate::overlay_panel::collect_hardware_data()).unwrap();
+    assert_eq!(rendered["cpu_clock"],5275.75);assert_eq!(rendered["cpu_usage"],42);assert_eq!(rendered["fps_1low"],84.125);assert_eq!(rendered["memory_usage"],61.25);assert_eq!(rendered["cpu_voltage"],1.2345);
+    assert_eq!(rendered["cpu_core_clocks"],json!([5250.25,5301.25]));assert_eq!(rendered["gpu_sensors"][0]["usage"],63);
+    assert_eq!(raw["cpu_clock"],5275.75);assert!(raw.get("cpu_frequency_info").is_some());
+    crate::overlay_panel::publish_hardware_data(crate::decode_fixture(crate::hardware_service::sanitize_for_gdi(crate::hardware_service::empty_overlay_value())).unwrap());
+    assert!(serde_json::to_value(crate::overlay_panel::collect_hardware_data()).unwrap()["cpu_clock"].is_null());
+    crate::overlay_panel::publish_hardware_data(crate::decode_fixture(crate::hardware_service::sanitize_for_gdi(raw.clone())).unwrap());
+    assert_eq!(serde_json::to_value(crate::overlay_panel::collect_hardware_data()).unwrap()["cpu_clock"],5275.75);
+    assert!(crate::decode_fixture(json!({"future_diagnostics":{}})).is_err(),"fixture validation must remain strict");
+    raw["cpu_clock"]=json!("bad-type");assert!(crate::decode_fixture(crate::hardware_service::sanitize_for_gdi(raw)).is_err(),"known fields must not be silently coerced to zero");
 }

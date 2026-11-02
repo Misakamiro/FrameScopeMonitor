@@ -25,7 +25,7 @@ internal static partial class FrameScopeReportGenerator
     private static string ReportHtmlChartToolbar()
     {
         return @"    <div class='toolbar'>
-      <div class='left-tools'><select id='metricSelect'></select><select id='readMode'><option value='spike'>保留尖峰</option><option value='trend'>趋势易读</option></select><input id='processSearch' class='search' placeholder='搜索进程，留空显示全部后台进程'></div>
+      <div class='left-tools'><select id='metricSelect'></select><select id='readMode'><option value='spike'>保留尖峰</option><option value='trend'>趋势易读</option></select><label id='fpsFilterControl' hidden><input id='fpsFilter' type='checkbox' checked> 排除过高/过低 FPS</label><span id='fpsFilterInfo' class='mode-stats'></span><input id='processSearch' class='search' placeholder='搜索进程，留空显示全部后台进程'></div>
       <div class='right-tools'><div class='mode-stats' id='modeStats'>-</div><div class='range'>图表宽度 <input id='widthScale' type='range' min='1' max='8' step='0.25' value='1'><b id='widthText'>1.00x</b></div><button class='tool' id='fitWidth'>适合窗口</button><button class='tool' id='resetView'>重置视图</button><button class='tool' id='exportPng'>导出 PNG</button><div class='legend' id='legend'></div></div>
     </div>
 ";

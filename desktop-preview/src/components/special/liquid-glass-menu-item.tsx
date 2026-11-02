@@ -2,6 +2,7 @@
 
 import { Box, HStack, Text, useColorModeValue } from "@chakra-ui/react";
 import { useBackground } from "@/contexts/background-context";
+import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { useGlowEffect, getBorderGlowStyle } from "@/hooks/use-glow-effect";
 import { useLiquidGlassRefraction } from "@/components/special/liquid-glass-svg-filter";
@@ -28,7 +29,7 @@ export function LiquidGlassMenuItem({
   const activeTextFinal = getContrastTextColor();
   // 关闭液态玻璃时：设置子菜单作为独立面板，背景/文字跟随主题（深色模式保持深色）
   const inactiveText = useColorModeValue("#000000", "#ffffff");
-  const glassInactiveText = useColorModeValue("gray.900", "#ffffff");
+  const glassInactiveText = useGlassTextColor("gray.900", "#ffffff");
   const defaultInactiveBg = useColorModeValue("#ffffff", "#1a1a1a");
   const hoverBg = useColorModeValue("#f0f0f0", "#2a2a2a");
 
@@ -55,7 +56,7 @@ export function LiquidGlassMenuItem({
       borderRadius="lg"
       px={3}
       py={2.5}
-      bg={isActive ? activeBg : (isReal ? "transparent" : (liquidGlassEnabled ? (isHovering ? glassHoverBg : glassInactiveBg) : (isHovering ? hoverBg : defaultInactiveBg)))}
+      bg={isActive ? activeBg : (isReal ? "var(--framescope-real-glass-bg, transparent)" : (liquidGlassEnabled ? (isHovering ? glassHoverBg : glassInactiveBg) : (isHovering ? hoverBg : defaultInactiveBg)))}
       border="1px solid"
       borderColor={isActive ? (liquidGlassEnabled ? glassActiveBorder : activeBg) : (isReal && !isHovering ? "rgba(255,255,255,0.06)" : (liquidGlassEnabled ? glassBorderColor : "transparent"))}
       position="relative"

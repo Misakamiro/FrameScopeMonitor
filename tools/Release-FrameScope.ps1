@@ -8,6 +8,8 @@ param(
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'FrameScopeRelease.Common.ps1')
 $RepoRoot=(Resolve-Path -LiteralPath $RepoRoot).Path
+$edition=if(Test-Path -LiteralPath (Join-Path $RepoRoot 'EDITION')){(Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'EDITION')).Trim()}else{'offline'}
+if($edition -ne 'offline'){throw 'GitHub release requires the verified offline source export; the full working tree cannot be published'}
 $public=Join-Path $RepoRoot 'src/updater/release.pub'
 $signer=Get-ReleaseSigner $SigningDirectory
 if((Get-Content -LiteralPath $public)[1].Trim() -cne (Get-Content -LiteralPath (Join-Path $SigningDirectory 'release.pub'))[1].Trim()){throw 'Signing public key does not match the client'}

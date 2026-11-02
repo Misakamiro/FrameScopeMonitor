@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [switch]$StageOnly,
@@ -30,8 +30,20 @@ function Assert-IsolatedBuildStorage([string]$Directory, [string]$StorageRoot, [
 }
 
 function Get-IsolatedSourceFiles([string]$Root) {
-    $gitOutput = Get-PayloadGitOutput ('-C "' + $Root + '" -c core.quotepath=false ls-files --cached --others --exclude-standard')
-    $names = @($gitOutput -split "`r?`n" | Where-Object { $_ })
+    $exportManifest=Join-Path $Root 'SOURCE_MANIFEST.json'
+    if((Test-Path -LiteralPath $exportManifest) -and -not (Test-Path -LiteralPath (Join-Path $Root '.git'))) {
+        $export=Get-Content -Raw -LiteralPath $exportManifest | ConvertFrom-Json
+        if($export.schema -ne 1 -or $export.sourceHead -notmatch '^[a-f0-9]{40}$'){throw 'Invalid source export identity'}
+        foreach($entry in $export.files){
+            $exportPath=Join-Path $Root $entry.path
+            Assert-PayloadPath -Path $exportPath -Root $Root
+            if((Get-FileHash -LiteralPath $exportPath).Hash -ne $entry.sha256){throw "Export changed: $($entry.path)"}
+        }
+        $names=@($export.files.path)+@('SOURCE_MANIFEST.json')
+    } else {
+        $gitOutput = Get-PayloadGitOutput ('-C "' + $Root + '" -c core.quotepath=false ls-files --cached --others --exclude-standard')
+        $names = @($gitOutput -split "`r?`n" | Where-Object { $_ })
+    }
     foreach ($name in ($names | Sort-Object -Unique)) {
         # Neither historical evidence nor generated/installed/user content is a build input.
         if ($name -match '(^|/)(artifacts|backups|reference|node_modules|target|dist|bin|obj|coverage|\.playwright-cli|\.vite|\.cache|framescope-runs|cs2-monitor-runs|script-backups|install-backups|--run)(/|$)' -or
@@ -65,8 +77,13 @@ function Get-IsolatedSourceFiles([string]$Root) {
 function Assert-IsolatedSourceUnchanged([string]$Directory) {
     $provenance = Get-Content -LiteralPath (Join-Path $Directory 'snapshot-inputs.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $snapshot = Join-Path $Directory 'source'
-    $head = (& git -C $provenance.sourceRoot rev-parse HEAD)
-    if ($LASTEXITCODE -ne 0 -or $head -ne $provenance.sourceHead) { throw 'Original source HEAD changed during isolated build' }
+    if(Test-Path -LiteralPath (Join-Path $provenance.sourceRoot '.git')) {
+        $head = (& git -C $provenance.sourceRoot rev-parse HEAD)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot read original source HEAD' }
+    } else {
+        $head=(Get-Content -Raw -LiteralPath (Join-Path $provenance.sourceRoot 'SOURCE_MANIFEST.json') | ConvertFrom-Json).sourceHead
+    }
+    if ($head -ne $provenance.sourceHead) { throw 'Original source HEAD changed during isolated build' }
     $current = @(Get-IsolatedSourceFiles -Root $provenance.sourceRoot)
     $currentMap = @{}
     foreach ($entry in $current) { $currentMap[[string]$entry.path] = [string]$entry.sha256 }

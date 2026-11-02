@@ -1,9 +1,10 @@
-import { Box, HStack, Text, Badge, useColorModeValue } from "@chakra-ui/react";
+import { Box, HStack, Text, Badge, } from "@chakra-ui/react";
 import { LuChevronDown, LuCheck } from "react-icons/lu";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { LiquidGlassCard } from "./liquid-glass-card";
 import { useThemeColor } from "@/contexts/theme-color-context";
+import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 
 interface SelectOption {
   value: string;
@@ -39,15 +40,15 @@ export function CustomSelect({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const scrollTopRef = useRef(0);
   
-  const textColor = useColorModeValue("gray.700", "#ffffff");
-  const iconColor = useColorModeValue("gray.500", "#999999");
-  const dropdownBg = useColorModeValue("white", "#111111");
-  const itemBg = useColorModeValue("white", "#111111");
+  const textColor = useGlassTextColor("gray.700", "#ffffff");
+  const iconColor = useGlassTextColor("gray.500", "#999999");
+  const dropdownBg = 'var(--framescope-panel-bg)';
+  const itemBg = 'transparent';
   // 主题色适配：选中项高亮使用主题色
   const { getActiveColor, getHoverColor, getBorderColor } = useThemeColor();
   const itemBgActive = getHoverColor();
-  const itemText = useColorModeValue("gray.600", "#cccccc");
-  const itemTextActive = useColorModeValue("gray.900", getActiveColor());
+  const itemText = 'var(--framescope-surface-fg)';
+  const itemTextActive = getActiveColor();
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -176,6 +177,8 @@ export function CustomSelect({
       {isOpen && dropdownPos && createPortal(
           <Box
             ref={dropdownRef}
+            data-glass-surface="panel"
+            backdropFilter="var(--framescope-surface-filter)"
             position="fixed"
             top={dropdownPos.top}
             bottom={dropdownPos.bottom}

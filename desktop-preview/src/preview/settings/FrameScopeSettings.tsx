@@ -3,7 +3,7 @@ import { Box, Heading, Text, VStack, HStack, Input, NumberInput, NumberInputFiel
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { CustomSelect } from "@/components/special/custom-select";
 import { usePreviewState, usePreviewAction, ActionError } from "../pages/shared";
-import { isDesktop } from "../runtime/platform";
+import { isDesktop, nativeOperation } from "../runtime/platform";
 import type { PreviewScenario } from "../runtime";
 import { UpdateSettings } from "./UpdateSettings";
 type NumberConfigKey = "sampleIntervalMs" | "pollIntervalMs" | "captureDurationSeconds";
@@ -13,6 +13,23 @@ export function FrameScopeSettings() {
   const [draft, setDraft] = useState(state.config);
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [autostart, setAutostart] = useState<boolean>();
+  const [autostartBusy, setAutostartBusy] = useState(false);
+  const [autostartError, setAutostartError] = useState("");
+  useEffect(() => {
+    if (!desktop) return;
+    let cancelled = false;
+    void nativeOperation<{ enabled: boolean }>("autostart_get").then(value => {
+      if (!cancelled) setAutostart(value.enabled);
+    }).catch(error => { if (!cancelled) setAutostartError(String(error)); });
+    return () => { cancelled = true; };
+  }, [desktop]);
+  const changeAutostart = async (enabled: boolean) => {
+    setAutostartBusy(true); setAutostartError("");
+    try { setAutostart((await nativeOperation<{ enabled: boolean }>("autostart_set", { enabled })).enabled); }
+    catch (error) { setAutostartError(String(error)); }
+    finally { setAutostartBusy(false); }
+  };
   const { run, pending, error } = usePreviewAction();
   // State rewrites whenever anything syncs (monitor ticks, backend
   // reconciliation) and each rewrite clones state.config. Re-syncing the
@@ -40,6 +57,12 @@ export function FrameScopeSettings() {
             <FormControl key={key}><FormLabel fontSize="sm">{label}</FormLabel><NumberInput value={draft[key]} min={min} max={max} onChange={(_, value) => update({ [key]: value })}>
               <NumberInputField /><NumberInputStepper><NumberIncrementStepper /><NumberDecrementStepper /></NumberInputStepper></NumberInput></FormControl>)}
           {!desktop && <FormControl><FormLabel fontSize="sm">预览数据目录</FormLabel><Input value={draft.outputDirectory} onChange={e => update({ outputDirectory: e.target.value })} /></FormControl>}
+          {desktop && <HStack justify="space-between">
+            <Box><Text fontSize="sm">随 Windows 启动</Text><Text fontSize="xs" opacity={.7}>登录后直接进入托盘。此开关立即生效。</Text></Box>
+            <Switch aria-label="随 Windows 启动" colorScheme="teal" isChecked={autostart ?? false}
+              isDisabled={autostartBusy || autostart === undefined} onChange={e => void changeAutostart(e.target.checked)} />
+          </HStack>}
+          <ActionError message={autostartError} />
           <HStack justify="space-between">
             <Box><Text fontSize="sm">启动软件时自动开启监控</Text><Text fontSize="xs" opacity={.7}>下次打开软件时生效，不改变当前监控状态。</Text></Box>
             <Switch aria-label="启动软件时自动开启监控" colorScheme="teal" isChecked={draft.autoStart} onChange={e => update({ autoStart: e.target.checked })} />
@@ -47,8 +70,8 @@ export function FrameScopeSettings() {
           {([["autoOpenReport", "完成后自动打开报告"], ["detailedLogging", "详细日志"], ["diagnosticLogging", "性能诊断日志"]] as const).map(([key, label]) =>
             <HStack key={key} justify="space-between"><Text fontSize="sm">{label}</Text><Switch aria-label={label} colorScheme="teal" isChecked={draft[key]} onChange={e => update({ [key]: e.target.checked })} /></HStack>)}
           <HStack justify="space-between">
-            <Box><Text fontSize="sm">启动软件时自动最小化</Text><Text fontSize="xs" opacity={.7}>下次启动时最小化到任务栏，不影响监控和悬浮窗。</Text></Box>
-            <Switch aria-label="启动软件时自动最小化" colorScheme="teal" isChecked={draft.startMinimized} onChange={e => update({ startMinimized: e.target.checked })} />
+            <Box><Text fontSize="sm">手动启动时也直接进入托盘</Text><Text fontSize="xs" opacity={.7}>下次手动启动时隐藏主界面，点击托盘图标即可打开。不影响监控和悬浮窗。</Text></Box>
+            <Switch aria-label="手动启动时也直接进入托盘" colorScheme="teal" isChecked={draft.startMinimized} onChange={e => update({ startMinimized: e.target.checked })} />
           </HStack>
           <ActionError message={error} /><HStack justify="flex-end"><Button variant="ghost" onClick={() => { setDraft(state.config); setDirty(false); setSaved(false); }}>取消修改</Button><Button type="submit" colorScheme="teal" isLoading={pending}>保存</Button></HStack>
           {saved && <Text role="status" fontSize="sm" color="teal.500">设置已保存</Text>}

@@ -1,9 +1,9 @@
 @echo off
 setlocal
-set "UNINSTALLER=%~dp0FrameScopeUninstaller.exe"
+set "UNINSTALLER=%~dp0FrameScope Installer.exe"
 if exist "%UNINSTALLER%" (
-    start "" "%UNINSTALLER%" %*
+    start "" "%UNINSTALLER%" --uninstall %*
     exit /b 0
 )
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\FrameScopeMonitor" /f >nul 2>nul
+echo Transactional FrameScope uninstaller not found. No files or registration were deleted.
 exit /b 1

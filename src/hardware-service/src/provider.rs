@@ -158,6 +158,7 @@ impl ResidentProvider {
                 // are not provider crashes and must not consume the restart budget.
                 let policy_error = error.contains("not configured")
                     || error.contains("gave up after")
+                    || error.contains("shutdown")
                     || error.contains("cooldown");
                 if !policy_error {
                     let cleanup = self.kill();
@@ -196,6 +197,9 @@ impl ResidentProvider {
             ));
         }
         if self.proc.is_none() {
+            if !crate::windows_shutdown::may_start_process(crate::SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst), crate::windows_shutdown::system_shutting_down()) {
+                return Err("provider start refused during Windows shutdown".into());
+            }
             if let Some(last_spawn) = self.last_spawn {
                 if last_spawn.elapsed() < RESTART_COOLDOWN {
                     return Err("provider is restarting (cooldown)".to_string());

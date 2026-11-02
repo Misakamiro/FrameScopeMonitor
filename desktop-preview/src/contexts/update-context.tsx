@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isDesktop,isMainWindow } from "@/preview/runtime/platform";
 import { useAppStartup } from "./app-startup-context";
 import { updateAction,type UpdateSnapshot } from "@/lib/update-api";
+import {confirmPaintedUi} from '@/lib/ui-startup';
 
 type ContextValue={snapshot:UpdateSnapshot|null;error:string|null;pending:boolean;action:typeof updateAction};
 const Context=createContext<ContextValue|null>(null);
@@ -28,9 +29,9 @@ export function UpdateProvider({children}:{children:ReactNode}){
     let unlisten:(()=>void)|undefined;
     void listen<UpdateSnapshot>("framescope-update",event=>{if(!disposed)setSnapshot(event.payload);})
       .then(fn=>{if(disposed)fn();else unlisten=fn;}).catch(reason=>setError(String(reason)));
+    const stopReady=confirmPaintedUi(()=>updateAction('update_ready',{ui_ready:true}),reason=>{if(!disposed)setError(String(reason));});
     void (async()=>{
       try{
-        await updateAction("update_ready");
         const current=await updateAction("update_status");
         if(disposed)return;
         setSnapshot(current);
@@ -41,7 +42,7 @@ export function UpdateProvider({children}:{children:ReactNode}){
         }
       }catch(reason){if(!disposed)setError(String(reason));}
     })();
-    return()=>{disposed=true;unlisten?.();};
+    return()=>{disposed=true;stopReady();unlisten?.();};
   },[isStartupComplete]);
   useEffect(()=>{
     const release=snapshot?.state.releases[0];

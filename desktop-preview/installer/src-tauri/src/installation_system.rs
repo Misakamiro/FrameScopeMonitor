@@ -39,6 +39,8 @@ struct Snapshot {
     run: Option<Raw>,
     run_exists: bool,
     links: Vec<Link>,
+    #[serde(default)]
+    logon_task: Option<framescope_update::autostart::State>,
 }
 
 pub struct WindowsRuntime {
@@ -175,6 +177,9 @@ fn validate_tree(key: &Key) -> Result<()> {
     Ok(())
 }
 fn validate_snapshot(snapshot: &Snapshot, target: &Path, links: &[PathBuf]) -> Result<()> {
+    if snapshot.logon_task.as_ref().is_some_and(|task| task.enabled && !task.exists) {
+        return Err("Invalid logon task recovery state".into());
+    }
     let mut keys = std::collections::BTreeSet::new();
     for key in &snapshot.keys {
         if !keys.insert(key.path.to_lowercase()) {
@@ -276,6 +281,7 @@ mod tests {
             run: None,
             run_exists: true,
             links: vec![],
+            logon_task: None,
         }
     }
     #[test]
@@ -552,6 +558,7 @@ impl Runtime for WindowsRuntime {
             run,
             run_exists,
             links,
+            logon_task: Some(framescope_update::autostart::state(&self.target.join("FrameScope.exe"))?),
         })
         .map_err(|e| e.to_string())
     }
@@ -570,6 +577,11 @@ impl Runtime for WindowsRuntime {
             io(root.delete_subkey_all(path))?;
         }
         if self.preserve_settings {
+            let exe = self.target.join("FrameScope.exe");
+            if framescope_update::autostart::legacy_enabled(&exe)?
+                && !framescope_update::autostart::state(&exe)?.exists {
+                framescope_update::autostart::set(&exe, true)?;
+            }
             if let Some(build)=&self.startup_build {
                 let key=io(root.open_subkey_with_flags(ARP,KEY_SET_VALUE))?;
                 io(key.set_value("DisplayVersion",&build.version))?;
@@ -601,13 +613,8 @@ impl Runtime for WindowsRuntime {
             }
         }
         let user = RegKey::predef(HKEY_CURRENT_USER);
-        if !self.uninstall && self.autostart {
-            let (key, _) = io(user.create_subkey(RUN))?;
-            io(key.set_value(
-                "FrameScope",
-                &format!("\"{}\"", self.target.join("FrameScope.exe").display()),
-            ))?;
-        } else {
+        framescope_update::autostart::set(&self.target.join("FrameScope.exe"), !self.uninstall && self.autostart)?;
+        {
             match user.open_subkey_with_flags(RUN, KEY_SET_VALUE) {
                 Ok(key) => match key.delete_value("FrameScope") {
                     Ok(()) => (),
@@ -624,6 +631,9 @@ impl Runtime for WindowsRuntime {
         let snapshot: Snapshot =
             serde_json::from_value(snapshot.clone()).map_err(|e| e.to_string())?;
         validate_snapshot(&snapshot, &self.target, &self.links)?;
+        if let Some(task) = &snapshot.logon_task {
+            framescope_update::autostart::restore(&self.target.join("FrameScope.exe"), task)?;
+        }
         let root = RegKey::predef(HKEY_LOCAL_MACHINE);
         // Restore only the exact product key and legacy keys captured for this target.
         for key in &snapshot.keys {

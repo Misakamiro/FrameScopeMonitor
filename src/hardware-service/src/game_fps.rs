@@ -4,7 +4,7 @@
 //! 内核 History/Win32k/Flip 为没有 runtime 数据时的估计回退；不启动 PresentMon。
 //! 多线程提交按开始时间有界排序，同一目标代次不混合两种统计口径。
 //! ETW 显式使用原始 QPC，归一成 100ns；目标按 PID 而非可执行文件名隔离。
-//! 瞬时 FPS 为 60 样本环；Low 为 10s/30s 时间窗，样本不足必须发布 unavailable。
+//! FPS 与 Low 为 1s 窗口，100ms 刷新；无有效帧时发布 unavailable。
 //! 呈现事件只提供最近信号提示，不能仅凭 B8/A8 证明传统独占或 OSD 可见。
 //!
 //! 架构说明：
@@ -17,6 +17,7 @@
 //! 需要管理员权限才能启用内核 Provider（与旧 PresentMon 方案一致）。
 
 use std::collections::{BTreeMap, HashMap};
+use crate::frame_statistics::{self, Metrics};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -47,14 +48,26 @@ static ONE_PCT_LOW_FPS: AtomicU64 = AtomicU64::new(0);
 /// 0.1% Low FPS（30s 窗口内最慢 0.1% 帧的平均帧时间取倒数）
 static ZERO_DOT_ONE_PCT_LOW_FPS: AtomicU64 = AtomicU64::new(0);
 
-fn store_low(slot: &AtomicU64, value: f64) { slot.store(value.max(0.0).to_bits(), Ordering::Relaxed); }
+fn store_low(slot: &AtomicU64, value: f64) {
+    slot.store(if value.is_finite()&&value>=0.0 {value.to_bits()+1}else{0},Ordering::Relaxed);
+}
+fn store_fps(slot:&AtomicU32,value:Option<f64>){
+    let encoded=value.filter(|v|v.is_finite()&&*v>=0.0&&*v<(u32::MAX-1) as f64).map(|v|v as u32+1).unwrap_or(0);
+    slot.store(encoded,Ordering::Relaxed);
+}
+fn cached_stats_fresh()->bool{
+    let last=LAST_FRAME_TIME.load(Ordering::Relaxed);
+    last>0&&now_unix_ms().saturating_sub(last)<1000
+}
 fn load_low(slot: &AtomicU64) -> Option<f64> {
-    let value = f64::from_bits(slot.load(Ordering::Relaxed));
-    (value.is_finite() && value > 0.0).then_some(value)
+    let encoded=slot.load(Ordering::Relaxed);
+    if encoded==0{return None;}
+    let value=f64::from_bits(encoded-1);
+    (value.is_finite()&&value>=0.0).then_some(value)
 }
 /// 目标进程最近呈现模式（问题 6 方案 E）：0 未知 / 1 合成 / 2 独立翻转 / 3 传统独占
 static PRESENT_MODE: AtomicU8 = AtomicU8::new(0);
-/// 10s 窗口平均 FPS；不同时间窗口的指标不能互相钳制。
+/// 与 FPS/Low 共用的一秒窗口平均 FPS。
 static WINDOW_AVG_FPS: AtomicU32 = AtomicU32::new(0);
 
 pub const MODE_UNKNOWN: u8 = 0;
@@ -247,70 +260,21 @@ pub(crate) fn present_mode_code(st: &TierState, now: i64) -> u8 {
 /// 瞬时 FPS 有效帧时间区间 [1ms, 10s) → 上限 1000 FPS。
 /// 下限挡掉双源/多 surface 漏网假帧；上限挡掉停顿后的陈旧间隔污染统计。
 pub(crate) const MIN_FRAME_TIME_S: f64 = 0.001;
-pub(crate) const MAX_FRAME_TIME_S: f64 = 10.0;
+pub(crate) const MAX_FRAME_TIME_S: f64 = frame_statistics::MAX_TIME_MS / 1000.0;
 
 /// 1% low / 0.1% low 统计窗口与门槛（门槛 = 窗口内帧数，非会话累计）
-pub(crate) const LOW1_WINDOW_TICKS: i64 = 100_000_000; // 10s
-pub(crate) const LOW01_WINDOW_TICKS: i64 = 300_000_000; // 30s
-pub(crate) const LOW1_MIN_FRAMES: usize = 100;
-pub(crate) const LOW01_MIN_FRAMES: usize = 900;
+pub(crate) const LOW1_WINDOW_TICKS: i64 = 10_000_000; // 1s
 
-/// 瞬时 FPS 环形样本数（300FPS 下窗口 ≈200ms）
-pub(crate) const SAMPLE_COUNT: usize = 60;
-/// 帧窗口容量。真正的过期口径是绝对时间；容量必须 ≥ 30s 窗口在 1000FPS 下的帧数
-/// （tubatools 用 16384，@1000FPS 仅 16s 会先于时间窗口截断，这里按其自述风险扩到 32768）。
+/// One-second frame storage. Capacity exhaustion makes the snapshot unavailable.
 pub(crate) const FRAME_WINDOW_CAPACITY: usize = 32768;
 
-/// 瞬时 FPS 环形缓冲：fps = (count-1) / (最新 - 最旧)
-pub(crate) struct InstantRing {
-    stamps: [i64; SAMPLE_COUNT],
-    index: usize,
-    count: usize,
-}
-
-impl InstantRing {
-    fn new() -> Self {
-        Self {
-            stamps: [0; SAMPLE_COUNT],
-            index: 0,
-            count: 0,
-        }
-    }
-
-    /// 最近一次样本的 tick（peek，不推进）
-    fn last_tick(&self) -> Option<i64> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.stamps[(self.index + SAMPLE_COUNT - 1) % SAMPLE_COUNT])
-        }
-    }
-
-    /// 写入一个 present，返回 (count-1)/duration 秒单位的瞬时 FPS（不足 2 样本或
-    /// duration ≤ 0 返回 0）。
-    fn push(&mut self, ticks: i64) -> f64 {
-        self.stamps[self.index] = ticks;
-        self.index = (self.index + 1) % SAMPLE_COUNT;
-        if self.count < SAMPLE_COUNT {
-            self.count += 1;
-        }
-        if self.count < 2 {
-            return 0.0;
-        }
-        let first = self.stamps[(self.index + SAMPLE_COUNT - self.count) % SAMPLE_COUNT];
-        let last = self.stamps[(self.index + SAMPLE_COUNT - 1) % SAMPLE_COUNT];
-        let duration = (last - first) as f64 / TICKS_PER_SECOND as f64;
-        if duration > 0.0 {
-            (self.count - 1) as f64 / duration
-        } else {
-            0.0
-        }
-    }
-
-    fn clear(&mut self) {
-        self.index = 0;
-        self.count = 0;
-    }
+#[derive(Default)]
+pub(crate) struct PresentClock { last:Option<i64> }
+impl PresentClock {
+    fn new()->Self{Self::default()}
+    fn last_tick(&self)->Option<i64>{self.last}
+    fn push(&mut self,ticks:i64){self.last=Some(ticks);}
+    fn clear(&mut self){self.last=None;}
 }
 
 /// 帧时间窗口：存 (绝对 ticks, 帧时间秒) × FRAME_WINDOW_CAPACITY，按绝对时间剪枝。
@@ -368,7 +332,7 @@ impl FrameWindowBuffer {
         let mut filled = false;
         for k in 0..self.count {
             let idx = (self.head + cap * 2 - 1 - k) % cap;
-            if self.ticks[idx] < min_tick {
+            if self.ticks[idx] <= min_tick {
                 filled = true; // 存在比窗口更老的帧 → 数据已覆盖整个时间窗口
                 break;
             }
@@ -377,57 +341,29 @@ impl FrameWindowBuffer {
         filled
     }
 
-    /// 1% / 0.1% low：窗口里最慢 ceil(n*percentile) 帧的「平均帧时间」取倒数
-    /// （PresentMon / CapFrameX 标准口径；对最差帧的瞬时 FPS 直接平均会因 1/x 凸性
-    /// 系统性高估）。样本不足 minFrames 返回 -1；require_full_window 时窗口未被
-    /// 时间填满也返回 -1（启动期半截窗口的坏帧会放大最差百分位）。
-    fn calc_percentile_low(
-        &self,
-        percentile: f64,
-        window_ticks: i64,
-        min_frames: usize,
-        require_full_window: bool,
-    ) -> f64 {
-        let mut scratch = Vec::new();
-        let filled = self.collect_window(window_ticks, &mut scratch);
-        if scratch.len() < min_frames {
-            return -1.0;
-        }
-        if require_full_window && !filled {
-            return -1.0;
-        }
-        scratch.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let n = scratch.len();
-        // 真百分位帧数，刻意不设「最少 3 帧」兜底：那会把口径悄悄放大且随窗口
-        // 填充进度漂移。样本不足的问题交给 min_frames 门槛解决。
-        let worst = ((n as f64 * percentile).ceil() as usize).clamp(1, n);
-        let sum: f64 = scratch[n - worst..].iter().sum();
-        let avg = sum / worst as f64;
-        if avg > 0.0 {
-            1.0 / avg
-        } else {
-            -1.0
-        }
-    }
+
 }
 
-/// 目标进程帧统计器：瞬时环 + 帧窗口 + 会话累计。
-/// 帧时间 = 相邻两个 present 的 tick 差（与 tubatools OnPresent 一致：环存全部
-/// 计入帧，帧窗口只收有效帧间隔）。
+/// 目标进程帧统计器：最近呈现时间、一秒帧窗口和诊断用会话累计。
+/// 有效帧时间来自相邻两个 present 的 tick 差。
 pub(crate) struct FpsTracker {
-    ring: InstantRing,
+    ring: PresentClock,
     window: FrameWindowBuffer,
     total_frames: u64,
     total_frame_time: f64,
+    cached: Option<Metrics>,
+    last_calc_tick: Option<i64>,
 }
 
 impl FpsTracker {
     pub(crate) fn new() -> Self {
         Self {
-            ring: InstantRing::new(),
+            ring: PresentClock::new(),
             window: FrameWindowBuffer::new(FRAME_WINDOW_CAPACITY),
             total_frames: 0,
             total_frame_time: 0.0,
+            cached: None,
+            last_calc_tick: None,
         }
     }
 
@@ -444,34 +380,32 @@ impl FpsTracker {
 
     fn record_present(&mut self, ticks: i64, minimum_frame_time: f64) -> f64 {
         let prev = self.ring.last_tick();
-        let fps = self.ring.push(ticks);
+        self.ring.push(ticks);
         if let Some(prev) = prev {
             let frame_time = (ticks - prev) as f64 / TICKS_PER_SECOND as f64;
-            if frame_time > 0.0 && frame_time >= minimum_frame_time && frame_time < MAX_FRAME_TIME_S {
+            if frame_time > 0.0 && frame_time >= minimum_frame_time && frame_time <= MAX_FRAME_TIME_S {
                 self.window.push(ticks, frame_time);
                 self.total_frames += 1;
                 self.total_frame_time += frame_time;
             }
         }
-        fps
+        if self.last_calc_tick.is_none_or(|last|ticks-last>=TICKS_PER_SECOND/10) {
+            let mut values=Vec::new();
+            let filled=self.window.collect_window(LOW1_WINDOW_TICKS,&mut values);
+            self.cached=if self.window.count==self.window.ticks.len()&&!filled {None}else{
+                values.reverse();
+                let ms=values.iter().map(|v|v*1000.0).collect::<Vec<_>>();
+                (!ms.is_empty()).then(||frame_statistics::snapshot(&ms).ok()).flatten()
+            };
+            self.last_calc_tick=Some(ticks);
+        }
+        self.instant_fps()
     }
 
     pub(crate) fn instant_fps(&self) -> f64 {
-        // 复用环里的读数语义：on_present 返回值即最新瞬时 FPS，这里重算一次
-        // （读取频率远低于写入频率，重算成本可忽略且不引入跨线程状态）
-        if self.ring.count < 2 {
-            return 0.0;
-        }
-        let cap = SAMPLE_COUNT;
-        let first = self.ring.stamps[(self.ring.index + cap - self.ring.count) % cap];
-        let last = self.ring.stamps[(self.ring.index + cap - 1) % cap];
-        let duration = (last - first) as f64 / TICKS_PER_SECOND as f64;
-        if duration > 0.0 {
-            (self.ring.count - 1) as f64 / duration
-        } else {
-            0.0
-        }
+        self.cached.and_then(|v|v.average_fps).unwrap_or(0.0)
     }
+    fn statistics(&self)->Option<Metrics>{self.cached}
 
     pub(crate) fn total_frames(&self) -> u64 {
         self.total_frames
@@ -486,32 +420,10 @@ impl FpsTracker {
         }
     }
 
-    /// 10s 窗口平均 FPS（与 1% low 同窗口、同剪枝口径）
-    pub(crate) fn window_avg_fps(&self) -> f64 {
-        let mut scratch = Vec::new();
-        if !self.window.collect_window(LOW1_WINDOW_TICKS, &mut scratch) && scratch.is_empty() {
-            return 0.0;
-        }
-        if scratch.is_empty() {
-            return 0.0;
-        }
-        let sum: f64 = scratch.iter().sum();
-        if sum > 0.0 {
-            scratch.len() as f64 / sum
-        } else {
-            0.0
-        }
-    }
-
-    pub(crate) fn one_percent_low(&self) -> f64 {
-        self.window
-            .calc_percentile_low(0.01, LOW1_WINDOW_TICKS, LOW1_MIN_FRAMES, true)
-    }
-
-    pub(crate) fn point_one_percent_low(&self) -> f64 {
-        self.window
-            .calc_percentile_low(0.001, LOW01_WINDOW_TICKS, LOW01_MIN_FRAMES, true)
-    }
+    /// Same one-second window and integer rounding as FPS and Low.
+    pub(crate) fn window_avg_fps(&self) -> f64 {self.instant_fps()}
+    pub(crate) fn one_percent_low(&self) -> f64 {self.cached.and_then(|v|v.low1_fps).unwrap_or(-1.0)}
+    pub(crate) fn point_one_percent_low(&self) -> f64 {self.cached.and_then(|v|v.low01_fps).unwrap_or(-1.0)}
 
     pub(crate) fn is_window_empty(&self) -> bool {
         self.window.is_empty()
@@ -522,6 +434,8 @@ impl FpsTracker {
         self.window.clear();
         self.total_frames = 0;
         self.total_frame_time = 0.0;
+        self.cached = None;
+        self.last_calc_tick = None;
     }
 }
 
@@ -978,13 +892,12 @@ mod etw {
         }
         LAST_FRAME_TIME.store(now_unix_ms(), Ordering::Relaxed);
 
-        // 瞬时 FPS：60 样本环形 (n-1)/duration，事件驱动逐帧刷新，无 EMA
-        let mut fps = rt.tracker.instant_fps();
+        // The tracker refreshes its shared one-second snapshot on the 100ms cadence.
         for at in completed_ticks {
             if rt.tracker.ring.last_tick().map(|last| at <= last).unwrap_or(false) {
                 continue;
             }
-            fps = if is_runtime {
+            if is_runtime {
                 rt.tracker.on_runtime_present(at)
             } else {
                 rt.tracker.on_present(at)
@@ -995,16 +908,14 @@ mod etw {
                 }
             }
         }
-        SMOOTHED_FPS.store(fps.max(0.0).round() as u32, Ordering::Relaxed);
-
-        // 每 ~1 秒计算 1% / 0.1% Low（32768 帧排序不可高频跑，CPU 预算硬指标）
-        if rt.last_low_calc.elapsed() >= Duration::from_secs(1) {
-            let wavg = rt.tracker.window_avg_fps();
-            WINDOW_AVG_FPS.store(wavg.max(0.0).round() as u32, Ordering::Relaxed);
-            let one_low = rt.tracker.one_percent_low();
-            store_low(&ONE_PCT_LOW_FPS, one_low);
-            let z_one_low = rt.tracker.point_one_percent_low();
-            store_low(&ZERO_DOT_ONE_PCT_LOW_FPS, z_one_low);
+        // Publish all three values from the same cached 100ms snapshot,
+        // including when ETW delivers recorded events in a fast backlog.
+        let statistics=rt.tracker.statistics();
+        store_fps(&SMOOTHED_FPS,statistics.and_then(|v|v.average_fps));
+        store_fps(&WINDOW_AVG_FPS,statistics.and_then(|v|v.average_fps));
+        store_low(&ONE_PCT_LOW_FPS,statistics.and_then(|v|v.low1_fps).unwrap_or(-1.0));
+        store_low(&ZERO_DOT_ONE_PCT_LOW_FPS,statistics.and_then(|v|v.low01_fps).unwrap_or(-1.0));
+        if rt.last_low_calc.elapsed() >= Duration::from_millis(frame_statistics::UPDATE_MS as u64) {
             rt.last_low_calc = Instant::now();
             prune_stale(rt, ticks);
         }
@@ -1603,6 +1514,20 @@ mod etw {
         }
 
         #[test]
+        fn replayed_events_publish_fps_and_lows_from_the_same_snapshot() {
+            let _lock = CALLBACK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (mut rt, _reset) = setup(42);
+            let start=100*TICKS_PER_SECOND;
+            // ETW may deliver a backlog faster than its recorded timestamp span.
+            // Publication must not put Low on an independent wall-clock gate.
+            rt.last_low_calc=Instant::now()+Duration::from_secs(60);
+            for offset in [0,200_000,1_200_000]{emit_dxgi(&mut rt,start+offset,0,0);}
+            assert_eq!(get_cached_fps(),Some(17));
+            assert_eq!(get_cached_1low_fps(),Some(10.0));
+            assert_eq!(get_cached_01low_fps(),Some(10.0));
+        }
+
+        #[test]
         fn one_hz_runtime_does_not_alternate_sources_or_reset() {
             let _lock = CALLBACK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let (mut rt, _reset) = setup(42);
@@ -1644,8 +1569,10 @@ mod etw {
             emit_dxgi_half(&mut rt, base + 20_000, 8, 42, 0);
             emit_dxgi_half(&mut rt, base + 30_000, 8, 43, 0);
             emit_dxgi_half(&mut rt, base + 40_000, 7, 43, 0);
-            assert_eq!(get_cached_fps(), Some(1000));
-            assert_eq!(rt.tracker.total_frames(), 2);
+            assert_eq!(get_cached_fps(), None); // before the first 100ms snapshot
+            for i in 3..=120 {emit_dxgi(&mut rt,base+i*10_000,0,0);}
+            assert_eq!(get_cached_fps(),Some(1000));
+            assert_eq!(rt.tracker.total_frames(),120);
         }
 
         #[test]
@@ -1661,7 +1588,9 @@ mod etw {
             emit_dxgi_half(&mut rt, base + 310_000, 8, 43, 0);
             emit_dxgi_half(&mut rt, base + 400_000, 7, 43, 0);
             assert_eq!(rt.tracker.total_frames(), 3);
-            assert_eq!(get_cached_fps(), Some(100));
+            assert_eq!(get_cached_fps(), None);
+            for i in 4..=12 {emit_dxgi(&mut rt,base+i*100_000,0,0);}
+            assert_eq!(get_cached_fps(),Some(100));
         }
 
         #[test]
@@ -1711,7 +1640,7 @@ mod etw {
             let _lock = CALLBACK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let (mut rt, _reset) = setup(42);
             emit(&mut rt, 42, 100 * TICKS_PER_SECOND);
-            emit(&mut rt, 42, 100 * TICKS_PER_SECOND + 100_000);
+            for i in 1..=12 {emit(&mut rt,42,100*TICKS_PER_SECOND+i*100_000);}
             assert_eq!(get_cached_fps(), Some(100));
             select_target(43, "test-game.exe");
             assert_eq!(get_cached_fps(), None);
@@ -1720,7 +1649,7 @@ mod etw {
             assert_eq!(get_cached_fps(), None);
             emit(&mut rt, 43, 101 * TICKS_PER_SECOND);
             assert_eq!(get_cached_fps(), None);
-            emit(&mut rt, 43, 101 * TICKS_PER_SECOND + 50_000);
+            for i in 1..=24 {emit(&mut rt,43,101*TICKS_PER_SECOND+i*50_000);}
             assert_eq!(get_cached_fps(), Some(200));
         }
 
@@ -1800,7 +1729,7 @@ mod etw {
         }
 
         #[test]
-        fn callback_clears_low_cache_when_sparse_stream_loses_required_samples() {
+        fn callback_keeps_valid_sparse_frames_and_expires_stale_cache() {
             let _lock = CALLBACK_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let (mut rt, _reset) = setup(42);
             let base = 100 * TICKS_PER_SECOND;
@@ -1815,8 +1744,11 @@ mod etw {
                 rt.last_low_calc = Instant::now() - Duration::from_secs(2);
                 emit(&mut rt, 42, base + 34 * TICKS_PER_SECOND + i * TICKS_PER_SECOND);
             }
-            assert_eq!(get_cached_1low_fps(), None);
-            assert_eq!(get_cached_01low_fps(), None);
+            assert_eq!(get_cached_1low_fps(),Some(1.0));
+            assert_eq!(get_cached_01low_fps(),Some(1.0));
+            LAST_FRAME_TIME.store(now_unix_ms()-1001,Ordering::Relaxed);
+            assert_eq!(get_cached_1low_fps(),None);
+            assert_eq!(get_cached_01low_fps(),None);
         }
     }
 }
@@ -2017,10 +1949,10 @@ pub fn stop_fps_monitor() {
 /// 获取缓存的瞬时 FPS 值（60 样本环形窗口）
 pub fn get_cached_fps() -> Option<u32> {
     let fps = SMOOTHED_FPS.load(Ordering::Relaxed);
-    if fps == 0 {
+    if fps == 0 || !cached_stats_fresh() {
         None
     } else {
-        Some(fps)
+        Some(fps-1)
     }
 }
 
@@ -2029,7 +1961,7 @@ pub fn get_cached_fps() -> Option<u32> {
 /// 口径（PresentMon / CapFrameX 标准）：10s 绝对时间窗口内最慢 1% 帧的
 /// 平均帧时间取倒数；窗口未填满或帧数 <100 返回 None。
 pub fn get_cached_1low_fps() -> Option<f64> {
-    load_low(&ONE_PCT_LOW_FPS)
+    if cached_stats_fresh(){load_low(&ONE_PCT_LOW_FPS)}else{None}
 }
 
 /// 获取缓存的 0.1% Low FPS 值
@@ -2037,7 +1969,7 @@ pub fn get_cached_1low_fps() -> Option<f64> {
 /// 口径：30s 绝对时间窗口内最慢 0.1% 帧的平均帧时间取倒数；
 /// 窗口未填满或帧数 <900 返回 None。
 pub fn get_cached_01low_fps() -> Option<f64> {
-    load_low(&ZERO_DOT_ONE_PCT_LOW_FPS)
+    if cached_stats_fresh(){load_low(&ZERO_DOT_ONE_PCT_LOW_FPS)}else{None}
 }
 
 /// PID currently selected by the ETW tracker for an in-process overlay.
@@ -2048,10 +1980,10 @@ pub fn current_target_pid() -> u32 {
 /// 获取缓存的 10s 窗口平均 FPS。
 pub fn get_cached_window_avg_fps() -> Option<u32> {
     let fps = WINDOW_AVG_FPS.load(Ordering::Relaxed);
-    if fps == 0 {
+    if fps == 0 || !cached_stats_fresh() {
         None
     } else {
-        Some(fps)
+        Some(fps-1)
     }
 }
 
@@ -2098,6 +2030,29 @@ pub fn cleanup() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn statistics_v2_uses_one_second_floor_tails_and_keeps_long_frames() {
+        let mut tracker=super::FpsTracker::new();
+        let mut ticks=0;
+        for _ in 0..=400 {tracker.on_runtime_present(ticks);ticks+=super::TICKS_PER_SECOND/200;}
+        ticks-=super::TICKS_PER_SECOND/200;
+        assert_eq!(tracker.instant_fps(),200.0);
+        ticks+=super::TICKS_PER_SECOND/2;tracker.on_runtime_present(ticks);
+        assert_eq!(tracker.instant_fps(),101.0);
+        assert_eq!(tracker.one_percent_low(),2.0);
+        assert_eq!(tracker.point_one_percent_low(),2.0);
+        ticks+=super::TICKS_PER_SECOND*3/2;tracker.on_runtime_present(ticks);
+        assert_eq!(tracker.instant_fps(),1.0);
+        assert_eq!(tracker.one_percent_low(),1.0);
+        tracker.clear();assert_eq!(tracker.statistics(),None);
+    }
+    #[test]
+    fn statistics_v2_distinguishes_a_measured_zero_from_missing() {
+        let slot=std::sync::atomic::AtomicU64::new(0);
+        assert_eq!(super::load_low(&slot),None);
+        super::store_low(&slot,0.0);assert_eq!(super::load_low(&slot),Some(0.0));
+        super::store_low(&slot,-1.0);assert_eq!(super::load_low(&slot),None);
+    }
     use super::*;
 
     /// ms → 100ns ticks
@@ -2224,7 +2179,8 @@ mod tests {
         assert_eq!(tracker.on_present(tick(10_000)), 0.0); // 首帧无 FPS
         tracker.on_present(tick(10_000) + 20_000);
         assert_eq!(tracker.total_frames(), 1); // 2 presents → 1 间隔
-        assert!((tracker.instant_fps() - 500.0).abs() < 0.1); // 2ms 间隔 → 500 FPS
+        feed(&mut tracker,60,20_000,tick(10_000)+20_000);
+        assert!((tracker.instant_fps()-500.0).abs()<0.1); // 2ms 间隔 → 500 FPS
     }
 
     #[test]
@@ -2323,16 +2279,17 @@ mod tests {
     }
 
     #[test]
-    fn frame_time_filter_rejects_stall_gaps() {
+    fn statistics_v2_retains_real_stall_gaps() {
         // 停顿 15s 后的恢复帧：15s 间隔 ≥10s 上限，不进窗口（但推进瞬时环）
         let mut tracker = FpsTracker::new();
         let frame_ticks = tick(1000) / 60;
         let t = feed(&mut tracker, 30, frame_ticks, 0);
         tracker.on_present(t + tick(15_000));
-        assert_eq!(tracker.total_frames(), 29); // 停顿间隔未计入
+        assert_eq!(tracker.total_frames(), 30); // 停顿间隔未计入
         // 恢复后的下一帧间隔正常
         tracker.on_present(t + tick(15_000) + frame_ticks);
-        assert_eq!(tracker.total_frames(), 30);
+        assert_eq!(tracker.total_frames(), 31);
+        assert_eq!(tracker.one_percent_low(),0.0);
     }
 
     // ---- 1%/0.1% low 时间窗口（翻译自 FpsServiceTests.cs:349-478） ----
@@ -2360,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn point_one_percent_low_needs_enough_frames_in_window() {
+    fn point_one_percent_low_uses_available_one_second_samples() {
         // 0.1% low 要有统计意义必须有足够多的帧——样本不够必须返回 -1，
         // 而不是拿一两帧最差帧的噪声填数字。门槛按「窗口内帧数」（900 帧）算。
         let mut tracker = FpsTracker::new();
@@ -2368,7 +2325,7 @@ mod tests {
         let mut t = 0i64;
 
         t = feed(&mut tracker, 500, frame_ticks, t);
-        assert_eq!(tracker.point_one_percent_low(), -1.0);
+        assert_eq!(tracker.point_one_percent_low(),60.0);
 
         // 1900 帧 ≈ 31.7s ≥ 30s 窗口：帧数门槛（900）和时间填满门槛同时满足才出数
         feed(&mut tracker, 1400, frame_ticks, t);
@@ -2377,7 +2334,7 @@ mod tests {
     }
 
     #[test]
-    fn low_masked_until_window_filled() {
+    fn statistics_v2_does_not_wait_for_legacy_full_windows() {
         // 开测头几秒窗口只有半截：启动期坏帧会把 1%/0.1% low 放大成离谱读数
         // ——这段时间必须显示 "--"，不能拿半截窗口硬算。
         let mut tracker = FpsTracker::new();
@@ -2386,32 +2343,23 @@ mod tests {
 
         // 5s：帧数够（299 ≥ 100）但 10s 窗口没填满
         t = feed(&mut tracker, 300, frame_ticks, t);
-        assert_eq!(tracker.one_percent_low(), -1.0);
-        assert_eq!(tracker.point_one_percent_low(), -1.0);
+        assert_eq!(tracker.one_percent_low(),60.0);
+        assert_eq!(tracker.point_one_percent_low(),60.0);
 
         // 累计 ≈11.7s：1% 窗口填满
         t = feed(&mut tracker, 400, frame_ticks, t);
         let low = tracker.one_percent_low();
         assert!((55.0..=65.0).contains(&low), "got {low}");
-        assert_eq!(tracker.point_one_percent_low(), -1.0); // 30s 窗口仍未填满
+        assert_eq!(tracker.point_one_percent_low(),60.0); // 30s 窗口仍未填满
     }
 
     #[test]
-    fn low_best_effort_mode_for_short_sessions() {
-        // 报告/快照是「整段会话」语义：会话比窗口短时按已有帧算（CapFrameX 对
-        // 整段录制的口径），不能因为滚动窗口没填满就在报告里开天窗。
-        let mut tracker = FpsTracker::new();
-        let frame_ticks = tick(1000) / 60;
-        feed(&mut tracker, 300, frame_ticks, 0); // 5s 短会话
-
-        assert_eq!(tracker.one_percent_low(), -1.0); // 实时读数：窗口没填满 → 屏蔽
-        let best_effort = tracker.window.calc_percentile_low(
-            0.01,
-            LOW1_WINDOW_TICKS,
-            LOW1_MIN_FRAMES,
-            false,
-        );
-        assert!((55.0..=65.0).contains(&best_effort), "got {best_effort}");
+    fn statistics_v2_short_sessions_do_not_need_a_full_window() {
+        let mut tracker=FpsTracker::new();
+        assert_eq!(tracker.one_percent_low(),-1.0);
+        feed(&mut tracker,30,tick(1000)/60,0);
+        assert_eq!(tracker.one_percent_low(),60.0);
+        assert_eq!(tracker.point_one_percent_low(),60.0);
     }
 
     #[test]
@@ -2501,10 +2449,10 @@ mod tests {
     }
 
     #[test]
-    fn ring_wraps_at_sample_count() {
+    fn present_clock_keeps_latest_after_many_presents() {
         // 超过 60 样本后环形覆盖：FPS 稳定在帧率而不是漂移
         let mut tracker = FpsTracker::new();
-        feed(&mut tracker, SAMPLE_COUNT * 3, tick(1000) / 120, 0); // 120Hz × 3 圈
+        feed(&mut tracker, 180, tick(1000) / 120, 0); // 120Hz × 3 圈
         let fps = tracker.instant_fps();
         assert!((119.0..=121.0).contains(&fps), "got {fps}");
     }

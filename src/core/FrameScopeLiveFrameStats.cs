@@ -65,11 +65,7 @@ public sealed class FrameScopeLiveFrameStats
         return order != 0 ? order : string.CompareOrdinal(aKey, bKey);
     }
     public static double? LowFromSorted(List<double> sorted, double fraction) {
-        if (sorted == null || sorted.Count == 0) return null;
-        int count = Math.Max(1, (int)Math.Ceiling(sorted.Count * fraction));
-        double sum = 0;
-        for (int i = sorted.Count - 1, taken = 0; i >= 0 && taken < count; i--, taken++) sum += sorted[i];
-        return sum > 0 ? (double?)(1000.0 / (sum / count)) : null;
+        return sorted == null ? null : FrameScopeFrameStatistics.LowFromSorted(sorted, fraction);
     }
     private static double? Rank(SortedDictionary<double, long> values, long count, double fraction) {
         long rank = Math.Max(1, (long)Math.Ceiling(count * fraction));
@@ -79,15 +75,15 @@ public sealed class FrameScopeLiveFrameStats
     }
     private static long ValidCount(SortedDictionary<double, long> values) {
         long count = 0;
-        foreach (var entry in values) { if (entry.Key > 1000) break; count += entry.Value; }
+        foreach (var entry in values) count += entry.Value;
         return count;
     }
     private static double? Low(SortedDictionary<double, long> values, long count, double fraction) {
         if (count == 0) return null;
-        long tail = Math.Max(1, (long)Math.Ceiling(count * fraction));
+        long tail = Math.Max(1, (long)Math.Floor(count * fraction));
         long remaining = tail;
         var sorted = new List<KeyValuePair<double, long>>();
-        foreach (var entry in values) { if (entry.Key > 1000) break; sorted.Add(entry); }
+        foreach (var entry in values) sorted.Add(entry);
         double sum = 0;
         // Match the report's descending, per-frame floating point sum exactly.
         for (int index = sorted.Count - 1; index >= 0 && remaining > 0; index--) {
@@ -95,7 +91,7 @@ public sealed class FrameScopeLiveFrameStats
             for (long frame = 0; frame < take; frame++) sum += sorted[index].Key;
             remaining -= take;
         }
-        return sum > 0 ? (double?)(1000.0 / (sum / tail)) : null;
+        return sum > 0 ? (double?)FrameScopeFrameStatistics.Rounded(1000.0 / (sum / tail)) : null;
     }
     private void Add(SortedDictionary<double, long> values, double ms) {
         long count;
@@ -143,7 +139,7 @@ public sealed class FrameScopeLiveFrameStats
             || DateTime.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out time)
             || DateTime.TryParse(date, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out time);
         if (!validDate || !double.TryParse(Field(row, "MsBetweenPresents"), NumberStyles.Float, CultureInfo.InvariantCulture, out ms)
-            || double.IsNaN(ms) || double.IsInfinity(ms) || ms <= 0 || ms >= 10000) return;
+            || double.IsNaN(ms) || double.IsInfinity(ms) || ms <= 0 || ms > FrameScopeFrameStatistics.MaxTimeMs) return;
         string key = Field(row, "ProcessID") + "|" + Field(row, "SwapChainAddress") + "|" + Field(row, "Application");
         DateTimeOffset timestamp = dto;
         if (rolling) {
@@ -160,10 +156,8 @@ public sealed class FrameScopeLiveFrameStats
         bool hardware = Field(row, "PresentMode").StartsWith("Hardware:", StringComparison.OrdinalIgnoreCase);
         track.Instant.Enqueue(ms);
         while (track.Instant.Count > 60) track.Instant.Dequeue();
-        if (ms <= 1000) {
-            lastNewValidFrameAt = monotonicClock();
-            hasNewValidFrameAt = true;
-        }
+        lastNewValidFrameAt = monotonicClock();
+        hasNewValidFrameAt = true;
         if (rolling) {
             if (timestamp > track.Latest) track.Latest = timestamp;
             track.Recent.Enqueue(Tuple.Create(timestamp, ms, hardware));
@@ -176,7 +170,7 @@ public sealed class FrameScopeLiveFrameStats
         if (latestFrame == DateTimeOffset.MinValue) return;
         var expired = new List<string>();
         foreach (var track in tracks.Values) {
-            while (track.Recent.Count > 0 && track.Recent.Peek().Item1 < latestFrame.AddSeconds(-3)) track.Recent.Dequeue();
+            while (track.Recent.Count > 0 && track.Recent.Peek().Item1 <= latestFrame.AddMilliseconds(-FrameScopeFrameStatistics.WindowMs)) track.Recent.Dequeue();
             if (track.Recent.Count == 0) expired.Add(track.Key);
         }
         foreach (string key in expired) tracks.Remove(key);
@@ -244,7 +238,7 @@ public sealed class FrameScopeLiveFrameStats
         return result;
     }
     private Snapshot RollingCurrent(Snapshot result) {
-        if (!hasNewValidFrameAt || ElapsedMilliseconds(lastNewValidFrameAt, monotonicClock()) >= 3000) return result;
+        if (!hasNewValidFrameAt || ElapsedMilliseconds(lastNewValidFrameAt, monotonicClock()) >= FrameScopeFrameStatistics.WindowMs) return result;
         TrimRollingTracks();
         TrackData selected = null;
         List<double> selectedValues = null;
@@ -262,14 +256,13 @@ public sealed class FrameScopeLiveFrameStats
             }
         }
         if (selected == null) return result;
-        selectedValues.RemoveAll(ms => ms > 1000);
-        selectedValues.Sort();
+        var statistics = FrameScopeFrameStatistics.Snapshot(selectedValues);
         result.Count = selectedValues.Count;
         result.Track = selected.Key;
         int.TryParse(selected.Key.Split('|')[0], out result.ProcessId);
-        result.Low1 = PercentileLow(selectedValues,.99);
-        result.Low01 = PercentileLow(selectedValues,.999);
-        result.Fps = InstantFps(selected);
+        result.Low1 = statistics.Low1;
+        result.Low01 = statistics.Low01;
+        result.Fps = statistics.Average;
         return result;
     }
     private static double? InstantFps(TrackData track) {
@@ -282,13 +275,6 @@ public sealed class FrameScopeLiveFrameStats
         double elapsed = (now - started) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         return elapsed >= long.MaxValue ? long.MaxValue : (long)elapsed;
     }
-    private static double? PercentileLow(List<double> sorted, double quantile) {
-        if (sorted.Count == 0) return null;
-        int index = Math.Max(0, (int)Math.Ceiling(sorted.Count * quantile) - 1);
-        // The report curve quantizes frame times to 0.1 ms before selecting the percentile.
-        double ms = Math.Max(1, Math.Min(100000, Math.Round(sorted[index] * 10.0))) / 10.0;
-        return 1000.0 / ms;
-    }
     public void Publish(string runDir, int workerPid, string phase, bool final) {
         Snapshot snapshot;
         try { snapshot = Poll(final); }
@@ -298,8 +284,9 @@ public sealed class FrameScopeLiveFrameStats
             && (phase == "capturing" || phase == "completed");
         var value = new Dictionary<string, object> {
             { "source", "presentmon" }, { "phase", phase }, { "run_dir", Path.GetFullPath(runDir) },
-            { "statistics_scope", rolling ? "rolling-percentile" : "cumulative-tail-mean" },
-            { "window_ms", rolling ? 3000 : 0 },
+            { "statistics_scope", rolling ? "gamepp-rolling" : "cumulative-tail-mean" },
+            { "statistics_version", rolling ? FrameScopeFrameStatistics.Version : 1 },
+            { "window_ms", rolling ? FrameScopeFrameStatistics.WindowMs : 0 },
             { "worker_pid", workerPid }, { "target_pid", snapshot.ProcessId },
             { "worker_start_time_unix", (long)(System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalSeconds },
             { "timestamp_ms", (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds },

@@ -29,6 +29,7 @@ import {
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useBackground } from "@/contexts/background-context";
+import { useGlassTextColor, useBackgroundTextColor } from "@/hooks/use-adaptive-text-color";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { useThemeMode } from "@/contexts/theme-mode-context";
 
@@ -120,7 +121,7 @@ function SortableNavItem({
 
   return (
     <Box ref={setNodeRef} style={style}>
-      <Divider />
+      <Box h="1px" aria-hidden="true" />
       <HStack justify="space-between" py={2} pl={1}>
         <HStack spacing={2} flex={1}>
           <Box
@@ -177,9 +178,9 @@ function GeneralSettings() {
   const dragHandleColor = useColorModeValue("gray.400", "gray.500");
   const sortableDragBg = useColorModeValue("blue.50", "rgba(59,130,246,0.1)");
   const [pageTransitionMode, setPageTransitionMode] = useState<"slide" | "fade" | "off">("fade");
-  const titleColor = useColorModeValue("gray.800", "#ffffff");
-  const labelColor = useColorModeValue("gray.700", "#ffffff");
-  const subLabelColor = useColorModeValue("gray.500", "#ffffff");
+  const titleColor = useBackgroundTextColor("gray.800", "#ffffff");
+  const labelColor = useGlassTextColor("gray.700", "#ffffff");
+  const subLabelColor = useGlassTextColor("gray.500", "#ffffff");
   const segmentedControlBg = useColorModeValue(
     liquidGlassEnabled ? "rgba(255,255,255,0.24)" : "rgba(255,255,255,0.78)",
     liquidGlassEnabled ? "rgba(18,18,18,0.34)" : "rgba(18,18,18,0.58)"
@@ -348,7 +349,8 @@ function GeneralSettings() {
                 borderRadius="xl"
                 border="1px solid"
                 borderColor={isReal ? "rgba(255,255,255,0.06)" : segmentedControlBorder}
-                bg={isReal ? "transparent" : segmentedControlBg}
+                data-glass-surface="control"
+                bg={isReal ? "var(--framescope-real-glass-bg, transparent)" : segmentedControlBg}
                 boxShadow={isReal ? undefined : segmentedControlShadow}
                 sx={{
                   "::before": {
@@ -534,7 +536,7 @@ function GeneralSettings() {
                 width="100px"
               />
             </HStack>
-            <Divider />
+            <Box h="1px" aria-hidden="true" />
             <HStack justify="space-between" py={2}>
               <Box flex={1}>
                 <Text fontSize="sm" color={labelColor} fontWeight="medium">
@@ -554,7 +556,7 @@ function GeneralSettings() {
                 width="100px"
               />
             </HStack>
-            <Divider />
+            <Box h="1px" aria-hidden="true" />
             <DndContext sensors={navSensors} collisionDetection={closestCenter} onDragEnd={handleNavDragEnd} modifiers={[restrictToVerticalAxis]}>
               <SortableContext items={navOrder} strategy={verticalListSortingStrategy}>
                 {navOrder.map((path) => {
@@ -596,8 +598,8 @@ function ThemeColorSettings() {
     resetToDefault,
   } = useThemeColor();
   
-  const labelColor = useColorModeValue("gray.700", "#ffffff");
-  const subLabelColor = useColorModeValue("gray.500", "#ffffff");
+  const labelColor = useGlassTextColor("gray.700", "#ffffff");
+  const subLabelColor = useGlassTextColor("gray.500", "#ffffff");
   const cardBorder = useColorModeValue("gray.200", "#333333");
   const presetBorderColor = useColorModeValue("gray.200", "#444444");
   const presetActiveBorderColor = useColorModeValue("gray.400", "#666666");
@@ -607,7 +609,7 @@ function ThemeColorSettings() {
   };
   
   return (
-    <Box mb={6}>
+    <Box id="search-appearance-theme-color" mb={6}>
       <Text
         fontSize="xs"
         fontWeight="semibold"
@@ -692,6 +694,8 @@ function AppearanceSettings() {
     setLiquidGlassBlur,
     liquidGlassMode,
     setLiquidGlassMode,
+    liquidGlassTransparency,
+    setLiquidGlassTransparency,
     islandLiquidGlassEnabled,
     setIslandLiquidGlassEnabled,
     backgroundBlur,
@@ -703,16 +707,18 @@ function AppearanceSettings() {
     setCarouselEnabled,
     jellyBounceEnabled,
     setJellyBounceEnabled,
+    jellyBounceStrength,
+    setJellyBounceStrength,
     mrColorMode,
     mrCustomColor,
     setMrColorMode,
     setMrCustomColor,
   } = useBackground();
   const videoPreviewSrc = useMemo(() => dynamicBgVideo ? convertFileSrc(dynamicBgVideo) : null, [dynamicBgVideo]);
-  const titleColor = useColorModeValue("gray.800", "#ffffff");
+  const titleColor = useBackgroundTextColor("gray.800", "#ffffff");
   const cardBorder = useColorModeValue("gray.200", "#333333");
-  const labelColor = useColorModeValue("gray.700", "#ffffff");
-  const subLabelColor = useColorModeValue("gray.500", "#ffffff");
+  const labelColor = useGlassTextColor("gray.700", "#ffffff");
+  const subLabelColor = useGlassTextColor("gray.500", "#ffffff");
   const emptySlotBg = useColorModeValue("gray.100", "#1a1a1a");
   const emptySlotHoverBg = useColorModeValue("gray.200", "#222222");
   const sliderTrackBg = useColorModeValue("gray.200", "gray.700");
@@ -831,7 +837,7 @@ function AppearanceSettings() {
         </LiquidGlassCard>
       </Box>
 
-      <Box mb={6}>
+      <Box id="search-appearance-font" mb={6}>
         <Text
           fontSize="xs"
           fontWeight="semibold"
@@ -863,8 +869,7 @@ function AppearanceSettings() {
                 width="180px"
               />
             </HStack>
-            <Divider />
-            <HStack justify="space-between" py={2}>
+            <HStack justify="space-between" py={2} mt="1px">
               <Box flex={1}>
                 <Text fontSize="sm" color={labelColor} fontWeight="medium">
                   {t("settings.appearanceSettings.importCustomFontLabel")}
@@ -955,7 +960,7 @@ function AppearanceSettings() {
         />
       </Box>
 
-      <Box mb={6}>
+      <Box id="search-appearance-glass" mb={6}>
         <Text
           fontSize="xs"
           fontWeight="semibold"
@@ -1014,6 +1019,19 @@ function AppearanceSettings() {
                   ? t("settings.appearanceSettings.liquidGlassModeRealDesc")
                   : t("settings.appearanceSettings.liquidGlassModeNormalDesc")}
               </Text>
+            </Box>
+          )}
+          {liquidGlassEnabled && liquidGlassMode === "real" && (
+            <Box id="search-appearance-glass-transparency" mt={4} pt={3} borderTop="1px solid" borderColor={glassSectionBorder}>
+              <HStack justify="space-between" mb={2}>
+                <Text fontSize="sm" color={labelColor}>{t("settings.appearanceSettings.glassTransparencyLabel")}</Text>
+                <Text fontSize="sm" color={getActiveColor()} fontWeight="bold">{liquidGlassTransparency}%</Text>
+              </HStack>
+              <Slider aria-label={t("settings.appearanceSettings.glassTransparencyLabel")} value={liquidGlassTransparency} min={0} max={100} step={1} onChange={setLiquidGlassTransparency}>
+                <SliderTrack bg={sliderTrackBg}><SliderFilledTrack bg={getActiveColor()} /></SliderTrack>
+                <SliderThumb boxSize={4} bg={getActiveColor()} />
+              </Slider>
+              <Text fontSize="xs" color={subLabelColor} mt={2}>{t("settings.appearanceSettings.glassTransparencyDesc")}</Text>
             </Box>
           )}
           {liquidGlassEnabled && liquidGlassMode === "normal" && (
@@ -1098,12 +1116,23 @@ function AppearanceSettings() {
               onChange={() => setJellyBounceEnabled(!jellyBounceEnabled)}
             />
           </HStack>
+          {jellyBounceEnabled && <Box id="search-appearance-jelly-strength" mt={4} pt={3} borderTop="1px solid" borderColor={glassSectionBorder}>
+            <HStack justify="space-between" mb={2}>
+              <Text fontSize="sm" color={labelColor}>{t("settings.appearanceSettings.jellyStrengthLabel")}</Text>
+              <Text fontSize="sm" color={getActiveColor()} fontWeight="bold">{jellyBounceStrength}%</Text>
+            </HStack>
+            <Slider aria-label={t("settings.appearanceSettings.jellyStrengthLabel")} value={jellyBounceStrength} min={0} max={200} step={1} onChange={setJellyBounceStrength}>
+              <SliderTrack bg={sliderTrackBg}><SliderFilledTrack bg={getActiveColor()} /></SliderTrack>
+              <SliderThumb boxSize={4} bg={getActiveColor()} />
+            </Slider>
+            <Text fontSize="xs" color={subLabelColor} mt={2}>{t("settings.appearanceSettings.jellyStrengthDesc")}</Text>
+          </Box>}
         </LiquidGlassCard>
       </Box>
 
       <ThemeColorSettings />
 
-      <Box mb={6}>
+      <Box id="search-appearance-background" mb={6}>
         <Text
           fontSize="xs"
           fontWeight="semibold"
@@ -1143,6 +1172,7 @@ function AppearanceSettings() {
                     px={3}
                     py={2}
                     cursor="pointer"
+                    as="button" type="button" aria-pressed={backgroundMode === "preset"}
                     onClick={() => setBackgroundMode("preset")}
                     border="1px solid"
                     borderColor={backgroundMode === "preset" ? getActiveColor() : "transparent"}
@@ -1162,6 +1192,7 @@ function AppearanceSettings() {
                     px={3}
                     py={2}
                     cursor="pointer"
+                    as="button" type="button" aria-pressed={backgroundMode === "image"}
                     onClick={() => setBackgroundMode("image")}
                     border="1px solid"
                     borderColor={backgroundMode === "image" ? getActiveColor() : "transparent"}
@@ -1181,6 +1212,7 @@ function AppearanceSettings() {
                     px={3}
                     py={2}
                     cursor="pointer"
+                    as="button" type="button" aria-pressed={backgroundMode === "dynamic"}
                     onClick={() => setBackgroundMode("dynamic")}
                     border="1px solid"
                     borderColor={backgroundMode === "dynamic" ? getActiveColor() : "transparent"}
@@ -1200,6 +1232,7 @@ function AppearanceSettings() {
                     px={3}
                     py={2}
                     cursor="pointer"
+                    as="button" type="button" aria-pressed={backgroundMode === "mr"}
                     onClick={() => setBackgroundMode("mr")}
                     border="1px solid"
                     borderColor={backgroundMode === "mr" ? getActiveColor() : "transparent"}
@@ -1567,19 +1600,14 @@ function AppearanceSettings() {
 
 
 export default function SettingsPage() {
-  const [activeItem, setActiveItem] = useState("general");
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const section = searchParams.get("section");
+  const activeItem = settingItems.some(item => item.id === section) ? section! : "general";
   const { t } = useTranslation();
-  const { jellyBounceEnabled } = useBackground();
+  const { jellyBounceEnabled, jellyBounceActive } = useBackground();
+  const jellyAllowed=useRef(jellyBounceActive);
+  jellyAllowed.current=jellyBounceActive;
   const isFirstRender = useRef(true);
-
-  // 支持通过 URL ?section=xxx 定位子菜单（如托盘"检查更新"导航到 /settings?section=about）
-  useEffect(() => {
-    const section = searchParams.get("section");
-    if (section && settingItems.some((item) => item.id === section)) {
-      setActiveItem(section);
-    }
-  }, [searchParams]);
 
   // 子菜单切换时触发果冻弹跳动画（跳过首次挂载，避免与路由切换动画重复）
   useEffect(() => {
@@ -1587,7 +1615,7 @@ export default function SettingsPage() {
       isFirstRender.current = false;
       return;
     }
-    if (!jellyBounceEnabled) return;
+    if (!jellyAllowed.current) return;
     document.body.classList.remove("jelly-bounce-active");
     void document.body.offsetWidth; // 强制 reflow
     document.body.classList.add("jelly-bounce-active");
@@ -1611,7 +1639,12 @@ export default function SettingsPage() {
               <LiquidGlassMenuItem
                 key={item.id}
                 isActive={isActive}
-                onClick={() => setActiveItem(item.id)}
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.set("section", item.id);
+                  next.delete("focus");
+                  setSearchParams(next, { replace: true });
+                }}
                 icon={item.icon}
               >
                 {t(item.labelKey)}
@@ -1624,7 +1657,7 @@ export default function SettingsPage() {
       <Box flex={1}>
         {/* 直接渲染子菜单，不做 motion 动画：opacity/transform 动画会让 backdrop-filter 失效，
             导致液态玻璃卡片在切换时先透明、动画结束后瞬间出现模糊 */}
-        <div key={activeItem} style={{ position: 'relative', zIndex: 1 }}>
+        <div id={`search-settings-${activeItem}`} key={activeItem} style={{ position: 'relative', zIndex: 1 }}>
           {activeItem === "general" && <GeneralSettings />}
           {activeItem === "appearance" && <AppearanceSettings />}
           {activeItem === "preview" && <FrameScopeSettings />}

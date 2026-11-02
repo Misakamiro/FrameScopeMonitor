@@ -25,7 +25,9 @@ internal static partial class FrameScopeReportGenerator
                 {
                     Time = t,
                     Cpu = ParseNullableDouble(Get(row, h, "TotalCpuPct")),
-                    CpuFrequency = ParseNullableDouble(Get(row, h, "CpuFrequencyMHz")),
+                    CpuFrequency = ParseNullableDouble(Get(row, h, "CpuClockMHz")),
+                    CpuHardwareClock = h.ContainsKey("CpuClockMHz"),
+                    CpuReferenceFrequency = ParseNullableDouble(Get(row, h, "CpuFrequencyMHz")),
                     CpuPerformancePct = ParseNullableDouble(Get(row, h, "CpuPerformancePct")),
                     AvailableMb = ParseNullableDouble(Get(row, h, "AvailableMB")),
                     DiskAvgSecPerTransfer = ParseNullableDouble(Get(row, h, "DiskAvgSecPerTransfer")),
@@ -47,7 +49,7 @@ internal static partial class FrameScopeReportGenerator
         return rows;
     }
 
-    /// Overlays the GPU columns of systemRows with hardware-samples.csv values
+    /// Overlays CPU clock and GPU columns of systemRows with hardware-samples.csv values
     /// (the same hardware-service snapshot the overlay displays). Each system
     /// row inherits the nearest overlay row's non-null GPU fields within a
     /// two-second window; system data stays untouched otherwise. Returns the
@@ -91,6 +93,9 @@ internal static partial class FrameScopeReportGenerator
             if (nearest == null || nearestDelta > 2.0) continue;
 
             var applied = false;
+            row.CpuFrequency=nearest.CpuFrequency;
+            row.CpuHardwareClock=nearest.CpuHardwareClock;
+            if (nearest.CpuFrequency.HasValue) applied=true;
             if (nearest.Gpu.HasValue) { row.Gpu = nearest.Gpu; applied = true; }
             if (nearest.GpuTemp.HasValue) { row.GpuTemp = nearest.GpuTemp; applied = true; }
             if (nearest.GpuClock.HasValue) { row.GpuClock = nearest.GpuClock; applied = true; }
@@ -130,7 +135,7 @@ internal static partial class FrameScopeReportGenerator
     {
         List<double> t = new List<double>();
         List<double?> cpu = new List<double?>(), gpu = new List<double?>(), gpuMem = new List<double?>(), mem = new List<double?>(), vram = new List<double?>();
-        List<double?> cpuFreq = new List<double?>(), gpuClock = new List<double?>(), memClock = new List<double?>();
+        List<double?> cpuFreq = new List<double?>(), cpuFreqReference = new List<double?>(), gpuClock = new List<double?>(), memClock = new List<double?>();
         List<double?> disk = new List<double?>(), net = new List<double?>(), diskLatency = new List<double?>(), power = new List<double?>(), temp = new List<double?>();
 
         foreach (SystemRow row in rows)
@@ -146,6 +151,7 @@ internal static partial class FrameScopeReportGenerator
             if (row.VramTotalMiB.HasValue && row.VramTotalMiB.Value > 0 && row.VramUsedMiB.HasValue) vramPct = row.VramUsedMiB.Value / row.VramTotalMiB.Value * 100.0;
             vram.Add(RoundNullable(vramPct, 2));
             cpuFreq.Add(RoundNullable(ValidFrequencyOrNull(EffectiveCpuFrequency(row)), 0));
+            cpuFreqReference.Add(RoundNullable(ValidFrequencyOrNull(row.CpuReferenceFrequency.HasValue&&row.CpuPerformancePct.HasValue?row.CpuReferenceFrequency*row.CpuPerformancePct/100.0:row.CpuReferenceFrequency),0));
             gpuClock.Add(RoundNullable(ValidFrequencyOrNull(row.GpuClock), 0));
             memClock.Add(RoundNullable(ValidFrequencyOrNull(row.MemClock), 0));
             disk.Add(RoundNullable(row.DiskBytesPerSec.HasValue ? row.DiskBytesPerSec.Value / 1024.0 / 1024.0 : (double?)null, 3));
@@ -159,16 +165,14 @@ internal static partial class FrameScopeReportGenerator
         {
             { "t", t },
             { "usage", new Dictionary<string, object> { { "cpu", cpu }, { "gpu", gpu }, { "gpuMem", gpuMem }, { "mem", mem }, { "vram", vram } } },
-            { "perf", new Dictionary<string, object> { { "cpuFreq", cpuFreq }, { "gpuClock", gpuClock }, { "memClock", memClock } } },
+            { "perf", new Dictionary<string, object> { { "cpuFreq", cpuFreq }, { "cpuFreqReference", cpuFreqReference }, { "gpuClock", gpuClock }, { "memClock", memClock } } },
             { "io", new Dictionary<string, object> { { "disk", disk }, { "net", net }, { "diskLatency", diskLatency }, { "power", power }, { "temp", temp } } }
         };
     }
 
     private static double? EffectiveCpuFrequency(SystemRow row)
     {
-        if (!row.CpuFrequency.HasValue) return null;
-        if (row.CpuPerformancePct.HasValue && row.CpuPerformancePct.Value > 0) return row.CpuFrequency.Value * row.CpuPerformancePct.Value / 100.0;
-        return row.CpuFrequency.Value;
+        return row.CpuHardwareClock ? row.CpuFrequency : null;
     }
 
     private static double? ValidFrequencyOrNull(double? value)
@@ -209,7 +213,10 @@ internal static partial class FrameScopeReportGenerator
 
     private static Dictionary<string, object> ReadCpuCoreCharts(string runDir, DateTime start, Dictionary<string, object> metadata)
     {
-        string path = Path.Combine(runDir, "cpu-core-samples.csv");
+        string path = Path.Combine(runDir, "hardware-samples.csv");
+        bool hardwareClocks=false;
+        if(File.Exists(path))using(CsvTable table=CsvTable.Open(path))hardwareClocks=table.Headers.ContainsKey("CpuCoreClocksMHz");
+        if(!hardwareClocks)path=Path.Combine(runDir,"cpu-core-samples.csv");
         Dictionary<string, object> frequency = EmptyCpuCoreChart("MHz", "本次报告没有 cpu-core-samples.csv 或 Actual Frequency 数据。");
         Dictionary<string, object> voltage = ReadCpuVoltageChart(runDir, start, metadata);
         Dictionary<string, object> vid = ReadCpuVidChart(runDir, start, metadata);
@@ -231,6 +238,15 @@ internal static partial class FrameScopeReportGenerator
             {
                 double pointTime;
                 if (!TryCpuCorePointTime(row, h, start, out pointTime)) { missingTimeRows++; continue; }
+                if(hardwareClocks) {
+                    string[] clocks=Get(row,h,"CpuCoreClocksMHz").Split(';');
+                    for(int core=0;core<clocks.Length;core++) {
+                        double? clock=ParseNullableDouble(clocks[core]);if(!IsValidFrequencyValue(clock))continue;
+                        string key=CpuCoreKey("0",core.ToString(CultureInfo.InvariantCulture));
+                        AddCpuCorePoint(frequencyPoints,pointTime,key,clock.Value);frequencyCores.Add(key);rowCount++;
+                    }
+                    continue;
+                }
                 string coreKey = CpuCoreKey(Get(row, h, "ProcessorGroup"), Get(row, h, "LogicalProcessor"));
                 if (String.IsNullOrWhiteSpace(coreKey)) continue;
 
@@ -251,6 +267,7 @@ internal static partial class FrameScopeReportGenerator
         }
 
         RecordMissingCpuTime(frequency, missingTimeRows);
+        frequency["source"]=hardwareClocks?"hardware-service-core-clock":"windows-perfcounter-reference";
         return new Dictionary<string, object> { { "frequency", frequency }, { "voltage", voltage }, { "vid", vid } };
     }
 

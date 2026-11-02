@@ -2,7 +2,7 @@
 
 import { Box } from "@chakra-ui/react";
 import { useEffect, useRef, useState } from "react";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {uiActivity} from "@/lib/ui-activity";
 
 /**
  * MR 动态背景（独立背景模式）。
@@ -305,30 +305,17 @@ export function MRBackground({ blur = 0, colors }: { blur?: number; colors: MRBa
       startLoop();
     };
 
-    const onVisibilityChange = () => {
-      if (document.hidden) handlePause();
-      else handleResume();
+    const updateActivity=()=>{
+      if(uiActivity.getSnapshot())handleResume();else handlePause();
     };
-
-    let unlisten: UnlistenFn | undefined;
-    listen<boolean>("window-visibility-changed", (e) => {
-      if (e.payload) handleResume();
-      else handlePause();
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    if (!document.hidden) startLoop();
+    const unlisten=uiActivity.subscribe(updateActivity);
+    updateActivity();
 
     return () => {
       disposed = true;
       stopLoop();
       window.removeEventListener("resize", resize);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      unlisten?.();
+      unlisten();
       gl!.deleteBuffer(buffer);
       gl!.deleteProgram(program);
       // 不调用 loseContext()：StrictMode 下二次挂载可复用同一上下文

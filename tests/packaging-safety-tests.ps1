@@ -1,4 +1,4 @@
-﻿param([string]$RepoRoot = (Split-Path -Parent $PSScriptRoot))
+param([string]$RepoRoot = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $failures = @()
 $fixtureBase = Join-Path ([IO.Path]::GetTempPath()) ('framescope-packaging-test-' + [guid]::NewGuid().ToString('N'))
@@ -79,7 +79,8 @@ New-Item -ItemType Directory -Path "$fixture\src" -Force | Out-Null
 $required = @('FrameScopeHardwareService.exe', 'FrameScopeHardwareProvider.exe', 'FrameScopeMonitor.exe',
     'FrameScopeProcessSampler.exe', 'FrameScopeSystemSampler.exe', 'FrameScopeReportGenerator.exe',
     'LICENSE', 'LICENSE.EXTRA', 'PRIVACY.md', 'THIRD-PARTY-NOTICES.md', 'README-FrameScopeMonitor.txt',
-    'fixture.dll', 'tools\PresentMon.exe', 'FrameScopeUninstaller.exe')
+    'fixture.dll', 'tools\PresentMon.exe', 'FrameScopeUninstaller.exe', 'FrameScopeBuildInfo.json',
+    'Restore-FrameScope.cmd')
 foreach ($name in $required) {
     $path = Join-Path "$resources\backend" $name
     New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null

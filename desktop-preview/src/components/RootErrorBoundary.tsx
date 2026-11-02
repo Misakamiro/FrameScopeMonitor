@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Button, Text, VStack } from "@chakra-ui/react";
+import {traceStartup} from '@/lib/startup-trace';
 
 type Props = { children: React.ReactNode };
 type State = { error: Error | null };
@@ -16,22 +16,16 @@ export class RootErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    traceStartup('frontend-failed');
     console.error("RootErrorBoundary caught:", error, info.componentStack);
   }
 
   render() {
     if (this.state.error) {
-      return <Box bg="gray.900" color="white" minH="100vh" display="flex" alignItems="center" justifyContent="center">
-        <VStack spacing={4} maxW="560px" px={6}>
-          <Text fontSize="xl" fontWeight="bold">界面出现了问题</Text>
-          <Text fontSize="sm" opacity={0.8} fontFamily="monospace" wordBreak="break-all">
-            {String(this.state.error?.message ?? this.state.error)}
-          </Text>
-          <Button colorScheme="teal" onClick={() => { this.setState({ error: null }); window.location.reload(); }}>
-            重新加载界面
-          </Button>
-        </VStack>
-      </Box>;
+      return <div role="alert" style={{minHeight:'100vh',display:'grid',placeContent:'center',background:'#15171d',color:'#f4f5f7',padding:32,gap:16,fontFamily:'system-ui'}}>
+        <h1>界面出现了问题</h1><p>设置与监测数据已保留，可以重新加载界面。</p>
+        <button style={{padding:'10px 18px',borderRadius:8}} onClick={()=>window.location.reload()}>重新加载界面</button>
+      </div>;
     }
     return this.props.children;
   }

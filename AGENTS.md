@@ -1,103 +1,13 @@
-# FrameScope Monitor 项目协作说明
+# FrameScope 公开离线树协作说明
 
-## 当前事实来源
+回复默认中文。改动前核对实际代码、[架构](docs/ARCHITECTURE.md) 与 [构建说明](docs/BUILD.md)。当前 UI 为 desktop-preview 的 Tauri 2 / React，src/frontend 为保留兼容前端。
 
-修改前先查看真实代码、配置和 run 数据。本文、根目录 README、项目总览和 `docs/modules/` 下的模块说明属于 current guidance。
+本仓库 EDITION 固定 offline。保留本地采集、硬件、OSD、报告和签名更新；不加入完整版账号、社区、榜单、上传、服务端、部署配置、生产地址、私钥或真实用户数据。完整版通过 Releases 独立分发。
 
-`docs/implementation-reports/` 和 `docs/test-reports/` 记录当时的实现与证据，必须保留历史属性；其中出现的旧目录、旧界面或旧命令不代表当前生产架构，不应为了“看起来最新”而回写历史报告。
+保留其他工作和用户数据，不 reset、clean、stash 或强推。使用独立公开分支和明确文件清单提交。单次改动应可解释和验证。保留许可证、公钥和锁文件。
 
-## 强制协作与交付约束
+在独立构建槽中验证，Rust 串行；工作机仅复用 b202/b203，至少 30 GiB 空闲，保留当前缓存和有效回滚材料。清理必须核对绝对路径、归属、进程占用和 reparse point。
 
-- 必须保持任务上下文和已确认的约束，不得在后续步骤中遗忘或擅自扩大范围。
-- 回复语气要干练，但说明具体变更时必须逐步、详细且易懂地说明执行了什么、为什么这样改。
-- 每次代码变更完成前，必须从头到尾测试和检查本轮修改过的全部步骤、功能与 bug；不能只验证最后一个文件或只凭编译成功判断完成。
-- 涉及用户本机已安装版本时，必须同步更新安装目录或重新安装新包后才算完成。只有当前用户在当前任务中明确要求“仅本地源码”“暂不安装”或“暂不推送”时，才遵守对应限制；后续任务若得到明确安装或 push 授权，应按新授权执行，不得把旧任务限制永久化。
-- 涉及运行链路时，必须验证启动、监听、采样、报告生成、按配置自动打开报告，以及退出后无残留进程或专用采集会话。
-- 修改安装器时，必须验证首次安装、覆盖安装、卸载、保留用户数据和删除用户数据两条路径。
-- 重新打包后必须核对最终 payload，确认其中是本轮构建的 exe、前端资源、依赖和说明文件，不能只看 build 命令退出码。
-- 交付时必须逐项说明：改动文件、实现的功能或修复的 bug、是否更新本机安装版、是否重新打包、执行过的测试、未能执行的验证、残留风险以及回滚方式。
+测试、构建、原生窗口、真实硬件和游戏验收分别记录。浏览器数据仅为演示。禁止自动安装、自动 UAC、自动启动游戏或硬件压力测试。公开同步不改现有 Release 附件、tag 或在线服务。
 
-## 当前生产架构
-
-FrameScope Monitor 是本地 Windows 游戏性能诊断工具。当前链路为：
-
-1. `src/frontend/` 中的 React + Vite 前端渲染用户界面。
-2. `src/app/FrameScopeNativeMonitor.WebHost.cs` 承载 WebView2，并把前端消息交给 C#。
-3. `src/app/FrameScopeWebBridge.cs` 及其 partial 文件实现 request/response/event 契约。
-4. native watcher 发现已启用目标；每个 active target 对应一个 monitor-session worker。
-5. worker 启动 PresentMon、`FrameScopeProcessSampler.exe` 和 `FrameScopeSystemSampler.exe`。
-6. worker 持久化 `status.json`、`summary.json` 与原始 CSV。
-7. watcher 通过有界进程运行器调用 `FrameScopeReportGenerator.exe`。
-8. 完整报告由 `framescope-interactive-data.js`、HTML 和 manifest 三件套组成。
-
-多个 `FrameScopeMonitor.exe` 进程可能分别承担 UI、watcher 或 monitor-session worker 角色；不能仅按进程名判断重复启动，也不能粗暴结束全部同名进程。
-
-## 代码归属
-
-- `src/frontend/src/App.tsx`：前端应用入口与页面组合。
-- `src/frontend/src/bridge/webviewBridge.ts`：WebView2 消息客户端。
-- `src/frontend/src/pages/`：Overview、Reports、Settings、Targets、About 页面。
-- `src/app/FrameScopeNativeMonitor.WebHost.cs`：WebView2 宿主和 host adapter。
-- `src/app/FrameScopeWebBridge.Contracts.cs`：桥接请求、结果和宿主接口。
-- `src/app/FrameScopeNativeMonitor.Watcher.cs`：目标发现、worker 生命周期和完成编排。
-- `src/app/FrameScopeNativeMonitor.MonitorSession.cs`：一次目标会话的采集编排。
-- `src/monitoring/FrameScopeProcessSampler.cs`：进程 CPU、内存与 IO 采样。
-- `src/monitoring/FrameScopeSystemSampler.cs`：系统、GPU、磁盘、网络和硬件遥测采样。
-- `src/app/FrameScopeNativeMonitor.ReportProcess.cs`：报告进程调用与结果处理。
-- `src/core/FrameScopeBoundedProcessRunner.cs`：有总截止时间、并发 drain 和进程树终止的进程运行器。
-- `src/reporting/FrameScopeReportGenerator.cs`：报告数据分析和发布入口。
-- `src/core/FrameScopeReportArtifacts.cs`：报告完整性的唯一检查口径。
-- `src/core/FrameScopeReportPublisher.cs`：报告 staging、校验、swap 和回滚。
-- `tests/Build-FrameScopeTests.ps1`：C# 测试编译入口。
-
-## 采样配置
-
-`TelemetrySampleIntervalMs` 是持久化的全局遥测间隔，当前会归一化到 500–5000 ms。Targets 中保留的 `SampleIntervalMs`、`ProcessSampleIntervalMs` 和 `SlowSampleIntervalMs` 只是旧配置兼容字段；加载和保存时会统一归一化为全局值，不是可独立调节的生产设置。
-
-`PollIntervalMs` 是 watcher 扫描周期，不等同于遥测采样周期。
-
-## run 与报告契约
-
-默认 run 位于 `%LOCALAPPDATA%\FrameScopeMonitorData\framescope-runs\<Game>\<Run>`。优先检查：
-
-- `status.json`：会话阶段、采集证据、报告状态。
-- `summary.json`：会话摘要和报告摘要。
-- `presentmon.csv`：原始帧数据。
-- `process-samples.csv`：进程采样。
-- `system-samples.csv`：系统采样。
-- `charts/framescope-interactive-data.js`：报告数据对象。
-- `charts/framescope-interactive-report.html`：交互报告。
-- `charts/framescope-interactive-manifest.json`：最终路径、计数和报告分类。
-
-报告分类由 `src/core/FrameScopeRunContract.cs` 统一定义：
-
-- `full`：有有效帧数据，且必需的进程与系统采样器健康。
-- `partial`：有有效帧数据，但至少一个必需辅助采样器不健康。
-- `diagnostic`：没有有效帧数据，但进程或系统 CSV 有有效数据。
-- `error`：帧、进程和系统数据均不足以生成可用诊断。
-
-不能把仅存在 HTML、缺 data.js、缺 manifest 或 manifest 路径错误的目录当成完整报告。
-
-## 修改与验证原则
-
-- 不根据当前活跃进程推断用户上传的历史 run；以该 run 的 CSV/JSON 为准。
-- 不通过删除原始数据来优化报告；显示层可以抽样，统计口径仍来自完整数据。
-- 状态 JSON 使用原子写入；append-only 日志和 history 保持追加语义。
-- 修改桥接契约时同步更新 C# contract、前端 contract 和对应测试。
-- 修改报告生成时验证四种 report kind、三件套完整性、失败回滚和残留清理。
-- 修改采集时验证 worker、三个采集进程、退出清理与 status/summary 证据。
-- 完成前执行与改动范围相称的测试、构建和 `git diff --check`。
-
-## 构建存储与清理
-
-- 新的完整构建和候选源码快照统一放在 `C:\fs-build\<构建名>`；不得继续在 Documents 根目录或仓库 artifacts 下创建完整构建环境。`StorageRoot` 的替代路径只供 TEMP 测试夹具使用。
-- 构建入口 `tools/Build-IsolatedInstaller.ps1` 在创建目录前检查：构建目录必须是存储根的直接子目录、最多保留两份（含失败或未完成的构建），磁盘至少剩余 30 GiB。触发限制后先检查旧产物，不得换一个根目录规避限制。
-- 每轮完成或失败后核对构建存储占用。保留当前候选与确有需要的上一份，其余完整源码副本和可再生的 `target`、`node_modules` 应及时清理；日志、哈希清单和小型验收结果放在 artifacts。不得为了保留日志而保留整套编译缓存。
-- 清理前核对绝对路径、构建归属、当前任务引用和 reparse point。保留主仓库与 Git 历史、未提交源码、用户配置与报告、签名密钥、唯一基线及有效回滚备份。不得按模糊文件名前缀直接批量删除。
-- 2026-10-18 暂停任务所保留的旧位置可继续只读核验；如需重新构建，使用上述统一位置。构建、安装和发布的暂停状态不会因清理而解除。
-
-## GameLite 边界
-
-GameLite 自动轻量化是独立项目，不属于 FrameScope 生产链路。普通 FrameScope build、安装器和运行时不得安装、修改或调用 GameLite 脚本，也不得创建或删除其 WMI 触发器。
-
-本仓库不包含任何 GameLite 执行入口、兼容包装器或独立项目路径。`tests/lightweight-separation-tests.ps1` 只验证 FrameScope 生产源码、build 与 packaging 不含 GameLite 自动触发实现，不依赖独立 GameLite 项目。没有用户明确授权时，不执行任何 GameLite WMI 安装、移除或真实游戏操作。
+交付说明改动、验证、未验收项和回滚方法。报告三件套及原始 CSV 必须保留，不伪造缺失数据。

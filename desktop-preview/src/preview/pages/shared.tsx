@@ -12,11 +12,11 @@ import type { ReactNode } from "react";
 // Floating search/filter fields sit directly on the background; give them the same
 // translucent-pill treatment as GlobalSearch so they stay readable on any wallpaper.
 export function useFloatingFieldStyle() {
-  const bg = useColorModeValue("rgba(255,255,255,0.6)", "rgba(28,28,32,0.55)");
-  const color = useColorModeValue("gray.800", "#f0f0f0");
-  const borderColor = useColorModeValue("rgba(0,0,0,0.14)", "rgba(255,255,255,0.2)");
-  const placeholder = useColorModeValue("gray.500", "gray.400");
-  const icon = useColorModeValue("gray.600", "gray.300");
+  const bg = 'var(--framescope-control-bg)';
+  const color = 'var(--framescope-control-fg)';
+  const borderColor = 'var(--framescope-control-border)';
+  const placeholder = 'var(--framescope-surface-muted)';
+  const icon = 'var(--framescope-surface-muted)';
   return useMemo(() => ({
     iconColor: icon,
     sx: {
@@ -61,20 +61,21 @@ export function usePreviewAction() {
 }
 
 // HardwareDetailModal's surface, sizing and scroll pattern, shared by business dialogs.
-export function PreviewDialog({ title, isOpen, onClose, children }: {
+export function PreviewDialog({ title, isOpen, onClose, children, size = 'md', closeDisabled = false }: {
   title: string; isOpen: boolean; onClose: () => void; children: ReactNode;
+  size?: string; closeDisabled?: boolean;
 }) {
-  const overlayBg = useColorModeValue("blackAlpha.600", "blackAlpha.700");
-  const contentBg = useColorModeValue("white", "#1a1a1a");
-  const borderColor = useColorModeValue("gray.200", "#2a2a2a");
-  const color = useColorModeValue("gray.800", "#e0e0e0");
+  const overlayBg = 'rgba(0,0,0,.18)';
+  const contentBg = 'var(--framescope-panel-bg)';
+  const borderColor = 'var(--framescope-control-border)';
+  const color = 'var(--framescope-surface-fg)';
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="md" isCentered scrollBehavior="inside">
-      <ModalOverlay bg={overlayBg} backdropFilter="blur(4px)" />
-      <ModalContent bg={contentBg} color={color} border="1px solid" borderColor={borderColor}
+    <Modal isOpen={isOpen} onClose={onClose} size={size} isCentered scrollBehavior="inside" closeOnOverlayClick={!closeDisabled} closeOnEsc={!closeDisabled}>
+      <ModalOverlay bg={overlayBg} backdropFilter="none" />
+      <ModalContent data-glass-surface="panel" bg={contentBg} color={color} border="1px solid" borderColor={borderColor}
         borderRadius="xl" mx={4} maxH="80vh" overflow="hidden">
-        <ModalHeader fontSize="lg">{title}</ModalHeader>
-        <ModalCloseButton />
+        <ModalHeader fontSize="lg" overflowWrap="anywhere" pr={12}>{title}</ModalHeader>
+        <ModalCloseButton isDisabled={closeDisabled} />
         <Divider borderColor={borderColor} />
         <ModalBody pb={6} overflowY="auto">{children}</ModalBody>
       </ModalContent>

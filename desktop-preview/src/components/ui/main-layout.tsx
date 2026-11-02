@@ -9,7 +9,7 @@ import { MRBackground } from "./MRBackground";
 import { useBackground } from "@/contexts/background-context";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { uiActivity } from "@/lib/ui-activity";
 import { store } from "@/lib/store";
 import { deriveSplashColors } from "@/lib/color-utils";
 import { useEscBack } from "@/hooks/use-esc-back";
@@ -47,12 +47,15 @@ interface MainLayoutProps {
 
 export function MainLayout({ children }: MainLayoutProps) {
   const bgColor = useColorModeValue("#fafafa", "#0a0a0a");
-  const { backgroundMode, customBgImages, activeBgIndex, dynamicBgVideo, activePresetIndex, presetBackgrounds, backgroundBlur, jellyBounceEnabled, mrColorMode, mrCustomColor } = useBackground();
+  const { backgroundMode, customBgImages, activeBgIndex, dynamicBgVideo, activePresetIndex, presetBackgrounds, backgroundBlur, jellyBounceEnabled, jellyBounceActive, mrColorMode, mrCustomColor } = useBackground();
+  const jellyAllowed=useRef(jellyBounceActive);
+  jellyAllowed.current=jellyBounceActive;
   const { config } = useThemeColor();
   const navPosition = useNavPosition();
   useEscBack();
   const location = useLocation();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [mainUiActive,setMainUiActive]=useState(uiActivity.getSnapshot);
   const [videoReady, setVideoReady] = useState(false);
   const idCounter = useRef(0);
 
@@ -142,47 +145,20 @@ export function MainLayout({ children }: MainLayoutProps) {
 
   useEffect(() => {
     // 窗口隐藏时保持暂停，避免切回动态背景后视频在托盘状态下继续解码
-    if (videoRef.current && dynamicBgVideo && !document.hidden) {
+    if (videoRef.current && dynamicBgVideo && uiActivity.getSnapshot()) {
       videoRef.current.play().catch(() => {});
     }
   }, [dynamicBgVideo, showDynamicBg]);
 
-  // 窗口最小化 / 隐藏到托盘时自动暂停动态背景视频，减少 CPU 占用；
-  // 恢复显示后自动继续播放。双保险：
-  //   1) 标准 Web API visibilitychange（覆盖最小化场景）
-  //   2) Rust 端 window-visibility-changed 事件（覆盖隐藏到托盘等 visibilitychange 不可靠的场景）
+  // Visibility is authoritative in the native host; keep the document available for errors.
   useEffect(() => {
-    const applyVisibility = (visible: boolean) => {
-      // 隐藏时停止 WebView2 GPU 渲染，释放 GPU 资源
-      document.body.style.contentVisibility = visible ? "" : "hidden";
-      // 暂停/恢复视频背景
-      if (!showDynamicBgRef.current) return;
-      const video = videoRef.current;
-      if (!video) return;
-      if (visible) {
-        video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
+    const update=()=>{
+      const visible=uiActivity.getSnapshot();setMainUiActive(visible);
+      const video=videoRef.current;
+      if(!video||!showDynamicBgRef.current)return;
+      if(visible)void video.play().catch(()=>{});else video.pause();
     };
-
-    const onVisibilityChange = () => applyVisibility(!document.hidden);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    let unlisten: UnlistenFn | undefined;
-    let disposed = false;
-    listen<boolean>("window-visibility-changed", (e) => {
-      applyVisibility(e.payload);
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-
-    return () => {
-      disposed = true;
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-      unlisten?.();
-    };
+    update();return uiActivity.subscribe(update);
   }, []);
 
   // 顶部导航栏模式下，body 不滚动，内容区域自行管理滚动
@@ -199,7 +175,7 @@ export function MainLayout({ children }: MainLayoutProps) {
 
   // 果冻弹跳效果开关：在 body 上添加/移除 class，供全局 CSS 使用
   useEffect(() => {
-    if (jellyBounceEnabled) {
+    if (jellyBounceActive) {
       document.body.classList.add("jelly-bounce-enabled");
     } else {
       document.body.classList.remove("jelly-bounce-enabled");
@@ -209,13 +185,13 @@ export function MainLayout({ children }: MainLayoutProps) {
       document.body.classList.remove("jelly-bounce-enabled");
       document.body.classList.remove("jelly-bounce-active");
     };
-  }, [jellyBounceEnabled]);
+  }, [jellyBounceActive]);
 
   // 路由切换时触发果冻弹跳动画：在 body 添加 .jelly-bounce-active，
   // 所有带 jelly-bounce-* className 的元素会播放动画。动画时长后移除 class。
   // 这样异步加载的内容（如三角洲改枪码列表）不会在挂载时触发动画，避免布局跳动。
   useEffect(() => {
-    if (!jellyBounceEnabled) return;
+    if (!jellyAllowed.current) return;
     // 移除再添加以重新触发 CSS animation
     document.body.classList.remove("jelly-bounce-active");
     void document.body.offsetWidth; // 强制 reflow
@@ -232,7 +208,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   const isNavTop = navPosition === "top";
 
   return (
-    <Box
+    <Box data-main-layout="" data-main-ui-active={mainUiActive}
       position="relative"
       minHeight="100vh"
       bg="transparent"
@@ -266,6 +242,7 @@ export function MainLayout({ children }: MainLayoutProps) {
             animation={!layer.fading ? "bgFadeIn 0.5s ease-in-out" : undefined}
           >
             <img
+              data-framescope-background={layer.fading ? undefined : 'image'}
               src={layer.url}
               alt=""
               style={{
@@ -293,6 +270,7 @@ export function MainLayout({ children }: MainLayoutProps) {
           transition="opacity 0.6s ease-in"
         >
           <video
+            data-framescope-background="video"
             ref={videoRef}
             src={videoSrc!}
             autoPlay

@@ -1,4 +1,4 @@
-﻿# FrameScope 采集异常自助诊断工具
+# FrameScope 采集异常自助诊断工具
 # 用法:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File diagnose-pubg-capture.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File diagnose-pubg-capture.ps1 -RunDir "<运行目录>"
