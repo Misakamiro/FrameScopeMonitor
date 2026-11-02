@@ -16,12 +16,14 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useBackground } from "@/contexts/background-context";
 import { useThemeColor } from "@/contexts/theme-color-context";
-import { useAppStartup } from "@/contexts/app-startup-context";
+import { LiquidGlassEdges } from "@/components/special/liquid-glass-card";
+import { useLiquidGlassRefraction } from "@/components/special/liquid-glass-svg-filter";
+import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import {
   searchIndex,
   categoryLabels,
   categoryOrder,
-  getThirdPartyToolIcon,
+  findSearchResults,
   type SearchItem,
 } from "@/config/search-index";
 import { invoke } from "@tauri-apps/api/core";
@@ -31,27 +33,14 @@ interface GroupedResults {
   [key: string]: SearchItem[];
 }
 
-function matchSearch(query: string, item: SearchItem, t: (key: string) => string): boolean {
-  const lowerQuery = query.toLowerCase();
-  const name = t(item.nameKey).toLowerCase();
-  const keywords = item.keywords?.map((k) => k.toLowerCase()) || [];
-
-  if (name.includes(lowerQuery)) return true;
-
-  for (const keyword of keywords) {
-    if (keyword.includes(lowerQuery)) return true;
-  }
-
-  return false;
-}
-
 export function GlobalSearch() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const toast = useDynamicIsland("search");
-  const { liquidGlassEnabled, liquidGlassBlur } = useBackground();
+  const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode, liquidGlassTransparency=100 } = useBackground();
+  const isReal = liquidGlassEnabled && liquidGlassMode === "real";
+  const { svgSupported } = useLiquidGlassRefraction(isReal);
   const { getActiveColor, getContrastTextColor } = useThemeColor();
-  const { tools } = useAppStartup();
 
   const [isOpen, setIsOpen] = useState(false);
   // keydown 监听 deps 为空，用 ref 读取最新的开关状态
@@ -59,12 +48,11 @@ export function GlobalSearch() {
   isOpenRef.current = isOpen;
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
-  const [results, setResults] = useState<GroupedResults>({});
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [flatResults, setFlatResults] = useState<SearchItem[]>([]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const selectedRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const activeBg = getActiveColor();
@@ -72,6 +60,7 @@ export function GlobalSearch() {
 
   // 模糊立即生效：页面切换动画期间的 backdrop-filter 关闭由 .page-animating 类统一处理
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
+  const surfaceBackdrop = liquidGlassEnabled && !isReal ? `blur(${effectiveBlur}px) saturate(1.3)` : "none";
 
   const inputBg = useColorModeValue(
     liquidGlassEnabled ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.9)",
@@ -81,11 +70,16 @@ export function GlobalSearch() {
     liquidGlassEnabled ? "rgba(255,255,255,0.2)" : "rgba(200,200,200,0.3)",
     liquidGlassEnabled ? "rgba(255,255,255,0.1)" : "rgba(51,51,51,0.5)"
   );
-  const textColor = useColorModeValue("gray.700", "#ffffff");
-  const placeholderColor = useColorModeValue("gray.500", "gray.400");
+  const surfaceBg = isReal ? "var(--framescope-real-glass-bg, transparent)" : inputBg;
+  const surfaceBorder = isReal ? "rgba(255,255,255,0.06)" : inputBorderColor;
+  const textColor = useGlassTextColor("gray.700", "#ffffff");
+  const popupTransparency=liquidGlassTransparency*0.75;
+  const popupTextColor = useGlassTextColor("gray.700", "#ffffff",popupTransparency);
+  const placeholderColor = useGlassTextColor("gray.500", "gray.400");
+  const hoverTextColor = useColorModeValue("gray.700", "#ffffff");
   const resultItemHoverBg = useColorModeValue("gray.100", "gray.700");
-  const categoryColor = useColorModeValue("gray.500", "gray.400");
-  const noResultColor = useColorModeValue("gray.400", "gray.500");
+  const categoryColor = useGlassTextColor("gray.500", "gray.400",popupTransparency);
+  const noResultColor = useGlassTextColor("gray.400", "gray.500",popupTransparency);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -134,63 +128,20 @@ export function GlobalSearch() {
     };
   }, [query]);
 
-  const allSearchItems = useMemo(() => {
-    const items: SearchItem[] = [...searchIndex];
-    
-    tools.forEach((tool) => {
-      items.push({
-        id: tool.id,
-        nameKey: `tools.tools.${tool.id}`,
-        path: "/tools",
-        icon: getThirdPartyToolIcon(tool.id),
-        category: "thirdparty-tool",
-        keywords: [tool.name, tool.description, tool.category],
-        action: "run-tool",
-        toolId: tool.id,
-      });
-    });
-    
-    return items;
-  }, [tools]);
-
-  useEffect(() => {
-    if (!debouncedQuery.trim()) {
-      setResults({});
-      setFlatResults([]);
-      setSelectedIndex(0);
-      return;
-    }
-
-    const matched = allSearchItems.filter((item) => matchSearch(debouncedQuery, item, t));
-
+  const { results, flatResults, resultCategories } = useMemo(() => {
+    const matched = findSearchResults(debouncedQuery, searchIndex, t)
+      .filter(item => categoryOrder.includes(item.category));
     const grouped: GroupedResults = {};
-    categoryOrder.forEach((cat) => {
-      grouped[cat] = [];
-    });
+    // Keep the best matching category first; a broad page keyword must not
+    // displace an exact setting match when the user presses Enter.
+    const categories = [...new Set(matched.map(item => item.category))];
+    matched.forEach(item => { (grouped[item.category] ??= []).push(item); });
+    return { results: grouped, resultCategories: categories,
+      flatResults: categories.flatMap(category => grouped[category]) };
+  }, [debouncedQuery, t]);
 
-    matched.forEach((item) => {
-      if (grouped[item.category]) {
-        grouped[item.category].push(item);
-      }
-    });
-
-    Object.keys(grouped).forEach((key) => {
-      if (grouped[key].length === 0) {
-        delete grouped[key];
-      }
-    });
-
-    setResults(grouped);
-
-    const flat: SearchItem[] = [];
-    categoryOrder.forEach((cat) => {
-      if (grouped[cat]) {
-        flat.push(...grouped[cat]);
-      }
-    });
-    setFlatResults(flat);
-    setSelectedIndex(0);
-  }, [debouncedQuery, t, allSearchItems]);
+  useEffect(() => { setSelectedIndex(0); }, [flatResults]);
+  useEffect(() => { selectedRef.current?.scrollIntoView({ block: "nearest" }); }, [selectedIndex, flatResults]);
 
   const handleSelect = useCallback(
     async (item: SearchItem) => {
@@ -232,19 +183,30 @@ export function GlobalSearch() {
 
   return (
     <Box id="global-search" position="relative" ref={containerRef}>
-      <InputGroup size="sm" w="180px">
+      <InputGroup data-glass-surface="control" size="sm" w="180px" bg={surfaceBg} borderRadius="lg" overflow="hidden" isolation="isolate"
+        className={isReal ? "real-liquid-glass" : undefined}
+        _focusWithin={{ boxShadow: `0 0 0 1px ${activeBg}` }}>
+        {isReal && svgSupported && <LiquidGlassEdges filter="url(#nexbox-liquid-glass-filter)" />}
         <InputLeftElement pointerEvents="none">
           <Icon as={Search} boxSize={4} color={placeholderColor} />
         </InputLeftElement>
         <Input
           ref={inputRef}
+          role="combobox"
+          aria-expanded={isOpen}
+          aria-autocomplete="list"
+          aria-controls="global-search-results"
+          aria-activedescendant={isOpen && flatResults[selectedIndex] ? `search-result-${flatResults[selectedIndex].id}` : undefined}
           placeholder={t("search.placeholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => setIsOpen(true)}
           onKeyDown={handleKeyDown}
-          bg={inputBg}
-          borderColor={inputBorderColor}
+          bg="transparent"
+          _hover={{ bg: "transparent" }}
+          borderColor={surfaceBorder}
+          position="relative"
+          zIndex={1}
           color={textColor}
           borderRadius="lg"
           _placeholder={{ color: placeholderColor }}
@@ -252,22 +214,20 @@ export function GlobalSearch() {
             borderColor: activeBg,
             boxShadow: `0 0 0 1px ${activeBg}`,
           }}
-          backdropFilter={`blur(${effectiveBlur}px)`}
+          backdropFilter={surfaceBackdrop}
           sx={{
-            transform: "translateZ(0)",
-            WebkitTransform: "translateZ(0)",
             willChange: "auto",
             transition: "backdrop-filter 0.45s cubic-bezier(0.4, 0, 0.2, 1)",
           }}
           pr="60px"
         />
         {!isOpen && (
-          <Box position="absolute" right={3} top="50%" transform="translateY(-50%)">
+          <Box position="absolute" right={3} top="50%" transform="translateY(-50%)" zIndex={2}>
             <HStack spacing={1}>
-              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={resultItemHoverBg}>
+              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={resultItemHoverBg} color={hoverTextColor}>
                 Ctrl
               </Kbd>
-              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={resultItemHoverBg}>
+              <Kbd fontSize="10px" px={1} py={0.5} borderRadius="md" bg={resultItemHoverBg} color={hoverTextColor}>
                 K
               </Kbd>
             </HStack>
@@ -277,21 +237,24 @@ export function GlobalSearch() {
 
       {isOpen && (
         <Box
+          id="global-search-results"
+          role="listbox"
+          data-search-query={debouncedQuery}
           position="absolute"
           top="calc(100% + 8px)"
           left={0}
           w="320px"
           maxH="400px"
           overflowY="auto"
-          bg={inputBg}
+          data-glass-surface="panel"
+          className={isReal ? "real-liquid-glass" : undefined}
+          bg={surfaceBg}
           borderRadius="xl"
           border="1px solid"
           borderColor={inputBorderColor}
           boxShadow="2xl"
-          backdropFilter={`blur(${effectiveBlur}px)`}
+          backdropFilter={surfaceBackdrop}
           sx={{
-            transform: "translateZ(0)",
-            WebkitTransform: "translateZ(0)",
             willChange: "auto",
             transition: "backdrop-filter 0.45s cubic-bezier(0.4, 0, 0.2, 1)",
             "&::-webkit-scrollbar": {
@@ -314,7 +277,7 @@ export function GlobalSearch() {
             </Text>
           ) : (
             <VStack align="stretch" spacing={1}>
-              {categoryOrder.map((category) => {
+              {resultCategories.map((category) => {
                 const items = results[category];
                 if (!items || items.length === 0) return null;
 
@@ -330,25 +293,39 @@ export function GlobalSearch() {
                       return (
                         <Box
                           key={item.id}
+                          id={`search-result-${item.id}`}
+                          role="option"
+                          aria-selected={isSelected}
+                          ref={isSelected ? selectedRef : undefined}
                           px={3}
                           py={2}
                           mx={2}
                           borderRadius="lg"
                           cursor="pointer"
                           bg={isSelected ? activeBg : "transparent"}
-                          color={isSelected ? activeIconColor : textColor}
-                          onMouseEnter={() => setSelectedIndex(globalIndex)}
+                          color={isSelected ? activeIconColor : popupTextColor}
+                          sx={{'--framescope-surface-fg':isSelected?activeIconColor:undefined}}
+                          onMouseMove={event => {
+                            // Keyboard scrolling moves rows under a stationary
+                            // pointer; only a real pointer move changes selection.
+                            if (event.movementX || event.movementY) setSelectedIndex(globalIndex);
+                          }}
                           onClick={() => handleSelect(item)}
                           transition="all 0.15s"
                           _hover={{
                             bg: isSelected ? activeBg : resultItemHoverBg,
+                            color: isSelected ? activeIconColor : hoverTextColor,
                           }}
                         >
                           <HStack spacing={3}>
                             <Icon as={item.icon} boxSize={4} />
-                            <Text fontSize="sm" fontWeight="medium">
-                              {t(item.nameKey)}
-                            </Text>
+                            <Box minW={0}>
+                              <Text fontSize="sm" fontWeight="medium">{t(item.nameKey)}</Text>
+                              {item.locationKeys && <Text fontSize="xs" opacity={.75}>
+                                {item.locationKeys.map(key => t(key)).join(" › ")}
+                              </Text>}
+                              {item.hintKey && <Text fontSize="xs" opacity={.75}>{t(item.hintKey)}</Text>}
+                            </Box>
                           </HStack>
                         </Box>
                       );

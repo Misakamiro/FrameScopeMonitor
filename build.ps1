@@ -307,6 +307,7 @@ $commonCoreSources = @(
     'src\core\FrameScopeJsonFile.cs'
 )
 $monitorSources = @(
+    'src\core\FrameScopeFrameStatistics.cs'
     'src\core\FrameScopeLiveFrameStats.cs'
     'src\core\FrameScopeBoundedProcessRunner.cs'
     'src\core\FrameScopeHistoryFile.cs'
@@ -384,6 +385,7 @@ $systemSamplerSources = @(
     'src\monitoring\FrameScopeSystemSampler.IO.cs'
 )
 $reportSources = @(
+    'src\core\FrameScopeFrameStatistics.cs'
     'src\core\FrameScopeLiveFrameStats.cs'
     'src\core\FrameScopeReportProgress.cs'
     'src\core\FrameScopePresentMonDiagnostics.cs'
@@ -427,7 +429,11 @@ $legacyCleanupSources = @(
 $hardwareProviderSources = @(
     'src\app\FrameScopeHardwareProvider.cs'
 )
-$packagingOnlySources = @()
+# Compiled separately by tools/Build-FullInstaller.ps1 before any WebView UI.
+$packagingOnlySources = @(
+    'packaging\FrameScopeFullInstaller.Core.cs'
+    'packaging\FrameScopeFullInstaller.cs'
+)
 
 $monitorReferences = @(
     'System.Core.dll'
@@ -559,11 +565,11 @@ try {
     # missing file makes the temperature-driver button fail on every install.
     # Third-party exes are not committed (*.exe is gitignored under packaging/),
     # so resolve from the local packaging copy or the vendored reference tree.
-    $pawnIOSources = @(
+    $pawnIOCandidates = @(
         (Join-Path $root 'packaging\PawnIO_setup.exe'),
         (Join-Path $root 'reference\nexbox\src-tauri\resources\binaries\PawnIO_setup.exe')
     )
-    $pawnIOSetup = $pawnIOSources |
+    $pawnIOSetup = $pawnIOCandidates |
         Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
         Select-Object -First 1
     if ($pawnIOSetup) {

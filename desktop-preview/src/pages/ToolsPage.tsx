@@ -58,7 +58,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStartup } from "@/contexts/app-startup-context";
 import { Image } from "@chakra-ui/react";
 import { store } from "@/lib/store";
-import { CommunityToolSection } from "@/components/community-tools/community-tool-section";
+
 const CUSTOM_TOOLS_KEY = "custom-added-tools";
 
 const toolIcons = import.meta.glob<{ default: string }>(
@@ -1658,7 +1658,7 @@ export default function ToolsPage() {
 
         {activeSection === "official" && <OfficialToolSection activeCategory="all" />}
 
-        {activeSection === "community" && <CommunityToolSection />}
+
 
         {activeSection === "thirdparty" && (
           <ThirdPartyToolSection

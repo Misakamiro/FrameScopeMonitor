@@ -3,11 +3,15 @@ import { Home, Settings, Cpu, Crosshair, FileChartColumn, PanelsTopLeft } from "
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useBackground } from "@/contexts/background-context";
+import { LiquidGlassEdges } from "@/components/special/liquid-glass-card";
+import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { getBorderGlowStyle } from "@/hooks/use-glow-effect";
 import { useLiquidGlassRefraction } from "@/components/special/liquid-glass-svg-filter";
 import { store } from "@/lib/store";
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from "react";
+
+import { DEFAULT_NAV_ORDER, normalizeNavOrder } from "@/preview/settings/navigation";
 
 interface NavItem {
   path: string;
@@ -140,6 +144,8 @@ function NavButton({ item, isActive, isDropTarget, hoverBg, iconColor, activeIco
                 aria-label={item.ariaLabel}
                 icon={iconElement}
                 variant="ghost"
+                backdropFilter="none"
+                sx={{ WebkitBackdropFilter: "none" }}
                 borderRadius="xl"
                 bg={isDropTarget ? hoverBg : "transparent"}
                 color={isActive || isDropTarget ? activeIconColor : iconColor}
@@ -178,7 +184,9 @@ export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode, jellyBounceEnabled } = useBackground();
+  const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode, jellyBounceActive } = useBackground();
+  const jellyAllowed=useRef(jellyBounceActive);
+  jellyAllowed.current=jellyBounceActive;
   const { getActiveColor, getHoverColor, getContrastTextColor } = useThemeColor();
   const { svgSupported } = useLiquidGlassRefraction(liquidGlassEnabled && liquidGlassMode === "real");
   const [showLabel, setShowLabel] = useState(false);
@@ -207,22 +215,15 @@ export function Sidebar() {
   const isFirstRender = useRef(true);
 
   const triggerJellyBounce = useCallback(() => {
-    if (!jellyBounceEnabled) return;
-    // 触发内容区弹跳
-    const contentEl = sidebarContentRef.current;
-    if (contentEl) {
-      contentEl.classList.remove("jelly-bouncing");
-      void contentEl.offsetWidth;
-      contentEl.classList.add("jelly-bouncing");
-    }
-    // 触发外层容器弹跳
+    if (!jellyAllowed.current) return;
+    // 只缩放外层；内容跟随父级，避免图标被两层动画重复栅格缩放。
     const containerEl = sidebarContainerRef.current;
     if (containerEl) {
       containerEl.classList.remove("jelly-bouncing");
       void containerEl.offsetWidth;
       containerEl.classList.add("jelly-bouncing");
     }
-  }, [jellyBounceEnabled]);
+  }, []);
   
   useEffect(() => {
     const handler = (e: CustomEvent) => {
@@ -247,7 +248,7 @@ export function Sidebar() {
 
   const isTop = navPosition === "top";
   
-  const hideableNavPaths = ["/hardware", "/tools", "/builtin-tools", "/optimization", "/music", "/delta-force", "/steam", "/epic-free", "/custom"];
+  const hideableNavPaths = DEFAULT_NAV_ORDER.filter(path => path !== "/" && path !== "/settings");
   const getNavStorageKey = (path: string) => `nexbox_nav_visible_${path.replace(/\//g, "").replace(/-/g, "_")}`;
 
   const [navVisibility, setNavVisibility] = useState<Record<string, boolean>>({});
@@ -270,41 +271,8 @@ export function Sidebar() {
       }
       setNavVisibility(initial);
 
-      // 读取导航栏排序
-      let orderStr = await store.get<string>("nexbox_nav_order");
-      if (orderStr) {
-        try {
-          const parsed = JSON.parse(orderStr) as string[];
-          const allPaths = ["/hardware", "/tools", "/builtin-tools", "/optimization", "/music", "/delta-force", "/steam", "/epic-free", "/custom"];
-          let changed = false;
-          for (const p of allPaths) {
-            if (!parsed.includes(p)) { parsed.push(p); changed = true; }
-          }
-          if (changed) {
-            parsed.sort((a: string, b: string) => allPaths.indexOf(a) - allPaths.indexOf(b));
-            await store.set("nexbox_nav_order", JSON.stringify(parsed));
-            await store.save();
-          }
-          setNavOrder(parsed);
-        } catch { setNavOrder(null); }
-      } else {
-        try {
-          const saved = localStorage.getItem(NAV_ORDER_KEY);
-          if (saved) {
-            const parsed = JSON.parse(saved) as string[];
-            const allPaths = ["/hardware", "/tools", "/builtin-tools", "/optimization", "/music", "/delta-force", "/steam", "/epic-free", "/custom"];
-            let changed = false;
-            for (const p of allPaths) {
-              if (!parsed.includes(p)) { parsed.push(p); changed = true; }
-            }
-            if (changed) {
-              parsed.sort((a: string, b: string) => allPaths.indexOf(a) - allPaths.indexOf(b));
-              localStorage.setItem(NAV_ORDER_KEY, JSON.stringify(parsed));
-            }
-            setNavOrder(parsed);
-          }
-        } catch {}
-      }
+      const saved = await store.get<string>(NAV_ORDER_KEY) || localStorage.getItem(NAV_ORDER_KEY);
+      setNavOrder(normalizeNavOrder(saved));
     })();
   }, []);
 
@@ -314,10 +282,10 @@ export function Sidebar() {
       try {
         let saved = await store.get<string>("nexbox_nav_order");
         if (saved) {
-          setNavOrder(JSON.parse(saved));
+          setNavOrder(normalizeNavOrder(saved));
         } else {
           const ls = localStorage.getItem(NAV_ORDER_KEY);
-          setNavOrder(ls ? JSON.parse(ls) : null);
+          setNavOrder(normalizeNavOrder(ls));
         }
       } catch { setNavOrder(null); }
     };
@@ -353,11 +321,7 @@ export function Sidebar() {
   // 模糊立即生效：页面切换动画期间的 backdrop-filter 关闭由 .page-animating 类统一处理
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
   const isReal = liquidGlassEnabled && liquidGlassMode === "real";
-  const backdropFilter = isReal
-    ? (svgSupported
-        ? `url(#nexbox-liquid-glass-filter) saturate(1.4)`
-        : `saturate(1.4) brightness(1.05)`)
-    : `blur(${effectiveBlur}px)`;
+  const backdropFilter = isReal ? "none" : `blur(${effectiveBlur}px) saturate(1.3)`;
 
   const defaultBgColor = useColorModeValue("rgba(255,255,255,1)", "rgba(17,17,17,1)");
   const glassBgColor = useColorModeValue("rgba(255,255,255,0.25)", "rgba(0,0,0,0.25)");
@@ -365,7 +329,7 @@ export function Sidebar() {
   const glassBorderColor = useColorModeValue("rgba(255,255,255,0.2)", "rgba(255,255,255,0.1)");
   const glowColor = useColorModeValue("rgba(255,255,255,0.8)", "rgba(255,255,255,0.5)");
   
-  const iconColor = useColorModeValue("rgba(0,0,0,0.75)", "rgba(255,255,255,0.8)");
+  const iconColor = useGlassTextColor("rgba(0,0,0,0.75)", "rgba(255,255,255,0.8)");
 
   const activeBg = getActiveColor();
   const hoverBg = getHoverColor(true);
@@ -620,12 +584,8 @@ export function Sidebar() {
       direction="row" wrap="wrap" gap={3} align="center" justify="center" transition="gap 0.4s cubic-bezier(0.4, 0, 0.2, 1)"
       position="relative"
       userSelect="none"
+      zIndex={1}
       pointerEvents={drag ? "none" : undefined}
-      onAnimationEnd={(e: React.AnimationEvent) => {
-        if (e.animationName === "jellyBounce") {
-          sidebarContentRef.current?.classList.remove("jelly-bouncing");
-        }
-      }}
     >
       {pillRect && (
         <ChakraBox
@@ -684,6 +644,8 @@ export function Sidebar() {
     py: 6,
     px: 2,
     maxWidth: "64px",
+    maxHeight: "calc(100vh - 100px)",
+    overflowY: "auto" as const,
     transition: containerTransition,
     // backfaceVisibility: hidden 删除 —— 合成层圆角 AA 丢失的主开关（问题 1）
     sx: {},
@@ -700,7 +662,9 @@ export function Sidebar() {
     boxShadow: "2xl",
     py: 2,
     px: 3,
-    maxWidth: "2000px",
+    maxWidth: "calc(100vw - 48px)",
+    maxHeight: "calc(100vh - 110px)",
+    overflowY: "auto" as const,
     width: "max-content",
     transition: containerTransition,
     sx: {},
@@ -714,9 +678,9 @@ export function Sidebar() {
       id="main-sidebar"
       className={`${isTop ? "jelly-bounce-sidebar-top" : "jelly-bounce-sidebar-left"}${isReal ? " real-liquid-glass" : ""}`}
       {...containerStyles}
-      bg={liquidGlassEnabled ? glassBgColor : defaultBgColor}
+      bg={isReal ? "var(--framescope-real-glass-bg, transparent)" : (liquidGlassEnabled ? glassBgColor : defaultBgColor)}
       border="1px solid"
-      borderColor={liquidGlassEnabled ? glassBorderColor : defaultBorderColor}
+      borderColor={isReal ? "rgba(255,255,255,0.06)" : (liquidGlassEnabled ? glassBorderColor : defaultBorderColor)}
       transition="max-width 0.25s cubic-bezier(0.95, 0, 1, 1), left 0.4s cubic-bezier(0.4, 0, 0.2, 1), top 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1), padding 0.4s cubic-bezier(0.4, 0, 0.2, 1), background 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
       sx={{
         ...containerStyles.sx,
@@ -733,7 +697,7 @@ export function Sidebar() {
           overflow:hidden 在**绘制阶段**裁剪它——圆角走完整抗锯齿路径。
           旧方案内层自带 borderRadius + clipPath 且容器被 translateZ 提升为
           合成层，圆角只能走无 AA 的 mask 裁剪（问题 1 毛刺根因）。 */}
-      {liquidGlassEnabled && (
+      {liquidGlassEnabled && !isReal && (
         <ChakraBox
           position="absolute"
           inset={0}
@@ -742,6 +706,7 @@ export function Sidebar() {
           pointerEvents="none"
         />
       )}
+      {isReal && svgSupported && <LiquidGlassEdges filter="url(#nexbox-liquid-glass-filter)" />}
       {!isReal && (
         <ChakraBox
           style={{ ...getBorderGlowStyle(glowColor), zIndex: 1 }}

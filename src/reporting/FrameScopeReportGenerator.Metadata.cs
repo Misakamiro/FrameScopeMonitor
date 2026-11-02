@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Management;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -680,93 +679,6 @@ internal static partial class FrameScopeReportGenerator
             }
         }
         return sb.ToString();
-    }
-
-    private static Dictionary<string, object> LoadHardware()
-    {
-        // Machine inventory is optional enrichment, never a prerequisite for a report.
-        if (hardwareRead == null)
-            hardwareRead = System.Threading.Tasks.Task.Factory.StartNew<Dictionary<string, object>>(ReadHardwareInventory);
-        try
-        {
-            if (hardwareRead.Wait(1500)) return hardwareRead.Result;
-        }
-        catch { }
-        return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) { { "QueryStatus", "unavailable" } };
-    }
-
-    private static System.Threading.Tasks.Task<Dictionary<string, object>> hardwareRead;
-
-    private static Dictionary<string, object> ReadHardwareInventory()
-    {
-        Dictionary<string, object> h = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-        try
-        {
-            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed FROM Win32_Processor"))
-            {
-                foreach (ManagementObject obj in searcher.Get())
-                {
-                    h["CpuName"] = Convert.ToString(obj["Name"]);
-                    h["CpuCores"] = SafeInt(obj["NumberOfCores"]);
-                    h["CpuThreads"] = SafeInt(obj["NumberOfLogicalProcessors"]);
-                    h["CpuMaxClockMHz"] = SafeInt(obj["MaxClockSpeed"]);
-                    break;
-                }
-            }
-        }
-        catch { }
-        try
-        {
-            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Caption,Version,OSArchitecture FROM Win32_OperatingSystem"))
-            {
-                foreach (ManagementObject obj in searcher.Get())
-                {
-                    h["OsCaption"] = Convert.ToString(obj["Caption"]);
-                    h["OsVersion"] = Convert.ToString(obj["Version"]);
-                    h["OsArch"] = Convert.ToString(obj["OSArchitecture"]);
-                    break;
-                }
-            }
-        }
-        catch { }
-        try
-        {
-            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name,DriverVersion FROM Win32_VideoController"))
-            {
-                foreach (ManagementObject obj in searcher.Get())
-                {
-                    string name = Convert.ToString(obj["Name"]);
-                    if (string.IsNullOrEmpty(name)) continue;
-                    // Skip Microsoft basic adapters AND virtual/indirect display
-                    // adapters (GameViewer etc.) - the headline GPU must be the
-                    // physical card (audit F-3).
-                    string lowerName = name.ToLowerInvariant();
-                    bool virtualAdapter = lowerName.Contains("virtual") || lowerName.Contains("indirect")
-                        || lowerName.Contains("remote") || lowerName.Contains("mirroring")
-                        || lowerName.Contains("vmware") || lowerName.Contains("parallels")
-                        || lowerName.Contains("displaylink") || lowerName.Contains("spacedesk");
-                    if (name.IndexOf("Microsoft", StringComparison.OrdinalIgnoreCase) >= 0 || virtualAdapter) continue;
-                    h["GpuName"] = name;
-                    h["GpuDriver"] = Convert.ToString(obj["DriverVersion"]);
-                    break;
-                }
-            }
-        }
-        catch { }
-        try
-        {
-            h["TotalMemoryMB"] = RoundDouble(new Microsoft.VisualBasic.Devices.ComputerInfo().TotalPhysicalMemory / 1024.0 / 1024.0, 0);
-        }
-        catch { }
-        return h;
-    }
-
-    private static int? SafeInt(object value)
-    {
-        if (value == null) return null;
-        int parsed;
-        if (int.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), out parsed)) return parsed;
-        return null;
     }
 
     private static double? GetDoubleFromHardware(Dictionary<string, object> hardware, string key)

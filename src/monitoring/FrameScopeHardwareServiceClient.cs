@@ -20,6 +20,115 @@ internal static class FrameScopeHardwareServiceClient
     private const int ConnectTimeoutMs = 800;
     private const int ReadTimeoutMs = 4000;
     private static int _requestSequence;
+    internal static Dictionary<string,object> OperatingSystemInventory()
+    {
+        var result = new Dictionary<string,object>();
+        try {
+            // Environment.OSVersion is virtualized to Windows 8 for an unmanifested .NET Framework worker.
+            using (var key=Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion")) {
+                if (key == null) return result;
+                string build=Convert.ToString(key.GetValue("CurrentBuildNumber"));int number;
+                if (!Int32.TryParse(build,out number)) return result;
+                string product=Convert.ToString(key.GetValue("ProductName"));
+                if (number >= 22000) product=product.Replace("Windows 10","Windows 11");
+                result["OsCaption"]=product;
+                result["OsVersion"]="10.0."+build+"."+Convert.ToString(key.GetValue("UBR",0),CultureInfo.InvariantCulture);
+            }
+        } catch { /* Missing OS metadata stays unavailable rather than reporting a compatibility version. */ }
+        return result;
+    }
+    private sealed class InventoryCapture
+    {
+        internal readonly object Sync = new object();
+        internal readonly Stopwatch Budget = Stopwatch.StartNew();
+        internal System.Threading.Tasks.Task Task;
+        internal bool Frozen;
+    }
+    private static readonly Dictionary<string,InventoryCapture> InventoryCaptures = new Dictionary<string,InventoryCapture>(StringComparer.OrdinalIgnoreCase);
+    public static void WaitInventorySnapshot(string runDirectory)
+    {
+        InventoryCapture capture;
+        lock (InventoryCaptures) { if (!InventoryCaptures.TryGetValue(runDirectory,out capture)) return; }
+        var remaining=TimeSpan.FromMilliseconds(Math.Max(0,5000-capture.Budget.ElapsedMilliseconds));
+        try { if (remaining>TimeSpan.Zero && capture.Task!=null) capture.Task.Wait(remaining); } catch { }
+        lock (capture.Sync) {
+            capture.Frozen=true;
+            string path=Path.Combine(runDirectory,"hardware-inventory.json");
+            var serializer=new JavaScriptSerializer();
+            var snapshot=serializer.Deserialize<Dictionary<string,object>>(File.ReadAllText(path));
+            var details=snapshot.ContainsKey("MemoryDetails")?snapshot["MemoryDetails"] as Dictionary<string,object>:null;
+            if(details!=null&&Convert.ToString(details["status"])=="pending") {
+                snapshot["MemoryDetails"]=new Dictionary<string,object>{{"status","timeout"}};
+                snapshot["MemorySummaryError"]="采集开始后5秒内未读取到内存运行信息";
+                FrameScopeJsonFile.Write(path,serializer.Serialize(snapshot));
+            }
+        }
+        lock (InventoryCaptures) { InventoryCaptures.Remove(runDirectory); }
+    }
+    public static void SaveInventorySnapshot(string runDirectory)
+    {
+        SaveInventorySnapshot(runDirectory,delegate {return Exchange("{\"id\":\"inventory\",\"method\":\"get_static_hardware\",\"params\":{}}");});
+    }
+    internal static void SaveInventorySnapshot(string runDirectory,Func<string> read)
+    {
+        string destination = Path.Combine(runDirectory, "hardware-inventory.json");
+        var serializer = new JavaScriptSerializer();
+        var os=OperatingSystemInventory();
+        var initial=new Dictionary<string,object>(os);initial["ConfigurationSource"]=os.Count>0?"capture":"not-recorded";
+        initial["MemoryDetails"]=new Dictionary<string,object>{{"status","pending"}};
+        FrameScopeJsonFile.Write(destination,serializer.Serialize(initial));
+        // Do not block game capture on an unavailable inventory provider.
+        var capture=new InventoryCapture();
+        lock (InventoryCaptures) { InventoryCaptures[runDirectory]=capture; }
+        capture.Task=System.Threading.Tasks.Task.Factory.StartNew(delegate {
+            try {
+                while (capture.Budget.ElapsedMilliseconds<5000) {
+                string line = read();
+                var response = serializer.Deserialize<Dictionary<string,object>>(line ?? "{}");
+                var result = response.ContainsKey("result") ? response["result"] as Dictionary<string,object> : null;
+                var hardware = result != null && result.ContainsKey("hardware") ? result["hardware"] as Dictionary<string,object> : null;
+                if (hardware == null) { Thread.Sleep(100); continue; }
+                Func<object,string,object> get = (obj,key) => { var map=obj as Dictionary<string,object>; return map != null && map.ContainsKey(key) ? map[key] : null; };
+                Func<object,object> first = obj => { var list=obj as System.Collections.IList; return list != null && list.Count > 0 ? list[0] : null; };
+                object cpu=get(hardware,"cpu"),gpu=first(get(hardware,"gpu"));
+                if (Convert.ToString(get(get(hardware,"memory_details"),"status"))=="pending") { Thread.Sleep(100); continue; }
+                double memory=0; var modules=get(hardware,"memory") as System.Collections.IList;
+                if(modules==null||modules.Count==0) {Thread.Sleep(100);continue;}
+                if (modules != null) foreach (object module in modules) { double size; if (double.TryParse(Convert.ToString(get(module,"capacity_gb"),CultureInfo.InvariantCulture),NumberStyles.Any,CultureInfo.InvariantCulture,out size)) memory+=size*1024; }
+                var snapshot=new Dictionary<string,object> {{"ConfigurationSource","capture"},{"CpuName",get(cpu,"name")},{"GpuName",get(gpu,"name")},
+                    {"CpuCores",get(cpu,"cores")},{"CpuThreads",get(cpu,"threads")},{"CpuMaxClockMHz",get(cpu,"max_clock_speed")},
+                    {"GpuDriver",get(gpu,"driver_version")},{"TotalMemoryMB",memory>0?(object)memory:null},
+                    {"Motherboard",get(get(hardware,"motherboard"),"product")},{"Monitor",get(first(get(hardware,"monitor")),"name")}};
+                snapshot["MemorySummary"]=get(hardware,"memory_summary");
+                snapshot["MemoryDetails"]=get(hardware,"memory_details");
+                snapshot["MemorySummaryError"]=get(hardware,"memory_summary_error");
+                snapshot["CpuFrequencyInfo"]=get(cpu,"frequency_info");
+                snapshot["HardwareCapturedAt"]=DateTimeOffset.UtcNow.ToString("O");
+                var identities=new List<object>();
+                if(modules!=null) foreach(object module in modules) identities.Add(new Dictionary<string,object>{{"manufacturer",get(module,"manufacturer")},{"capacity_gb",get(module,"capacity_gb")},{"memory_type",get(module,"memory_type")}});
+                snapshot["MemoryModules"]=identities.ToArray();
+                foreach (var entry in os) snapshot[entry.Key]=entry.Value;
+                lock(capture.Sync) { if (!capture.Frozen && capture.Budget.ElapsedMilliseconds<=5000 && Directory.Exists(runDirectory)) FrameScopeJsonFile.Write(destination,serializer.Serialize(snapshot)); }
+                return;
+                }
+            } catch { /* Explicit missing marker remains; a new report never substitutes a later machine. */ }
+        });
+    }
+    private static volatile bool exiting;
+
+    static FrameScopeHardwareServiceClient()
+    {
+        AppDomain.CurrentDomain.ProcessExit += delegate { exiting = true; };
+        AppDomain.CurrentDomain.DomainUnload += delegate { exiting = true; };
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    internal static bool MayStartService(bool processExiting, bool systemShuttingDown)
+    {
+        return !processExiting && !systemShuttingDown;
+    }
 
     /// Returns the raw `result` JSON for get_overlay_data, or null when the
     /// service is unavailable. Never throws.
@@ -89,6 +198,7 @@ internal static class FrameScopeHardwareServiceClient
 
     public static void EnsureServiceRunning()
     {
+        if (!MayStartService(exiting, GetSystemMetrics(0x2000) != 0)) return; // SM_SHUTTINGDOWN
         using (var lease = MaintenanceLease.TryAcquire(AppDomain.CurrentDomain.BaseDirectory))
         {
         if (lease == null) return;
@@ -110,6 +220,7 @@ internal static class FrameScopeHardwareServiceClient
             var service = Path.Combine(root, "FrameScopeHardwareService.exe");
             var helper = Path.Combine(root, "FrameScopeHardwareProvider.exe");
             if (!File.Exists(service) || !File.Exists(helper)) return;
+            if (!MayStartService(exiting, GetSystemMetrics(0x2000) != 0)) return;
             var start = new ProcessStartInfo
             {
                 FileName = service,
@@ -215,7 +326,7 @@ internal sealed class FrameScopeHardwareSampleRecorder
         // Fps is the resident ETW FPS session's value from the same overlay
         // snapshot. It lets the report still build a full FPS series when an
         // anti-cheat denies PresentMon's own ETW trace (Battlefield 6).
-        "Fps", "CpuCoreVoltages"
+        "Fps", "CpuCoreVoltages", "CpuClockSource", "CpuReferenceMHz", "CpuClockQuality", "CpuCoreClocksMHz"
     };
 
     private readonly string _csvPath;
@@ -294,6 +405,9 @@ internal sealed class FrameScopeHardwareSampleRecorder
         var serializer = new JavaScriptSerializer();
         var data = serializer.Deserialize<Dictionary<string, object>>(json);
         if (data == null) return;
+        object rawFrequency;
+        var frequency=data.TryGetValue("cpu_frequency_info",out rawFrequency)?rawFrequency as Dictionary<string,object>:null;
+        if(frequency==null) frequency=new Dictionary<string,object>();
         var values = new[]
         {
             DateTime.Now.ToString("o", CultureInfo.InvariantCulture),
@@ -313,7 +427,7 @@ internal sealed class FrameScopeHardwareSampleRecorder
             Text(data, "ssd_temp"),
             Text(data, "game_ping"),
             Text(data, "fps"),
-            CoreVoltages(data)
+            CoreValues(data,"cpu_core_voltages"), Text(frequency,"source"), Text(frequency,"reference_mhz"), Text(frequency,"quality"), CoreValues(data,"cpu_core_clocks")
         };
         try
         {
@@ -335,10 +449,10 @@ internal sealed class FrameScopeHardwareSampleRecorder
         return text == null ? "" : text.Replace(",", "");
     }
 
-    private static string CoreVoltages(Dictionary<string, object> data)
+    private static string CoreValues(Dictionary<string, object> data,string key)
     {
         object value;
-        if (!data.TryGetValue("cpu_core_voltages", out value)) return "";
+        if (!data.TryGetValue(key, out value)) return "";
         var cores = value as System.Collections.IEnumerable;
         if (cores == null || value is string) return "";
         var values = new List<string>();

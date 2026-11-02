@@ -12,5 +12,6 @@ export function normalizeNavOrder(value: unknown): string[] {
   const saved = Array.isArray(parsed)
     ? parsed.filter((path): path is string => typeof path === "string" && DEFAULT_NAV_ORDER.includes(path))
     : [];
-  return [...new Set([...saved, ...DEFAULT_NAV_ORDER])];
+  const middle = [...new Set([...saved, ...DEFAULT_NAV_ORDER])].filter(path => path !== "/" && path !== "/settings");
+  return ["/", ...middle, "/settings"];
 }

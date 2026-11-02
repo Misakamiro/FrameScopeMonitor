@@ -50,7 +50,7 @@ internal static partial class FrameScopeReportGenerator
                     invalidRows++;
                     continue;
                 }
-                if (!(ms.Value > 0 && ms.Value < 10000))
+                if (!(ms.Value > 0 && ms.Value <= FrameScopeFrameStatistics.MaxTimeMs))
                 {
                     outOfRangeRows++;
                     continue;
@@ -128,11 +128,6 @@ internal static partial class FrameScopeReportGenerator
                 droppedModeRows++;
                 continue;
             }
-            if (frame.FrameMs > 1000)
-            {
-                droppedModeRows++;
-                continue;
-            }
             selectedFrames.Add(frame);
         }
         selectedFrames.Sort(delegate(PresentFrame a, PresentFrame b) { return a.Time.CompareTo(b.Time); });
@@ -146,7 +141,8 @@ internal static partial class FrameScopeReportGenerator
         result.Diagnostics["trackCount"] = summaries.Count;
         result.Diagnostics["droppedTrackRows"] = Math.Max(0, droppedTrackRows);
         result.Diagnostics["droppedModeRows"] = Math.Max(0, droppedModeRows);
-        result.Diagnostics["droppedResumeArtifactRows"] = selected.ArtifactRowsOver1000ms;
+        result.Diagnostics["droppedResumeArtifactRows"] = 0;
+        result.Diagnostics["longFrameRowsRetained"] = selected.ArtifactRowsOver1000ms;
     }
 
     private static List<double> PresentTrackFrameValues(PresentTrack track, bool hardwareOnly)
@@ -183,12 +179,13 @@ internal static partial class FrameScopeReportGenerator
     internal static Dictionary<string, object> ReadRollingFrameStatsForTests(string path)
     {
         var frames = ReadPresentMon(path).Frames;
-        var fenwick = new Fenwick(100001);
+        var values = new List<double>();
         if (frames.Count > 0) {
-            DateTime start = frames[frames.Count - 1].Key.AddSeconds(-3);
-            foreach (var frame in frames) if (frame.Key >= start) fenwick.Add(MsToBin(frame.Value), 1);
+            DateTime start = frames[frames.Count - 1].Key.AddMilliseconds(-FrameScopeFrameStatistics.WindowMs);
+            foreach (var frame in frames) if (frame.Key > start) values.Add(frame.Value);
         }
-        return new Dictionary<string, object> { { "count", fenwick.Count },
-            { "low1", FpsFromFenwick(fenwick, .99) }, { "low01", FpsFromFenwick(fenwick, .999) } };
+        var statistics = FrameScopeFrameStatistics.Snapshot(values);
+        return new Dictionary<string, object> { { "count", values.Count },
+            { "low1", statistics.Low1 }, { "low01", statistics.Low01 } };
     }
 }

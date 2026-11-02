@@ -1,7 +1,7 @@
 import "./preview/browser";
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { ChakraProvider, ColorModeScript, Spinner, Center } from "@chakra-ui/react";
+import { ChakraProvider, Spinner, Center } from "@chakra-ui/react";
 import { CacheProvider } from "@emotion/react";
 import createCache from "@emotion/cache";
 import { BrowserRouter } from "react-router-dom";
@@ -17,9 +17,17 @@ import { ThemeModeProvider } from "./contexts/theme-mode-context";
 import { UpdateProvider } from "./contexts/update-context";
 import { LiquidGlassSvgFilter } from "./components/special/liquid-glass-svg-filter";
 import { RootErrorBoundary } from "./components/RootErrorBoundary";
-import theme from "./lib/theme";
+import theme, {readInitialScheme} from "./lib/theme";
 import { startPreviewRuntime } from "./preview/runtime";
+import { startWindowActivity } from "./lib/window-activity";
+import {traceStartup} from './lib/startup-trace';
+import {UiSurfaceTokens} from './components/UiSurfaceTokens';
 const emotionCache = createCache({ key: "css", prepend: true });
+const colorModeManager = {
+  type:'localStorage' as const,
+  get:readInitialScheme,
+  set:(mode:string)=>{try{localStorage.setItem('chakra-ui-color-mode',mode);}catch{/* Keep the resolved in-memory theme. */}},
+};
 if (window.location.pathname === "/vertical-overlay") {
   document.documentElement.dataset.overlayWindow = "vertical";
 }
@@ -27,21 +35,23 @@ if (window.location.pathname === "/vertical-overlay") {
 function Root() {
   const [isI18nReady, setIsI18nReady] = useState(i18n.isInitialized);
   useEffect(() => {
+    traceStartup('react-mounted');
     const ready = () => setIsI18nReady(true);
     i18n.on("initialized", ready);
     if (i18n.isInitialized) ready();
+    const stopActivity=startWindowActivity();
     const stop = startPreviewRuntime();
-    return () => { stop(); i18n.off("initialized", ready); };
+    return () => { stop();stopActivity(); i18n.off("initialized", ready); };
   }, []);
   if (!isI18nReady) return <Center h="100vh"><Spinner size="xl" /></Center>;
   return <CacheProvider value={emotionCache}>
-    <ColorModeScript initialColorMode={theme.config.initialColorMode} />
     <I18nextProvider i18n={i18n}>
-      <ChakraProvider theme={theme}>
+      <ChakraProvider theme={theme} colorModeManager={colorModeManager}>
         <BrowserRouter>
           <AppStartupProvider>
             <BackgroundProvider>
               <ThemeColorProvider>
+                <UiSurfaceTokens/>
                 <FontProvider>
                   <LiquidGlassSvgFilter />
                   <ThemeModeProvider><UpdateProvider><App /></UpdateProvider></ThemeModeProvider>

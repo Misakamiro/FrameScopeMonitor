@@ -33,7 +33,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { Eye, EyeOff, ArrowLeft, Trash2, Plus, Move, RotateCcw, Settings } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
-import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
+import { useAdaptiveTextColor, useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { useFloatingButtonStyle } from "@/hooks/use-floating-button-style";
 import { useBackground } from "@/contexts/background-context";
 import { useAppStartup } from "@/contexts/app-startup-context";
@@ -154,9 +154,11 @@ const BUILTIN_CHINESE_FONTS = [
 ];
 
 function SettingCard({
+  id,
   title,
   children,
 }: {
+  id?: string;
   title: string;
   children: React.ReactNode;
 }) {
@@ -167,7 +169,7 @@ function SettingCard({
 
   if (liquidGlassEnabled) {
     return (
-      <LiquidGlassCard p={5}>
+      <LiquidGlassCard id={id} p={5}>
         <VStack align="stretch" spacing={4}>
           <Text fontWeight="medium" color={headerColor}>{title}</Text>
           {children}
@@ -177,7 +179,7 @@ function SettingCard({
   }
 
   return (
-    <Box bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
+    <Box id={id} bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
       <VStack align="stretch" spacing={4}>
         <Text fontWeight="medium" color={headerColor}>{title}</Text>
         {children}
@@ -231,6 +233,7 @@ interface CustomItemCardProps {
 
 function CustomItemCard({ item, onUpdate, onRemove }: CustomItemCardProps) {
   const textColor = useColorModeValue("gray.800", "#ffffff");
+  const labelColor = useGlassTextColor("gray.800", "#ffffff");
   const borderColor = useColorModeValue("gray.200", "#333333");
   const inputBg = useColorModeValue("gray.50", "#1a1a1a");
   const { getActiveColor } = useThemeColor();
@@ -261,7 +264,7 @@ function CustomItemCard({ item, onUpdate, onRemove }: CustomItemCardProps) {
         <HStack justify="space-between">
           <HStack spacing={2}>
             <CustomColorPicker color={item.color} onChange={(c) => onUpdate(item.id, "color", c)} compact />
-            <Text color={textColor} fontSize="xs">{item.color}</Text>
+            <Text color={labelColor} fontSize="xs">{item.color}</Text>
           </HStack>
           <Switch
             isChecked={item.enabled}
@@ -303,8 +306,8 @@ export default function OverlayPanelPage() {
     onClose: onMapSettingsClose,
   } = useDisclosure();
 
-  const headingColor = useColorModeValue("gray.900", "#ffffff");
-  const subTextColor = useColorModeValue("gray.600", "gray.400");
+  const headingColor = useGlassTextColor("gray.900", "#ffffff");
+  const subTextColor = useGlassTextColor("gray.600", "gray.400");
   const { getActiveColor, getHoverColor } = useThemeColor();
 
   const settings = overlaySettings || DEFAULT_SETTINGS;
@@ -342,35 +345,46 @@ export default function OverlayPanelPage() {
 
   const startOverlay = async () => {
     setIsLoading(true);
+    const deadline = performance.now() + 15000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const result = await invoke<{ success: boolean; message: string }>("start_overlay_panel", {
-        settings: settings,
-      });
-      if (result.success) {
-        setIsEnabled(true);
-        toast({
-          title: result.message,
-          status: "success",
-          duration: 2000,
-          isClosable: true,
+      const request = async () => {
+        await saveOverlaySettings(settings);
+        const remaining = Math.floor(deadline - performance.now());
+        if (remaining <= 0) throw new Error("启动悬浮框超时");
+        const result = await invoke<{ success: boolean; message: string }>("start_overlay_panel", {
+          settings, timeout_ms: remaining,
         });
-      }
+        if (performance.now() >= deadline) throw new Error("启动悬浮框超时");
+        if (!result?.success) throw new Error(result?.message || "启动悬浮框失败");
+        return result;
+      };
+      const result = await Promise.race([
+        request(),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("启动悬浮框超时")), 15000); }),
+      ]);
+      setIsEnabled(true);
+      toast({ title: result.message, status: "success", duration: 2000, isClosable: true });
     } catch (error) {
       console.error("Failed to start overlay panel:", error);
+      setIsEnabled(false);
       toast({
-        title: t("overlayPanel.startFailed") || "启动失败",
+        title: error instanceof Error ? error.message : String(error),
         status: "error",
         duration: 2000,
         isClosable: true,
       });
+    } finally {
+      if (timer) clearTimeout(timer);
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const stopOverlay = async () => {
     setIsLoading(true);
     try {
       const result = await invoke<{ success: boolean; message: string }>("stop_overlay_panel");
+      if (!result?.success) throw new Error(result?.message || "停止悬浮框失败");
       if (result.success) {
         setIsEnabled(false);
         toast({
@@ -383,7 +397,7 @@ export default function OverlayPanelPage() {
     } catch (error) {
       console.error("Failed to stop overlay panel:", error);
       toast({
-        title: t("overlayPanel.stopFailed") || "停止失败",
+        title: error instanceof Error ? error.message : String(error),
         status: "error",
         duration: 2000,
         isClosable: true,
@@ -614,7 +628,7 @@ export default function OverlayPanelPage() {
   };
 
   return (
-    <Box pt={8} pb={8}>
+    <Box id="search-overlay" pt={8} pb={8}>
       <HStack justify="space-between" mb={6}>
         <HStack>
           <IconButton
@@ -622,7 +636,7 @@ export default function OverlayPanelPage() {
             icon={<ArrowLeft size={20} />}
             variant="ghost"
             onClick={() => navigate("/")}
-            color={headingColor}
+            color={adaptiveTitle.text}
           />
           <Heading size="lg" color={adaptiveTitle.text} textShadow={adaptiveTitle.shadow}>
             {t("overlayPanel.title") || "悬浮框"}
@@ -663,7 +677,7 @@ export default function OverlayPanelPage() {
       </HStack>
 
       <VStack align="stretch" spacing={5}>
-        <SettingCard title={t("overlayPanel.enableOverlay") || "启用悬浮框"}>
+        <SettingCard id="search-overlay-enable" title={t("overlayPanel.enableOverlay") || "启用悬浮框"}>
           <HStack justify="space-between" wrap="wrap" spacing={4}>
             <HStack>
               <Icon as={isEnabled ? Eye : EyeOff} boxSize={5} color={isEnabled ? "green.400" : "gray.400"} />
@@ -737,17 +751,9 @@ export default function OverlayPanelPage() {
                 }
               }} />
           </HStack>
-          <HStack justify="space-between" align="flex-end" spacing={4}>
-            <VStack align="flex-start" spacing={1} flex={1} minW={0}>
-              <Text fontSize="xs" color={subTextColor} opacity={0.75}>
-                游戏需开启无边框模式，全屏模式会被覆盖
-              </Text>
-              
-            </VStack>
-          </HStack>
         </SettingCard>
 
-        <SettingCard title={t("overlayPanel.displayItems") || "显示项"}>
+        <SettingCard id="search-overlay-items" title={t("overlayPanel.displayItems") || "显示项"}>
           <SimpleGrid columns={2} spacing={4}>
             <Box>
               <Text fontSize="sm" fontWeight="medium" mb={2} color={subTextColor}>
@@ -803,7 +809,7 @@ export default function OverlayPanelPage() {
 
 
 
-        <SettingCard title={t("overlayPanel.appearance") || "外观设置"}>
+        <SettingCard id="search-overlay-appearance" title={t("overlayPanel.appearance") || "外观设置"}>
           <HStack align="start" spacing={6}>
             {/* 左侧：样式选择 */}
             <VStack align="stretch" spacing={2} flex={1}>

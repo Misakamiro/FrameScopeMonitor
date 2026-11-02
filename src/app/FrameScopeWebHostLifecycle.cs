@@ -1,4 +1,4 @@
-﻿internal static class FrameScopeWebHostLifecycle
+internal static class FrameScopeWebHostLifecycle
 {
     public const string CloseBehaviorExit = "exit";
     public const string CloseBehaviorMinimizeToTray = "minimize-to-tray";

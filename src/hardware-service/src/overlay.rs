@@ -8,6 +8,21 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+mod clock_regression {
+    use super::*;
+    #[test]
+    fn core_mhz_wins_over_nominal_aggregate_and_keeps_fractional_reference_precision() {
+        let payload=serde_json::json!({"dynamic":{"cpuFrequency":{"value":5000.0}},"sensors":[
+            {"hardwareType":"Cpu","hardware":"CPU","name":"Core #1","sensorType":"Clock","value":5250.25},
+            {"hardwareType":"Cpu","hardware":"CPU","name":"Core #2","sensorType":"Clock","value":5275.75},
+            {"hardwareType":"Cpu","hardware":"CPU","name":"Core #1 Effective","sensorType":"Clock","value":500.0}]});
+        let data=build_overlay_data(&payload,(None,None,None),None,0);
+        assert_eq!(data.cpu_clock,Some(5263.0));
+        assert_eq!(data.cpu_core_clocks,vec![Some(5250.25),Some(5275.75)]);
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct GpuSensorData {
     pub name: String,
@@ -32,6 +47,7 @@ pub struct OverlayData {
     pub cpu_usage: Option<f64>,
     pub cpu_temp: Option<f64>,
     pub cpu_clock: Option<f64>,
+    pub cpu_frequency_info: crate::cpu_frequency::CpuFrequencyInfo,
     pub cpu_voltage: Option<f64>,
     pub cpu_power: Option<f64>,
     pub cpu_fan_speed: Option<f64>,
@@ -59,6 +75,72 @@ pub struct OverlayData {
     /// 目标进程最近呈现模式（问题 6 方案 E，ETW 事件 ID 推断）：
     /// "composited" / "independent-flip" / "legacy-exclusive"；None = 无活跃信号
     pub present_mode: Option<String>,
+}
+
+#[derive(Default)]
+pub struct GpuSelection {
+    preferred: Option<GpuSensorData>,
+    manual_index: Option<usize>,
+    manual: bool,
+}
+
+impl GpuSelection {
+    pub fn request(&mut self, index: usize, current: &[GpuSensorData]) {
+        self.manual = true;
+        self.preferred = current.get(index).cloned();
+        self.manual_index = self.preferred.is_none().then_some(index);
+    }
+
+    pub fn apply(&mut self, data: &mut OverlayData) {
+        if let Some(index) = self.manual_index {
+            if let Some(gpu) = data.gpu_sensors.get(index) {
+                self.preferred = Some(gpu.clone());
+                self.manual_index = None;
+            } else {
+                data.active_gpu_index = index;
+            }
+        }
+        if !self.manual {
+            // Dedicated-memory capacity is a default preference, not a load
+            // race. Keep the preferred identity through missing/idle samples.
+            if let Some(best) = data.gpu_sensors.iter().max_by(|a, b|
+                a.vram_total.unwrap_or(0.0).total_cmp(&b.vram_total.unwrap_or(0.0))) {
+                if self.preferred.as_ref().map_or(true, |old|
+                    best.vram_total.unwrap_or(0.0) > old.vram_total.unwrap_or(0.0)) {
+                    self.preferred = Some(best.clone());
+                }
+            }
+        }
+        if let Some(preferred) = &self.preferred {
+            let index = data.gpu_sensors.iter().position(|gpu| same_gpu(gpu, preferred))
+                .unwrap_or_else(|| {
+                    data.gpu_sensors.push(GpuSensorData { name: preferred.name.clone(),
+                        identifier: preferred.identifier.clone(), hardware_type: preferred.hardware_type.clone(),
+                        ..Default::default() });
+                    data.gpu_sensors.len() - 1
+                });
+            data.active_gpu_index = index;
+        }
+        project_gpu(data);
+    }
+}
+
+fn same_gpu(a: &GpuSensorData, b: &GpuSensorData) -> bool {
+    if !a.identifier.is_empty() { a.identifier.eq_ignore_ascii_case(&b.identifier) }
+    else { b.identifier.is_empty() && a.name.eq_ignore_ascii_case(&b.name) }
+}
+
+fn project_gpu(data: &mut OverlayData) {
+    let gpu = data.gpu_sensors.get(data.active_gpu_index);
+    data.gpu_temp = gpu.and_then(|g| g.temperature);
+    data.gpu_usage = gpu.and_then(|g| g.usage);
+    data.gpu_fan_speed = gpu.and_then(|g| g.fan_speed);
+    data.gpu_power = gpu.and_then(|g| g.power);
+    data.gpu_clock = gpu.and_then(|g| g.clock);
+    data.gpu_voltage = gpu.and_then(|g| g.voltage);
+    data.gpu_memory_clock = gpu.and_then(|g| g.memory_clock);
+    data.gpu_vram_used = gpu.and_then(|g| g.vram_used);
+    data.gpu_vram_total = gpu.and_then(|g| g.vram_total);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +197,27 @@ fn dynamic_value(snapshot: &Value, key: &str) -> Option<f64> {
         .and_then(|dynamic| dynamic.get(key))
         .and_then(|metric| metric.get("value"))
         .and_then(Value::as_f64)
+}
+
+fn disk_temperature(rows: &[SensorRow<'_>]) -> Option<f64> {
+    // Select the drive's primary/composite reading before comparing drives.
+    // Numbered, controller, NAND, hot-spot and threshold channels are distinct
+    // measurements and must not replace the temperature advertised by SMART.
+    let mut drives: HashMap<&str, (u8, f64)> = HashMap::new();
+    for row in rows.iter().filter(|r| contains(r.hardware_type, "storage") && r.sensor_type.eq_ignore_ascii_case("Temperature")) {
+        let priority = match row.name.trim().to_ascii_lowercase().as_str() {
+            "composite temperature" | "temperature (composite)" | "drive temperature (composite)" | "composite" => 0,
+            "temperature" | "drive temperature" => 1,
+            "hdd temperature" | "ssd temperature" => 2,
+            _ => continue,
+        };
+        if !row.value.is_finite() { continue; }
+        let key=if row.identifier.is_empty() { row.hardware } else { row.identifier };
+        drives.entry(key).and_modify(|current| {
+            if priority < current.0 || (priority == current.0 && row.value > current.1) { *current=(priority,row.value); }
+        }).or_insert((priority,row.value));
+    }
+    drives.values().map(|(_,value)|*value).max_by(f64::total_cmp)
 }
 
 fn find_sensor<'a>(
@@ -262,17 +365,7 @@ pub fn build_overlay_data(
         (Some(used), Some(total)) if total > 0.0 => Some((used / total * 100.0).clamp(0.0, 100.0)),
         _ => None,
     };
-    // Unlike the fan/temperature hints above, storage has no misattribution
-    // risk - every storage "Temperature" sensor belongs to some drive - so
-    // strict name hints ("Drive"/"SSD") only served to miss most NVMe models.
-    // The overlay shows a single disk temp: report the hottest drive.
-    let ssd_temp = rows
-        .iter()
-        .filter(|row| {
-            contains(row.sensor_type, "Temperature") && contains(row.hardware_type, "storage")
-        })
-        .map(|row| row.value)
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let ssd_temp = disk_temperature(&rows);
 
     // Actual core-rail voltage as measured by the board's SuperIO sensor.
     // LibreHardwareMonitor's per-core AMD "VID" sensors are scaled with the
@@ -281,9 +374,11 @@ pub fn build_overlay_data(
     let board_vcore = sensor_value(&rows, "Voltage", "superio", &["Vcore"])
         .or_else(|| sensor_value(&rows, "Voltage", "", &["CPU Vcore"]));
 
-    let mut cpu_core_clocks = collect_core_series(&rows, "Clock", false);
+    let reference=crate::memory::current().reference_mhz;
+    let cpu_frequency_info=crate::cpu_frequency::resolve_with_reference(snapshot,reference);
+    let mut cpu_core_clocks = cpu_frequency_info.per_core_mhz.clone();
     for value in cpu_core_clocks.iter_mut() {
-        *value = value.map(|v| v.round());
+        *value = value.filter(|v|v.is_finite()&&*v>0.0);
     }
     let mut cpu_core_voltages = collect_core_series(&rows, "Voltage", true);
     for value in cpu_core_voltages.iter_mut() {
@@ -314,7 +409,8 @@ pub fn build_overlay_data(
         fps_01low: r1(fps.2),
         cpu_usage: r1(dynamic_value(snapshot, "cpuUsage")),
         cpu_temp: r1(dynamic_value(snapshot, "cpuTemperature")),
-        cpu_clock: dynamic_value(snapshot, "cpuFrequency").map(|v| v.round()),
+        cpu_clock: cpu_frequency_info.current_mhz,
+        cpu_frequency_info,
         cpu_power: r2(dynamic_value(snapshot, "cpuPower")),
         cpu_voltage: r2(
             // Prefer the board's measured rail over any LHM VID-derived value
@@ -407,6 +503,9 @@ pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
 }
 
 pub fn clear_hardware_values(data: &mut OverlayData) {
+    data.cpu_frequency_info.current_mhz=None;
+    data.cpu_frequency_info.per_core_mhz.fill(None);
+    data.cpu_frequency_info.quality="unavailable".into();
     macro_rules! clear { ($($field:ident),+) => { $(data.$field = None;)+ }; }
     clear!(cpu_usage, cpu_temp, cpu_clock, cpu_voltage, cpu_power, cpu_fan_speed,
         gpu_temp, gpu_usage, gpu_fan_speed, gpu_power, gpu_clock, gpu_voltage,
@@ -459,17 +558,57 @@ pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Ins
     }
     // Top-level GPU fields are a projection of the selected identity's independently aged values.
     // No timestamp or number from the previously selected GPU can enter this projection.
-    if let Some(gpu) = new.gpu_sensors.get(new.active_gpu_index) {
-        new.gpu_temp = gpu.temperature; new.gpu_usage = gpu.usage; new.gpu_fan_speed = gpu.fan_speed;
-        new.gpu_power = gpu.power; new.gpu_clock = gpu.clock; new.gpu_voltage = gpu.voltage;
-        new.gpu_memory_clock = gpu.memory_clock; new.gpu_vram_used = gpu.vram_used; new.gpu_vram_total = gpu.vram_total;
-    }
+    project_gpu(new);
+    if new.cpu_frequency_info.current_mhz.is_none()&&new.cpu_clock.is_some(){new.cpu_frequency_info=old.cpu_frequency_info.clone();new.cpu_frequency_info.quality="retained".into();}
+    new.cpu_frequency_info.current_mhz=new.cpu_clock;
+    new.cpu_frequency_info.per_core_mhz=new.cpu_core_clocks.clone();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn selection_prefers_dedicated_capacity_and_pins_identity_across_reorder_and_gaps() {
+        let integrated = GpuSensorData { name: "AMD Radeon 780M".into(), identifier: "/amd/0".into(),
+            vram_total: Some(0.5), usage: Some(0.0), ..Default::default() };
+        let discrete = GpuSensorData { name: "NVIDIA GeForce".into(), identifier: "/nvidia/0".into(),
+            vram_total: Some(8.0), usage: Some(65.0), ..Default::default() };
+        let mut selection = GpuSelection::default();
+        for topology in [vec![integrated.clone(), discrete.clone()], vec![discrete.clone(), integrated.clone()]] {
+            let mut data = OverlayData { gpu_sensors: topology, ..Default::default() };
+            selection.apply(&mut data);
+            assert_eq!(data.gpu_usage, Some(65.0));
+            assert_eq!(data.gpu_sensors[data.active_gpu_index].identifier, discrete.identifier);
+        }
+        let mut missing = OverlayData { gpu_sensors: vec![integrated.clone()], ..Default::default() };
+        selection.apply(&mut missing);
+        assert_eq!(missing.gpu_usage, None);
+        assert_eq!(missing.gpu_sensors[missing.active_gpu_index].identifier, discrete.identifier);
+        selection.request(0, &missing.gpu_sensors);
+        let mut restored = OverlayData { gpu_sensors: vec![discrete, integrated], ..Default::default() };
+        selection.apply(&mut restored);
+        assert_eq!(restored.active_gpu_index, 1);
+        assert_eq!(restored.gpu_usage, Some(0.0));
+    }
+
+    #[test]
+    fn later_discrete_gpu_replaces_automatic_integrated_default_but_not_manual_choice() {
+        let integrated = GpuSensorData { name: "Intel UHD".into(), identifier: "/intel/0".into(),
+            vram_total: Some(0.25), ..Default::default() };
+        let discrete = GpuSensorData { name: "AMD Radeon RX".into(), identifier: "/amd/0".into(),
+            vram_total: Some(12.0), ..Default::default() };
+        let mut selection = GpuSelection::default();
+        let mut data = OverlayData { gpu_sensors: vec![integrated], ..Default::default() };
+        selection.apply(&mut data);
+        data.gpu_sensors.push(discrete);
+        selection.apply(&mut data);
+        assert_eq!(data.active_gpu_index, 1);
+        selection.request(0, &data.gpu_sensors);
+        selection.apply(&mut data);
+        assert_eq!(data.active_gpu_index, 0);
+    }
 
     fn sample_snapshot() -> Value {
         json!({
@@ -507,7 +646,7 @@ mod tests {
         assert_eq!(data.cpu_usage, Some(42.0));
         assert_eq!(data.cpu_temp, Some(61.5));
         assert_eq!(data.cpu_voltage, Some(1.24));
-        assert_eq!(data.cpu_core_clocks, vec![Some(4826.0), Some(4870.0), Some(4910.0)]);
+        assert_eq!(data.cpu_core_clocks, vec![Some(4825.5), Some(4870.0), Some(4910.25)]);
         // "Core #1" (Intel style) and "Core #2 VID" (AMD style) both land in
         // the series; "Core #3 Max" is rejected, so there is no third slot.
         assert_eq!(data.cpu_core_voltages, vec![Some(1.24), Some(0.59)]);
@@ -523,6 +662,26 @@ mod tests {
         assert_eq!(data.active_gpu_index, 0);
         assert_eq!(data.gpu_temp, Some(71.0));
         assert_eq!(data.gpu_vram_used, Some(8.0));
+    }
+
+    #[test]
+    fn disk_temperature_uses_composite_instead_of_hotspot_or_secondary_sensors() {
+        let snapshot=serde_json::json!({"sensors":[
+            {"hardware":"NVMe A","identifier":"/nvme/0","hardwareType":"Storage","name":"Temperature","sensorType":"Temperature","value":43.0},
+            {"hardware":"NVMe A","identifier":"/nvme/0","hardwareType":"Storage","name":"Temperature 1","sensorType":"Temperature","value":89.0},
+            {"hardware":"NVMe A","identifier":"/nvme/0","hardwareType":"Storage","name":"Controller Hot Spot","sensorType":"Temperature","value":97.0},
+            {"hardware":"NVMe B","identifier":"/nvme/1","hardwareType":"Storage","name":"Composite Temperature","sensorType":"Temperature","value":48.0},
+            {"hardware":"NVMe B","identifier":"/nvme/1","hardwareType":"Storage","name":"Temperature 2","sensorType":"Temperature","value":92.0}
+        ]});
+        assert_eq!(build_overlay_data(&snapshot,(None,None,None),None,0).ssd_temp,Some(48.0));
+    }
+
+    #[test]
+    fn disk_secondary_or_threshold_temperature_is_not_a_primary_temperature() {
+        for name in ["Temperature 1","NAND Temperature","Controller Temperature","Hot Spot","Critical Temperature","Warning Composite Temperature"] {
+            let snapshot=serde_json::json!({"sensors":[{"hardware":"NVMe","hardwareType":"Storage","name":name,"sensorType":"Temperature","value":89.0}]});
+            assert_eq!(build_overlay_data(&snapshot,(None,None,None),None,0).ssd_temp,None,"{name}");
+        }
     }
 
     #[test]

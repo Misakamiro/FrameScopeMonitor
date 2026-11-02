@@ -5,6 +5,7 @@ import { getPreviewState, subscribePreviewState, type OverlaySettings } from "@/
 import { defaultOverlay } from "@/preview/runtime/state";
 import { isMainWindow } from "@/preview/runtime/platform";
 import { startLiveHardwarePolling, type LiveHardwareSnapshot } from "@/lib/live-hardware";
+import { uiActivity } from "@/lib/ui-activity";
 
 interface StartupContext {
   isStartupComplete: boolean;
@@ -61,13 +62,18 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
     let scenario = getPreviewState().scenario;
     const mainWindow = isMainWindow();
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let refreshing = false;
+    let activityRevision = 0;
     // Hardware discovery can remain pending independently of live sensors.
     // It must never prevent access to the application and its settings.
     const startupTimer = setTimeout(() => { if (active) setReady(true); }, 2000);
     const refresh = () => {
-      void invoke<HardwareInfo>("get_hardware").then(data => { if (active) { clearTimeout(startupTimer); setHardwareInfo(data); setReady(true); } })
+      if (!active || !uiActivity.getSnapshot() || refreshing) return;
+      refreshing = true;
+      const revision = activityRevision;
+      void invoke<HardwareInfo>("get_hardware").then(data => { if (active && uiActivity.getSnapshot() && revision === activityRevision) { clearTimeout(startupTimer); setHardwareInfo(data); setReady(true); } })
         .catch(error => {
-          if (!active) return;
+          if (!active || !uiActivity.getSnapshot() || revision !== activityRevision) return;
           clearTimeout(startupTimer);
           setReady(true);
           setHardwareInfo(null);
@@ -77,9 +83,17 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
           // Inventory is built in the background; a pending query or a short
           // collision with the sensor poller must not add eight seconds.
           const pending = /Hardware inventory is still loading|hardware maintenance is active or requests have not drained/.test(String(error));
-          retryTimer = setTimeout(() => { if (active) refresh(); }, pending ? 500 : 8000);
+          retryTimer = setTimeout(refresh, pending ? 500 : 8000);
+        }).finally(() => {
+          refreshing = false;
+          if (active && revision !== activityRevision && uiActivity.getSnapshot()) refresh();
         });
     };
+    const stopActivity = mainWindow ? uiActivity.subscribe(() => {
+      activityRevision++;
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+      if (uiActivity.getSnapshot()) refresh();
+    }) : () => {};
     if (mainWindow) refresh(); else setReady(true);
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       void invoke<string>("preview_native", { command: "get_overlay_hotkey", args: {} })
@@ -93,7 +107,7 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
       setHotkey(state.hotkey);
       if (scenario !== state.scenario) { scenario = state.scenario; if (mainWindow) refresh(); }
     });
-    return () => { active = false; clearTimeout(startupTimer); if (retryTimer) clearTimeout(retryTimer); unsubscribe(); };
+    return () => { active = false; clearTimeout(startupTimer); if (retryTimer) clearTimeout(retryTimer); stopActivity(); unsubscribe(); };
   }, []);
   useEffect(() => {
     if (!isMainWindow()) return;
@@ -101,6 +115,7 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
   }, []);
   return <Context.Provider value={{
     isStartupComplete: ready, startupProgress: ready ? 100 : 20, startupMessage: ready ? "准备就绪" : "正在加载预览",
-    hardwareInfo, liveHardware, tools: [], overlaySettings, saveOverlaySettings, overlayHotkey, saveOverlayHotkey,
+    hardwareInfo:hardwareInfo?{...hardwareInfo,cpu:{...hardwareInfo.cpu,current_clock_speed:liveHardware&&Date.now()-liveHardware.observedAt<=2000?(liveHardware.overlay.cpu_clock??null):null}}:null,
+    liveHardware, tools: [], overlaySettings, saveOverlaySettings, overlayHotkey, saveOverlayHotkey,
   }}>{children}</Context.Provider>;
 }

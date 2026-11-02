@@ -82,9 +82,9 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
         display_items: [...settings.display_items, ...missing],
         delta_password_maps: settings.delta_password_maps ?? getPreviewState().overlay.settings.delta_password_maps ?? [],
       };
+      if (isDesktop()) await nativeOperation("update_overlay_settings", { settings: normalized });
       mutatePreview(next => { next.overlay.settings = normalized; });
       await emitPreviewEvent("vertical-overlay-settings", normalized);
-      if (isDesktop()) await nativeOperation("update_overlay_settings", { settings: normalized });
       result = { success: true, message: "预览设置已保存" }; break;
     }
     case "get_delta_passwords":
@@ -112,7 +112,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
         elapsedSeconds: state.monitor.elapsedSeconds }; break;
     default:
       if (!nativeCommands.has(command)) throw new Error(`Unsupported preview command: ${command}`);
-      if (command === "start_overlay_panel" && args.settings) await invoke("update_overlay_settings", args);
+      if (!isDesktop() && command === "start_overlay_panel" && args.settings) await invoke("update_overlay_settings", args);
       if (isDesktop()) result = await nativeOperation(command, args);
       else if (command === "get_overlay_panel_status") result = state.overlay.enabled;
       else if (command === "open_report_sample") { window.open("/samples/charts/framescope-interactive-report.html", "report-sample"); result = true; }
@@ -122,8 +122,8 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       } else if (["start_overlay_panel", "stop_overlay_panel", "toggle_overlay_panel", "set_overlay_drag_mode"].includes(command)) {
         result = { success: true, message: "浏览器预览状态已更新；原生窗口仅在桌面版显示" };
       } else throw new Error(`Native window operation requires desktop: ${command}`);
-      if (command === "start_overlay_panel") mutatePreview(next => { next.overlay.enabled = true; });
-      if (command === "stop_overlay_panel") mutatePreview(next => { next.overlay.enabled = false; });
+      if (command === "start_overlay_panel" && (result as { success?: boolean })?.success) mutatePreview(next => { next.overlay.enabled = true; });
+      if (command === "stop_overlay_panel" && (result as { success?: boolean })?.success) mutatePreview(next => { next.overlay.enabled = false; });
       if (command === "toggle_overlay_panel") mutatePreview(next => { next.overlay.enabled = !next.overlay.enabled; });
       if (command === "set_overlay_drag_mode") mutatePreview(next => { next.overlay.dragMode = !!args.enabled; });
       break;

@@ -1,5 +1,11 @@
 //! Update inputs are repository release identities, never frontend supplied URLs.
 use serde::{Deserialize, Serialize};
+mod download;
+mod asset_download;
+#[cfg(test)]
+mod segmented_tests;
+#[cfg(windows)]
+pub mod autostart;
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::atomic::{AtomicBool, Ordering}, time::Duration};
@@ -9,14 +15,25 @@ pub const REPOSITORY: &str = "Misakamiro/FrameScopeMonitor";
 pub const PROXY: &str = "https://gh-proxy.org/";
 pub const MANIFEST: &str = "release-manifest.json";
 pub const SIGNATURE: &str = "release-manifest.json.minisig";
+pub const OFFLINE_MANIFEST: &str = "offline-release-manifest.json";
+pub const COMMUNITY_MANIFEST: &str = "community-release-manifest.json";
 pub const PUBLIC_KEY: &str = include_str!("../release.pub");
 pub fn public_key() -> &'static str { PUBLIC_KEY.lines().nth(1).expect("Minisign public key missing") }
 pub fn installation_allowed(phase:&str)->bool {matches!(phase,"idle"|"stopped"|"completed")}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BuildInfo { pub version:String, pub git_sha:String, pub channel:String }
+pub struct BuildInfo { pub version:String, pub git_sha:String, pub channel:String, #[serde(default)] pub edition:String }
 impl BuildInfo {
-    pub fn new(version:&str,sha:&str)->Self {Self {version:version.into(),git_sha:sha.into(),channel:if version.contains('-'){"beta"}else{"stable"}.into()}}
+    pub fn new(version:&str,sha:&str)->Self {Self {version:version.into(),git_sha:sha.into(),channel:if version.contains('-'){"beta"}else{"stable"}.into(),edition:String::new()}}
+    pub fn with_edition(mut self,edition:&str)->Self{self.edition=edition.into();self}
+    pub fn resolved_edition(&self)->&str{
+        if !self.edition.is_empty(){return &self.edition;}
+        if ["2.0.1-beta.5","2.0.1-beta.6","2.0.1-beta.7"].contains(&self.version.as_str()){"full"}else{"offline"}
+    }
+    pub fn can_upgrade_to(&self,edition:&str)->bool {
+        self.resolved_edition()==edition || (edition=="full" && self.edition.is_empty()
+            && matches!(self.version.as_str(),"2.0.0"|"2.0.0-beta.1"|"2.0.0-beta.2"|"2.0.1-beta.1"|"2.0.1-beta.2"|"2.0.1-beta.3"|"2.0.1-beta.4"))
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StartupTicket { pub nonce:String, pub build:BuildInfo }
@@ -24,13 +41,13 @@ pub struct StartupTicket { pub nonce:String, pub build:BuildInfo }
 pub struct StartupAck { pub nonce:String, pub build:BuildInfo, pub executable:PathBuf, pub pid:u32 }
 pub fn startup_ack_matches(ticket:&StartupTicket,ack:&StartupAck,expected:&Path,running_image:Option<&Path>)->bool {
     ack.pid!=0&&ack.nonce==ticket.nonce&&ack.build.version==ticket.build.version&&ack.build.git_sha==ticket.build.git_sha
-        &&ack.build.channel==ticket.build.channel&&ack.executable==expected&&running_image==Some(expected)
+        &&ack.build.channel==ticket.build.channel&&ack.build.resolved_edition()==ticket.build.resolved_edition()&&ack.executable==expected&&running_image==Some(expected)
 }
 pub fn acknowledge_startup(root:&Path,build:BuildInfo)->Result<()> {
     let ticket = root.join("FrameScopeUpdatePending.json");
     if !ticket.exists() {return Ok(());}
     let ticket:StartupTicket = serde_json::from_slice(&fs::read(ticket).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    if ticket.build.version != build.version || ticket.build.git_sha != build.git_sha {return Err("更新启动身份不匹配".into());}
+    if ticket.build.version != build.version || ticket.build.git_sha != build.git_sha || ticket.build.resolved_edition()!=build.resolved_edition() {return Err("更新启动身份不匹配".into());}
     atomic_json(&root.join("FrameScopeUpdateReady.json"),&StartupAck {nonce:ticket.nonce,build,
         executable:std::env::current_exe().map_err(|e|e.to_string())?.canonicalize().map_err(|e|e.to_string())?,pid:std::process::id()})
 }
@@ -43,6 +60,7 @@ pub struct Package { pub name: String, pub size: u64, pub sha256: String }
 pub struct Manifest {
     pub schema: u32, pub version: String, pub channel: String, pub git_sha: String,
     pub platform: String, pub installer: Package,
+    #[serde(default)] pub edition:String,
 }
 fn hex(s: &str, n: usize) -> bool { s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit()) }
 impl Manifest {
@@ -52,11 +70,13 @@ impl Manifest {
         if self.schema != 1 || version.major < 2 || !version.build.is_empty()
             || tag != format!("v{}", self.version) || self.channel != channel
             || self.platform != "windows-x86_64" || !hex(&self.git_sha, 40)
-            || self.installer.name != format!("FrameScope_{}_x64-setup.exe", self.version)
+            || (self.installer.name != format!("FrameScope_{}_x64-setup.exe", self.version)
+                && !(self.edition=="offline" && self.installer.name==format!("FrameScope_{}_x64-offline-setup.exe",self.version)))
             || self.installer.size == 0 || self.installer.size > 2 * 1024 * 1024 * 1024
             || !hex(&self.installer.sha256, 64) {
             return Err("发行清单的版本、渠道、平台或包身份不一致".into());
         }
+        if !matches!(self.edition.as_str(),""|"offline"|"full"){return Err("发行版型无效".into());}
         Ok(())
     }
 }
@@ -82,59 +102,117 @@ pub struct Release {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Asset { pub name: String, pub size: u64 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Candidate { pub id: u64, pub tag: String, pub notes: String, pub manifest: Manifest }
+pub struct Candidate { pub id: u64, pub tag: String, pub notes: String, pub manifest: Manifest,
+    #[serde(default="default_manifest_name")] pub manifest_name:String }
+fn default_manifest_name()->String{MANIFEST.into()}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Receipt { pub candidate: Candidate, pub manifest_text: String, pub signature: String }
 
+#[derive(Clone,Debug,Serialize)]
+pub struct DownloadTelemetry {
+    pub event: &'static str,
+    pub route: &'static str,
+    pub bytes_per_second: u64,
+    pub ttfb_ms: Option<u64>,
+    pub sample_bytes: Option<u64>,
+    pub range_supported: Option<bool>,
+    pub reason: Option<&'static str>,
+    pub active_requests: Option<usize>,
+}
+impl DownloadTelemetry {
+    fn event(event:&'static str,proxy:bool,rate:u64)->Self {
+        Self{event,route:if proxy{"accelerator"}else{"origin"},bytes_per_second:rate,ttfb_ms:None,sample_bytes:None,range_supported:None,reason:None,active_requests:None}
+    }
+}
+
 /// Production constructor fixes the repository and proxy. Tests use loopback only.
-pub struct Source { client: reqwest::blocking::Client, api: String, downloads: String, proxy: Option<String>, key: String }
+pub struct Source { client: reqwest::blocking::Client, api: String, downloads: String, proxy: Option<String>, key: String, origin_first: AtomicBool, edition:String }
+fn system_proxy_enabled() -> bool {
+    if ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter().any(|name| std::env::var(name).map(|v| !v.trim().is_empty()).unwrap_or(false)) { return true; }
+    #[cfg(windows)]
+    if let Ok(key) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") {
+        return key.get_value::<u32, _>("ProxyEnable").unwrap_or(0) != 0
+            || !key.get_value::<String, _>("AutoConfigURL").unwrap_or_default().is_empty();
+    }
+    false
+}
+fn request_error(error: reqwest::Error) -> String {
+    use std::error::Error;
+    let mut message = error.to_string();
+    let mut cause = error.source();
+    while let Some(value) = cause { message.push_str(": "); message.push_str(&value.to_string()); cause = value.source(); }
+    message
+}
 impl Source {
+    pub fn with_edition(mut self,edition:&str)->Result<Self>{
+        if !matches!(edition,"full"|"offline"){return Err("更新版型无效".into());}
+        self.edition=edition.into();Ok(self)
+    }
+    fn accepts(&self,manifest:&Manifest)->bool {
+        manifest.edition==self.edition || (manifest.edition.is_empty() && self.edition=="offline")
+    }
     pub fn github(key: &str, accelerated: bool) -> Result<Self> {
-        Self::new(format!("https://api.github.com/repos/{REPOSITORY}"),
+        let source = Self::new(format!("https://api.github.com/repos/{REPOSITORY}"),
             format!("https://github.com/{REPOSITORY}/releases/download"),
-            accelerated.then(|| PROXY.into()), key.into())
+            accelerated.then(|| PROXY.into()), key.into())?;
+        source.origin_first.store(system_proxy_enabled(), Ordering::Relaxed);
+        Ok(source)
     }
     fn new(api: String, downloads: String, proxy: Option<String>, key: String) -> Result<Self> {
         let client = reqwest::blocking::Client::builder().user_agent("FrameScope/2 updater")
-            .connect_timeout(Duration::from_secs(8))
+            .connect_timeout(Duration::from_secs(4))
             .redirect(reqwest::redirect::Policy::limited(5)).build().map_err(|e| e.to_string())?;
-        Ok(Self {client, api, downloads, proxy, key})
+        Ok(Self {client, api, downloads, proxy, key, origin_first: AtomicBool::new(false),edition:"offline".into()})
     }
     fn url(&self, original: &str, proxy: bool) -> String {
         if proxy { format!("{}{original}", self.proxy.as_deref().unwrap_or("")) } else { original.into() }
     }
     fn small(&self, original: &str, proxy: bool, cancel: &AtomicBool) -> Result<Vec<u8>> {
         cancelled(cancel)?;
-        let response = self.client.get(self.url(original, proxy)).timeout(Duration::from_secs(15))
-            .send().and_then(|r|r.error_for_status()).map_err(|e|e.to_string())?;
+        let response = self.client.get(self.url(original, proxy)).timeout(Duration::from_secs(8))
+            .send().and_then(|r|r.error_for_status()).map_err(request_error)?;
         let mut bytes = Vec::new();
         response.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
         cancelled(cancel)?;
         if bytes.len() > 2 * 1024 * 1024 { return Err("更新响应过大".into()); }
         Ok(bytes)
     }
-    fn attempts<T>(&self, cancel: &AtomicBool, mut operation: impl FnMut(bool) -> Result<T>) -> Result<T> {
-        if self.proxy.is_some() {
-            if let Ok(value) = operation(true) { return Ok(value); }
-            cancelled(cancel)?;
-        }
-        operation(false)
+    fn attempts<T>(&self, cancel: &AtomicBool, operation: impl FnMut(bool) -> Result<T>) -> Result<T> {
+        let routes: &[bool] = if self.proxy.is_none() { &[false] }
+            else if self.origin_first.load(Ordering::Relaxed) { &[false, true] } else { &[true, false] };
+        self.attempts_on(cancel, routes, operation)
     }
-    fn signed(&self, tag: &str, proxy: bool, cancel: &AtomicBool) -> Result<(Manifest,String,String)> {
+    fn attempts_on<T>(&self, cancel: &AtomicBool, routes: &[bool], mut operation: impl FnMut(bool) -> Result<T>) -> Result<T> {
+        let mut errors = Vec::new();
+        for &proxy in routes {
+            cancelled(cancel)?;
+            match operation(proxy) {
+                Ok(value) => { self.origin_first.store(!proxy, Ordering::Relaxed); return Ok(value); }
+                Err(error) => errors.push(format!("{}：{error}", if proxy { "GitHub 加速站" } else { "GitHub 原站（遵循系统代理）" })),
+            }
+        }
+        cancelled(cancel)?;
+        Err(errors.join("\n"))
+    }
+    fn signed(&self, tag: &str, name:&str, proxy: bool, cancel: &AtomicBool) -> Result<(Manifest,String,String)> {
+        if name!=MANIFEST && !(self.edition=="offline" && name==OFFLINE_MANIFEST) && !(self.edition=="full" && name==COMMUNITY_MANIFEST){return Err("更新清单名称无效".into());}
         // tag is a validated SemVer; no path/query components are accepted.
         Version::parse(tag.strip_prefix('v').ok_or("Invalid release tag")?).map_err(|e|e.to_string())?;
         let base = format!("{}/{tag}", self.downloads);
-        let text = String::from_utf8(self.small(&format!("{base}/{MANIFEST}"),proxy,cancel)?).map_err(|e|e.to_string())?;
-        let sig = String::from_utf8(self.small(&format!("{base}/{SIGNATURE}"),proxy,cancel)?).map_err(|e|e.to_string())?;
+        let text = String::from_utf8(self.small(&format!("{base}/{name}"),proxy,cancel)?).map_err(|e|e.to_string())?;
+        let sig = String::from_utf8(self.small(&format!("{base}/{name}.minisig"),proxy,cancel)?).map_err(|e|e.to_string())?;
         let manifest = verify_manifest(text.as_bytes(), &sig, &self.key, tag)?;
         Ok((manifest,text,sig))
     }
     pub fn check(&self, current: &str, beta: bool, return_stable: bool, skipped: Option<&str>, cancel: &AtomicBool) -> Result<Vec<Candidate>> {
-        self.attempts(cancel, |proxy| {
             let mut releases = Vec::new();
             for page in 1..=10 {
-                let bytes = self.small(&format!("{}/releases?per_page=100&page={page}", self.api),proxy,cancel)?;
-                let list: Vec<Release> = serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+                let list: Vec<Release> = self.attempts(cancel, |proxy| {
+                    let bytes = self.small(&format!("{}/releases?per_page=100&page={page}", self.api),proxy,cancel)?;
+                    serde_json::from_slice(&bytes).map_err(|e|e.to_string())
+                })?;
                 let done = list.len() < 100;
                 releases.extend(list);
                 if done { break; }
@@ -145,71 +223,57 @@ impl Source {
             let mut result = Vec::new();
             let mut invalid = None;
             for release in releases {
-                if ![MANIFEST,SIGNATURE].iter().all(|name|release.assets.iter().any(|a|a.name == *name)) { continue; }
+                let has=|name:&str|release.assets.iter().any(|a|a.name==name);
+                if self.edition=="offline" && has(COMMUNITY_MANIFEST) && !has(OFFLINE_MANIFEST){continue;}
+                let manifest_name=if self.edition=="full" && has(COMMUNITY_MANIFEST){COMMUNITY_MANIFEST}
+                    else if self.edition=="offline" && has(OFFLINE_MANIFEST){OFFLINE_MANIFEST}else{MANIFEST};
+                if ![manifest_name.to_string(),format!("{manifest_name}.minisig")].iter().all(|name|release.assets.iter().any(|a|a.name == *name)) { continue; }
                 // A bad signature from the proxy must be retried at the origin.
-                let signed = self.signed(&release.tag_name,proxy,cancel);
+                let signed = self.attempts(cancel, |proxy| self.signed(&release.tag_name,manifest_name,proxy,cancel));
                 let (manifest,_,_) = match signed {
                     Ok(s) => s,
-                    Err(e) if proxy => return Err(e),
                     Err(e) => { cancelled(cancel)?; invalid = Some(e); continue; }
                 };
                 if release.prerelease != (manifest.channel == "beta") || !release.assets.iter().any(|a|a.name == manifest.installer.name && a.size == manifest.installer.size) { continue; }
-                result.push(Candidate { id:release.id, tag:release.tag_name, notes:release.body.unwrap_or_default(), manifest });
+                if !self.accepts(&manifest){continue;}
+                result.push(Candidate { id:release.id, tag:release.tag_name, notes:release.body.unwrap_or_default(), manifest,manifest_name:manifest_name.into() });
                 // Keep newest eligible + newest stable (explicit stable return).
                 if result.len() >= 2 && result.iter().any(|r|r.manifest.channel == "stable") { break; }
             }
             if result.is_empty() { if let Some(error) = invalid { return Err(error); } }
             Ok(result)
-        })
     }
     pub fn download(&self, candidate: &Candidate, cache: &Path, cancel: &AtomicBool, progress: impl Fn(u64,u64)) -> Result<Receipt> {
+        self.download_observed(candidate,cache,cancel,progress,|_|{})
+    }
+    pub fn download_observed(&self, candidate: &Candidate, cache: &Path, cancel: &AtomicBool, progress: impl Fn(u64,u64), observer:impl Fn(DownloadTelemetry)) -> Result<Receipt> {
         fs::create_dir_all(cache).map_err(|e|e.to_string())?;
         let path = cache.join(&candidate.manifest.installer.name);
         let partial = path.with_extension("part");
-        let result = self.attempts(cancel, |proxy| {
-            let (manifest,text,sig) = self.signed(&candidate.tag,proxy,cancel)?;
+        let result = (|| {
+            let (manifest,text,sig) = self.attempts(cancel, |proxy| self.signed(&candidate.tag,&candidate.manifest_name,proxy,cancel))?;
+            if !self.accepts(&manifest){return Err("更新包版型与当前客户端不一致".into());}
             // Do not accept a replaced release under the same identity.
             if serde_json::to_value(&manifest).unwrap() != serde_json::to_value(&candidate.manifest).unwrap() { return Err("发行文件在检查后被修改".into()); }
-            cancelled(cancel)?;
-            self.transfer(&self.url(&format!("{}/{}/{}",self.downloads,candidate.tag,manifest.installer.name),proxy),
-                &partial,manifest.installer.size,cancel,&progress)?;
-            verify_file(&partial,&manifest.installer)?;
+            let original = format!("{}/{}/{}",self.downloads,candidate.tag,manifest.installer.name);
+            self.download_asset(&original,&partial,&manifest.installer,cancel,&progress,&observer)?;
             cancelled(cancel)?;
             if path.exists() { fs::remove_file(&path).map_err(|e|e.to_string())?; }
             fs::rename(&partial,&path).map_err(|e|e.to_string())?;
-            let receipt = Receipt {candidate:candidate.clone(),manifest_text:text,signature:sig};
+            let receipt = Receipt {candidate:candidate.clone(),manifest_text:text.clone(),signature:sig.clone()};
             atomic_json(&cache.join("receipt.json"), &receipt)?;
             Ok(receipt)
-        });
+        })();
         let _ = fs::remove_file(partial);
         result
     }
+    #[cfg(test)]
     fn transfer(&self, url:&str, path:&Path, expected:u64, cancel:&AtomicBool, progress:&impl Fn(u64,u64)) -> Result<()> {
-        // A blocked socket must not prevent cancellation. Dropping the selected
-        // future closes that request; no detached download survives cancellation.
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|e.to_string())?;
-        runtime.block_on(async {
-            let transfer = async {
-                let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(8))
-                    .timeout(Duration::from_secs(1800)).user_agent("FrameScope/2 updater").build().map_err(|e|e.to_string())?;
-                let mut response = client.get(url).send().await.and_then(|r|r.error_for_status()).map_err(|e|e.to_string())?;
-                let mut file = fs::File::create(path).map_err(|e|e.to_string())?;
-                let mut size = 0;
-                while let Some(chunk) = response.chunk().await.map_err(|e|e.to_string())? {
-                    cancelled(cancel)?;
-                    size += chunk.len() as u64;
-                    if size > expected {return Err("安装包大小超出清单".into());}
-                    file.write_all(&chunk).map_err(|e|e.to_string())?;
-                    progress(size,expected);
-                }
-                file.sync_all().map_err(|e|e.to_string())
-            };
-            let cancellation = async { loop {tokio::time::sleep(Duration::from_millis(100)).await;if cancel.load(Ordering::SeqCst){break;}} };
-            tokio::select! { result = transfer => result, _ = cancellation => Err("下载已取消".into()) }
-        })
+        self.transfer_with_speed_check(url, path, expected, cancel, progress, true)
     }
     pub fn verified_cache(&self, cache: &Path, receipt: &Receipt) -> Result<PathBuf> {
         let manifest = verify_manifest(receipt.manifest_text.as_bytes(), &receipt.signature,&self.key,&receipt.candidate.tag)?;
+        if !self.accepts(&manifest){return Err("缓存更新包版型与当前客户端不一致".into());}
         if serde_json::to_value(&manifest).unwrap() != serde_json::to_value(&receipt.candidate.manifest).unwrap() { return Err("缓存清单不一致".into()); }
         let path = cache.join(&manifest.installer.name);
         verify_file(&path,&manifest.installer)?;
@@ -246,3 +310,5 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod download_tests;

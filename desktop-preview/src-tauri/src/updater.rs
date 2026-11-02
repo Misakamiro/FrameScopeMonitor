@@ -9,18 +9,32 @@ use tauri::{Emitter,Manager};
 pub struct Preferences { pub startup_check:bool, pub include_beta:bool, pub accelerated:bool }
 impl Default for Preferences {fn default()->Self {Self {startup_check:true,include_beta:env!("FRAMESCOPE_VERSION").contains('-'),accelerated:true}}}
 #[derive(Serialize)]
-struct State {preferences:Preferences,phase:String,error:Option<String>,releases:Vec<Candidate>,downloaded:u64,total:u64,ready:Option<u64>,last_checked:Option<String>}
+struct State {preferences:Preferences,phase:String,error:Option<String>,releases:Vec<Candidate>,downloaded:u64,total:u64,ready:Option<u64>,last_checked:Option<String>,download_route:Option<String>,bytes_per_second:u64}
 pub struct Service {root:PathBuf,state:Mutex<State>,busy:AtomicBool,cancel:AtomicBool}
-pub fn build_info()->BuildInfo {BuildInfo::new(env!("FRAMESCOPE_VERSION"),env!("FRAMESCOPE_GIT_SHA"))}
+pub fn build_info()->BuildInfo {BuildInfo::new(env!("FRAMESCOPE_VERSION"),env!("FRAMESCOPE_GIT_SHA")).with_edition(env!("FRAMESCOPE_EDITION"))}
+
+fn write_download_diagnostic(root:&Path,event:&update::DownloadTelemetry) {
+    use std::io::Write;
+    let path=root.join("download-diagnostics.jsonl");
+    if std::fs::metadata(&path).is_ok_and(|m|m.len()>=128*1024) {
+        let previous=root.join("download-diagnostics.previous.jsonl");
+        if previous.exists()&&std::fs::remove_file(&previous).is_err(){return;}
+        if std::fs::rename(&path,&previous).is_err(){return;}
+    }
+    let value=json!({"time":chrono::Utc::now().to_rfc3339(),"version":env!("FRAMESCOPE_VERSION"),"event":event});
+    if let (Ok(mut file),Ok(mut bytes))=(std::fs::OpenOptions::new().create(true).append(true).open(path),serde_json::to_vec(&value)) {
+        bytes.push(b'\n');let _=file.write_all(&bytes);
+    }
+}
 impl Service {
     pub fn new(root:PathBuf)->Result<Self,String> {
         let path=root.join("preferences.json");
         let loaded=(||{std::fs::create_dir_all(&root).map_err(|e|e.to_string())?;
             if path.exists(){serde_json::from_slice(&std::fs::read(path).map_err(|e|e.to_string())?).map_err(|e|format!("更新设置读取失败: {e}"))}else{Ok(Preferences::default())}})();
         let (preferences,error)=match loaded{Ok(p)=>(p,None),Err(e)=>{let mut p=Preferences::default();p.startup_check=false;(p,Some(e))}};
-        Ok(Self {root,state:Mutex::new(State{preferences,phase:"idle".into(),error,releases:vec![],downloaded:0,total:0,ready:None,last_checked:None}),busy:AtomicBool::new(false),cancel:AtomicBool::new(false)})
+        Ok(Self {root,state:Mutex::new(State{preferences,phase:"idle".into(),error,releases:vec![],downloaded:0,total:0,ready:None,last_checked:None,download_route:None,bytes_per_second:0}),busy:AtomicBool::new(false),cancel:AtomicBool::new(false)})
     }
-    fn source(&self)->Result<Source,String>{Source::github(update::public_key(),self.state.lock().unwrap().preferences.accelerated)}
+    fn source(&self)->Result<Source,String>{Source::github(update::public_key(),self.state.lock().unwrap().preferences.accelerated)?.with_edition(env!("FRAMESCOPE_EDITION"))}
     fn snapshot(&self)->Value {
         let state=self.state.lock().unwrap();
         let target=std::env::current_exe().ok().and_then(|p|p.parent().map(Path::to_path_buf));
@@ -29,7 +43,8 @@ impl Service {
     }
     fn emit(&self,app:&tauri::AppHandle){let _=app.emit("framescope-update",self.snapshot());}
     fn run(&self,app:&tauri::AppHandle,command:&str,args:Value)->Result<Value,String> {
-        let result=(||match command {
+        let result=(||{
+            match command {
             "update_check"=>{
                 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Options {#[serde(default)]return_stable:bool}
                 let options:Options=serde_json::from_value(args).map_err(|e|e.to_string())?;
@@ -45,20 +60,26 @@ impl Service {
                 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Selection {release_id:u64}
                 let selection:Selection=serde_json::from_value(args).map_err(|e|e.to_string())?;
                 let candidate=self.state.lock().unwrap().releases.iter().find(|r|r.id==selection.release_id).cloned().ok_or("请先检查并选择有效发行")?;
-                {let mut s=self.state.lock().unwrap();s.phase="downloading".into();s.ready=None;s.downloaded=0;s.total=candidate.manifest.installer.size;}
+                {let mut s=self.state.lock().unwrap();s.phase="downloading".into();s.ready=None;s.downloaded=0;s.total=candidate.manifest.installer.size;s.download_route=None;s.bytes_per_second=0;}
                 self.emit(app);
                 let mut last=std::time::Instant::now();
                 let last=Mutex::new(&mut last);
-                self.source()?.download(&candidate,&self.root.join("cache"),&self.cancel,|done,total|{
+                self.source()?.download_observed(&candidate,&self.root.join("cache"),&self.cancel,|done,total|{
                     {let mut s=self.state.lock().unwrap();s.downloaded=done;s.total=total;}
                     let mut last=last.lock().unwrap();if last.elapsed().as_millis()>=150||done==total{**last=std::time::Instant::now();self.emit(app);}
+                },|event|{
+                    write_download_diagnostic(&self.root,&event);
+                    if matches!(event.event,"route"|"progress"|"switch") {
+                        {let mut s=self.state.lock().unwrap();s.download_route=Some(event.route.into());s.bytes_per_second=event.bytes_per_second;}
+                        self.emit(app);
+                    }
                 })?;
                 self.state.lock().unwrap().ready=Some(candidate.id);
                 Ok(())
             }
             "update_install"|"update_restore"=>{
-                crate::backend::ensure_update_idle()?;
                 let target=std::env::current_exe().map_err(|e|e.to_string())?.parent().ok_or("缺少安装目录")?.to_path_buf();
+                run_verified_update(|| {
                 let (exe,arguments,package)=if command=="update_install" {
                     #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Selection {release_id:u64}
                     let selection:Selection=serde_json::from_value(args).map_err(|e|e.to_string())?;
@@ -79,21 +100,28 @@ impl Service {
                     let exe=directory.join("FrameScopeRecovery.exe");std::fs::copy(&original,&exe).map_err(|e|e.to_string())?;
                     (exe,vec!["--restore-previous".into(),"/S".into(),format!("/D={}",target.display())],helper)
                 };
-                let _verified_file=lock_verified(&exe,&package)?;
-                crate::backend::reserve_update()?;
-                self.state.lock().unwrap().phase="installing".into();self.emit(app);
-                // The elevated installer owns normal shutdown. Do not close this
-                // process before launch/UAC succeeds; cancellation leaves it usable.
-                let result=launch_installer(&exe,&arguments);
-                crate::backend::release_update();
-                result
+                let verified_file=lock_verified(&exe,&package)?;
+                Ok((exe,arguments,verified_file))
+                },|| {
+                    self.state.lock().unwrap().phase="preparing".into();self.emit(app);
+                    crate::backend::reserve_update()
+                },|(exe,arguments,_verified_file)| {
+                    self.state.lock().unwrap().phase="installing".into();self.emit(app);
+                    // The installer closes the UI only after launch/UAC succeeds.
+                    launch_installer(&exe,&arguments)
+                })
             }
             _=>Err("Unsupported update operation".into()),
-        })();
+        }})();
         {let mut state=self.state.lock().unwrap();state.phase="idle".into();state.error=result.as_ref().err().cloned();}
         self.busy.store(false,Ordering::SeqCst);self.emit(app);
         result.map(|_|self.snapshot())
     }
+}
+fn run_verified_update<T,R>(verify:impl FnOnce()->Result<T,String>,prepare:impl FnOnce()->Result<R,String>,launch:impl FnOnce(T)->Result<(),String>)->Result<(),String>{
+    let verified=verify()?;
+    let _reservation=prepare()?;
+    launch(verified)
 }
 fn lock_verified(path:&Path,package:&update::Package)->Result<std::fs::File,String>{
     let mut options=std::fs::OpenOptions::new();options.read(true);
@@ -145,7 +173,12 @@ pub async fn command(app:tauri::AppHandle,command:String,args:Value)->Result<Val
     match command.as_str(){
         "build_info"=>return Ok(json!(build_info())),
         "update_status"=>return Ok(service.snapshot()),
-        "update_ready"=>{let exe=std::env::current_exe().map_err(|e|e.to_string())?;update::acknowledge_startup(exe.parent().ok_or("Missing installation root")?,build_info())?;return Ok(service.snapshot());}
+        "update_ready"=>{
+            let main=app.get_webview_window("main").ok_or("Main window missing")?;
+            if args["ui_ready"]!=true||!main.is_visible().unwrap_or(false)||main.is_minimized().unwrap_or(true){return Err("主界面尚未显示，暂不确认更新启动成功".into());}
+            let exe=std::env::current_exe().map_err(|e|e.to_string())?;
+            update::acknowledge_startup(exe.parent().ok_or("Missing installation root")?,build_info())?;return Ok(service.snapshot());
+        }
         "update_cancel"=>{service.cancel.store(true,Ordering::SeqCst);
             {let mut state=service.state.lock().unwrap();if state.phase=="downloading"{state.phase="cancelling".into();}}service.emit(&app);return Ok(service.snapshot());}
         "update_preferences"=>{
@@ -166,6 +199,35 @@ pub async fn command(app:tauri::AppHandle,command:String,args:Value)->Result<Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn invalid_package_is_rejected_before_monitor_preparation(){
+        let result=run_verified_update(||Err::<(),_>("invalid package signature".into()),||->Result<(),String>{panic!("must not stop monitoring for an invalid package")},|_|panic!("invalid package must not launch"));
+        assert!(result.unwrap_err().contains("signature"));
+    }
+    #[test] fn failed_monitor_drain_never_launches_the_installer(){
+        let result=run_verified_update(||Ok(()),||Err::<(),_>("report timeout".into()),|_|panic!("must not install before reports drain"));
+        assert!(result.unwrap_err().contains("report timeout"));
+    }
+    #[test] fn installation_launch_failure_drops_the_reservation(){
+        use std::sync::atomic::AtomicBool;
+        struct Permit<'a>(&'a AtomicBool);
+        impl Drop for Permit<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
+        let active=AtomicBool::new(false);
+        let result=run_verified_update(||Ok("verified"),||{active.store(true,Ordering::SeqCst);Ok(Permit(&active))},|value|{assert_eq!(value,"verified");assert!(active.load(Ordering::SeqCst));Err("UAC cancelled".into())});
+        assert!(result.unwrap_err().contains("UAC"));assert!(!active.load(Ordering::SeqCst));
+    }
+    #[test] fn download_diagnostics_are_bounded_and_do_not_store_urls(){
+        let root=std::env::temp_dir().join(format!("framescope-download-diagnostic-{}",std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&root).unwrap();
+        let event=update::DownloadTelemetry{event:"sample",route:"accelerator",bytes_per_second:1000000,ttfb_ms:Some(100),sample_bytes:Some(1048576),range_supported:Some(true),reason:None,active_requests:Some(4)};
+        for _ in 0..1100{write_download_diagnostic(&root,&event);}
+        let files=std::fs::read_dir(&root).unwrap().map(|e|e.unwrap().path()).collect::<Vec<_>>();assert_eq!(files.len(),2);
+        for file in files{let text=std::fs::read_to_string(&file).unwrap();assert!(text.len()<129*1024);assert!(!text.contains("http://")&&!text.contains("https://"));for line in text.lines(){let value:Value=serde_json::from_str(line).unwrap();assert_eq!(value["event"]["route"],"accelerator");}std::fs::remove_file(file).unwrap();}
+        std::fs::remove_dir(root).unwrap();
+    }
+    #[test] fn download_snapshot_adds_only_runtime_progress_fields(){
+        let root=std::env::temp_dir().join(format!("framescope-update-state-{}",std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let service=Service::new(root.clone()).unwrap();let snapshot=service.snapshot();assert!(snapshot["state"]["download_route"].is_null());assert_eq!(snapshot["state"]["bytes_per_second"],0);assert_eq!(serde_json::to_value(Preferences::default()).unwrap().as_object().unwrap().len(),3);std::fs::remove_dir(root).unwrap();
+    }
     #[test] fn default_preferences_match_channel_and_persist_explicit_choice(){
         assert!(Preferences::default().startup_check);
         assert!(Preferences::default().accelerated);

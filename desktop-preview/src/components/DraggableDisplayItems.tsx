@@ -1,6 +1,7 @@
 import { Box, HStack, Text, Switch, useColorModeValue, Icon, Button, IconButton, useDisclosure } from "@chakra-ui/react";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 import { useThemeColor } from "@/contexts/theme-color-context";
+import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { hexToRgba } from "@/lib/color-utils";
 import { GripVertical, Cpu, Thermometer, Activity, HardDrive, Key, Gauge, Fan, Zap, Clock, Download, Settings } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -77,8 +78,9 @@ function SortableItem({
   onSettingsClick?: () => void;
   onInstallClick?: () => void;
 }) {
-  const textColor = useColorModeValue("gray.800", "#ffffff");
-  const iconColor = useColorModeValue("gray.500", "#999999");
+  const textColor = useGlassTextColor("gray.800", "#ffffff");
+  const hoverTextColor = useColorModeValue("gray.800", "#ffffff");
+  const iconColor = useGlassTextColor("gray.500", "#999999");
   const hoverBg = useColorModeValue("gray.50", "#1a1a1a");
   const dragBg = useColorModeValue("gray.100", "#222222");
   const toast = useDynamicIsland("layout");
@@ -118,6 +120,7 @@ function SortableItem({
   return (
     <HStack
       ref={setNodeRef}
+      role="group"
       style={style}
       py={2}
       px={3}
@@ -138,7 +141,7 @@ function SortableItem({
         <GripVertical size={16} />
       </Box>
       <Icon as={() => <IconComponent size={18} />} color={item.enabled ? getActiveColor() : "gray.400"} />
-      <Text color={textColor} fontSize="sm" flex={1}>
+      <Text color={isDragging ? hoverTextColor : textColor} _groupHover={{ color: hoverTextColor }} fontSize="sm" flex={1}>
         {item.label}
       </Text>
       {item.id === "delta_password" && onSettingsClick && (

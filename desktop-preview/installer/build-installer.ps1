@@ -1,4 +1,4 @@
-﻿# Builds the FrameScope native installer end-to-end:
+# Builds the FrameScope native installer end-to-end:
 #   1. build current app/backend via tools/Package-Installer.ps1 -StageOnly
 #   2. pack payload.zip
 #   3. vite build the frontend

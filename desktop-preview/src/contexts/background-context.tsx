@@ -3,6 +3,8 @@
 import { createContext, useContext, useState, ReactNode, useEffect, useRef, useCallback, useMemo } from "react";
 import { useColorMode } from "@chakra-ui/react";
 import { store } from "@/lib/store";
+import {uiActivity} from "@/lib/ui-activity";
+import { effectPercentage, realGlassBackground, jellyScales } from "@/lib/ui-effects";
 
 type BackgroundMode = "none" | "preset" | "image" | "dynamic" | "mr";
 
@@ -31,12 +33,15 @@ interface BackgroundContextType {
   liquidGlassEnabled: boolean;
   liquidGlassBlur: number;
   liquidGlassMode: LiquidGlassMode;
+  liquidGlassTransparency: number;
   islandLiquidGlassEnabled: boolean;
   backgroundBlur: number;
   activePresetIndex: number;
   presetBackgrounds: PresetBackground[];
   carouselEnabled: boolean;
   jellyBounceEnabled: boolean;
+  jellyBounceStrength: number;
+  jellyBounceActive: boolean;
   mrColorMode: MrColorMode;
   mrCustomColor: string;
   setBackgroundMode: (mode: BackgroundMode) => void;
@@ -48,11 +53,13 @@ interface BackgroundContextType {
   setLiquidGlassEnabled: (enabled: boolean) => void;
   setLiquidGlassBlur: (blur: number) => void;
   setLiquidGlassMode: (mode: LiquidGlassMode) => void;
+  setLiquidGlassTransparency: (value: number) => void;
   setIslandLiquidGlassEnabled: (enabled: boolean) => void;
   setBackgroundBlur: (blur: number) => void;
   setActivePresetIndex: (index: number) => void;
   setCarouselEnabled: (enabled: boolean) => void;
   setJellyBounceEnabled: (enabled: boolean) => void;
+  setJellyBounceStrength: (value: number) => void;
   setMrColorMode: (mode: MrColorMode) => void;
   setMrCustomColor: (color: string) => void;
 }
@@ -65,12 +72,15 @@ const BackgroundContext = createContext<BackgroundContextType>({
   liquidGlassEnabled: true,
   liquidGlassBlur: 1,
   liquidGlassMode: "normal",
+  liquidGlassTransparency: 100,
   islandLiquidGlassEnabled: false,
   backgroundBlur: 0,
   activePresetIndex: 0,
   presetBackgrounds: PRESET_BACKGROUNDS,
   carouselEnabled: false,
   jellyBounceEnabled: false,
+  jellyBounceStrength: 100,
+  jellyBounceActive: false,
   mrColorMode: "theme",
   mrCustomColor: "#FF214F",
   setBackgroundMode: () => {},
@@ -82,11 +92,13 @@ const BackgroundContext = createContext<BackgroundContextType>({
   setLiquidGlassEnabled: () => {},
   setLiquidGlassBlur: () => {},
   setLiquidGlassMode: () => {},
+  setLiquidGlassTransparency: () => {},
   setIslandLiquidGlassEnabled: () => {},
   setBackgroundBlur: () => {},
   setActivePresetIndex: () => {},
   setCarouselEnabled: () => {},
   setJellyBounceEnabled: () => {},
+  setJellyBounceStrength: () => {},
   setMrColorMode: () => {},
   setMrCustomColor: () => {},
 });
@@ -106,40 +118,34 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
   const [liquidGlassEnabled, setLiquidGlassEnabled] = useState(true);
   const [liquidGlassBlur, setLiquidGlassBlur] = useState(1);
   const [liquidGlassMode, setLiquidGlassMode] = useState<LiquidGlassMode>("normal");
+  const [liquidGlassTransparency, setLiquidGlassTransparency] = useState(100);
   const [islandLiquidGlassEnabled, setIslandLiquidGlassEnabled] = useState(false);
   const [backgroundBlur, setBackgroundBlur] = useState(0);
   const [activePresetIndex, setActivePresetIndex] = useState(0);
   const [carouselEnabled, setCarouselEnabled] = useState(false);
   const [jellyBounceEnabled, setJellyBounceEnabled] = useState(false);
+  const [jellyBounceStrength, setJellyBounceStrength] = useState(100);
+  const jellyBounceActive = jellyBounceEnabled && jellyBounceStrength > 0;
   const [mrColorMode, setMrColorModeState] = useState<MrColorMode>("theme");
   const [mrCustomColor, setMrCustomColorState] = useState<string>("#FF214F");
 
   const { colorMode } = useColorMode();
 
-  // 同步 Tooltip 样式到 CSS 变量：跟随液态玻璃开关与深浅主题，由 theme.ts 的 Tooltip baseStyle 消费。
-  // 液态玻璃开启 → 半透明 + 模糊；关闭 → 实心胶囊（不再是液态玻璃效果）。
   useEffect(() => {
-    const root = document.documentElement;
-    const glass = liquidGlassEnabled;
-    const isDark = colorMode === "dark";
-    const bg = glass
-      ? isDark ? "rgba(28,28,32,0.66)" : "rgba(255,255,255,0.55)"
-      : isDark ? "#262626" : "#ffffff";
-    const fg = isDark ? "#f0f0f0" : "#1a1a1a";
-    const border = glass
-      ? isDark ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.5)"
-      : isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.10)";
-    root.style.setProperty("--nexbox-tooltip-bg", bg);
-    root.style.setProperty("--nexbox-tooltip-fg", fg);
-    root.style.setProperty("--nexbox-tooltip-border", border);
-    root.style.setProperty("--nexbox-tooltip-blur", glass ? "blur(12px) saturate(1.4)" : "none");
-  }, [liquidGlassEnabled, colorMode]);
+    const root=document.documentElement;
+    root.style.setProperty('--framescope-real-glass-bg',realGlassBackground(colorMode,liquidGlassTransparency));
+    for(const [name,value] of Object.entries(jellyScales(jellyBounceStrength)))root.style.setProperty('--nexbox-jelly-'+name,String(value));
+    if(!jellyBounceActive){
+      document.body.classList.remove('jelly-bounce-active');
+      document.querySelectorAll('.jelly-bouncing').forEach(el=>el.classList.remove('jelly-bouncing'));
+    }
+  }, [colorMode,liquidGlassTransparency,jellyBounceStrength,jellyBounceActive]);
 
   useEffect(() => {
     async function loadSettings() {
       try {
         // 批量读取所有设置，减少 store IO 调用次数
-        const [savedMode, savedImages, savedActiveIndex, savedDynamicVideo, savedLiquidGlass, savedLiquidGlassBlur, savedLiquidGlassMode, savedIslandLiquidGlass, savedBgBlur, savedActivePreset, savedCarousel, savedJellyBounce, savedMrColorMode, savedMrCustomColor, hasLaunched] =
+        const [savedMode, savedImages, savedActiveIndex, savedDynamicVideo, savedLiquidGlass, savedLiquidGlassBlur, savedLiquidGlassMode, savedIslandLiquidGlass, savedBgBlur, savedActivePreset, savedCarousel, savedJellyBounce, savedMrColorMode, savedMrCustomColor, hasLaunched, savedTransparency, savedStrength] =
           await Promise.all([
             store.get<string>("background-mode"),
             store.get<string[]>("custom-bg-images"),
@@ -156,7 +162,12 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
             store.get<string>("mr-color-mode"),
             store.get<string>("mr-custom-color"),
             store.get<boolean>("has-launched"),
+            store.get<number>("liquid-glass-transparency"),
+            store.get<number>("jelly-bounce-strength"),
           ]);
+
+        setLiquidGlassTransparency(effectPercentage(savedTransparency,100));
+        setJellyBounceStrength(effectPercentage(savedStrength,200));
 
         // 兼容旧版 liquid-glass-enhanced 设置
         const savedLiquidGlassEnhanced = await store.get<boolean>("liquid-glass-enhanced");
@@ -333,6 +344,12 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     persist("liquid-glass-mode", mode);
   }, [persist]);
 
+  const setLiquidGlassTransparencyPersist = useCallback((value: number) => {
+    const normalized=effectPercentage(value,100);
+    setLiquidGlassTransparency(normalized);
+    persist("liquid-glass-transparency",normalized);
+  }, [persist]);
+
   const setIslandLiquidGlassEnabledPersist = useCallback((enabled: boolean) => {
     setIslandLiquidGlassEnabled(enabled);
     persist("island-liquid-glass-enabled", enabled);
@@ -358,6 +375,12 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     persist("jelly-bounce-enabled", enabled);
   }, [persist]);
 
+  const setJellyBounceStrengthPersist = useCallback((value: number) => {
+    const normalized=effectPercentage(value,200);
+    setJellyBounceStrength(normalized);
+    persist("jelly-bounce-strength",normalized);
+  }, [persist]);
+
   const setMrColorModePersist = useCallback((mode: MrColorMode) => {
     setMrColorModeState(mode);
     persist("mr-color-mode", mode);
@@ -374,26 +397,15 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
   const carouselTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (backgroundMode === "preset" && carouselEnabled) {
-      carouselTimerRef.current = setInterval(() => {
-        // 窗口最小化/隐藏到托盘时暂停轮播，降低后台 CPU 占用
-        if (document.hidden) return;
-        setActivePresetIndex((prev) => (prev + 1) % PRESET_BACKGROUNDS.length);
-      }, 10000);
-    } else {
-      if (carouselTimerRef.current) {
-        clearInterval(carouselTimerRef.current);
-        carouselTimerRef.current = null;
-      }
-    }
-
-    return () => {
-      if (carouselTimerRef.current) {
-        clearInterval(carouselTimerRef.current);
-        carouselTimerRef.current = null;
+    const update=()=>{
+      if(carouselTimerRef.current){clearInterval(carouselTimerRef.current);carouselTimerRef.current=null;}
+      if(backgroundMode==='preset'&&carouselEnabled&&uiActivity.getSnapshot()){
+        carouselTimerRef.current=setInterval(()=>setActivePresetIndex(previous=>(previous+1)%PRESET_BACKGROUNDS.length),10000);
       }
     };
-  }, [backgroundMode, carouselEnabled]);
+    const unlisten=uiActivity.subscribe(update);update();
+    return()=>{unlisten();if(carouselTimerRef.current){clearInterval(carouselTimerRef.current);carouselTimerRef.current=null;}};
+  }, [backgroundMode,carouselEnabled]);
 
   const addCustomBgImage = useCallback((image: string): boolean => {
     if (customBgImages.length >= MAX_BG_IMAGES) {
@@ -429,12 +441,15 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     liquidGlassEnabled,
     liquidGlassBlur,
     liquidGlassMode,
+    liquidGlassTransparency,
     islandLiquidGlassEnabled,
     backgroundBlur,
     activePresetIndex,
     presetBackgrounds: PRESET_BACKGROUNDS,
     carouselEnabled,
     jellyBounceEnabled,
+    jellyBounceStrength,
+    jellyBounceActive,
     mrColorMode,
     mrCustomColor,
     setBackgroundMode: setBackgroundModePersist,
@@ -446,14 +461,16 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
     setLiquidGlassEnabled: setLiquidGlassEnabledPersist,
     setLiquidGlassBlur: setLiquidGlassBlurPersist,
     setLiquidGlassMode: setLiquidGlassModePersist,
+    setLiquidGlassTransparency: setLiquidGlassTransparencyPersist,
     setIslandLiquidGlassEnabled: setIslandLiquidGlassEnabledPersist,
     setBackgroundBlur: setBackgroundBlurPersist,
     setActivePresetIndex: setActivePresetIndexPersist,
     setCarouselEnabled: setCarouselEnabledPersist,
     setJellyBounceEnabled: setJellyBounceEnabledPersist,
+    setJellyBounceStrength: setJellyBounceStrengthPersist,
     setMrColorMode: setMrColorModePersist,
     setMrCustomColor: setMrCustomColorPersist,
-  }), [backgroundMode, customBgImages, activeBgIndex, dynamicBgVideo, liquidGlassEnabled, liquidGlassBlur, liquidGlassMode, islandLiquidGlassEnabled, backgroundBlur, activePresetIndex, carouselEnabled, jellyBounceEnabled, mrColorMode, mrCustomColor, setBackgroundModePersist, setCustomBgImagesPersist, addCustomBgImage, removeCustomBgImage, setActiveBgIndexPersist, setDynamicBgVideoPersist, setLiquidGlassEnabledPersist, setLiquidGlassBlurPersist, setLiquidGlassModePersist, setIslandLiquidGlassEnabledPersist, setBackgroundBlurPersist, setActivePresetIndexPersist, setCarouselEnabledPersist, setJellyBounceEnabledPersist, setMrColorModePersist, setMrCustomColorPersist]);
+  }), [backgroundMode, customBgImages, activeBgIndex, dynamicBgVideo, liquidGlassEnabled, liquidGlassBlur, liquidGlassMode, liquidGlassTransparency, islandLiquidGlassEnabled, backgroundBlur, activePresetIndex, carouselEnabled, jellyBounceEnabled, jellyBounceStrength, jellyBounceActive, mrColorMode, mrCustomColor, setBackgroundModePersist, setCustomBgImagesPersist, addCustomBgImage, removeCustomBgImage, setActiveBgIndexPersist, setDynamicBgVideoPersist, setLiquidGlassEnabledPersist, setLiquidGlassBlurPersist, setLiquidGlassModePersist, setLiquidGlassTransparencyPersist, setIslandLiquidGlassEnabledPersist, setBackgroundBlurPersist, setActivePresetIndexPersist, setCarouselEnabledPersist, setJellyBounceEnabledPersist, setJellyBounceStrengthPersist, setMrColorModePersist, setMrCustomColorPersist]);
 
   return (
     <BackgroundContext.Provider value={value}>

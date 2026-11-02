@@ -15,6 +15,34 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub const PIPE_NAME: &str = "FrameScopeHardwareService";
+fn service_pipe_name()->Result<String,String>{
+    #[cfg(feature="uiaccess-acceptance")]
+    if let Ok(name)=std::env::var("FRAMESCOPE_OSD_ACCEPTANCE_PIPE"){
+        if !name.starts_with("FrameScopeHardwareService-qa-")||name.len()>120||!name.bytes().all(|c|c.is_ascii_alphanumeric()||c==b'-'){return Err("Invalid isolated OSD pipe".into());}
+        return Ok(name);
+    }
+    Ok(PIPE_NAME.into())
+}
+
+pub fn sanitized_diagnostic(hardware:&Value,overlay:&Value)->Value {
+    fn selected(value:&Value,keys:&[&str])->Value {
+        let mut result=serde_json::Map::new();
+        for key in keys {if let Some(value)=value.get(*key){result.insert((*key).into(),value.clone());}}
+        Value::Object(result)
+    }
+    let modules=hardware["memory"].as_array().into_iter().flatten().map(|m|selected(m,&["manufacturer","capacity_gb","memory_type","configured_clock_speed"])).collect::<Vec<_>>();
+    json!({"cpu":selected(&hardware["cpu"],&["name","manufacturer","cores","threads","max_clock_speed","current_clock_speed"]),
+        "frequency":selected(&overlay["cpu_frequency_info"],&["current_mhz","per_core_mhz","raw_core_mhz","raw_ratios","reported_average_mhz","reference_mhz","reference_source","source","quality","calculation","provider_version","vendor","family","model"]),"memory":modules,
+        "memory_runtime":selected(&hardware["memory_details"],&["status","source","captured_at_ms","memory_type","data_rate_mts","reference_mhz","channels"]),"memory_summary":hardware["memory_summary"],
+        "overlay":selected(overlay,&["cpu_clock","cpu_core_clocks","cpu_usage","cpu_temp","cpu_voltage","cpu_power"])})
+}
+
+#[cfg(test)]
+#[test]
+fn hardware_diagnostics_do_not_export_device_or_account_identifiers(){
+    let value=sanitized_diagnostic(&json!({"cpu":{"name":"CPU","processor_id":"SECRET"},"memory":[{"manufacturer":"Kingston","serial_number":"SECRET"}],"account":"SECRET","path":"SECRET"}),&json!({"cpu_clock":5250,"device_id":"SECRET"}));
+    let text=value.to_string();assert!(!text.contains("SECRET"));assert!(text.contains("Kingston")&&text.contains("5250"));
+}
 
 // Shared with the recorder. A request holds this installation-scoped mutex
 // until its pipe exchange ends; maintenance acquires it before stopping the
@@ -73,7 +101,7 @@ impl Drop for MaintenanceLease {
 pub(crate) fn begin_maintenance() -> Result<MaintenanceLease, String> {
     let (service, _) = backend_paths()?;
     let root = service.parent().ok_or("hardware installation root missing")?;
-    begin_maintenance_at(root, &service, PIPE_NAME, &CLIENT)
+    begin_maintenance_at(root, &service, &service_pipe_name()?, &CLIENT)
 }
 
 fn begin_maintenance_at(root: &std::path::Path, service: &std::path::Path,
@@ -214,6 +242,17 @@ struct PipeClient {
 static CLIENT: Mutex<Option<PipeClient>> = Mutex::new(None);
 static HALTING: AtomicBool = AtomicBool::new(false);
 static LAST_SPAWN: Mutex<Option<Instant>> = Mutex::new(None);
+static SPAWN_GATE: Mutex<bool> = Mutex::new(true);
+
+pub fn prevent_new_connections() {
+    *SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner()) = false;
+}
+
+pub fn cancel_shutdown() {
+    HALTING.store(false, Ordering::SeqCst);
+    set_poller_paused(false);
+    *SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner()) = true;
+}
 
 /// `FRAMESCOPE_BACKEND_DIR` overrides the directory holding
 /// FrameScopeHardwareService.exe / FrameScopeHardwareProvider.exe; otherwise
@@ -233,6 +272,12 @@ fn backend_paths() -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
 }
 
 fn spawn_service(service: &std::path::Path, helper: &std::path::Path) -> Result<(), String> {
+    // Serialize the final spawn decision with exit initiation. Existing pipe
+    // clients remain available for the recorder/report drain.
+    let allowed = SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    if !crate::windows_shutdown::may_start_process(!*allowed, crate::windows_shutdown::system_shutting_down()) {
+        return Err("hardware process start refused during shutdown".into());
+    }
     {
         let last = LAST_SPAWN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(last) = *last {
@@ -251,7 +296,7 @@ fn spawn_service(service: &std::path::Path, helper: &std::path::Path) -> Result<
     let mut command = std::process::Command::new(service);
     command
         .arg("--pipe-name")
-        .arg(PIPE_NAME)
+        .arg(service_pipe_name()?)
         .arg("--lhm-helper")
         .arg(helper);
     #[cfg(windows)]
@@ -261,10 +306,9 @@ fn spawn_service(service: &std::path::Path, helper: &std::path::Path) -> Result<
     }
     // A spawn racing a healthy instance just exits with a pipe-name clash;
     // either way the connect loop below settles it.
-    if let Ok(child) = command.spawn() {
-        #[cfg(windows)]
-        kill_child_when_host_dies(&child);
-    }
+    let child = command.spawn().map_err(|error| format!("hardware service spawn failed: {error}"))?;
+    #[cfg(windows)]
+    kill_child_when_host_dies(&child);
     Ok(())
 }
 
@@ -306,7 +350,7 @@ fn kill_child_when_host_dies(child: &std::process::Child) {
 
 fn open_pipe() -> Result<PipeClient, String> {
     let (service, _) = backend_paths()?;
-    open_pipe_at(PIPE_NAME, &service)
+    open_pipe_at(&service_pipe_name()?, &service)
 }
 
 fn open_pipe_at(pipe_name: &str, expected_service: &std::path::Path) -> Result<PipeClient, String> {
@@ -475,17 +519,17 @@ impl Drop for PipeClient {
 /// (clocks, fans, percents, VRAM GB). The service reports f64 for everything;
 /// the frontend keeps full precision while this feeds the native panel.
 pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
+    let supported=serde_json::to_value(crate::overlay_panel::OverlayHardwareData::default()).expect("GDI schema serialization");
     const INT_FIELDS: &[&str] = &[
-        "fps", "cpu_usage", "cpu_clock", "gpu_usage", "game_ping",
+        "fps", "cpu_usage", "gpu_usage", "game_ping",
         "cpu_fan_speed", "gpu_fan_speed", "gpu_power", "gpu_clock", "gpu_vram_used",
         "gpu_vram_total", "gpu_memory_clock",
         "net_time_offset_ms",
     ];
     if let Some(object) = overlay.as_object_mut() {
-        // Routing metadata belongs to the in-process snapshot, not the strict
-        // original GDI renderer contract.
-        object.remove("target_pid");
-        object.remove("timestamp_ms");
+        // The service may add optional diagnostics without changing the renderer.
+        // Project its production snapshot; keep fixture input validation strict.
+        object.retain(|key,_|supported.get(key).is_some());
         for field in INT_FIELDS {
             if let Some(value) = object.get_mut(*field) {
                 if let Some(number) = value.as_f64() {
@@ -496,9 +540,8 @@ pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
         if let Some(gpus) = object.get_mut("gpu_sensors").and_then(Value::as_array_mut) {
             for gpu in gpus {
                 if let Some(gpu_object) = gpu.as_object_mut() {
-                    // GPU identity is service routing metadata; the original
-                    // GDI renderer consumes only its sensor values and name.
-                    gpu_object.remove("identifier");
+                    let supported_gpu=serde_json::to_value(crate::overlay_panel::GpuSensorData::default()).expect("GDI GPU schema serialization");
+                    gpu_object.retain(|key,_|supported_gpu.get(key).is_some());
                     for field in ["usage", "fan_speed", "power", "clock", "memory_clock", "vram_used", "vram_total"] {
                         if let Some(value) = gpu_object.get_mut(field) {
                             if let Some(number) = value.as_f64() {
@@ -570,6 +613,9 @@ fn call_with_client(
 }
 
 fn connect_service() -> Result<PipeClient, String> {
+    if !*SPAWN_GATE.lock().unwrap_or_else(|p| p.into_inner()) {
+        return Err("hardware client is draining for shutdown".into());
+    }
     let (service, helper) = backend_paths()?;
     spawn_service(&service, &helper)?;
     let mut last_error = String::new();

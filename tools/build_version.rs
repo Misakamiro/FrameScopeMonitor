@@ -1,6 +1,12 @@
 // Shared by the app and custom installer. VERSION remains authoritative.
 pub fn emit(root: &str) {
     let root = std::path::Path::new(root);
+    let edition=std::fs::read_to_string(root.join("EDITION")).unwrap_or_else(|_|"offline".into());
+    let edition=edition.trim();
+    assert!(matches!(edition,"offline"|"full"),"Invalid EDITION");
+    println!("cargo:rerun-if-changed={}",root.join("EDITION").display());
+    println!("cargo:rustc-env=FRAMESCOPE_EDITION={edition}");
+    println!("cargo:rerun-if-env-changed=FRAMESCOPE_ACCOUNT_ORIGIN");
     println!("cargo:rerun-if-changed={}", root.join("VERSION").display());
     let version = std::fs::read_to_string(root.join("VERSION")).expect("VERSION missing");
     let version = version.trim();

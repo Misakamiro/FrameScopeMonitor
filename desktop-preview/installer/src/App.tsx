@@ -77,8 +77,13 @@ export default function App() {
 
   const browse = useCallback(async () => {
     const picked = await open({ directory: true, multiple: false, title: "选择安装目录" });
-    if (typeof picked === "string") setTargetDir(picked);
-  }, []);
+    if (typeof picked === "string") {
+      const directory = picked.replace(/[\\/]+$/, "");
+      const current = existing?.install_path.replace(/[\\/]+$/, "");
+      setTargetDir(directory.toLowerCase() === current?.toLowerCase() || /(?:^|[\\/])framescope$/i.test(directory)
+        ? picked : `${directory}\\FrameScope`);
+    }
+  }, [existing]);
 
   const runInstall = useCallback(async () => {
     setPhase("working");

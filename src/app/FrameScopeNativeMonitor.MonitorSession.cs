@@ -112,6 +112,8 @@ internal static partial class FrameScopeNativeMonitor
                     throw new InvalidOperationException("Reserved run directory is missing its ownership marker.");
             }
             paths = CreateMonitorSessionPaths(runDirectory);
+            try { FrameScopeHardwareServiceClient.SaveInventorySnapshot(runDirectory); }
+            catch { WriteFrameScopeLog("hardware-inventory-snapshot-unavailable"); }
             var presentMonSessionName = FrameScopePresentMonSessionPolicy.CreateSessionName(
                 prefix,
                 Process.GetCurrentProcess().Id,
@@ -538,7 +540,7 @@ internal static partial class FrameScopeNativeMonitor
                     // Read between publications too, so a bounded parser slice
                     // can catch up without waiting another full second.
                     liveFrameStats.ReadAvailable();
-                    if ((now - lastLiveStats).TotalSeconds >= 1) {
+                    if ((now - lastLiveStats).TotalMilliseconds >= FrameScopeFrameStatistics.UpdateMs) {
                         selectCapture(false);
                         liveFrameStats.Publish(paths.RunDir, Process.GetCurrentProcess().Id,
                             presentMonExitedEarly || File.Exists(paths.PresentMonCsv + ".capture-error.txt") ? "unavailable" : "capturing", false);
@@ -571,9 +573,8 @@ internal static partial class FrameScopeNativeMonitor
                     }
 
                     sampleIndex++;
-                    // Live FPS/Low expires after 3s; publication must not wait
-                    // for a configured 3s control interval plus its I/O jitter.
-                    var remainingMs = Math.Min(controlPollIntervalMs, 1000);
+                    // The statistics-v2 window is 1s; publish on its 100ms cadence.
+                    var remainingMs = Math.Min(controlPollIntervalMs, (int)FrameScopeFrameStatistics.UpdateMs);
                     if (!captureUntilTargetExit)
                     {
                         remainingMs = Math.Max(1, Math.Min(remainingMs, (int)Math.Max(1, (captureDeadline - DateTime.Now).TotalMilliseconds)));
@@ -844,6 +845,7 @@ internal static partial class FrameScopeNativeMonitor
         }
         finally
         {
+            if (paths!=null) FrameScopeHardwareServiceClient.WaitInventorySnapshot(paths.RunDir);
             if (runtimeBackup != null) {
                 if (!ProcessExited(runtimeBackup)) RequestPresentMonStopWithTargetedFallback(runtimeBackupExecutable, runtimeBackupSession);
                 StopMonitorChild(runtimeBackup, 3000, true);

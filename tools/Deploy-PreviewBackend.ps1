@@ -1,4 +1,4 @@
-﻿# Deploy only the requested preview installation after identity-bound normal shutdown.
+# Deploy only the requested preview installation after identity-bound normal shutdown.
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$TargetDirectory,

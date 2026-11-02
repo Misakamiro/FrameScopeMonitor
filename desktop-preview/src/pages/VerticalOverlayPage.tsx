@@ -10,7 +10,7 @@
  * - 数值颜色渐变（绿→黄→红）
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -179,7 +179,7 @@ function getItemValue(item: DisplayItemConfig, data: HardwareData | null): strin
     case "cpu_usage":
       return data.cpu_usage != null ? `${data.cpu_usage}%` : "--";
     case "cpu_clock":
-      return data.cpu_clock != null ? `${data.cpu_clock}MHz` : "--";
+      return data.cpu_clock != null ? `${Math.round(data.cpu_clock)}MHz` : "--";
     case "cpu_voltage":
       return data.cpu_voltage != null ? `${data.cpu_voltage.toFixed(2)}V` : "--";
     case "cpu_power":
@@ -296,57 +296,21 @@ export default function VerticalOverlayPage() {
   const [hardwareData, setHardwareData] = useState<HardwareData | null>(null);
   const [settings, setSettings] = useState<OverlaySettings>(DEFAULT_SETTINGS);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [listenersReady, setListenersReady] = useState(false);
+  const [inputReady, setInputReady] = useState(false);
   // 每秒 tick：驱动时间显示刷新
   const [, setTick] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const generation = useRef((window as Window & { __FRAMESCOPE_OVERLAY_GENERATION__?: number }).__FRAMESCOPE_OVERLAY_GENERATION__ ?? 0).current;
+  const readySent = useRef(false);
+  const mounted = useRef(true);
+  const layoutRevision = useRef(0);
+  const lastLayout = useRef("");
+  const stopDrag = useRef<(() => void) | null>(null);
   const win = getCurrentWindow();
-  // 记录拖动过程中的最新窗口位置，避免 startDragging 返回后读取到旧坐标
-  const movedPosRef = useRef<{ x: number; y: number } | null>(null);
-  const lastSaveRef = useRef(0);
-  // 移动停止后的兜底保存定时器（拖动结束 → 立即关闭时防止最后一次位置丢失）
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 原生 WM_EXITSIZEMOVE 保存手动拖动的位置；显示模式变化产生的
+  // Moved 事件不能覆盖用户的定位基准。
 
-  // 保存竖排悬浮框位置：Rust 端负责更新内存并写入 settings.json（仅更新位置字段、保留其他键），
-  // 主应用通过 overlay-position-saved 事件同步共享 store。
-  // 这里不再直接写 LazyStore：独立窗口的 store 缓存可能过期，整体写回会覆盖主应用的其他设置。
-  const persistPosition = useCallback(async (x: number, y: number) => {
-    try {
-      await invoke("save_vertical_overlay_position", { x, y });
-    } catch (e) {
-      console.error("Failed to save vertical overlay position:", e);
-    }
-  }, []);
-
-  // 监听窗口移动，拖动过程中实时保存位置（节流），保证不依赖 startDragging 结束后的捕获
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      unlisten = await win.onMoved(({ payload }) => {
-        movedPosRef.current = { x: payload.x, y: payload.y };
-        const now = Date.now();
-        if (now - lastSaveRef.current > 300) {
-          lastSaveRef.current = now;
-          persistPosition(payload.x, payload.y);
-        }
-        // 移动停止约 200ms 后兜底保存最终位置（配合 Rust 端关闭时保存，双保险）
-        if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = setTimeout(() => {
-          flushTimerRef.current = null;
-          const pos = movedPosRef.current;
-          if (pos) persistPosition(pos.x, pos.y);
-        }, 200);
-      });
-    })();
-    return () => {
-      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
-      unlisten?.();
-    };
-  }, [win, persistPosition]);
-
-  // 设置完成首次绘制后再显示窗口，避免默认透明度先闪一帧。
-  useEffect(() => {
-    if (settingsLoaded) invoke("vertical_overlay_ready");
-  }, [settingsLoaded]);
 
   // 每秒刷新（驱动时间显示）
   useEffect(() => {
@@ -358,9 +322,12 @@ export default function VerticalOverlayPage() {
   useLayoutEffect(() => {
     const html = document.documentElement;
     html.dataset.overlayWindow = "vertical";
+    mounted.current = true;
 
     return () => {
       delete html.dataset.overlayWindow;
+      mounted.current = false;
+      stopDrag.current?.();
     };
   }, []);
 
@@ -368,7 +335,8 @@ export default function VerticalOverlayPage() {
   useEffect(() => {
     let disposed = false;
     let receivedUpdate = false;
-    let unlisten: UnlistenFn | undefined;
+    let registered = false;
+    const stops: UnlistenFn[] = [];
     (async () => {
       try {
         const stop = await listen<OverlaySettings>("vertical-overlay-settings", (event) => {
@@ -378,47 +346,72 @@ export default function VerticalOverlayPage() {
           setSettingsLoaded(true);
         });
         if (disposed) { stop(); return; }
-        unlisten = stop;
+        stops.push(stop);
+        const stopData = await listen<HardwareData>("vertical-overlay-data", event => {
+          if (!disposed) setHardwareData(event.payload);
+        });
+        if (disposed) { stopData(); return; }
+        stops.push(stopData);
+        registered = true;
+        setListenersReady(true);
         const stored = await invoke<OverlaySettings>("get_overlay_current_settings");
         if (!disposed && !receivedUpdate) setSettings(stored);
-      } catch {
-        // 使用默认设置
+      } catch (error) {
+        if (!disposed && (!receivedUpdate || !registered)) {
+          console.error("Vertical overlay bootstrap failed:", error);
+          void invoke("vertical_overlay_ready", { generation, error: "settings-or-listener" }).catch(() => {});
+          return;
+        }
       }
       if (!disposed) setSettingsLoaded(true);
     })();
     return () => {
       disposed = true;
-      unlisten?.();
+      stops.forEach(stop => stop());
     };
-  }, []);
-
-  // 监听硬件数据
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-    (async () => {
-      unlisten = await listen<HardwareData>("vertical-overlay-data", (event) => {
-        setHardwareData(event.payload);
-      });
-    })();
-    return () => { unlisten?.(); };
-  }, []);
+  }, [generation]);
 
   // 默认开启鼠标穿透
   useEffect(() => {
-    invoke("set_vertical_overlay_click_through", { enabled: true }).catch(() => {});
-  }, []);
+    let disposed = false;
+    invoke("set_vertical_overlay_click_through", { enabled: true, generation }).then(() => {
+      if (!disposed) setInputReady(true);
+    }).catch((error) => {
+      if (disposed) return;
+      console.error("Vertical overlay input initialization failed:", error);
+      void invoke("vertical_overlay_ready", { generation, error: "input" }).catch(() => {});
+    });
+    return () => { disposed = true; };
+  }, [generation]);
 
   // 窗口大小自适应：每次渲染后同步调整，确保绘制前窗口尺寸正确
   useLayoutEffect(() => {
+    if (!settingsLoaded || !listenersReady || !inputReady) return;
     const el = containerRef.current;
     if (!el) return;
     // 用 requestAnimationFrame 确保 DOM 布局已稳定
-    requestAnimationFrame(() => {
+    const revision = ++layoutRevision.current;
+    const frame = requestAnimationFrame(async () => {
       const height = el.scrollHeight;
-      if (height > 0) {
-        invoke("resize_vertical_overlay", { height }).catch(() => {});
+      if (height <= 0) return;
+      const key = `${settings.item_width}:${height}`;
+      if (lastLayout.current === key && readySent.current) return;
+      lastLayout.current = key;
+      try {
+        await invoke("resize_vertical_overlay", { height, generation });
+        if (!mounted.current || revision !== layoutRevision.current) return;
+        if (!readySent.current) {
+          await invoke("vertical_overlay_ready", { generation });
+          if (mounted.current) readySent.current = true;
+        }
+      } catch (error) {
+        if (mounted.current && revision === layoutRevision.current && !readySent.current) {
+          console.error("Vertical overlay layout failed:", error);
+          void invoke("vertical_overlay_ready", { generation, error: "layout" }).catch(() => {});
+        }
       }
     });
+    return () => { cancelAnimationFrame(frame); };
   });
 
   // 计算启用的项
@@ -462,22 +455,16 @@ export default function VerticalOverlayPage() {
         e.preventDefault();
         // 发起 OS 级拖动（不依赖其返回时机，避免读到拖动前位置）
         win.startDragging().catch(() => {});
-        // 拖动结束后（mouseup）保存最终位置
-        const handleUp = async () => {
+        // 拖动结束后恢复鼠标穿透
+        stopDrag.current?.();
+        const handleUp = () => {
           window.removeEventListener("mouseup", handleUp);
-          try {
-            const pos = movedPosRef.current ?? (await win.outerPosition());
-            if (pos) {
-              await persistPosition(pos.x, pos.y);
-            }
-          } catch (err) {
-            console.error("Failed to save vertical overlay position:", err);
-          } finally {
-            // 无论是否出错都恢复鼠标穿透，避免面板卡在可拖动状态
-            invoke("set_vertical_overlay_click_through", { enabled: true }).catch(() => {});
-          }
+          stopDrag.current = null;
+          // 最终物理位置由原生拖动结束消息记录，恢复鼠标穿透即可。
+          invoke("set_vertical_overlay_click_through", { enabled: true, generation }).catch(() => {});
         };
         window.addEventListener("mouseup", handleUp, { once: true });
+        stopDrag.current = () => window.removeEventListener("mouseup", handleUp);
       }}
     >
       {!settingsLoaded ? (

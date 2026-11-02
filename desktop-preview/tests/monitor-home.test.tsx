@@ -9,7 +9,7 @@ const fixture = vi.hoisted(() => ({ state: {
 vi.mock("@chakra-ui/react", async () => {
   const { createElement } = await import("react");
   const component = ({ children }: any) => createElement("div", null, children);
-  return Object.fromEntries(["Box","Text","Flex","HStack","VStack","Button","Badge","Progress","SimpleGrid"].map(name => [name, component]));
+  return {...Object.fromEntries(["Box","Text","Flex","HStack","VStack","Button","Badge","Progress","SimpleGrid"].map(name => [name, component])),useColorMode:()=>({colorMode:'light'})};
 });
 vi.mock("@/components/special/custom-select", () => ({ CustomSelect: () => { throw new Error("Home monitoring must not expose a game picker"); } }));
 vi.mock("@/components/special/liquid-glass-card", async () => {

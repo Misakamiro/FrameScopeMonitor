@@ -54,7 +54,7 @@ export default function TargetsPage() {
       : await run("target.add", { name: editing.name ?? "", executable: editing.executable ?? "", enabled: editing.enabled });
     if (ok) close();
   };
-  return <Box pt={8}>
+  return <Box id="search-targets" pt={8}>
     <HStack justify="space-between" mb={6}>
       <Heading size="lg" color={color.text} textShadow={color.shadow}>监控目标</Heading>
       <Button leftIcon={<Plus size={16} />} colorScheme="teal" size="sm" isDisabled={busy || syncing}

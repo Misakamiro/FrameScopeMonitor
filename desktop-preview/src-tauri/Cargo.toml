@@ -1,11 +1,15 @@
 [package]
 name = "framescope-ui-preview"
-version = "2.0.0"
+version = "2.1.2"
 description = "FrameScope - local game performance monitor"
 edition = "2021"
 license = "GPL-3.0"
 
 [workspace]
+
+[profile.release]
+debug = 0
+strip = "symbols"
 
 [features]
 uiaccess-acceptance = []
@@ -18,7 +22,7 @@ path = "src/lib.rs"
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
-tauri = { version = "2.10", features = ["tray-icon", "protocol-asset", "devtools", "image-png"] }
+tauri = { version = "2.10", features = ["tray-icon", "protocol-asset", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
@@ -30,10 +34,13 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 log = "0.4"
 chrono = "0.4"
 sha2 = "0.10"
+base64 = "0.22"
+flate2 = "1"
 sysinfo = "0.30"
 framescope-update = { path = "../../src/updater" }
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "=0.38.2"
 windows = { version = "0.61.3", features = ["Win32_System_Com", "Win32_UI_Shell"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
@@ -42,6 +49,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_Graphics_Gdi",
   "Win32_Graphics_GdiPlus",
   "Win32_Security",
+  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_IO",
   "Win32_System_Environment",
@@ -53,6 +61,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Registry",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_HiDpi",
+  "Win32_UI_Shell",
   "Win32_System_LibraryLoader"
 ] }
 

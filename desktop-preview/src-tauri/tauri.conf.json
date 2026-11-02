@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FrameScope",
   "mainBinaryName": "FrameScope",
-  "version": "2.0.0",
+  "version": "2.1.2",
   "identifier": "com.framescope.ui-preview",
   "build": {
     "devUrl": "http://127.0.0.1:1430",
@@ -23,13 +23,17 @@
       }
     ],
     "security": {
+      "dangerousDisableAssetCspModification": ["style-src"],
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$HOME/**"
+          "$RESOURCE/**",
+          "$HOME/**/*.png", "$HOME/**/*.jpg", "$HOME/**/*.jpeg", "$HOME/**/*.webp", "$HOME/**/*.gif", "$HOME/**/*.bmp",
+          "$HOME/**/*.mp4", "$HOME/**/*.webm", "$HOME/**/*.mov"
         ]
       },
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: https:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob: https:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'",
+      "devCsp": null
     }
   },
   "bundle": {

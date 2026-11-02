@@ -14,7 +14,7 @@ import {
   useDisclosure,
   Tooltip,
 } from "@chakra-ui/react";
-import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
+import { useAdaptiveTextColor, useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 import { useAppStartup } from "@/contexts/app-startup-context";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
@@ -309,16 +309,16 @@ export default function HardwarePage() {
   const { isOpen: isPawnioModalOpen, onOpen: onPawnioModalOpen, onClose: onPawnioModalClose } = useDisclosure();
   
   const cardBg = useColorModeValue("white", "#111111");
-  const headingColor = useColorModeValue("gray.900", "#ffffff");
-  const textColor = useColorModeValue("gray.800", "#ffffff");
-  const subTextColor = useColorModeValue("gray.500", "#ffffff");
+  const headingColor = useGlassTextColor("gray.900", "#ffffff");
+  const textColor = useGlassTextColor("gray.800", "#ffffff");
+  const subTextColor = useGlassTextColor("gray.500", "#ffffff");
   const btnBorderColor = useColorModeValue("gray.300", "#333333");
 
   // 顶栏悬浮按钮：半透明胶囊底（与全局搜索同思路），保证亮/暗背景上都可读
-  const floatBtnBg = useColorModeValue("rgba(255,255,255,0.6)", "rgba(28,28,32,0.55)");
-  const floatBtnBgHover = useColorModeValue("rgba(255,255,255,0.85)", "rgba(28,28,32,0.75)");
-  const floatBtnBorder = useColorModeValue("rgba(0,0,0,0.14)", "rgba(255,255,255,0.2)");
-  const floatBtnText = useColorModeValue("gray.800", "#f0f0f0");
+  const floatBtnBg = 'var(--framescope-control-bg)';
+  const floatBtnBgHover = 'var(--framescope-control-bg)';
+  const floatBtnBorder = 'var(--framescope-control-border)';
+  const floatBtnText = 'var(--framescope-control-fg)';
   const floatBtnStyle = {
     bg: floatBtnBg,
     borderColor: floatBtnBorder,
@@ -392,8 +392,8 @@ export default function HardwarePage() {
       value: `${hardwareInfo.cpu.cores} ${t("hardware.cores")} ${hardwareInfo.cpu.threads} ${t("hardware.threads")}`,
     },
     {
-      name: t("hardware.baseClock"),
-      value: `${(hardwareInfo.cpu.max_clock_speed / 1000).toFixed(1)} GHz`,
+      name: t("hardware.currentClock"),
+      value: hardwareInfo.cpu.current_clock_speed!=null?`${(hardwareInfo.cpu.current_clock_speed / 1000).toFixed(2)} GHz`:"--",
     },
     {
       name: t("hardware.l3Cache"),
@@ -457,9 +457,9 @@ export default function HardwarePage() {
     { label: t("hardware.cores"), value: `${cpu.cores}` },
     { label: t("hardware.threads"), value: `${cpu.threads}` },
     { label: t("hardware.enabledCores") || "已启用核心", value: cpu.enabled_cores ? `${cpu.enabled_cores}` : "--" },
-    { label: t("hardware.baseClock"), value: `${(cpu.max_clock_speed / 1000).toFixed(1)} GHz` },
-    { label: t("hardware.currentClock") || "当前频率", value: cpu.current_clock_speed ? `${(cpu.current_clock_speed / 1000).toFixed(1)} GHz` : "--" },
-    { label: t("hardware.extClock") || "外频(Bus)", value: cpu.ext_clock ? `${cpu.ext_clock} MHz` : "--" },
+    { label: "标称最大频率", value: `${(cpu.max_clock_speed / 1000).toFixed(2)} GHz` },
+    { label: t("hardware.currentClock") || "当前频率", value: cpu.current_clock_speed!=null ? `${(cpu.current_clock_speed / 1000).toFixed(2)} GHz` : "--" },
+    { label: "外频（WMI 参考）", value: cpu.ext_clock ? `${cpu.ext_clock} MHz` : "--" },
     { label: t("hardware.l2Cache"), value: cpu.l2_cache_size > 0 ? `${(cpu.l2_cache_size / 1024).toFixed(1)} MB` : "--" },
     { label: t("hardware.l3Cache"), value: cpu.l3_cache_size > 0 ? `${(cpu.l3_cache_size / 1024).toFixed(1)} MB` : "--" },
     { label: t("hardware.family") || "系列", value: cpu.family > 0 ? `${cpu.family}` : "--" },
@@ -658,7 +658,7 @@ export default function HardwarePage() {
   };
 
   return (
-    <Box pt={8}>
+    <Box id="search-hardware" pt={8}>
       <HStack justify="space-between" mb={6}>
         <Heading size="lg" color={adaptiveTitle.text} textShadow={adaptiveTitle.shadow}>
           {t("hardware.title")}
@@ -916,7 +916,7 @@ export default function HardwarePage() {
         title={detailCard?.title || ""}
         icon={detailCard?.icon || Cpu}
         type={detailCard?.type || "cpu"}
-        specs={detailCard?.specs || []}
+        specs={detailCard?.type==="cpu"&&hardwareInfo?buildCpuSpecs(hardwareInfo.cpu):(detailCard?.specs || [])}
       />
 
       {/* PawnIO 安装对话框 */}

@@ -1,4 +1,4 @@
-﻿param([string]$RepoRoot = (Split-Path -Parent $PSScriptRoot))
+param([string]$RepoRoot = (Split-Path -Parent $PSScriptRoot))
 $ErrorActionPreference = 'Stop'
 $owned = Join-Path ([IO.Path]::GetTempPath()) ('framescope-isolation-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $owned | Out-Null

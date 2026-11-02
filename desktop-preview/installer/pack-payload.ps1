@@ -1,4 +1,4 @@
-﻿# Packs the app payload (main exe + staged resources) into the installer's
+# Packs the app payload (main exe + staged resources) into the installer's
 # embedded payload.zip. Requires the main app to be built and staged first —
 # run tools/Package-Installer.ps1 (or at least its staging section) before
 # this script if src-tauri/target/release/FrameScope.exe is missing.
@@ -67,7 +67,7 @@ function Get-PayloadGitOutput([string]$Arguments) {
     } finally { $process.Dispose() }
 }
 function Get-PayloadInputs([string]$Root) {
-    $pathspecs = 'build.ps1 tools packaging src assets VERSION dependencies.lock.json native-packages.lock.json PRIVACY.md THIRD-PARTY-NOTICES.md ' +
+    $pathspecs = 'build.ps1 tools packaging src assets VERSION EDITION dependencies.lock.json native-packages.lock.json PRIVACY.md THIRD-PARTY-NOTICES.md ' +
         'desktop-preview/src desktop-preview/public desktop-preview/package.json desktop-preview/package-lock.json desktop-preview/index.html ' +
         'desktop-preview/vite.config.ts desktop-preview/tsconfig* desktop-preview/LICENSE desktop-preview/LICENSE.EXTRA ' +
         'desktop-preview/src-tauri/src desktop-preview/src-tauri/vendor desktop-preview/src-tauri/capabilities desktop-preview/src-tauri/icons ' +

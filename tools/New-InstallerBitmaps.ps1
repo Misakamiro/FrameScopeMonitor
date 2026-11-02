@@ -1,4 +1,4 @@
-﻿
+
 # Generates the FrameScope-branded NSIS bitmaps (24-bit BMP as required by
 # MUI2): a 164x314 welcome/finish sidebar and a 150x57 header, plus the
 # full-bleed wizard art (welcome + finish) stretched by the BgImage plugin.

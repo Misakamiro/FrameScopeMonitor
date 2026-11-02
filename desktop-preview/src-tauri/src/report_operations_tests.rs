@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+#[ignore = "explicit isolated copies of existing reports; never writes original runs"]
+fn regenerate_canonical_report_paths_with_real_generator() {
+    let root=PathBuf::from(std::env::var("FRAMESCOPE_REPORT_REGEN_BACKEND").expect("isolated backend required"));
+    let runs=std::env::var("FRAMESCOPE_REPORT_REGEN_RUNS").expect("isolated run list required");
+    for path in runs.split(';') {
+        let run=PathBuf::from(path).canonicalize().unwrap();
+        assert!(run.to_string_lossy().to_lowercase().contains("fs-build\\b203\\report-glass-fixtures\\"));
+        let raw=std::fs::read(run.join("presentmon.csv")).ok();
+        let result=report_regeneration_scope(||regenerate_report_with_root(&root,&run,std::time::Duration::from_secs(120)));
+        assert!(result.is_ok(),"{}: {result:?}",run.display());
+        assert_eq!(raw,std::fs::read(run.join("presentmon.csv")).ok());
+        println!("CANONICAL_REPORT_REGENERATION_PASSED {}",run.display());
+    }
+}
+
+#[test]
 #[ignore = "explicit compiled disposable controlled report executable; never uses production roots"]
 fn regeneration_process_failures_publish_retryable_terminal_state() {
     let helper = PathBuf::from(std::env::var("FRAMESCOPE_CONTROLLED_REPORT_EXE").expect("explicit compiled fixture required"));

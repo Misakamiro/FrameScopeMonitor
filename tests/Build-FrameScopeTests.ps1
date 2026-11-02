@@ -35,6 +35,9 @@ function Invoke-TestBuild {
     $args += (Join-Path $root 'src\core\FrameScopeJsonFile.cs')
     $args += (Join-Path $testRoot 'FrameScopeTestPaths.cs')
     $args += $buildMetadata
+    if (@($Sources | Where-Object { $_ -like '*FrameScopeLiveFrameStats.cs' }).Count) {
+        $args += (Join-Path $root 'src\core\FrameScopeFrameStatistics.cs')
+    }
     foreach ($source in $Sources) {
         $args += (Join-Path $root $source)
     }
@@ -51,8 +54,27 @@ function Invoke-TestBuild {
 }
 
 Invoke-TestBuild `
+    -OutputName 'FrameScopeInventorySnapshotTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\monitoring\FrameScopeHardwareServiceClient.cs', 'tests\FrameScopeInventorySnapshotTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeHardwareShutdownTests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\monitoring\FrameScopeHardwareServiceClient.cs', 'tests\FrameScopeHardwareShutdownTests.cs')
+
+Invoke-TestBuild `
     -OutputName 'FrameScopeJsonFileTests.exe' `
     -Sources @('tests\FrameScopeJsonFileTests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeStatisticsV2Tests.exe' `
+    -References @('System.Web.Extensions.dll') `
+    -Sources @('src\core\FrameScopeLiveFrameStats.cs', 'tests\FrameScopeStatisticsV2Tests.cs')
+
+Invoke-TestBuild `
+    -OutputName 'FrameScopeFullInstallerTests.exe' `
+    -Sources @('packaging\FrameScopeFullInstaller.Core.cs', 'tests\FrameScopeFullInstallerTests.cs')
 
 Invoke-TestBuild `
     -OutputName 'FrameScopeHardwareProviderTruthTests.exe' `
@@ -352,6 +374,11 @@ Invoke-TestBuild `
     -MainType 'FrameScopeHardwareSnapshotTests' `
     -References @('System.Management.dll', 'System.Web.Extensions.dll') `
     -Sources @('src\app\FrameScopeHardwareProvider.cs', 'tests\FrameScopeHardwareSnapshotTests.cs')
+Invoke-TestBuild `
+    -OutputName 'FrameScopeUninstallerSafetyTests.exe' `
+    -MainType 'FrameScopeUninstallerSafetyTests' `
+    -References @('System.Web.Extensions.dll', 'System.Management.dll', 'System.Windows.Forms.dll') `
+    -Sources @('packaging\FrameScopeInstallationShutdown.cs', 'src\core\FrameScopeWatcherShutdown.cs', 'packaging\FrameScopeUninstaller.cs', 'tests\FrameScopeUninstallerSafetyTests.cs')
 Invoke-TestBuild `
     -OutputName 'FrameScopeInstallationShutdownTests.exe' `
     -MainType 'FrameScopeInstallationShutdownTests' `

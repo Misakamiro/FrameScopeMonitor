@@ -3,6 +3,13 @@ const native=vi.hoisted(()=>vi.fn());
 vi.mock("../src/preview/runtime/platform",()=>({nativeOperation:native,isDesktop:()=>true}));
 import { updateAction } from "../src/lib/update-api";
 describe("native update boundary",()=>{
+  it("passes painted UI confirmation through the update parameter boundary",async()=>{
+    await updateAction("update_ready",{ui_ready:true});
+    expect(native).toHaveBeenLastCalledWith("update_ready",{ui_ready:true});
+    await expect(updateAction("update_ready",{ui_ready:true,path:"C:/other"})).rejects.toThrow();
+    await expect(updateAction("update_ready",{ui_ready:false})).rejects.toThrow();
+    await expect(updateAction("update_ready")).rejects.toThrow();
+  });
   it("sends release identity only for download and installation",async()=>{
     await updateAction("update_download",{release_id:42});
     expect(native).toHaveBeenLastCalledWith("update_download",{release_id:42});

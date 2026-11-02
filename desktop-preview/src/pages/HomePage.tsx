@@ -1,4 +1,5 @@
-import { Box, Text, Flex, HStack, VStack, Button, Badge, Progress, SimpleGrid } from "@chakra-ui/react";
+import { Box, Text, Flex, HStack, VStack, Button, Badge, Progress, SimpleGrid, useColorMode } from "@chakra-ui/react";
+import { useBackground } from "@/contexts/background-context";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { useNavigate } from "react-router-dom";
 import {
@@ -18,13 +19,16 @@ interface InfoRow {
   value: string;
 }
 
+const clearHomeText = { color: "var(--framescope-surface-fg)" };
+
 // Same card composition and row style as HardwarePage's DetailCard, rebuilt on the
 // shared LiquidGlassCard so the home grid follows NexBox visual rules.
-function HardwareSection({ icon: Icon, iconColor, title, rows }: {
+function HardwareSection({ icon: Icon, iconColor, title, rows, readable }: {
   icon: React.ElementType;
   iconColor: string;
   title: string;
   rows: InfoRow[];
+  readable: boolean;
 }) {
   if (rows.length === 0) return null;
   return (
@@ -32,13 +36,13 @@ function HardwareSection({ icon: Icon, iconColor, title, rows }: {
       <VStack align="start" spacing={3}>
         <HStack spacing={2}>
           <Icon size={18} color={iconColor} />
-          <Text fontSize="md" fontWeight="bold">{title}</Text>
+          <Text fontSize="md" fontWeight="bold" sx={readable ? clearHomeText : undefined}>{title}</Text>
         </HStack>
         <VStack align="stretch" spacing={1.5} width="full">
           {rows.map((row) => (
             <HStack key={row.name} justify="space-between" width="full" spacing={3}>
-              <Text fontSize="sm" opacity={0.72} noOfLines={1} flexShrink={0} maxW="35%">{row.name}</Text>
-              <Text fontSize="sm" isTruncated textAlign="right" flex={1} title={row.value}>{row.value}</Text>
+              <Text fontSize="sm" opacity={readable ? 1 : 0.72} sx={readable ? clearHomeText : undefined} noOfLines={1} flexShrink={0} maxW="35%">{row.name}</Text>
+              <Text fontSize="sm" sx={readable ? clearHomeText : undefined} isTruncated textAlign="right" flex={1} title={row.value}>{row.value}</Text>
             </HStack>
           ))}
         </VStack>
@@ -57,7 +61,7 @@ function buildHardwareSections(hardware: HardwareInfo): Array<{
       rows: [
         { name: "型号", value: hardware.cpu.name || "--" },
         { name: "核心 / 线程", value: `${hardware.cpu.cores} 核 / ${hardware.cpu.threads} 线程` },
-        { name: "最大频率", value: `${(hardware.cpu.max_clock_speed / 1000).toFixed(1)} GHz` },
+        { name: "当前频率", value: hardware.cpu.current_clock_speed!=null?`${(hardware.cpu.current_clock_speed / 1000).toFixed(2)} GHz`:"--" },
         { name: "三级缓存", value: `${(hardware.cpu.l3_cache_size / 1024).toFixed(0)} MB` },
         { name: "架构", value: hardware.cpu.architecture || "--" },
       ],
@@ -136,6 +140,9 @@ function buildHardwareSections(hardware: HardwareInfo): Array<{
 // sit beside them as secondary cards (layout decided by the owner, 2026-09-07).
 export default function HomePage() {
   const color = useAdaptiveTextColor();
+  const { colorMode } = useColorMode();
+  const { backgroundMode, liquidGlassEnabled, liquidGlassMode } = useBackground();
+  const readable = colorMode === 'dark' && backgroundMode === 'preset' && liquidGlassEnabled && liquidGlassMode === 'normal';
   const state = usePreviewState();
   const { hardwareInfo } = useAppStartup();
   const { run, pending, error } = usePreviewAction();
@@ -150,7 +157,7 @@ export default function HomePage() {
   const reportEtaSeconds = state.monitor.reportEtaSeconds;
   const hasReportEta = reportEtaSeconds != null && Number.isFinite(reportEtaSeconds) && reportEtaSeconds > 0;
   // 根容器不能加 overflowX hidden，否则会成为 sticky 的滚动容器使其失效
-  return <Box pt={8} pr={4} pb={4} pl={4} minH="calc(100vh - 120px)" position="relative">
+  return <Box id="search-home" pt={8} pr={4} pb={4} pl={4} minH="calc(100vh - 120px)" position="relative">
     <Flex gap={6} align="flex-start">
       <Text fontSize="3xl" fontWeight="bold" color={color.text} textShadow={color.shadow} lineHeight="1.4">FrameScope</Text>
       <Box flex={1} />
@@ -165,12 +172,12 @@ export default function HomePage() {
         {hardwareInfo ? (
           <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={4}>
             {buildHardwareSections(hardwareInfo).map((section) => (
-              <HardwareSection key={section.title} {...section} />
+              <HardwareSection key={section.title} {...section} readable={readable} />
             ))}
           </SimpleGrid>
         ) : (
           <LiquidGlassCard p={6} borderRadius="xl">
-            <Text fontSize="sm" opacity={0.75}>硬件信息加载中……</Text>
+            <Text fontSize="sm" opacity={readable ? 1 : 0.75} sx={readable ? clearHomeText : undefined}>硬件信息加载中……</Text>
           </LiquidGlassCard>
         )}
       </Box>
@@ -181,12 +188,12 @@ export default function HomePage() {
             <VStack spacing={3} align="stretch">
               <HStack spacing={2}>
                 <Play size={16} />
-                <Text fontWeight="bold">当前监控</Text>
+                <Text fontWeight="bold" sx={readable ? clearHomeText : undefined}>当前监控</Text>
                 <Box flex={1} />
                 <Badge colorScheme={state.monitor.phase === "error" ? "red" : busy ? "green" : "gray"}>{phaseLabels[state.monitor.phase]}</Badge>
               </HStack>
               <Box role="status" aria-label="当前监控游戏" px={3} py={2} borderRadius="md" bg="whiteAlpha.100">
-                <Text fontSize="sm">{state.monitor.activeTargets.length ? state.monitor.activeTargets.join("、") : "未启动游戏"}</Text>
+                <Text fontSize="sm" sx={readable ? clearHomeText : undefined}>{state.monitor.activeTargets.length ? state.monitor.activeTargets.join("、") : "未启动游戏"}</Text>
               </Box>
               <HStack spacing={2}>
                 <Button leftIcon={<Play size={14} />} colorScheme="teal" size="sm" isDisabled={busy}
@@ -201,14 +208,14 @@ export default function HomePage() {
                   value={reportPercent}
                 />
               )}
-              <HStack fontSize="sm" spacing={2} opacity={0.85}>
+              <HStack fontSize="sm" spacing={2} opacity={readable ? 1 : 0.85}>
                 {generating ? (
                   <>
-                    <Text>{hasReportProgress ? phaseLabels[state.monitor.phase] : "正在准备报告"}</Text>
+                    <Text sx={readable ? clearHomeText : undefined}>{hasReportProgress ? phaseLabels[state.monitor.phase] : "正在准备报告"}</Text>
                     <Text opacity={0.6}>·</Text>
-                    <Text>{hasReportEta ? `预计还需 ${Math.ceil(reportEtaSeconds)} 秒` : "正在估算"}</Text>
+                    <Text sx={readable ? clearHomeText : undefined}>{hasReportEta ? `预计还需 ${Math.ceil(reportEtaSeconds)} 秒` : "正在估算"}</Text>
                   </>
-                ) : <Text>{phaseLabels[state.monitor.phase]}</Text>}
+                ) : <Text sx={readable ? clearHomeText : undefined}>{phaseLabels[state.monitor.phase]}</Text>}
               </HStack>
               <ActionError message={error || state.monitor.error || ""} />
             </VStack>
@@ -217,12 +224,12 @@ export default function HomePage() {
             <VStack spacing={3} align="stretch">
               <HStack spacing={2}>
                 <FileChartColumn size={16} />
-                <Text fontWeight="bold">最新报告</Text>
+                <Text fontWeight="bold" sx={readable ? clearHomeText : undefined}>最新报告</Text>
               </HStack>
               {latestReport ? (
                 <>
-                  <Text fontWeight="medium">{latestReport.targetName}</Text>
-                  <Text fontSize="sm" opacity={0.72}>
+                  <Text fontWeight="medium" sx={readable ? clearHomeText : undefined}>{latestReport.targetName}</Text>
+                  <Text fontSize="sm" opacity={readable ? 1 : 0.72} sx={readable ? clearHomeText : undefined}>
                     {new Date(latestReport.createdAt).toLocaleString()} · {latestReport.durationSeconds} 秒
                     {latestReport.averageFps != null ? ` · ${latestReport.averageFps.toFixed(1)} FPS` : ""}
                   </Text>
@@ -232,7 +239,7 @@ export default function HomePage() {
                   </HStack>
                 </>
               ) : (
-                <Text fontSize="sm" opacity={0.72}>暂无报告，启动监控后将自动生成</Text>
+                <Text fontSize="sm" opacity={readable ? 1 : 0.72} sx={readable ? clearHomeText : undefined}>暂无报告，启动监控后将自动生成</Text>
               )}
             </VStack>
           </LiquidGlassCard>

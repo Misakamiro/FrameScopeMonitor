@@ -7,6 +7,9 @@
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[path = "report_tool_path.rs"]
+mod report_tool_path;
+use report_tool_path::report_tool_path;
 #[cfg(test)]
 #[path = "report_operations_tests.rs"]
 mod report_operations_tests;
@@ -71,24 +74,50 @@ static OWNED_WATCHER: std::sync::Mutex<Option<OwnedWatcher>> = std::sync::Mutex:
 static HOST_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static UPDATE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub fn ensure_update_idle() -> Result<(),String> {
-    ensure_not_closing()?;
-    let status=monitor_status()?;
-    match status["phase"].as_str() {
-        Some(phase) if framescope_update::installation_allowed(phase)=>Ok(()),
-        _=>Err("请先正常停止监控，等待采集和报告收尾，再安装或恢复版本".into()),
+#[cfg(test)]
+#[path = "update_preparation_tests.rs"]
+mod update_preparation_tests;
+
+pub struct UpdateReservation {
+    report: Option<std::sync::MutexGuard<'static, ()>>,
+}
+impl Drop for UpdateReservation {
+    fn drop(&mut self) { UPDATE_PENDING.store(false,std::sync::atomic::Ordering::SeqCst); }
+}
+
+pub fn reserve_update()->Result<UpdateReservation,String>{
+    reserve_update_after(shutdown_owned_monitor,monitor_status,crate::host_shutdown::budget(1))
+}
+
+fn reserve_update_after(
+    drain: impl FnOnce()->Result<(),String>,
+    status: impl FnOnce()->Result<Value,String>,
+    report_timeout: std::time::Duration,
+)->Result<UpdateReservation,String>{
+    {
+        let _owned=OWNED_WATCHER.lock().unwrap_or_else(|p|p.into_inner());
+        ensure_not_closing()?;
+        if UPDATE_PENDING.swap(true,std::sync::atomic::Ordering::SeqCst){return Err("更新已在进行".into());}
     }
+    let mut reservation=UpdateReservation{report:None};
+    drain()?;
+    let started=std::time::Instant::now();
+    reservation.report=Some(loop {
+        match REPORT_OPERATION.try_lock() {
+            Ok(report)=>break report,
+            Err(std::sync::TryLockError::WouldBlock) if started.elapsed()<report_timeout=>
+                std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(std::sync::TryLockError::WouldBlock)=>return Err("等待报告操作收尾超时，未启动安装或恢复；程序和数据已保留".into()),
+            Err(std::sync::TryLockError::Poisoned(_))=>return Err("报告操作状态异常，未启动安装或恢复".into()),
+        }
+    });
+    let status=status()?;
+    if HOST_CLOSING.load(std::sync::atomic::Ordering::SeqCst){return Err("程序正在退出，已取消安装或恢复".into());}
+    if !status["phase"].as_str().is_some_and(framescope_update::installation_allowed){
+        return Err("监控或报告尚未安全停止，未启动安装或恢复".into());
+    }
+    Ok(reservation)
 }
-pub fn reserve_update()->Result<(),String>{
-    let owned=OWNED_WATCHER.lock().unwrap_or_else(|p|p.into_inner());
-    let report=REPORT_OPERATION.try_lock().map_err(|_|"报告正在处理，不能安装更新")?;
-    if UPDATE_PENDING.swap(true,std::sync::atomic::Ordering::SeqCst){return Err("更新已在进行".into());}
-    drop(report);drop(owned);
-    let status=monitor_status();
-    if !status.is_ok_and(|s|s["phase"].as_str().is_some_and(framescope_update::installation_allowed)){release_update();return Err("监控正在运行或收尾，请先正常停止监控".into());}
-    Ok(())
-}
-pub fn release_update(){UPDATE_PENDING.store(false,std::sync::atomic::Ordering::SeqCst);}
 
 struct OwnedWatcher {
     child: std::process::Child,
@@ -615,6 +644,28 @@ mod report_live_lows_tests {
         assert!(!live_lows_source_fresh(&json!({"source_age_ms": u64::MAX}), 1));
     }
     #[test]
+    fn statistics_v2_has_one_second_freshness_and_one_hundred_ms_refresh() {
+        let value=json!({"statistics_version":2,"source_age_ms":900});
+        assert!(live_lows_source_fresh(&value,99));
+        assert!(!live_lows_source_fresh(&value,100));
+        let fresh=json!({"statistics_version":2,"source_age_ms":0});
+        assert!(!live_lows_refresh_due(Some(&fresh),99));
+        assert!(live_lows_refresh_due(Some(&fresh),100));
+    }
+    #[test]
+    fn statistics_v2_keeps_one_source_and_preserves_measured_zero() {
+        let resident=json!({"target_pid":99,"fps":120,"fps_1low":100,"fps_01low":90});
+        let frames=json!({"statistics_version":2,"target_pid":99,"fps":0,"fps_1low":0,"fps_01low":0});
+        let selected=apply_frame_snapshot(resident,99,Some(&frames));
+        for field in ["fps","fps_1low","fps_01low"]{assert_eq!(selected[field].as_f64(),Some(0.0), "{field} uses the selected v2 frame stream");}
+        let hardware=json!({"target_pid":99,"fps":0,"fps_1low":0,"fps_01low":0});
+        let selected=apply_frame_snapshot(hardware,99,None);
+        for field in ["fps","fps_1low","fps_01low"]{assert_eq!(selected[field].as_f64(),Some(0.0), "{field} retains a valid resident snapshot");}
+        let wrong_target=json!({"target_pid":88,"fps":120,"fps_1low":100,"fps_01low":90});
+        let selected=apply_frame_snapshot(wrong_target,99,None);
+        for field in ["fps","fps_1low","fps_01low"]{assert!(selected[field].is_null(), "{field} cannot cross target identity");}
+    }
+    #[test]
     fn refreshes_before_an_aging_low_snapshot_would_blank_the_overlay() {
         let aging = json!({"source_age_ms":2200});
         assert!(!live_lows_refresh_due(Some(&aging), 799));
@@ -660,12 +711,13 @@ fn validate_live_lows(value: &Value, run: &Path, worker_pid: u32, target_pid: u3
 }
 
 fn live_lows_source_fresh(value: &Value, elapsed_ms: u64) -> bool {
+    let window=if value["statistics_version"]==2 {1000}else{3000};
     value["source_age_ms"].as_u64().and_then(|age| age.checked_add(elapsed_ms))
-        .map(|age| age < 3000).unwrap_or(false)
+        .map(|age| age < window).unwrap_or(false)
 }
 
 fn live_lows_refresh_due(value: Option<&Value>, elapsed_ms: u64) -> bool {
-    elapsed_ms >= if value.is_some() { 1000 } else { 100 }
+    elapsed_ms >= if value.is_some_and(|v|v["statistics_version"]!=2) { 1000 } else { 100 }
         || value.is_some_and(|value| !live_lows_source_fresh(value, elapsed_ms))
 }
 
@@ -722,16 +774,17 @@ pub fn apply_report_lows(data: Value) -> Value {
 
 fn apply_frame_snapshot(mut data: Value, pid: u32, value: Option<&Value>) -> Value {
     let value = value.filter(|value| pid > 0 && value["target_pid"].as_u64() == Some(pid as u64));
-    for field in ["fps_1low", "fps_01low"] {
-        data[field] = value.and_then(|value| value[field].as_f64()).filter(|low| low.is_finite() && *low > 0.0)
-            .map(|low| json!(low)).unwrap_or(Value::Null);
+    let resident_matches=pid>0&&data["target_pid"].as_u64()==Some(pid as u64);
+    let worker_v2=value.is_some_and(|value|value["statistics_version"]==2);
+    for field in ["fps", "fps_1low", "fps_01low"] {
+        let worker=value.and_then(|value|value[field].as_f64()).filter(|v|v.is_finite()&&*v>=0.0);
+        let resident=resident_matches.then(||data[field].as_f64()).flatten().filter(|v|v.is_finite()&&*v>=0.0);
+        // A v2 worker supplies one complete frame stream. Legacy workers keep
+        // their FPS fallback behavior; the fresh resident stream is also usable.
+        let selected=if worker_v2 {worker}else if field=="fps" {resident.or(worker)}else{worker.or(resident)};
+        data[field]=selected.map(|v|json!(v)).unwrap_or(Value::Null);
     }
-    if data["fps"].as_f64().filter(|fps| fps.is_finite() && *fps > 0.0).is_none() {
-        if let Some(fps) = value.and_then(|value| value["fps"].as_f64()).filter(|fps| fps.is_finite() && *fps > 0.0) {
-            data["fps"] = json!(fps);
-            data["target_pid"] = json!(pid);
-        }
-    }
+    if value.is_some(){data["target_pid"]=json!(pid);}
     data
 }
 
@@ -1458,7 +1511,7 @@ fn inspect_report_runs(root: &Path, runs: &[&str], timeout: std::time::Duration)
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| e.to_string())?;
     let temporary = InspectionListFile(path);
-    for run in runs { writeln!(file, "{run}").map_err(|e| e.to_string())?; }
+    for run in runs { writeln!(file, "{}", report_tool_path(Path::new(run))?.display()).map_err(|e| e.to_string())?; }
     drop(file);
     let mut command = std::process::Command::new(generator);
     command.arg("--inspect-reports").arg("--run-list").arg(&temporary.0).current_dir(root);
@@ -1720,7 +1773,8 @@ fn regenerate_report_with_root(root: &Path, run_path: &Path, budget: std::time::
         let item = items[0].clone();
         if item["currentInputFingerprintVersion"] != 2 || item["currentInputFingerprintStable"] != true
             || item["currentInputFingerprint"].as_str().filter(|s| !s.is_empty()).is_none() {
-            return Err("report current v2 inputs cannot be verified".into());
+            let detail = item["error"].as_str().filter(|s| !s.is_empty()).unwrap_or("原始文件不可读或在检查过程中发生变化");
+            return Err(format!("无法验证报告原始数据：{detail}"));
         }
         Ok(item)
     };
@@ -1729,7 +1783,7 @@ fn regenerate_report_with_root(root: &Path, run_path: &Path, budget: std::time::
         if before["canRegenerate"] != true { return Err("missing_monitor_data: report has no valid raw inputs".into()); }
         publish_regeneration_state(run_path,"generating",None)?;
         let mut command = std::process::Command::new(root.join("FrameScopeReportGenerator.exe"));
-        command.arg(run_path).arg("--progress").arg(run_path.join("report-progress.json"))
+        command.arg(report_tool_path(run_path)?).arg("--progress").arg(report_tool_path(&run_path.join("report-progress.json"))?)
             .arg("--input-fingerprint").arg(before["currentInputFingerprint"].as_str().unwrap()).current_dir(root);
         let (status, _, stderr) = run_report_generator(command, remaining()?)?;
         if !status.success() { return Err(format!("report generation failed with status {status}: {}",
@@ -2045,7 +2099,7 @@ mod host_shutdown_binding_tests {
     fn monitor_startup_default_and_overlay_are_independent() {
         assert_eq!(super::default_config()["AutoStartMonitoring"], true);
         let source = include_str!("lib.rs");
-        let start = source.split("fn start_selected(").nth(1).unwrap().split("fn save_native_settings").next().unwrap();
+        let start = include_str!("overlay_runtime.rs");
         assert!(!start.contains("start_overlay_recording"), "showing an overlay cannot start report monitoring");
         assert!(source.contains("backend::auto_start_monitor()"));
         assert_eq!(source.matches("backend::auto_start_monitor()").count(), 1, "auto-start belongs only to process setup");

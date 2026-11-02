@@ -217,7 +217,7 @@ internal static partial class FrameScopeReportGenerator
 
         if (hasTrustedTime && end <= start) hasTrustedTime = false;
         double? durationSeconds = ReadRecordedCaptureDuration(runDir) ?? (hasTrustedTime ? (double?)((end - start).TotalSeconds) : FrameScopeReportArtifacts.ReadDuration(runDir, null));
-        Dictionary<string, object> hardware = LoadHardware();
+        Dictionary<string, object> hardware = LoadRecordedHardware(runDir);
         Dictionary<string, string> metadata = LoadRunMetadata(runDir);
         Dictionary<string, object> captureDiagnostics = LoadCaptureDiagnostics(runDir);
         // H3 tail: make the overlay merge visible in the report so a silent
@@ -300,8 +300,13 @@ internal static partial class FrameScopeReportGenerator
         WriteProgress(progressPath, "降采样", 55, "计算 FPS、1% Low、0.1% Low 和图表序列", progressStart, null, false);
         Dictionary<string, object> fps = hasFpsSamples
             ? BuildSampledFps(fpsSampleRows, start)
-            : BuildBucketedFps(frames, start, 1.0, 2.0);
+            : BuildStatisticsV2(frames, start);
         fps["source"] = hasFpsSamples ? "etw-fps-sampled" : (frames.Count > 0 ? "presentmon" : "none");
+        if(frames.Count>0) {
+            var summary=(Dictionary<string,object>)fps["filteredSummary"];
+            frameStats["average"]=summary["average"];frameStats["low1"]=summary["low1"];frameStats["low01"]=summary["low01"];
+            frameStats["statisticsVersion"]=FrameScopeFrameStatistics.Version;
+        }
         Dictionary<string, object> notes = new Dictionary<string, object>
         {
             { "frameDataCaptured", frames.Count > 0 },
@@ -314,6 +319,8 @@ internal static partial class FrameScopeReportGenerator
 
         Dictionary<string, object> data = new Dictionary<string, object>
         {
+            { "statisticsVersion", frames.Count>0?FrameScopeFrameStatistics.Version:0 },
+            { "inputFingerprint", inputFingerprint },
             { "brand", Brand },
             { "colors", Colors },
             { "run", new Dictionary<string, object>
@@ -376,6 +383,7 @@ internal static partial class FrameScopeReportGenerator
             { "reportKind", reportKind },
             { "durationSeconds", durationSeconds },
             { "inputFingerprintVersion", 2 },
+            { "statisticsVersion", frames.Count>0?FrameScopeFrameStatistics.Version:0 },
             { FrameScopeReportArtifacts.InputFingerprintFieldName, inputFingerprint },
             { "processes", process.Names.Count },
             { "processSamples", processSampleCount },

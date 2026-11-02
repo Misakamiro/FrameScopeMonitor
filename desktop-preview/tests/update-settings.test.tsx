@@ -7,6 +7,22 @@ vi.mock("../src/preview/runtime/platform",()=>({isDesktop:()=>true}));
 import { UpdateSettings } from "../src/preview/settings/UpdateSettings";
 function reset(){fixture.snapshot={build:{version:"2.0.0-beta.1",channel:"beta",git_sha:"abcdef123456"},previous:null,state:{preferences:{startup_check:true,include_beta:true,accelerated:true},phase:"idle",releases:[],downloaded:0,total:0,ready:null}};}
 describe("update settings states",()=>{
+  it("explains automatic drain and keeps installation controls disabled while preparing",()=>{
+    reset();fixture.snapshot.state.phase="preparing";fixture.snapshot.state.ready=42;
+    fixture.snapshot.state.releases=[{id:42,notes:"fixes",manifest:{version:"2.1.0",channel:"stable"}}];
+    const html=renderToStaticMarkup(<UpdateSettings/>);
+    expect(html).toContain("点击安装或恢复后会自动正常停止监控");
+    expect(html).toContain("正在正常停止监控，等待采集和报告收尾");
+    expect(html).not.toContain("请先正常停止监控");
+    expect(html).toContain("disabled");expect(html).not.toContain("取消下载");
+  });
+  it("full edition retains GitHub checks, beta preferences and download controls",()=>{
+    reset();fixture.snapshot.build.edition="full";
+    fixture.snapshot.state.releases=[{id:42,notes:"community",manifest:{version:"2.0.1-beta.8",channel:"beta",edition:"full"}}];
+    const html=renderToStaticMarkup(<UpdateSettings/>);
+    for(const text of ["检查更新","启动时检查更新","包含测试版","下载此版本"])expect(html).toContain(text);
+    expect(html).not.toContain("手动更新");
+  });
   it("shows version, opt-in controls and manual stable return without idle download animation",()=>{
     reset();const html=renderToStaticMarkup(<UpdateSettings/>);
     for(const text of ["2.0.0-beta.1","abcdef1234","启动时检查更新","包含测试版","使用 GitHub 加速下载","查找可返回的正式版"])expect(html).toContain(text);

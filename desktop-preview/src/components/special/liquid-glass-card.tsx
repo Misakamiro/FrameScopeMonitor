@@ -6,7 +6,9 @@ import { getBorderGlowStyle } from "@/hooks/use-glow-effect";
 import { useLiquidGlassRefraction } from "@/components/special/liquid-glass-svg-filter";
 import { useMemo } from "react";
 
+
 interface LiquidGlassCardProps extends BoxProps {
+  type?:'button'|'submit'|'reset';
   children: React.ReactNode;
   className?: string;
   isDashed?: boolean;
@@ -29,6 +31,7 @@ export function LiquidGlassCard({
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { bg: _bg, borderColor: _borderColor, backdropFilter: _backdropFilter, WebkitBackdropFilter: _webkitBackdropFilter, ...props } = allProps as Record<string, unknown>;
   const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode } = useBackground();
+
   const glassOn = forceGlass || liquidGlassEnabled;
   const { svgSupported } = useLiquidGlassRefraction(glassOn && liquidGlassMode === "real");
 
@@ -51,6 +54,7 @@ export function LiquidGlassCard({
   // 模糊立即生效：页面切换动画期间的 backdrop-filter 关闭由 .page-animating 类统一处理
   const effectiveBlur = glassOn ? effectiveGlassBlur : 0;
   const isReal = glassOn && liquidGlassMode === "real" && !isDashed;
+
 
   // 卡片主体：零滤镜
   const backdropFilter = useMemo(() => {
@@ -82,7 +86,8 @@ export function LiquidGlassCard({
     const base: any = {
       // 玻璃色留在根：stacking context 内负 z 层画在根背景之上，模糊采样会把
       // 蒙版一起处理（均匀色模糊不变），视觉与旧版（bg+blur 同元素）等效
-      bg: isReal ? "transparent" : (glassOn ? glassBgColor : defaultBg),
+      bg: isReal ? "var(--framescope-real-glass-bg, transparent)" : (glassOn ? glassBgColor : defaultBg),
+      color: "var(--framescope-surface-fg)",
       borderRadius: "xl" as const,
       border: isDashed ? "1px dashed" : "1px solid",
       borderColor: isReal ? "rgba(255,255,255,0.06)" : (glassOn ? glassBorderColor : defaultBorder),
@@ -90,7 +95,7 @@ export function LiquidGlassCard({
       // zIndex:0 让根成为 stacking context：::before(-1) 被限制在卡片内部
       // （bg 之上、children 之下），否则 -1 会掉到页面级底层压掉模糊层
       zIndex: 0,
-      sx: { "::before": glassUnderlay },
+      sx: { "::before": glassUnderlay, "& th": { color: "var(--framescope-surface-muted)" } },
       transition: "background 0.45s, border-color 0.45s",
     };
     return base;
@@ -100,6 +105,7 @@ export function LiquidGlassCard({
 
   return (
     <Box
+      data-glass-surface="card"
       className={`jelly-bounce-card${isReal ? " real-liquid-glass" : ""}${className ? ` ${className}` : ""}`}
       {...cardStyles}
       position="relative"
@@ -107,20 +113,7 @@ export function LiquidGlassCard({
     >
       {/* 边缘折射条 —— 独立叠加层，仅覆盖边缘 10px，卡片内部完全不受影响 */}
       {isReal && svgSupported && (
-        <>
-          <Box position="absolute" top={0} left={0} w="100%" h="10px" zIndex={0}
-            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
-            bg="transparent" pointerEvents="none" />
-          <Box position="absolute" bottom={0} left={0} w="100%" h="10px" zIndex={0}
-            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
-            bg="transparent" pointerEvents="none" />
-          <Box position="absolute" left={0} top={0} w="10px" h="100%" zIndex={0}
-            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
-            bg="transparent" pointerEvents="none" />
-          <Box position="absolute" right={0} top={0} w="10px" h="100%" zIndex={0}
-            backdropFilter={edgeFilter} sx={{ WebkitBackdropFilter: edgeFilter }}
-            bg="transparent" pointerEvents="none" />
-        </>
+        <LiquidGlassEdges filter={edgeFilter} />
       )}
 
       {!isReal && (
@@ -133,4 +126,18 @@ export function LiquidGlassCard({
       {children}
     </Box>
   );
+}
+
+// Reuse the original card's four edge strips without filtering its content.
+export function LiquidGlassEdges({ filter }: { filter: string }) {
+  return <>
+    <Box position="absolute" top={0} left={0} w="100%" h="10px" zIndex={0}
+      backdropFilter={filter} sx={{ WebkitBackdropFilter: filter }} bg="transparent" pointerEvents="none" />
+    <Box position="absolute" bottom={0} left={0} w="100%" h="10px" zIndex={0}
+      backdropFilter={filter} sx={{ WebkitBackdropFilter: filter }} bg="transparent" pointerEvents="none" />
+    <Box position="absolute" left={0} top={0} w="10px" h="100%" zIndex={0}
+      backdropFilter={filter} sx={{ WebkitBackdropFilter: filter }} bg="transparent" pointerEvents="none" />
+    <Box position="absolute" right={0} top={0} w="10px" h="100%" zIndex={0}
+      backdropFilter={filter} sx={{ WebkitBackdropFilter: filter }} bg="transparent" pointerEvents="none" />
+  </>;
 }

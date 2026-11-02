@@ -31,16 +31,19 @@ pub fn perform_update(target:&Path,receipt_path:&Path)->Result<()> {
     transaction::assert_path(receipt_path)?;
     let receipt:Receipt=serde_json::from_slice(&fs::read(receipt_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     let manifest=update::verify_manifest(receipt.manifest_text.as_bytes(),&receipt.signature,update::public_key(),&receipt.candidate.tag)?;
-    if manifest.version!=env!("FRAMESCOPE_VERSION") || manifest.git_sha!=env!("FRAMESCOPE_GIT_SHA"){return Err("签名清单与安装器构建身份不一致".into());}
+    // Strict legacy clients omit edition; bridge identities remain explicitly bounded.
+    // Signature, exact installer hash, previous edition and embedded payload are still verified.
+    let edition=signed_update_edition(&manifest,env!("FRAMESCOPE_EDITION"));
+    if manifest.version!=env!("FRAMESCOPE_VERSION") || manifest.git_sha!=env!("FRAMESCOPE_GIT_SHA") || edition!=env!("FRAMESCOPE_EDITION") || !old.can_upgrade_to(edition){return Err("签名清单与安装器构建或版型身份不一致".into());}
     let self_exe=std::env::current_exe().map_err(|e|e.to_string())?;
     update::verify_file(&self_exe,&manifest.installer)?;
     let mut zip=zip::ZipArchive::new(std::io::Cursor::new(crate::installer::PAYLOAD_ZIP)).map_err(|e|e.to_string())?;
     let mut metadata=String::new();zip.by_name("FrameScopeBuildInfo.json").map_err(|e|e.to_string())?.read_to_string(&mut metadata).map_err(|e|e.to_string())?;
     let payload_build:BuildInfo=serde_json::from_str(&metadata).map_err(|e|e.to_string())?;
-    if payload_build.version!=manifest.version||payload_build.git_sha!=manifest.git_sha{return Err("Payload build identity does not match signed release".into());}
+    if payload_build.version!=manifest.version||payload_build.git_sha!=manifest.git_sha||payload_build.resolved_edition()!=edition{return Err("Payload build identity does not match signed release".into());}
     let mut runtime=WindowsRuntime::new(&target,false,false,false)?;
     runtime.keep_previous=true;runtime.preserve_settings=true;
-    runtime.startup_build=Some(BuildInfo::new(&manifest.version,&manifest.git_sha));
+    runtime.startup_build=Some(BuildInfo::new(&manifest.version,&manifest.git_sha).with_edition(edition));
     let result=transaction::execute(transaction::Request{target:&target,payload:crate::installer::PAYLOAD_ZIP,self_exe:&self_exe,
         required:&crate::installer::required_payload_files()?,uninstall:false,delete_data:false,
         deletions:vec![],data_roots:vec![],progress:&|_,_|{}},&mut runtime);
@@ -49,6 +52,32 @@ pub fn perform_update(target:&Path,receipt_path:&Path)->Result<()> {
         let _=update::atomic_json(&target.join("FrameScopeRolledBack.json"),&serde_json::json!({"version":manifest.version}));
     }
     finish(&target,result,Some(old))
+}
+fn signed_update_edition<'a>(manifest:&'a update::Manifest,installer_edition:&str)->&'a str {
+    if !manifest.edition.is_empty(){return &manifest.edition;}
+    if installer_edition=="full" && matches!(manifest.version.as_str(),"2.0.1-beta.8"|"2.1.0"|"2.1.1"|"2.1.1-beta.1"|"2.1.1-beta.2"){"full"}else{"offline"}
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    fn manifest(version:&str,edition:&str)->update::Manifest {
+        serde_json::from_value(serde_json::json!({"schema":1,"edition":edition,"version":version,"channel":if version.contains('-'){"beta"}else{"stable"},
+            "git_sha":"a".repeat(40),"platform":"windows-x86_64","installer":{"name":"fixture.exe","size":1,"sha256":"a".repeat(64)}})).unwrap()
+    }
+    #[test] fn strict_legacy_bridge_is_limited_to_named_full_installer_versions(){
+        for version in ["2.0.1-beta.8","2.1.0","2.1.1","2.1.1-beta.1","2.1.1-beta.2"]{assert_eq!(signed_update_edition(&manifest(version,""),"full"),"full");}
+        assert_eq!(signed_update_edition(&manifest("2.1.1-beta.3",""),"full"),"offline");
+        assert_eq!(signed_update_edition(&manifest("2.1.2",""),"full"),"offline");
+        assert_eq!(signed_update_edition(&manifest("2.1.0",""),"offline"),"offline");
+        assert_eq!(signed_update_edition(&manifest("2.1.0","offline"),"full"),"offline");
+    }
+    #[test] fn bridge_does_not_override_explicit_installed_edition_separation(){
+        let legacy=manifest("2.1.0","");
+        let edition=signed_update_edition(&legacy,"full");
+        assert!(BuildInfo::new("2.0.1-beta.3",&"a".repeat(40)).can_upgrade_to(edition));
+        assert!(!BuildInfo::new("2.0.1-beta.3",&"a".repeat(40)).with_edition("offline").can_upgrade_to(edition));
+    }
 }
 pub fn restore_previous(target:&Path)->Result<()> {
     let target=transaction::normalize(target)?;
@@ -102,7 +131,7 @@ pub fn confirm_startup(runtime:&mut WindowsRuntime,build:BuildInfo)->Result<()> 
     update::atomic_json(&pending,&ticket)?;
     let executable=target.join("FrameScope.exe").canonicalize().map_err(|e|e.to_string())?;
     let expected_hash=transaction::hash(&executable)?;
-    let _child=std::process::Command::new(&executable).current_dir(&target).spawn().map_err(|e|e.to_string())?;
+    let _child=std::process::Command::new(&executable).arg("--framescope-after-update").current_dir(&target).spawn().map_err(|e|e.to_string())?;
     runtime.started_new=true;
     let deadline=Instant::now()+Duration::from_secs(120);
     while Instant::now()<deadline {

@@ -2,6 +2,7 @@ import type { PreviewAction, PreviewActionPayloads, PreviewState, PreviewListene
 import { connectStateBus, readPersistedState, persistState, isMainWindow, isDesktop, nativeOperation, backendInvoke, emitPreviewEvent } from "./platform";
 import { invoke } from "./core";
 import { FIXTURE_EPOCH, overlayFixture } from "./fixtures";
+import {uiActivity} from '../../lib/ui-activity';
 
 export const defaultOverlay: OverlaySettings = {
   display_items: [
@@ -78,6 +79,7 @@ function finishReport(next: PreviewState) {
   next.monitor.reportId = report.id;
 }
 function tick() {
+  if(!uiActivity.getSnapshot())return;
   if (isDesktop()) {
     // Desktop: the host poller owns hardware data (overlay cache +
     // vertical-overlay-data events), and the real watcher owns the capture
@@ -349,7 +351,15 @@ export function startPreviewRuntime(): () => void {
     state = incoming;
     listeners.forEach(fn => fn(state));
   });
-  if (!timer && isMainWindow()) timer = setInterval(tick, 1000);
+  const updateActivity=()=>{
+    if(timer){clearInterval(timer);timer=undefined;}
+    if(uiActivity.getSnapshot()&&isMainWindow()){
+      timer=setInterval(tick,1000);tick();
+      if(isDesktop())void refreshDesktopReports();
+    }
+  };
+  if (!timer && isMainWindow()&&uiActivity.getSnapshot()) timer = setInterval(tick, 1000);
+  const stopActivity=uiActivity.subscribe(updateActivity);
   if (isDesktop() && isMainWindow() && !targetsSynced) {
     // syncTargetsFromBackend sets targetsSynced itself once it succeeds and
     // retries until then — never mark it here.
@@ -361,6 +371,7 @@ export function startPreviewRuntime(): () => void {
   return () => {
     if (closed) return;
     closed = true;
+    stopActivity();
     users--;
     if (users <= 0) {
       if (timer) clearInterval(timer); timer = undefined;

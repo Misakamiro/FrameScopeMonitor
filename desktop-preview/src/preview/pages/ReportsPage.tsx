@@ -9,6 +9,8 @@ import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, formatMetric, useFloatingFieldStyle } from "./shared";
 import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
 import { refreshDesktopReports } from "@/preview/runtime/state";
+
+
 const labels = { full: "完整", partial: "部分数据", diagnostic: "诊断", error: "失败" };
 const colors = { full: "green", partial: "yellow", diagnostic: "blue", error: "red" };
 const artifactLabels: Record<string, string> = {
@@ -19,7 +21,7 @@ export default function ReportsPage() {
   const state = usePreviewState();
   const color = useAdaptiveTextColor();
   const [params] = useSearchParams();
-  const [selected, setSelected] = useState<string | null>(params.get("id"));
+  const [selected, setSelected] = useState<string | null>(params.get("view") === "upload" ? null : params.get("id"));
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
   const [openError, setOpenError] = useState("");
@@ -32,7 +34,7 @@ export default function ReportsPage() {
   useEffect(() => {
     if (isDesktop()) void refreshDesktopReports();
   }, []);
-  useEffect(() => { if (params.get("id")) setSelected(params.get("id")); }, [params]);
+  useEffect(() => { if (params.get("view") !== "upload" && params.get("id")) setSelected(params.get("id")); }, [params]);
   const reports = state.reports.filter(r => (kind === "all" || r.kind === kind) && r.targetName.toLowerCase().includes(query.toLowerCase()));
   const report = state.reports.find(r => r.id === selected);
   const deleteBlocked = report?.operation === "regenerating" || report?.operation === "diagnosing"
@@ -56,7 +58,7 @@ export default function ReportsPage() {
       else setDirectory(true);
     } catch (cause) { setOpenError(String(cause)); }
   };
-  return <Box pt={8}>
+  return <Box id="search-reports" pt={8}>
     <Heading size="lg" mb={6} color={color.text} textShadow={color.shadow}>报告</Heading>
     <HStack spacing={3} mb={5}>
       <Input aria-label="搜索报告" placeholder="搜索游戏报告" value={query} onChange={e => setQuery(e.target.value)} maxW="360px" sx={field.sx} />
@@ -78,7 +80,7 @@ export default function ReportsPage() {
     <PreviewDialog title="报告详情" isOpen={!!report} onClose={() => { if (!pending) { setDeleteConfirm(false); setSelected(null); } }}>
       {report && <VStack spacing={4} align="stretch">
         <HStack><Text fontWeight="bold">{report.targetName}</Text><Badge colorScheme={colors[report.kind]}>{labels[report.kind]}</Badge>{report.simulated ? <Badge colorScheme="purple">模拟</Badge> : <Badge>{artifactLabels[report.artifactStatus ?? "incomplete"] ?? "产物不完整"}</Badge>}</HStack>
-        {!report.simulated && report.artifactError && <Text fontSize="sm">{report.artifactError}</Text>}
+        {!report.simulated && report.artifactError && report.artifactError !== error && report.artifactError !== report.diagnostic && <Text fontSize="sm">{report.artifactError}</Text>}
         <SimpleGrid columns={2} spacing={4}>
           {[["平均 FPS", formatMetric(report.averageFps)], ["1% Low", formatMetric(report.low1Fps)],
             ["0.1% Low", formatMetric(report.low01Fps)], ["帧时间", formatMetric(report.frameTimeMs, " ms")]].map(([label, value]) =>
@@ -86,6 +88,7 @@ export default function ReportsPage() {
         </SimpleGrid>
         <HStack wrap="wrap">
           <Button size="sm" leftIcon={<ExternalLink size={14} />} isDisabled={report.simulated === false && report.canOpenReport === false} onClick={() => void open()}>打开图表报告</Button>
+
           <Button size="sm" leftIcon={<FolderOpen size={14} />} variant="outline" onClick={() => void openDirectory()}>报告目录</Button>
         </HStack>
         <HStack wrap="wrap">
@@ -97,7 +100,7 @@ export default function ReportsPage() {
             onClick={() => { clearError(); setOpenError(""); setDeleteConfirm(true); }}>删除记录</Button>
         </HStack>
         {deleteBlocked && <Text fontSize="sm">报告正在采集、生成或处理，完成后才能删除。</Text>}
-        {report.diagnostic && <Text fontSize="sm" role="status">{report.diagnostic}</Text>}
+        {report.diagnostic && report.diagnostic !== error && <Text fontSize="sm" role="status">{report.diagnostic}</Text>}
         <ActionError message={error || openError} />
       </VStack>}
     </PreviewDialog>
@@ -114,6 +117,7 @@ export default function ReportsPage() {
         <ActionError message={error} />
       </VStack>}
     </PreviewDialog>
+
     <PreviewDialog title="预览报告目录" isOpen={directory} onClose={() => setDirectory(false)}>
       <Text fontFamily="monospace" fontSize="sm">{report?.runDir ?? `${state.config.outputDirectory}/${report?.id}`}</Text>
       <Text fontSize="sm" mt={4}>{isDesktop() && report?.runDir ? "真实运行目录。" : "模拟目录，不访问真实运行数据。"}</Text>

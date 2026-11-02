@@ -1119,7 +1119,8 @@ unsafe fn init<T: 'static>(
   event_loop: &EventLoopWindowTarget<T>,
 ) -> Result<Window, RootOsError> {
   // registering the window class
-  let class_name = register_window_class(&pl_attribs.window_classname);
+  let layered_overlay = attributes.transparent && attributes.title == "FrameScope UI Preview - Overlay";
+  let class_name = register_window_class(&pl_attribs.window_classname, layered_overlay);
 
   let mut window_flags = WindowFlags::empty();
   window_flags.set(WindowFlags::MARKER_DECORATIONS, attributes.decorations);
@@ -1400,12 +1401,24 @@ unsafe fn init<T: 'static>(
   Ok(win)
 }
 
-unsafe fn register_window_class(window_classname: &str) -> Vec<u16> {
-  let class_name = util::encode_wide(window_classname);
+unsafe fn register_window_class(window_classname: &str, layered_overlay: bool) -> Vec<u16> {
+  // The overlay adds WS_EX_LAYERED for click-through. Windows forbids that
+  // extended style on CS_OWNDC / CS_CLASSDC classes. Use a distinct class so
+  // an already registered ordinary window cannot retain the incompatible DC.
+  let name = if layered_overlay {
+    format!("{window_classname}.FrameScopeLayeredOverlay")
+  } else {
+    window_classname.to_string()
+  };
+  let class_name = util::encode_wide(&name);
+  let mut class_style = CS_HREDRAW | CS_VREDRAW;
+  if !layered_overlay {
+    class_style |= CS_OWNDC;
+  }
 
   let class = WNDCLASSEXW {
     cbSize: mem::size_of::<WNDCLASSEXW>() as u32,
-    style: CS_HREDRAW | CS_VREDRAW | CS_OWNDC,
+    style: class_style,
     lpfnWndProc: Some(window_proc),
     cbClsExtra: 0,
     cbWndExtra: 0,
