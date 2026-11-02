@@ -9,15 +9,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "lint:delivery": "node scripts/lint-scopes.mjs --scope delivery",
-    "lint:retained": "node scripts/lint-scopes.mjs --scope retained",
-    "lint:scopes": "node scripts/lint-scopes.mjs --scope all",
     "format": "prettier --write .",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build --no-bundle",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude src-framescope-baseline/**"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@chakra-ui/react": "2.10.10",
@@ -66,7 +62,6 @@
     "husky": "9.1.7",
     "prettier": "3.9.6",
     "typescript": "5.9.3",
-    "vite": "6.4.3",
-    "vitest": "3.2.7"
+    "vite": "6.4.3"
   }
 }

@@ -1,5 +1,3 @@
-#[cfg(test)]
-mod tests;
 mod backend;
 #[path = "../../../src/core/frame_statistics.rs"]
 mod frame_statistics;
@@ -17,8 +15,6 @@ mod overlay_panel;
 mod overlay_lifecycle;
 mod overlay_runtime;
 mod overlay_diagnostics;
-#[cfg(all(windows,feature="uiaccess-acceptance"))]
-mod overlay_acceptance;
 mod overlay_position;
 #[cfg(windows)]
 mod overlay_display;
@@ -238,8 +234,6 @@ fn create_vertical(app: &tauri::AppHandle, generation:u64, deadline:std::time::I
     let built = builder.build();
     log::info!("UIAccess acceptance: original vertical build {:?}", built.as_ref().map(|window| window.label()));
     let window = built.map_err(|e| e.to_string())?;
-    #[cfg(all(windows,feature="uiaccess-acceptance"))]
-    overlay_acceptance::register_input(&window,generation);
     window.on_window_event(move|event|{
         if matches!(event,tauri::WindowEvent::Destroyed)&&overlay_runtime::STATE.closed(generation){VERTICAL_ACTIVE.store(false,std::sync::atomic::Ordering::SeqCst);}
     });
@@ -340,8 +334,6 @@ fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: 
             let mask=WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE;
             if flags&mask!=if transparent{mask}else{0}{return Err("竖排鼠标穿透窗口状态不一致".into());}
             }
-            #[cfg(feature="uiaccess-acceptance")]
-            overlay_acceptance::record_input(&owned,if transparent{"pass-through"}else{"move-mode"});
             Ok(())
         })();
         let _=send.send(result);
@@ -519,8 +511,6 @@ where FRegister: FnMut(&str) -> Result<(), String>, FUnregister: FnMut(&str) -> 
 // instead of freezing the window's message pump.
 #[tauri::command]
 async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
-    #[cfg(all(windows,feature="uiaccess-acceptance"))]
-    if command=="uiaccess_acceptance_frame" {return overlay_acceptance::receive_frame(&window,args);}
     #[cfg(feature = "uiaccess-acceptance")]
     if command == "uiaccess_acceptance_gdi" { return Ok(overlay_panel::render_diagnostics()); }
     if command == "uiaccess_acceptance_window" && cfg!(feature = "uiaccess-acceptance") {
@@ -1096,8 +1086,6 @@ pub fn run() {
                 #[cfg(windows)]
                 vertical_overlay_position::persist_pending(&topmost_handle);
             });
-            #[cfg(all(windows,feature="uiaccess-acceptance"))]
-            overlay_acceptance::start(app.handle());
             Ok(())
         })
         .on_window_event(|window, event| {

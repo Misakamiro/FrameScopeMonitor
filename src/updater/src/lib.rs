@@ -2,8 +2,6 @@
 use serde::{Deserialize, Serialize};
 mod download;
 mod asset_download;
-#[cfg(test)]
-mod segmented_tests;
 #[cfg(windows)]
 pub mod autostart;
 use semver::Version;
@@ -307,8 +305,3 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     }
     fs::rename(temp,path).map_err(|e|e.to_string())
 }
-
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod download_tests;

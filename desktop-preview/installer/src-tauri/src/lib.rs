@@ -7,8 +7,6 @@ mod update_install;
 pub fn bootstrap_relaunch() -> Result<bool, String> { self_relaunch::bootstrap() }
 pub fn validated_relaunch_root() -> Option<std::path::PathBuf> { self_relaunch::original_root() }
 pub fn cleanup_relaunch_copy() -> Result<(), String> { self_relaunch::schedule_cleanup() }
-#[cfg(feature = "transaction-validation")]
-pub mod transaction_validation;
 
 use installer::*;
 

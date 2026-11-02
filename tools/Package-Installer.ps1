@@ -124,16 +124,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed with exit code $LASTEXITCODE" }
 } finally { Pop-Location }
 
-Write-Host '== [5/6] Building the NSIS installer (tauri build) =='
+Write-Host '== [5/6] Building and verifying the production host =='
 & (Join-Path $RepoRoot 'tools\Verify-IsolatedBuildStage.ps1') -RepoRoot $RepoRoot
-Push-Location $previewDir
-try {
-    if ($StageOnly) { & npx tauri build --no-bundle --ci }
-    else { & npx tauri build --ci }
-    if ($LASTEXITCODE -ne 0) { throw "tauri build failed with exit code $LASTEXITCODE" }
-} finally { Pop-Location }
-
-Write-Host '== [6/6] Verifying build outputs =='
 # Cargo checks source freshness even when the final artifact is incremental.
 Push-Location (Join-Path $previewDir 'src-tauri')
 try {
@@ -175,6 +167,11 @@ if ($StageOnly) {
     Write-Host 'StageOnly: current backend, frontend and host verified; NSIS skipped'
     return
 }
+Push-Location $previewDir
+try {
+    & npx tauri bundle --bundles nsis --ci --features tauri/custom-protocol
+    if ($LASTEXITCODE -ne 0) { throw 'NSIS bundling failed' }
+} finally { Pop-Location }
 $bundleDir = Join-Path $targetDir 'bundle\nsis'
 $installer = Get-ChildItem -LiteralPath $bundleDir -Filter '*.exe' -File -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1

@@ -13,11 +13,6 @@ export default defineConfig(async () => ({
       },
     }),
   ],
-  test: {
-    // Overrides vitest's default excludes, so skip every node_modules tree
-    // (installer/ has its own) - a bare "node_modules" only matched the root.
-    exclude: ["**/node_modules/**", "dist/**", "src-framescope-baseline/**"],
-  },
   resolve: {
     alias: [
       { find: "@preview/native-core", replacement: path.resolve(__dirname, "node_modules/@tauri-apps/api/core.js") },

@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(not(feature = "transaction-validation"))]
 fn main() {
     match framescope_installer_lib::bootstrap_relaunch() {
         Ok(true) => std::process::exit(0),
@@ -17,10 +16,4 @@ fn main() {
     }
     framescope_installer_lib::run();
     if let Err(error)=framescope_installer_lib::cleanup_relaunch_copy(){eprintln!("Temporary installer cleanup incomplete: {error}");}
-}
-
-#[cfg(feature = "transaction-validation")]
-fn main() {
-    eprintln!("Validation feature build cannot run the installer; use the separate transaction-validation binary");
-    std::process::exit(2);
 }

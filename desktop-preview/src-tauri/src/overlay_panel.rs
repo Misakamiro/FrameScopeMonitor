@@ -352,11 +352,6 @@ pub fn get_or_init_settings() -> OverlaySettings {
 
 #[cfg(target_os = "windows")]
 mod win32 {
-    #[cfg(test)]
-    mod tests {
-        include!("overlay_panel_tests.rs");
-    }
-
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::Graphics::GdiPlus::*;

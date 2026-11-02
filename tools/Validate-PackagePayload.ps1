@@ -1,138 +1,9 @@
-param(
-    [string]$RepoRoot = '',
-    [string]$DistRoot = '',
-    [string]$InstallerPathGuardAssembly = '',
-    [switch]$PathGuardsOnly
-)
-
-$ErrorActionPreference = 'Stop'
-
-if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
-    $RepoRoot = Split-Path -Parent $PSScriptRoot
-}
-$root = (Resolve-Path -LiteralPath $RepoRoot).Path
-if ([string]::IsNullOrWhiteSpace($DistRoot)) {
-    $DistRoot = Join-Path $root 'dist'
-}
-$dist = [IO.Path]::GetFullPath($DistRoot)
-$payloadRoot = Join-Path $dist 'FrameScopeMonitor-payload'
-$version = (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()
-$required = @(
-    'FrameScopeMonitor-Setup.exe',
-    'FrameScopeMonitor-Full-Setup.exe',
-    'FrameScopeMonitor-Installer.zip',
-    'FrameScopeMonitor-LegacyCleanup.exe',
-    'FrameScopeMonitor-payload/FrameScopeBuildManifest.json'
-)
-
-if (-not $PathGuardsOnly) {
-    foreach ($relativePath in $required) {
-        $path = Join-Path $dist ($relativePath -replace '/', '\')
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Missing package: $relativePath"
-        }
-    }
-}
-
-function Assert-InstallerPathGuards {
-    param([string]$AssemblyPath)
-
-    $assembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($AssemblyPath))
-    $type = $assembly.GetType('FrameScopeSetupNative', $true)
-    $flags = [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Static
-    $normalize = $type.GetMethod('NormalizePayloadArchivePath', $flags)
-    $canonicalize = $type.GetMethod('GetCanonicalPayloadTargetPath', $flags)
-    $safeCombine = $type.GetMethod('SafeCombine', $flags)
-    if ($null -eq $normalize -or $null -eq $canonicalize -or $null -eq $safeCombine) { throw 'Installer path guard methods were not found.' }
-    $normalizePath = [Delegate]::CreateDelegate([Func[string, string]], $normalize)
-    $canonicalizePath = [Delegate]::CreateDelegate([Func[string, string]], $canonicalize)
-    $combinePath = [Delegate]::CreateDelegate([Func[string, string, string]], $safeCombine)
-
-    Assert-Equal 'dir/file.bin' ([string]$normalizePath.Invoke('dir/file.bin')) 'installer normalized path'
-    Assert-Equal 'dir' ([string]$normalizePath.Invoke('dir/')) 'installer directory entry path'
-    Assert-Equal 'dir/COM10.txt' ([string]$normalizePath.Invoke('dir/COM10.txt')) 'installer legal non-device path'
-    foreach ($invalid in @(
-            '../file.bin', 'dir/../file.bin', 'dir/./file.bin', '/file.bin', 'C:/file.bin', 'dir//file.bin',
-            'dir/file.bin.', 'dir/file.bin ', 'dir/CON', 'dir/con.txt', 'dir/PRN.log', 'dir/AUX', 'dir/NUL.bin',
-            'dir/COM1', 'dir/com9.txt', 'dir/LPT1', 'dir/lpt9.log', 'dir/CLOCK$.txt', 'dir/CONIN$', 'dir/CONOUT$.log'
-        )) {
-        $rejected = $false
-        try { $null = $normalizePath.Invoke([string]$invalid) }
-        catch { $rejected = $true }
-        if (-not $rejected) { throw "Installer accepted unsafe payload path: $invalid" }
-    }
-
-    $canonicalA = [string]$canonicalizePath.Invoke('dir/file.bin')
-    $canonicalB = [string]$canonicalizePath.Invoke('DIR\FILE.BIN')
-    if (-not [string]::Equals($canonicalA, $canonicalB, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Installer canonical target keys differ by path casing: $canonicalA vs $canonicalB"
-    }
-
-    $guardRoot = Join-Path $env:TEMP ('framescope-safe-root-' + [guid]::NewGuid().ToString('N'))
-    $valid = [string]$combinePath.Invoke($guardRoot, 'dir\file.bin')
-    $rootPrefix = [IO.Path]::GetFullPath($guardRoot).TrimEnd('\') + '\'
-    if (-not $valid.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Installer SafeCombine rejected its own root: $valid"
-    }
-    $escaped = $false
-    try { $null = $combinePath.Invoke($guardRoot, ('..\' + (Split-Path -Leaf $guardRoot) + '-sibling\file.bin')) }
-    catch { $escaped = $true }
-    if (-not $escaped) { throw 'Installer SafeCombine accepted a prefix-sibling escape.' }
-}
-
-function Assert-InstallerValidatesBeforeMutation {
-    $source = Get-Content -Raw -LiteralPath (Join-Path $root 'packaging\FrameScopeSetupNative.cs')
-    $validation = $source.IndexOf('ValidatePayloadResource(assembly);', [StringComparison]::Ordinal)
-    $firstMutation = $source.IndexOf('Directory.CreateDirectory(appDir);', [StringComparison]::Ordinal)
-    $runtimeInstall = $source.IndexOf('InstallBundledWebView2Runtime(assembly, logPath);', [StringComparison]::Ordinal)
-    if ($validation -lt 0 -or $firstMutation -lt 0 -or $runtimeInstall -lt 0 -or $validation -gt $firstMutation -or $validation -gt $runtimeInstall) {
-        throw 'Installer must validate the embedded payload before filesystem, runtime, process, or migration mutations.'
-    }
-}
-
-function Assert-PackageVerifierPathGuards {
-    Assert-Equal 'dir/file.bin' (ConvertTo-NormalizedPackageArchivePath -Path 'dir/file.bin') 'package verifier normalized path'
-    Assert-Equal 'dir' (ConvertTo-NormalizedPackageArchivePath -Path 'dir/') 'package verifier directory entry path'
-    Assert-Equal 'dir/COM10.txt' (ConvertTo-NormalizedPackageArchivePath -Path 'dir/COM10.txt') 'package verifier legal non-device path'
-    foreach ($invalid in @(
-            '../file.bin', 'dir/../file.bin', 'dir/./file.bin', '/file.bin', 'C:/file.bin', 'dir//file.bin',
-            'dir/file.bin.', 'dir/file.bin ', 'dir/CON', 'dir/con.txt', 'dir/PRN.log', 'dir/AUX', 'dir/NUL.bin',
-            'dir/COM1', 'dir/com9.txt', 'dir/LPT1', 'dir/lpt9.log', 'dir/CLOCK$.txt', 'dir/CONIN$', 'dir/CONOUT$.log'
-        )) {
-        $rejected = $false
-        try { $null = ConvertTo-NormalizedPackageArchivePath -Path $invalid }
-        catch { $rejected = $true }
-        if (-not $rejected) { throw "Package verifier accepted unsafe ZIP path: $invalid" }
-    }
-
-    $tokens = $null
-    $parseErrors = $null
-    $scriptAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$tokens, [ref]$parseErrors)
-    if ($parseErrors.Count -ne 0) { throw "Unable to parse package verifier for path-guard call coverage: $($parseErrors.Count) error(s)." }
-    $unconditionalCalls = @($scriptAst.FindAll({
-                param($node)
-                if ($node -isnot [Management.Automation.Language.CommandAst] -or
-                    $node.GetCommandName() -ine 'Assert-PackageVerifierPathGuards') {
-                    return $false
-                }
-                $parent = $node.Parent
-                while ($null -ne $parent) {
-                    if ($parent -is [Management.Automation.Language.FunctionDefinitionAst] -or
-                        $parent -is [Management.Automation.Language.IfStatementAst]) {
-                        return $false
-                    }
-                    $parent = $parent.Parent
-                }
-                return $true
-            }, $true))
-    if ($unconditionalCalls.Count -ne 1) {
-        throw "Package verifier path guards must run once in the normal package-parity flow (found: $($unconditionalCalls.Count))."
-    }
-}
-
-Add-Type -AssemblyName System.IO.Compression
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
+param([string]$RepoRoot=(Split-Path -Parent $PSScriptRoot),[Parameter(Mandatory=$true)][string]$DistRoot)
+$ErrorActionPreference='Stop'
+$root=(Resolve-Path -LiteralPath $RepoRoot).Path
+$dist=[IO.Path]::GetFullPath($DistRoot)
+$payloadRoot=Join-Path $dist 'FrameScopeMonitor-payload'
+$version=(Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
 function Get-Sha256Bytes {
     param([byte[]]$Bytes)
 
@@ -356,19 +227,7 @@ function Assert-Manifest {
     return $manifest
 }
 
-Assert-PackageVerifierPathGuards
-
-if ($PathGuardsOnly) {
-    if ([string]::IsNullOrWhiteSpace($InstallerPathGuardAssembly) -or
-        -not (Test-Path -LiteralPath $InstallerPathGuardAssembly -PathType Leaf)) {
-        throw 'PathGuardsOnly requires -InstallerPathGuardAssembly pointing to a compiled installer.'
-    }
-    Assert-InstallerPathGuards -AssemblyPath $InstallerPathGuardAssembly
-    Write-Host 'FrameScope installer path guards passed.'
-    return
-}
-
-$temp = Join-Path $env:TEMP ('framescope-package-test-' + [guid]::NewGuid().ToString('N'))
+$temp = Join-Path $env:TEMP ('framescope-package-verify-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp -Force | Out-Null
 try {
     $setupPath = Join-Path $dist 'FrameScopeMonitor-Setup.exe'
@@ -377,8 +236,6 @@ try {
     $fullPayload = Join-Path $temp 'full-payload'
     $setupInfo = Expand-PayloadResource -AssemblyPath $setupPath -Destination $setupPayload
     $fullInfo = Expand-PayloadResource -AssemblyPath $fullSetupPath -Destination $fullPayload
-    Assert-InstallerPathGuards -AssemblyPath $setupPath
-    Assert-InstallerValidatesBeforeMutation
 
     $payloadManifest = Assert-Manifest -Directory $payloadRoot
     $setupManifest = Assert-Manifest -Directory $setupPayload

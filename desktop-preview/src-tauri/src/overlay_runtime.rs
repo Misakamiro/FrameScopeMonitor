@@ -111,8 +111,6 @@ fn process(job:&Job)->Result<Value,String>{
             let result=STATE.commit(id,||{
                 owned.show().map_err(|e|e.to_string())?;
                 crate::overlay_set_hit_test_transparent(&owned,true)?;
-                #[cfg(all(windows,feature="uiaccess-acceptance"))]
-                crate::overlay_acceptance::record_input(&owned,"shown");
                 Ok(())
             });
             if result.is_ok(){crate::VERTICAL_ACTIVE.store(true,std::sync::atomic::Ordering::SeqCst);let _=owned.emit("vertical-overlay-data",latest_raw());}
@@ -155,8 +153,6 @@ pub fn auxiliary(window:tauri::WebviewWindow,app:tauri::AppHandle,command:&str,a
                     if !STATE.live(id){return Err("旧竖排布局消息已失效".into());}
                     target.set_size(tauri::LogicalSize::new(overlay_panel::get_or_init_settings().item_width as f64,height)).map_err(|e|e.to_string())?;
                     #[cfg(windows)] crate::vertical_overlay_position::layout_ready();
-                    #[cfg(all(windows,feature="uiaccess-acceptance"))]
-                    crate::overlay_acceptance::record_input(&target,"layout");
                     STATE.layout(id)
                 })();let _=send.send(result);
             }).map_err(|e|e.to_string())?;
