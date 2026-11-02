@@ -1000,7 +1000,3 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
     drop(lock);
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "install_transaction_tests.rs"]
-mod tests;

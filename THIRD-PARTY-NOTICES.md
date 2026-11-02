@@ -671,3 +671,13 @@ The native ETW FPS tracker, event-source prioritization/deduplication and relate
 ## PawnIO driver and setup
 
 [namazso/PawnIO](https://github.com/namazso/PawnIO) is a separate input/output driver project, GPL-2.0; see the upstream [COPYING](https://github.com/namazso/PawnIO/blob/master/COPYING). The original setup executable is bundled with Windows release packages. It is not a FrameScope-authored driver. The optional embedded PawnIO.Modules read modules are separately licensed under LGPL-2.1, as described above.
+
+## Local changes to tao and wry
+
+The vendored tao and wry retain their upstream MIT / Apache-2.0 license files.
+FrameScope modifies tao window creation to use WS_EX_NOREDIRECTIONBITMAP for
+transparent Windows windows. The wry changes use a WebView2 Composition Controller
+and DirectComposition visual tree for UIAccess band 2 windows, forward mouse input,
+and initialize an explicit background through controller options when supported.
+Ordinary desktop windows retain the upstream controller path. The modified source
+contains PATCH(framescope) markers.

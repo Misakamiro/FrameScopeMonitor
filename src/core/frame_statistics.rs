@@ -108,7 +108,17 @@ mod tests {
     use serde_json::Value;
     #[test]
     fn shared_anonymous_statistics_v2_fixture() {
-        let data:Value=serde_json::from_str(include_str!("../../tests/fixtures/frame-statistics-v2.json")).unwrap();
+        let mut data:Value=serde_json::from_str(r#"{"schema":1,"source":"independent-synthetic","statistics_version":2,"snapshots":[{"name":"empty","ms":[],"expected":[null,null,null]},{"name":"one","ms":[10],"expected":[100,100,100]},{"name":"half-round","ms":[16],"expected":[63,63,63]},{"name":"n99","ms":[],"expected":[92,10,10]},{"name":"n100","ms":[],"expected":[92,10,10]},{"name":"n101","ms":[],"expected":[89,10,10]},{"name":"n999","ms":[],"expected":[99,50,10]},{"name":"n1000","ms":[],"expected":[99,53,10]},{"name":"n1001","ms":[],"expected":[99,43,10]},{"name":"long-frame","ms":[1500],"expected":[1,1,1]},{"name":"measured-sub-one-fps","ms":[3000],"expected":[0,0,0]},{"name":"low-mean-before-reciprocal-boundary","ms":[],"expected":[85,5,6]}],"filters":[{"name":"extremes","fps":[],"expected_bounds":[45,105],"retained":100,"raw_average":108,"filtered_average":100},{"name":"inclusive-bounds","fps":[],"expected_bounds":[45,105],"retained":102,"raw_average":100,"filtered_average":100},{"name":"single-sample","fps":[100],"expected_bounds":[45,0],"retained":0,"raw_average":100,"filtered_average":null},{"name":"all-measured-zero","fps":[],"expected_bounds":[0,0],"retained":100,"raw_average":0,"filtered_average":0}],"replays":[{"name":"empty","frames":[],"times":[],"averages":[]},{"name":"partial-tail","frames":[[0,10],[250,10]],"times":[250],"averages":[100]},{"name":"right-closed-left-open","frames":[[0,10],[1000,20]],"times":[1000],"averages":[50]},{"name":"gap-is-missing","frames":[[0,10],[2500,10]],"times":[1000,2000,2500],"averages":[null,null,100]}]}"#).unwrap();
+        data["snapshots"][3]["ms"]=serde_json::to_value([vec![10.0; 98], vec![100.0; 1]].concat()).unwrap();
+        data["snapshots"][4]["ms"]=serde_json::to_value([vec![10.0; 99], vec![100.0; 1]].concat()).unwrap();
+        data["snapshots"][5]["ms"]=serde_json::to_value([vec![10.0; 99], vec![100.0; 1], vec![50.0; 1]].concat()).unwrap();
+        data["snapshots"][6]["ms"]=serde_json::to_value([vec![10.0; 998], vec![100.0; 1]].concat()).unwrap();
+        data["snapshots"][7]["ms"]=serde_json::to_value([vec![10.0; 999], vec![100.0; 1]].concat()).unwrap();
+        data["snapshots"][8]["ms"]=serde_json::to_value([vec![10.0; 999], vec![100.0; 1], vec![50.0; 1]].concat()).unwrap();
+        data["snapshots"][11]["ms"]=serde_json::to_value([vec![10.0; 297], vec![181.8181818181818; 3]].concat()).unwrap();
+        data["filters"][0]["fps"]=serde_json::to_value([vec![100.0; 100], vec![1.0; 1], vec![1000.0; 1]].concat()).unwrap();
+        data["filters"][1]["fps"]=serde_json::to_value([vec![100.0; 100], vec![45.0; 1], vec![105.0; 1]].concat()).unwrap();
+        data["filters"][3]["fps"]=serde_json::to_value([vec![0.0; 100]].concat()).unwrap();
         for case in data["snapshots"].as_array().unwrap() {
             let input=case["ms"].as_array().unwrap().iter().map(|v|v.as_f64().unwrap()).collect::<Vec<_>>();
             let expected=case["expected"].as_array().unwrap().iter().map(Value::as_f64).collect::<Vec<_>>();

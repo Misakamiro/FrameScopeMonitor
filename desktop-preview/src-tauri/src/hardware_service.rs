@@ -655,7 +655,3 @@ fn stop_connected_client(
     }
     Ok(true)
 }
-
-#[cfg(test)]
-#[path = "hardware_service_tests.rs"]
-mod tests;

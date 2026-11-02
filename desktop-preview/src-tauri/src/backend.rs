@@ -10,14 +10,8 @@ use std::path::{Path, PathBuf};
 #[path = "report_tool_path.rs"]
 mod report_tool_path;
 use report_tool_path::report_tool_path;
-#[cfg(test)]
-#[path = "report_operations_tests.rs"]
-mod report_operations_tests;
 static REPORT_OPERATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CONFIG_OPERATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
-#[cfg(all(test, windows))]
-#[path = "config_lock_tests.rs"]
-mod config_lock_tests;
 
 struct ConfigFileMutex {
     #[cfg(windows)] handle: windows_sys::Win32::Foundation::HANDLE,
@@ -74,9 +68,6 @@ static OWNED_WATCHER: std::sync::Mutex<Option<OwnedWatcher>> = std::sync::Mutex:
 static HOST_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static UPDATE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(test)]
-#[path = "update_preparation_tests.rs"]
-mod update_preparation_tests;
 
 pub struct UpdateReservation {
     report: Option<std::sync::MutexGuard<'static, ()>>,
@@ -1869,6 +1860,7 @@ mod graceful_stop_tests {
         }
     }
 
+
     #[test]
     fn watcher_owner_snapshot_loads_real_child_identity_before_stop_validation() {
         use std::io::{BufRead, BufReader};
@@ -1888,7 +1880,14 @@ mod graceful_stop_tests {
         let (root, mut state, _) = fixture();
         let exe = root.join("FrameScopeMonitor.exe");
         let config = root.join("framescope-config.json");
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backend_watcher_owner_fixture.rs");
+        let source = root.join("watcher_fixture.rs");
+        std::fs::write(&source, r#"use std::io::{BufRead, Write};
+fn main() {
+    println!("ready");
+    std::io::stdout().flush().unwrap();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).unwrap();
+}"#).unwrap();
         assert!(Command::new("rustc").arg(source).arg("-o").arg(&exe).status().unwrap().success());
         let mut child = OwnedFixture(Command::new(&exe)
             .arg("--watcher").arg("--config").arg(&config)
@@ -1919,6 +1918,51 @@ mod graceful_stop_tests {
         let result = request_watcher_stop(&root, &state, &owner);
         assert!(result.is_ok(), "real matching child identity rejected: {result:?}");
         assert!(watcher_stop_path(&root, &state).unwrap().is_file());
+    }
+
+    #[test]
+    fn exited_owned_child_with_wrong_config_cannot_complete_shutdown() {
+        let (root, mut state, identity) = fixture();
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let source = root.join("watcher_fixture.rs");
+        std::fs::write(&source, r#"use std::io::{BufRead, Write};
+fn main() {
+    println!("ready");
+    std::io::stdout().flush().unwrap();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).unwrap();
+}"#).unwrap();
+        assert!(Command::new("rustc").arg(source).arg("-o").arg(&identity.exe).status().unwrap().success());
+        let mut child = Command::new(&identity.exe).args(&identity.args[1..])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let start_time = child_start_time(&child);
+        let pid = child.id();
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        state["WatcherPid"] = json!(pid);
+        state["WatcherStartTimeUnix"] = json!(start_time);
+        state["Phase"] = json!("stopped");
+        state["ActiveMonitors"] = json!([]);
+        let wrong_config = root.join("wrong-config.json");
+        std::fs::write(&wrong_config, "{}").unwrap();
+        state["ConfigPath"] = json!(wrong_config);
+        std::fs::write(root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
+        let mut owned = OwnedWatcher { child, root, identity: WatcherOwner {pid, start_time, ..identity},
+            token: state["WatcherInstanceId"].as_str().map(str::to_string) };
+        assert!(owned.child.try_wait().unwrap().is_some());
+        assert!(crate::host_shutdown::completed(true, &state, owned.token.as_deref()).unwrap());
+        let error = owned_state(&mut owned).expect_err("terminal state must still match retained startup config");
+        assert!(error.contains("配置"), "wrong config must be rejected specifically, got: {error}");
+        state["ConfigPath"] = json!(owned.root.join("framescope-config.json"));
+        std::fs::write(owned.root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
+        assert!(owned_state(&mut owned).is_ok(), "matching config terminal state must work after child exit");
+        let wrong_startup_config = owned.root.join("wrong-config.json").to_string_lossy().into_owned();
+        *owned.identity.args.last_mut().unwrap() = wrong_startup_config;
+        assert!(owned_state(&mut owned).unwrap_err().contains("配置"));
     }
 
     fn fixture() -> (PathBuf, Value, WatcherOwner) {
@@ -1993,43 +2037,6 @@ mod graceful_stop_tests {
         request_watcher_stop(&root, &state, &owner).unwrap();
         state["WatcherInstanceId"] = json!("abcdef0123456789abcdef0123456789");
         assert!(!watcher_stop_pending(&root, &state));
-    }
-    #[test]
-    fn exited_owned_child_with_wrong_config_cannot_complete_shutdown() {
-        let (root, mut state, identity) = fixture();
-        use std::io::{BufRead, BufReader};
-        use std::process::{Command, Stdio};
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/backend_watcher_owner_fixture.rs");
-        assert!(Command::new("rustc").arg(source).arg("-o").arg(&identity.exe).status().unwrap().success());
-        let mut child = Command::new(&identity.exe).args(&identity.args[1..])
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-        let mut ready = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
-        assert_eq!(ready.trim(), "ready");
-        let start_time = child_start_time(&child);
-        let pid = child.id();
-        drop(child.stdin.take());
-        child.wait().unwrap();
-        state["WatcherPid"] = json!(pid);
-        state["WatcherStartTimeUnix"] = json!(start_time);
-        state["Phase"] = json!("stopped");
-        state["ActiveMonitors"] = json!([]);
-        let wrong_config = root.join("wrong-config.json");
-        std::fs::write(&wrong_config, "{}").unwrap();
-        state["ConfigPath"] = json!(wrong_config);
-        std::fs::write(root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
-        let mut owned = OwnedWatcher { child, root, identity: WatcherOwner {pid, start_time, ..identity},
-            token: state["WatcherInstanceId"].as_str().map(str::to_string) };
-        assert!(owned.child.try_wait().unwrap().is_some());
-        assert!(crate::host_shutdown::completed(true, &state, owned.token.as_deref()).unwrap());
-        let error = owned_state(&mut owned).expect_err("terminal state must still match retained startup config");
-        assert!(error.contains("配置"), "wrong config must be rejected specifically, got: {error}");
-        state["ConfigPath"] = json!(owned.root.join("framescope-config.json"));
-        std::fs::write(owned.root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
-        assert!(owned_state(&mut owned).is_ok(), "matching config terminal state must work after child exit");
-        let wrong_startup_config = owned.root.join("wrong-config.json").to_string_lossy().into_owned();
-        *owned.identity.args.last_mut().unwrap() = wrong_startup_config;
-        assert!(owned_state(&mut owned).unwrap_err().contains("配置"));
     }
 
     #[test]

@@ -647,7 +647,7 @@ try {
     if (Test-Path -LiteralPath $releaseZip) { Remove-Item -LiteralPath $releaseZip -Force }
     Compress-Archive -LiteralPath @($setupExe, $fullSetupExe, $legacyCleanupExe, $distReadme, $sourceRoot) -DestinationPath $releaseZip -Force
 
-    & (Join-Path $root 'tools\Test-FrameScopePackages.ps1') -RepoRoot $root -DistRoot $distStage | Out-Host
+    & (Join-Path $root 'tools\Validate-PackagePayload.ps1') -RepoRoot $root -DistRoot $distStage | Out-Host
 
     $hadPreviousDist = Test-Path -LiteralPath $dist -PathType Container
     if ($hadPreviousDist) {
