@@ -1,19 +1,6 @@
-import {
-  Box,
-  Heading,
-  Text,
-  VStack,
-  HStack,
-  useColorModeValue,
-  Grid,
-  Button,
-  Menu,
-  MenuButton,
-  MenuList,
-  MenuItem,
-  useDisclosure,
-  Tooltip,
-} from "@chakra-ui/react";
+import { Box, Heading, Text, VStack, HStack, useColorModeValue, Grid, Button, Menu, MenuButton, MenuItem, useDisclosure } from "@chakra-ui/react";
+import { Tooltip } from "@/components/ui/motion-components";
+import { MenuList } from "@/components/ui/motion-components";
 import { useAdaptiveTextColor, useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 import { useAppStartup } from "@/contexts/app-startup-context";
@@ -783,7 +770,7 @@ export default function HardwarePage() {
               <Text fontSize="sm" color={subTextColor} fontWeight="medium">GPU</Text>
             )}
             value={`${gpuUsage ?? "--"}%`}
-            subValue={gpuTemp !== null ? `${t("hardware.temperature")} ${Math.round(gpuTemp)}${t("hardware.temperatureUnit")}` : undefined}
+            subValue={[activeGpuData?.usage_source === '3d' ? 'Windows 3D' : activeGpuData?.usage_source === 'core-fallback' ? 'Core 回退' : '占用来源不可用', gpuTemp !== null ? `${t("hardware.temperature")} ${Math.round(gpuTemp)}${t("hardware.temperatureUnit")}` : ''].filter(Boolean).join(' · ')}
             color="#22c55e"
             sparklineData={gpuSparkline}
             icon={Monitor}

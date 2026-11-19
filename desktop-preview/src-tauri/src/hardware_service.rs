@@ -556,6 +556,22 @@ pub fn sanitize_for_gdi(mut overlay: Value) -> Value {
     overlay
 }
 
+#[cfg(test)]
+#[test]
+#[ignore = "requires private corrected feedback replay"]
+fn eclk_feedback_survives_native_osd_transport_without_rounding_or_rescaling() {
+    let path=std::env::var("FRAMESCOPE_ECLK_REPLAY_OUTPUT").expect("corrected replay path");
+    let rows:Value=serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    for raw in rows.as_array().unwrap() {
+        let data:crate::overlay_panel::OverlayHardwareData=serde_json::from_value(sanitize_for_gdi(raw.clone())).unwrap();
+        let serialized=serde_json::to_value(&data).unwrap();
+        assert_eq!(serialized["cpu_clock"],raw["cpu_clock"]);
+        assert_eq!(serialized["cpu_core_clocks"],raw["cpu_core_clocks"]);
+        assert_eq!(format!("{:.0}",serialized["cpu_clock"].as_f64().unwrap()),"5525");
+        assert_eq!(data.cpu_core_clocks.len(),16);
+    }
+}
+
 /// One request against the hardware service; connects (and spawns the service
 /// process when needed) on first use and after any transport failure.
 pub fn call(method: &str, params: Value) -> Result<Value, String> {
@@ -655,3 +671,4 @@ fn stop_connected_client(
     }
     Ok(true)
 }
+

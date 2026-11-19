@@ -13,6 +13,7 @@ pub type Result<T> = std::result::Result<T, String>;
 pub const MANIFEST: &str = "FrameScopePayloadManifest.json";
 
 pub trait Runtime {
+    fn prepare_components(&mut self, _stage: &Path) -> Result<()> { Ok(()) }
     fn retain_previous(&self) -> bool { false }
     fn confirm_startup(&mut self) -> Result<()> { Ok(()) }
     fn abort_startup(&mut self) -> Result<()> { Ok(()) }
@@ -29,12 +30,12 @@ pub trait Runtime {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Manifest {
     schema: u32,
     files: Vec<ManifestFile>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ManifestFile {
     path: String,
     length: u64,
@@ -398,7 +399,7 @@ fn finish_committed(journal:&Journal,home:&Path,runtime:&dyn Runtime)->Result<()
     Ok(())
 }
 
-pub struct PreviousPayload {pub payload:Vec<u8>,pub installer:PathBuf,pub deletions:Vec<PathBuf>,pub build:serde_json::Value}
+pub struct PreviousPayload {pub payload:Vec<u8>,pub installer:PathBuf,pub deletions:Vec<PathBuf>,pub build:serde_json::Value,pub installed_manifest:Option<Vec<u8>>}
 pub fn previous_payload(target:&Path,runtime:&dyn Runtime)->Result<PreviousPayload> {
     let target=normalize(target)?;
     let home=transaction_home(&target)?;
@@ -408,24 +409,53 @@ pub fn previous_payload(target:&Path,runtime:&dyn Runtime)->Result<PreviousPaylo
     let build=journal.previous_build.clone().ok_or("No previous 2.x version")?;
     let mut zip=zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let mut files=Vec::new();let mut installer=None;let mut deletions=Vec::new();
+    let mut original_manifest=None;let mut installed_manifest=None;
     for change in &journal.changes {
         let relative=change.destination.strip_prefix(&target).map_err(|_|"Recovery entry escapes program directory")?;
         let name=relative.to_string_lossy().replace('\\',"/");
         if change.old_hash.is_none(){deletions.push(change.destination.clone());continue;}
         if !matches(&change.backup,&change.old_hash)? {return Err(format!("Previous backup hash mismatch: {name}"));}
         if name=="FrameScope Installer.exe" {installer=Some(change.backup.clone());continue;}
-        if name==MANIFEST {continue;}
+        if name==MANIFEST {original_manifest=Some(io(fs::read(&change.backup))?);continue;}
         let bytes=io(fs::read(&change.backup))?;
         zip.start_file(&name,zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
         io(zip.write_all(&bytes))?;
-        files.push(serde_json::json!({"path":name,"length":bytes.len(),"sha256":change.old_hash}));
+        files.push(ManifestFile{path:name,length:bytes.len() as u64,sha256:change.old_hash.clone().unwrap()});
     }
     // A first fixture/manual 2.x installation may not have a generated installer
     // backup. Production updates require it before normal shutdown.
     let installer=installer.ok_or("Previous version has no independent installer backup")?;
+    let manifest_bytes=if let Some(bytes)=original_manifest {
+        let mut manifest:Manifest=serde_json::from_slice(bytes.strip_prefix(&[0xef,0xbb,0xbf]).unwrap_or(&bytes)).map_err(|e|e.to_string())?;
+        if manifest.schema!=1 {return Err("Unsupported previous payload manifest schema".into());}
+        // Files absent from the newer payload were never replaced or backed up.
+        // Recover them from the installation only when the old manifest matches.
+        for file in &manifest.files {
+            let name=file.path.replace('\\',"/");
+            crate::installer::checked_relative(Path::new(&name))?;
+            if files.iter().any(|entry|entry.path.eq_ignore_ascii_case(&name)){continue;}
+            let path=target.join(&name);assert_path(&path)?;
+            let contents=io(fs::read(&path))?;
+            if contents.len() as u64!=file.length
+                || !format!("{:x}",Sha256::digest(&contents)).eq_ignore_ascii_case(&file.sha256) {
+                return Err(format!("Unchanged previous program file differs: {name}"));
+            }
+            zip.start_file(&name,zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
+            io(zip.write_all(&contents))?;
+        }
+        let extras:Vec<_>=files.into_iter().filter(|entry|!manifest.files.iter().any(|file|
+            file.path.replace('\\',"/").eq_ignore_ascii_case(&entry.path))).collect();
+        if extras.is_empty(){bytes}else{
+            // The transport must cover every restored byte, including files
+            // that existed before this version began owning their paths.
+            // Their old ownership inventory is restored in the same transaction.
+            manifest.files.extend(extras);installed_manifest=Some(bytes);
+            serde_json::to_vec(&manifest).map_err(|e|e.to_string())?
+        }
+    }else{serde_json::to_vec(&serde_json::json!({"schema":1,"files":files})).map_err(|e|e.to_string())?};
     zip.start_file(MANIFEST,zip::write::SimpleFileOptions::default()).map_err(|e|e.to_string())?;
-    io(zip.write_all(&serde_json::to_vec(&serde_json::json!({"schema":1,"files":files})).map_err(|e|e.to_string())?))?;
-    Ok(PreviousPayload {payload:zip.finish().map_err(|e|e.to_string())?.into_inner(),installer,deletions,build})
+    io(zip.write_all(&manifest_bytes))?;
+    Ok(PreviousPayload {payload:zip.finish().map_err(|e|e.to_string())?.into_inner(),installer,deletions,build,installed_manifest})
 }
 pub fn discard_previous(target:&Path,runtime:&dyn Runtime)->Result<()> {
     let target=normalize(target)?;let home=transaction_home(&target)?;let path=home.join("previous.json");
@@ -715,7 +745,61 @@ fn collect_data(request: &Request<'_>, files: &mut BTreeSet<PathBuf>) -> Result<
     Ok(())
 }
 
+// Retire only unchanged program files recorded by the previous package.
+// User run copies, configurations and unregistered files are outside this set.
+fn installed_files(target: &Path) -> Result<Vec<ManifestFile>> {
+    let manifest_path = target.join(MANIFEST);
+    assert_path(&manifest_path)?;
+    if !manifest_path.exists() { return Ok(Vec::new()); }
+    let bytes = io(fs::read(&manifest_path))?;
+    let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(&bytes);
+    let previous: Manifest = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if previous.schema != 1 { return Err("Unsupported installed payload manifest".into()); }
+    let mut names=BTreeSet::new();
+    for file in &previous.files {
+        crate::installer::checked_relative(Path::new(&file.path))?;
+        let first=file.path.split(['/', '\\']).next().unwrap_or("");
+        if crate::installer::LOCAL_DATA_FILES.iter().chain(crate::installer::LOCAL_DATA_DIRS).any(|n|first.eq_ignore_ascii_case(n)) ||
+            !names.insert(file.path.replace('\\',"/").to_lowercase()) || file.sha256.len()!=64 || !file.sha256.bytes().all(|b|b.is_ascii_hexdigit()) {
+            return Err("Invalid installed program inventory".into());
+        }
+    }
+    Ok(previous.files)
+}
+fn retired_program_files(target: &Path, incoming: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let incoming: BTreeSet<String> = incoming.iter().map(|p| p.to_string_lossy().replace('\\', "/").to_lowercase()).collect();
+    let mut retired = Vec::new();
+    for file in installed_files(target)? {
+        let relative = file.path.replace('\\', "/");
+        if incoming.contains(&relative.to_lowercase()) { continue; }
+        crate::installer::checked_relative(Path::new(&relative))?;
+        let path = target.join(&relative);
+        assert_path(&path)?;
+        if !path.exists() { continue; }
+        if io(fs::metadata(&path))?.len() != file.length || !hash(&path)?.eq_ignore_ascii_case(&file.sha256) {
+            return Err(format!("Retired program file was modified; preserve it before retrying: {relative}"));
+        }
+        retired.push(path);
+    }
+    Ok(retired)
+}
+
 pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
+    execute_inner(request, None, None, runtime)
+}
+
+pub fn execute_restored(request: Request<'_>, installed_manifest: Option<&[u8]>, runtime: &mut dyn Runtime) -> Result<()> {
+    execute_inner(request, None, installed_manifest, runtime)
+}
+
+pub fn execute_cumulative(request: Request<'_>, manifest: &framescope_update::components::ManifestV2,
+    cache: &Path, runtime: &mut dyn Runtime) -> Result<()> {
+    if request.uninstall { return Err("Cumulative update cannot uninstall".into()); }
+    manifest.validate(&format!("v{}",manifest.version))?;
+    execute_inner(request, Some((manifest,cache)), None, runtime)
+}
+
+fn execute_inner(request: Request<'_>, components: Option<(&framescope_update::components::ManifestV2,&Path)>, installed_manifest: Option<&[u8]>, runtime: &mut dyn Runtime) -> Result<()> {
     let normalized = normalize(request.target).map_err(|error| format!("install target normalization failed: {error}"))?;
     let target = normalized.as_path();
     let request = Request {
@@ -779,18 +863,47 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
         if runtime.space(&existing_parent(target)?)? < estimate {
             return Err("Insufficient space for staging and rollback".into());
         }
-        let paths = stage_payload(
+        if let Some((manifest,_))=components {
+            for component in &manifest.components { for file in &component.files {
+                estimate=estimate.checked_add(file.length.saturating_mul(2)).ok_or("Space overflow")?;
+            }}
+            if runtime.space(&existing_parent(target)?)? < estimate {return Err("Insufficient space for component staging and rollback".into());}
+        }
+        let mut paths = stage_payload(
             target,
             &stage,
             request.payload,
             request.required,
             request.progress,
         )?;
+        if let Some(manifest)=installed_manifest {
+            // ZIP validation has checked all recovery files against their
+            // hashes. Journal the original ownership inventory with the files.
+            io(fs::write(stage.join(MANIFEST),manifest))?;
+        }
+        let mut owned=paths.clone();
+        if let Some((manifest,cache))=components {
+            owned=crate::component_install::stage(target,&stage,&mut paths,manifest,cache)?;
+            runtime.prepare_components(&stage)?;
+        }
+        if request.uninstall {
+            paths.extend(installed_files(target)?.into_iter().map(|file|PathBuf::from(file.path)));
+        }
+        let retired = if request.uninstall { Vec::new() } else { retired_program_files(target, &owned)? };
         runtime.checkpoint("staged", 0)?;
         // Normal shutdown can append telemetry or publish a final report. The
         // deletion set and old identities must be observed after it completes.
         runtime.stop(target, &stage.join("FrameScopeUninstaller.exe"))?;
         runtime.checkpoint("stopped", 0)?;
+        if let Some((manifest,_))=components {
+            // Reused files never enter the replacement set; check them again
+            // after the old application has drained its work.
+            for component in &manifest.components {
+                if !stage.join(&component.files[0].path).exists() {
+                    framescope_update::components::verify_component(target,component)?;
+                }
+            }
+        }
         let mut names = BTreeSet::new();
         collect_data(&request, &mut names)?;
         let mut changes = Vec::new();
@@ -816,6 +929,7 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
         for path in request.deletions {
             names.insert(path);
         }
+        names.extend(retired);
         let mut bytes = 1024u64 * 1024;
         for destination in names {
             assert_path(&destination)?;
@@ -1000,3 +1114,4 @@ pub fn execute(request: Request<'_>, runtime: &mut dyn Runtime) -> Result<()> {
     drop(lock);
     Ok(())
 }
+

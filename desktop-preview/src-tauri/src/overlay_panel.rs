@@ -10,6 +10,7 @@ static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OVERLAY_HANDLE: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(std::ptr::null_mut());
 static DRAG_MODE: AtomicBool = AtomicBool::new(false);
 static POSITION_CHANGED: AtomicBool = AtomicBool::new(false);
+pub static OUTLINE_MIGRATED: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 pub(crate) static POSITION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -19,15 +20,11 @@ pub fn take_position_changed() -> bool {
     POSITION_CHANGED.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 static OVERLAY_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
-#[cfg(feature = "uiaccess-acceptance")]
+#[cfg(any(test,feature = "uiaccess-acceptance"))]
 static RENDER_DIAGNOSTICS: Mutex<Option<serde_json::Value>> = Mutex::new(None);
-#[cfg(feature = "uiaccess-acceptance")]
+#[cfg(any(test,feature = "uiaccess-acceptance"))]
 pub fn render_diagnostics() -> serde_json::Value {
     RENDER_DIAGNOSTICS.lock().unwrap_or_else(|p|p.into_inner()).clone().unwrap_or(serde_json::Value::Null)
-}
-
-fn get_net_offset_ms() -> Option<i64> {
-    CURRENT_HARDWARE_DATA.lock().unwrap().as_ref().and_then(|d| d.net_time_offset_ms)
 }
 
 pub fn collect_hardware_data() -> OverlayHardwareData {
@@ -39,6 +36,8 @@ pub struct DisplayItem {
     pub id: String,
     pub label: String,
     pub enabled: bool,
+    #[serde(flatten)]
+    pub options: crate::overlay_items::ItemOptions,
 }
 
 pub type DisplayItems = Vec<DisplayItem>;
@@ -62,31 +61,33 @@ fn default_item_width() -> u32 {
 fn default_font_color() -> String {
     "#ffffff".to_string()
 }
+fn default_outline_width()->f32 {1.0}
+fn default_outline_color()->String {"#000000".into()}
 
 fn default_display_items() -> DisplayItems {
         vec![
-            DisplayItem { id: "time".to_string(), label: "时间".to_string(), enabled: false },
-            DisplayItem { id: "fps".to_string(), label: "FPS".to_string(), enabled: false },
-            DisplayItem { id: "fps_1low".to_string(), label: "1% Low".to_string(), enabled: false },
-            DisplayItem { id: "fps_01low".to_string(), label: "0.1% Low".to_string(), enabled: false },
-            DisplayItem { id: "cpu_temp".to_string(), label: "CPU温度".to_string(), enabled: false },
-            DisplayItem { id: "cpu_usage".to_string(), label: "CPU占用".to_string(), enabled: true },
-            DisplayItem { id: "cpu_fan_speed".to_string(), label: "CPU风扇转速".to_string(), enabled: false },
-            DisplayItem { id: "cpu_clock".to_string(), label: "CPU频率".to_string(), enabled: false },
-            DisplayItem { id: "cpu_voltage".to_string(), label: "CPU电压".to_string(), enabled: false },
-            DisplayItem { id: "cpu_power".to_string(), label: "CPU功耗".to_string(), enabled: false },
-            DisplayItem { id: "gpu_temp".to_string(), label: "GPU温度".to_string(), enabled: true },
-            DisplayItem { id: "gpu_usage".to_string(), label: "GPU占用".to_string(), enabled: true },
-            DisplayItem { id: "gpu_fan_speed".to_string(), label: "GPU风扇转速".to_string(), enabled: false },
-            DisplayItem { id: "gpu_power".to_string(), label: "GPU功耗".to_string(), enabled: false },
-            DisplayItem { id: "gpu_clock".to_string(), label: "GPU频率".to_string(), enabled: false },
-            DisplayItem { id: "gpu_voltage".to_string(), label: "GPU电压".to_string(), enabled: false },
-            DisplayItem { id: "gpu_vram".to_string(), label: "GPU显存占用".to_string(), enabled: false },
-            DisplayItem { id: "gpu_memory_clock".to_string(), label: "GPU显存频率".to_string(), enabled: false },
-            DisplayItem { id: "memory_usage".to_string(), label: "内存占用".to_string(), enabled: true },
-            DisplayItem { id: "ssd_temp".to_string(), label: "硬盘温度".to_string(), enabled: false },
-            DisplayItem { id: "game_ping".to_string(), label: "游戏延迟".to_string(), enabled: true },
-            DisplayItem { id: "delta_password".to_string(), label: "三角洲密码".to_string(), enabled: false },
+            DisplayItem { id: "time".to_string(), label: "时间".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "fps".to_string(), label: "FPS".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "fps_1low".to_string(), label: "1% Low".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "fps_01low".to_string(), label: "0.1% Low".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "cpu_temp".to_string(), label: "CPU温度".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "cpu_usage".to_string(), label: "CPU占用".to_string(), enabled: true, options: Default::default() },
+            DisplayItem { id: "cpu_fan_speed".to_string(), label: "CPU风扇转速".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "cpu_clock".to_string(), label: "CPU频率".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "cpu_voltage".to_string(), label: "CPU电压".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "cpu_power".to_string(), label: "CPU功耗".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "gpu_temp".to_string(), label: "GPU温度".to_string(), enabled: true, options: Default::default() },
+            DisplayItem { id: "gpu_usage".to_string(), label: "GPU占用".to_string(), enabled: true, options: Default::default() },
+            DisplayItem { id: "gpu_fan_speed".to_string(), label: "GPU风扇转速".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "gpu_power".to_string(), label: "GPU功耗".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "gpu_clock".to_string(), label: "GPU频率".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "gpu_voltage".to_string(), label: "GPU电压".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "gpu_vram".to_string(), label: "GPU显存占用".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "gpu_memory_clock".to_string(), label: "GPU显存频率".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "memory_usage".to_string(), label: "内存占用".to_string(), enabled: true, options: Default::default() },
+            DisplayItem { id: "ssd_temp".to_string(), label: "硬盘温度".to_string(), enabled: false, options: Default::default() },
+            DisplayItem { id: "game_ping".to_string(), label: "游戏延迟".to_string(), enabled: true, options: Default::default() },
+            DisplayItem { id: "delta_password".to_string(), label: "三角洲密码".to_string(), enabled: false, options: Default::default() },
         ]
 }
 
@@ -97,7 +98,12 @@ pub struct CustomOverlayItem {
     pub color: String,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(flatten)]
+    pub options: crate::overlay_items::ItemOptions,
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct OutlineStyle { pub enabled:bool, pub width:f32, pub color:String }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct OverlaySettings {
@@ -116,6 +122,20 @@ pub struct OverlaySettings {
     pub item_width: u32,
     #[serde(default = "default_font_color")]
     pub font_color: String,
+    #[serde(default)]
+    pub font_bold: bool,
+    #[serde(default)]
+    pub text_outline_enabled: bool,
+    #[serde(default="default_outline_width")]
+    pub text_outline_width: f32,
+    #[serde(default="default_outline_color")]
+    pub text_outline_color: String,
+    #[serde(default)]
+    pub outline_migration_version: u8,
+    #[serde(default)]
+    pub horizontal_outline: Option<OutlineStyle>,
+    #[serde(default)]
+    pub vertical_outline: Option<OutlineStyle>,
     #[serde(default)]
     pub position_x: Option<i32>,
     #[serde(default)]
@@ -145,6 +165,13 @@ impl Default for OverlaySettings {
             font_size: 13,
             item_width: 130,
             font_color: "#ffffff".to_string(),
+            font_bold:false,
+            text_outline_enabled:true,
+            text_outline_width:default_outline_width(),
+            text_outline_color:default_outline_color(),
+            outline_migration_version:1,
+            horizontal_outline:Some(OutlineStyle{enabled:true,width:1.0,color:default_outline_color()}),
+            vertical_outline:Some(OutlineStyle{enabled:false,width:1.0,color:default_outline_color()}),
             position_x: None,
             position_y: None,
             position_reference: None,
@@ -156,10 +183,73 @@ impl Default for OverlaySettings {
     }
 }
 
+impl OverlaySettings {
+    fn active_outline(&self)->OutlineStyle {OutlineStyle{enabled:self.text_outline_enabled,width:self.text_outline_width,color:self.text_outline_color.clone()}}
+    fn apply_outline(&mut self, value:OutlineStyle){self.text_outline_enabled=value.enabled;self.text_outline_width=value.width;self.text_outline_color=value.color;}
+    pub fn migrate_outline(&mut self)->bool {
+        if self.outline_migration_version>=1{return false;}
+        let vertical=self.active_outline();let mut horizontal=vertical.clone();horizontal.enabled=true;
+        self.horizontal_outline=Some(horizontal.clone());self.vertical_outline=Some(vertical);
+        if self.style!="vertical_panel"{self.apply_outline(horizontal);}
+        self.outline_migration_version=1;true
+    }
+    pub fn preserve_outline_styles(&mut self,current:&Self){
+        let stale_outline = self.outline_migration_version == 0 && current.outline_migration_version >= 1;
+        let mut old=current.clone();old.migrate_outline();
+        if stale_outline { self.apply_outline(old.active_outline()); }
+        let active=old.active_outline();
+        if old.style=="vertical_panel"{old.vertical_outline=Some(active);}else{old.horizontal_outline=Some(active);}
+        self.horizontal_outline=old.horizontal_outline;self.vertical_outline=old.vertical_outline;self.outline_migration_version=1;
+        if (old.style=="vertical_panel")!=(self.style=="vertical_panel") {
+            let selected=if self.style=="vertical_panel"{self.vertical_outline.clone()}else{self.horizontal_outline.clone()};
+            if let Some(selected)=selected{self.apply_outline(selected);}
+        }
+        let active=self.active_outline();
+        if self.style=="vertical_panel"{self.vertical_outline=Some(active);}else{self.horizontal_outline=Some(active);}
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct OverlayResult {
     pub success: bool,
     pub message: String,
+}
+
+#[cfg(test)]
+mod text_style_tests {
+    use super::*;
+    #[test] fn outline_migration_preserves_vertical_and_explicit_disable(){
+        let mut old:OverlaySettings=serde_json::from_value(serde_json::json!({"opacity":0,"text_outline_enabled":false,"text_outline_color":"#123456","text_outline_width":2.0})).unwrap();
+        assert!(old.migrate_outline());assert!(old.text_outline_enabled);assert_eq!(old.text_outline_width,2.0);
+        let mut stale:OverlaySettings=serde_json::from_value(serde_json::json!({"opacity":0,"text_outline_enabled":false})).unwrap();
+        stale.preserve_outline_styles(&old);assert!(stale.text_outline_enabled);assert_eq!(stale.text_outline_width,2.0);
+        let mut vertical=old.clone();vertical.style="vertical_panel".into();vertical.preserve_outline_styles(&old);
+        assert!(!vertical.text_outline_enabled);assert_eq!(vertical.text_outline_color,"#123456");
+        let mut horizontal=vertical.clone();horizontal.style="dynamic_island".into();horizontal.preserve_outline_styles(&vertical);assert!(horizontal.text_outline_enabled);
+        let previous=horizontal.clone();horizontal.text_outline_enabled=false;horizontal.preserve_outline_styles(&previous);
+        let mut restored:OverlaySettings=serde_json::from_value(serde_json::to_value(horizontal).unwrap()).unwrap();
+        assert!(!restored.migrate_outline());assert!(!restored.text_outline_enabled);
+    }
+    #[test] fn old_settings_default_to_unchanged_typography() {
+        let settings:OverlaySettings=serde_json::from_value(serde_json::json!({"opacity":0})).unwrap();
+        let saved=serde_json::to_value(settings).unwrap();
+        assert_eq!(saved["font_bold"],false);assert_eq!(saved["text_outline_enabled"],false);
+        assert_eq!(saved["text_outline_width"],1.0);assert_eq!(saved["text_outline_color"],"#000000");
+    }
+    #[test] fn text_style_validation_and_roundtrip_preserve_disabled_preferences() {
+        let mut raw=serde_json::to_value(OverlaySettings::default()).unwrap();
+        raw["font_bold"]=serde_json::json!(true);raw["text_outline_enabled"]=serde_json::json!(false);
+        raw["text_outline_width"]=serde_json::json!(2.5);raw["text_outline_color"]=serde_json::json!("#123ABC");
+        let settings:OverlaySettings=serde_json::from_value(raw.clone()).unwrap();
+        assert!(crate::validate_overlay_settings(&settings).is_ok());
+        assert_eq!(serde_json::to_value(settings).unwrap(),raw);
+        for width in [-1.0,0.0,3.5] {raw["text_outline_width"]=serde_json::json!(width);let s=serde_json::from_value(raw.clone()).unwrap();assert!(crate::validate_overlay_settings(&s).is_err());}
+        raw["text_outline_width"]=serde_json::json!(1.0);
+        let mut nonfinite=OverlaySettings::default();nonfinite.text_outline_width=f32::NAN;
+        assert!(crate::validate_overlay_settings(&nonfinite).is_err());
+        nonfinite.text_outline_width=f32::INFINITY;assert!(crate::validate_overlay_settings(&nonfinite).is_err());
+        for color in ["red","#12345","#GG0000","#00000000"] {raw["text_outline_color"]=serde_json::json!(color);let s=serde_json::from_value(raw.clone()).unwrap();assert!(crate::validate_overlay_settings(&s).is_err());}
+    }
 }
 
 /// 单个 GPU 的传感器数据
@@ -182,6 +272,7 @@ pub struct GpuSensorData {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayHardwareData {
+    pub resolved_items: Vec<crate::overlay_items::ResolvedItem>,
     fps: Option<u32>,
     // Low metrics are fractional FPS values. Keeping them as integers here
     // silently truncated the service result before it reached the native OSD.
@@ -192,6 +283,7 @@ pub struct OverlayHardwareData {
     cpu_clock: Option<f64>,
     gpu_temp: Option<f64>,
     gpu_usage: Option<u32>,
+    pub gpu_usage_source: Option<String>,
     memory_usage: Option<f64>,
     delta_password: Option<String>,
     game_ping: Option<u32>,
@@ -203,6 +295,9 @@ pub struct OverlayHardwareData {
     gpu_vram_total: Option<u32>,
     gpu_memory_clock: Option<u32>,
     cpu_voltage: Option<f64>,
+    pub cpu_voltage_kind: Option<String>,
+    pub cpu_voltage_source: Option<String>,
+    pub cpu_core_voltage_kind: Option<String>,
     gpu_voltage: Option<f64>,
     cpu_power: Option<f64>,
     ssd_temp: Option<f64>,
@@ -227,6 +322,7 @@ impl Default for OverlayHardwareData {
     fn default() -> Self {
         Self {
             fps: None,
+            resolved_items: Vec::new(),
             fps_1low: None,
             fps_01low: None,
             cpu_usage: None,
@@ -234,6 +330,7 @@ impl Default for OverlayHardwareData {
             cpu_clock: None,
             gpu_temp: None,
             gpu_usage: None,
+            gpu_usage_source: None,
             memory_usage: None,
             delta_password: None,
             game_ping: None,
@@ -245,6 +342,9 @@ impl Default for OverlayHardwareData {
             gpu_vram_total: None,
             gpu_memory_clock: None,
             cpu_voltage: None,
+            cpu_voltage_kind: None,
+            cpu_voltage_source: None,
+            cpu_core_voltage_kind: None,
             gpu_voltage: None,
             cpu_power: None,
             ssd_temp: None,
@@ -326,8 +426,11 @@ pub fn try_load_persisted_settings(app_handle: &tauri::AppHandle) {
             if let Ok(content) = std::fs::read_to_string(&store_path) {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(saved) = json.get("overlay-settings") {
-                        if let Ok(settings) = serde_json::from_value::<OverlaySettings>(saved.clone()) {
+                        if let Ok(mut settings) = serde_json::from_value::<OverlaySettings>(saved.clone()).and_then(|settings| {
+                            crate::validate_overlay_settings(&settings).map_err(serde::de::Error::custom)?; Ok(settings)
+                        }) {
                             log::info!("从持久化存储加载悬浮框设置成功");
+                            if settings.migrate_outline(){OUTLINE_MIGRATED.store(true,Ordering::SeqCst);}
                             *lock = Some(settings);
                         }
                     }
@@ -570,7 +673,7 @@ mod win32 {
         DestroyWindow(hwnd) != 0
     }
 
-    unsafe fn create_compatible_font(dpi_scale: f32, font_name: &str, font_size: u32) -> HFONT {
+    unsafe fn create_compatible_font(dpi_scale: f32, font_name: &str, font_size: u32, bold: bool) -> HFONT {
         let font_height = -((font_size as f32) * dpi_scale).round() as i32;
         let wide_name: Vec<u16> = font_name.encode_utf16().chain(std::iter::once(0)).collect();
         CreateFontW(
@@ -578,14 +681,14 @@ mod win32 {
             0,
             0,
             0,
-            FW_NORMAL as i32,
+            if bold { FW_BOLD as i32 } else { FW_NORMAL as i32 },
             0,
             0,
             0,
             DEFAULT_CHARSET as u32,
             OUT_DEFAULT_PRECIS as u32,
             CLIP_DEFAULT_PRECIS as u32,
-            CLEARTYPE_QUALITY as u32,
+            if bold { ANTIALIASED_QUALITY as u32 } else { CLEARTYPE_QUALITY as u32 },
             (DEFAULT_PITCH | FF_DONTCARE) as u32,
             wide_name.as_ptr(),
         )
@@ -600,6 +703,44 @@ mod win32 {
         size.cx
     }
 
+    unsafe fn measure_path_text(hdc:HDC,hfont:HFONT,text:&str)->i32 {
+        if text.is_empty(){return 0;}
+        let mut graphics=ptr::null_mut();let mut font=ptr::null_mut();let mut format=ptr::null_mut();
+        let mut lf:LOGFONTW=std::mem::zeroed();GetObjectW(hfont as _,std::mem::size_of::<LOGFONTW>() as i32,&mut lf as *mut _ as _);
+        let ready=GdipCreateFromHDC(hdc,&mut graphics)==0 && GdipCreateFontFromLogfontW(hdc,&lf,&mut font)==0
+            && GdipCreateStringFormat(StringFormatFlagsNoWrap as i32,0,&mut format)==0;
+        let width=if ready{measure_gdiplus_text(graphics,font,format,text)}else{measure_text_width(hdc,hfont,text)};
+        if !format.is_null(){GdipDeleteStringFormat(format);}if !font.is_null(){GdipDeleteFont(font);}if !graphics.is_null(){GdipDeleteGraphics(graphics);}
+        width
+    }
+
+    unsafe fn draw_gdiplus_text(settings:&super::OverlaySettings,scale:f32,graphics:*mut GpGraphics,
+        text:*const u16,length:i32,font:*mut GpFont,rect:&RectF,format:*mut GpStringFormat,brush:*mut GpBrush) {
+        if settings.text_outline_enabled {
+            let mut family=ptr::null_mut();let mut path=ptr::null_mut();let mut pen=ptr::null_mut();
+            let mut size=0.0;let mut unit=UnitPixel;let mut style=0;
+            let ready=GdipGetFamily(font,&mut family)==0 && GdipGetFontSize(font,&mut size)==0
+                && GdipGetFontUnit(font,&mut unit)==0 && GdipGetFontStyle(font,&mut style)==0;
+            if unit==UnitPoint {let mut dpi=96.0;GdipGetDpiY(graphics,&mut dpi);size*=dpi/72.0;}
+            let drawn=ready && GdipCreatePath(FillModeAlternate,&mut path)==0
+                && GdipAddPathString(path,text,length,family,style,size,rect,format)==0
+                && GdipCreatePen1(gdi_to_argb(parse_hex_color(&settings.text_outline_color)),2.0*settings.text_outline_width*scale,UnitPixel,&mut pen)==0;
+            if drawn {GdipSetPenLineJoin(pen,LineJoinRound);GdipDrawPath(graphics,pen,path);GdipFillPath(graphics,brush,path);}
+            if !pen.is_null(){GdipDeletePen(pen);}if !path.is_null(){GdipDeletePath(path);}if !family.is_null(){GdipDeleteFontFamily(family);}
+            if drawn{return;}
+            // Font-path conversion is not available for every fallback font.
+            let mut edge=ptr::null_mut();
+            if GdipCreateSolidFill(gdi_to_argb(parse_hex_color(&settings.text_outline_color)),&mut edge)==0 {
+                for i in 0..16 {let angle=i as f32*std::f32::consts::TAU/16.0;let radius=settings.text_outline_width*scale;
+                    let shifted=RectF{X:rect.X+angle.cos()*radius,Y:rect.Y+angle.sin()*radius,Width:rect.Width,Height:rect.Height};
+                    GdipDrawString(graphics,text,length,font,&shifted,format,edge as *mut GpBrush);
+                }GdipDeleteBrush(edge as *mut GpBrush);
+            }
+        }
+        GdipDrawString(graphics,text,length,font,rect,format,brush);
+    }
+
+
     struct DisplayItem {
         label: String,
         value: String,
@@ -607,6 +748,9 @@ mod win32 {
         value_width: i32,
         total_width: i32,
         custom_color: Option<u32>,
+        font_size: u32,
+        font_bold: bool,
+        keep_with_next: bool,
     }
 
     fn parse_hex_color(hex: &str) -> u32 {
@@ -630,202 +774,23 @@ mod win32 {
         0xFF000000 | (r << 16) | (g << 8) | b
     }
 
-    fn build_display_items(
-        settings: &super::OverlaySettings,
-        data: &super::OverlayHardwareData,
-    ) -> Vec<DisplayItem> {
-        let mut items = Vec::new();
-        for display_item in &settings.display_items {
-            if !display_item.enabled {
-                continue;
-            }
-            match display_item.id.as_str() {
-                "time" => {
-                    // 优先使用网络标准时间；未同步成功时回退到北京时间（UTC+8）
-                    let now = if let Some(offset_ms) = super::get_net_offset_ms() {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as i64)
-                            .unwrap_or(0)
-                            + offset_ms;
-                        chrono::DateTime::from_timestamp_millis(now_ms)
-                            .map(|dt| dt.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()))
-                    } else {
-                        Some(chrono::Utc::now().with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()))
-                    };
-                    if let Some(now) = now {
-                        items.push(DisplayItem {
-                            label: String::new(),
-                            value: now.format("%H:%M:%S").to_string(),
-                            label_width: 0, value_width: 0, total_width: 0, custom_color: None,
-                        });
-                    }
-                }
-                "cpu_usage" => {
-                    let val = data.cpu_usage.map(|v| format!("{}%", v)).unwrap_or_else(|| "--%".to_string());
-                    items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_temp" => {
-                    let val = data.gpu_temp.map(|v| format!("{:.0}°C", v)).unwrap_or_else(|| "--°C".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_usage" => {
-                    let val = data.gpu_usage.map(|v| format!("{}%", v)).unwrap_or_else(|| "--%".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "memory_usage" => {
-                    let val = data.memory_usage.map(|v| format!("{}%", v.round() as i32)).unwrap_or_else(|| "--%".to_string());
-                    items.push(DisplayItem { label: "RAM".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "delta_password" => {
-                    let val = data.delta_password.as_deref().unwrap_or("--").to_string();
-                    items.push(DisplayItem { label: "".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "game_ping" => {
-                    let val = data.game_ping.map(|v| format!("{}ms", v)).unwrap_or_else(|| "--ms".to_string());
-                    items.push(DisplayItem { label: "PING".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "fps" => {
-                    let (val, color) = match data.fps {
-                        Some(v) => {
-                            let c = if v < 30 {
-                                0x000000FFu32
-                            } else if v < 60 {
-                                0x0000FFFFu32
-                            } else {
-                                0x0000FF00u32
-                            };
-                            (format!("{}", v), Some(c))
-                        }
-                        None => ("--".to_string(), None),
-                    };
-                    items.push(DisplayItem { label: "FPS".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: color });
-                }
-                "fps_1low" => {
-                    let (val, color) = match data.fps_1low {
-                        Some(v) => {
-                            let c = if v < 30.0 {
-                                0x000000FFu32
-                            } else if v < 60.0 {
-                                0x0000FFFFu32
-                            } else {
-                                0x0000FF00u32
-                            };
-                            (format!("{v:.1}"), Some(c))
-                        }
-                        None => ("--".to_string(), None),
-                    };
-                    items.push(DisplayItem { label: "1%".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: color });
-                }
-                "fps_01low" => {
-                    let (val, color) = match data.fps_01low {
-                        Some(v) => {
-                            let c = if v < 30.0 {
-                                0x000000FFu32
-                            } else if v < 60.0 {
-                                0x0000FFFFu32
-                            } else {
-                                0x0000FF00u32
-                            };
-                            (format!("{v:.1}"), Some(c))
-                        }
-                        None => ("--".to_string(), None),
-                    };
-                    items.push(DisplayItem { label: "0.1%".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: color });
-                }
-                "cpu_fan_speed" => {
-                    let val = data.cpu_fan_speed.map(|v| format!("{}RPM", v)).unwrap_or_else(|| "--RPM".to_string());
-                    items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_fan_speed" => {
-                    let val = data.gpu_fan_speed.map(|v| format!("{}RPM", v)).unwrap_or_else(|| "--RPM".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_power" => {
-                    let val = data.gpu_power.map(|v| format!("{}W", v)).unwrap_or_else(|| "--W".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_clock" => {
-                    let val = data.gpu_clock.map(|v| format!("{}MHz", v)).unwrap_or_else(|| "--MHz".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_vram" => {
-                    // The hardware service already reports VRAM in GB (the
-                    // NexBox upstream feed was MiB, hence the old /1024 here).
-                    let val = match (data.gpu_vram_used, data.gpu_vram_total) {
-                        (Some(used), Some(total)) => {
-                            format!("{:.1}G/{:.1}G", used as f64, total as f64)
-                        }
-                        _ => "--G/--G".to_string(),
-                    };
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_memory_clock" => {
-                    let val = data.gpu_memory_clock.map(|v| format!("{}MHz", v)).unwrap_or_else(|| "--MHz".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "gpu_voltage" => {
-                    let val = data.gpu_voltage.map(|v| format!("{:.3}V", v)).unwrap_or_else(|| "--V".to_string());
-                    items.push(DisplayItem { label: "GPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "cpu_temp" => {
-                    let val = data.cpu_temp.map(|v| format!("{:.0}°C", v)).unwrap_or_else(|| "--°C".to_string());
-                    items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "cpu_clock" => {
-                    let val = data.cpu_clock.map(|v| format!("{v:.0}MHz")).unwrap_or_else(|| "--MHz".to_string());
-                    items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "cpu_voltage" => {
-                    let val = data.cpu_voltage.map(|v| format!("{:.3}V", v)).unwrap_or_else(|| "--V".to_string());
-                    items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "cpu_power" => {
-                    let val = data.cpu_power.map(|v| format!("{:.1}W", v)).unwrap_or_else(|| "--W".to_string());
-                    items.push(DisplayItem { label: "CPU".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                "ssd_temp" => {
-                    let val = data.ssd_temp.map(|v| format!("{:.0}°C", v)).unwrap_or_else(|| "--°C".to_string());
-                    items.push(DisplayItem { label: "硬盘".to_string(), value: val, label_width: 0, value_width: 0, total_width: 0, custom_color: None });
-                }
-                _ => {}
-            }
+    fn build_display_items(settings: &super::OverlaySettings, data: &super::OverlayHardwareData) -> Vec<DisplayItem> {
+        let raw=serde_json::to_value(data).unwrap_or_default();
+        let resolved=if data.resolved_items.is_empty(){crate::overlay_items::resolve(settings,&raw)}else{data.resolved_items.clone()};
+        let mut flattened=Vec::new();
+        for mut item in resolved {
+            if matches!(item.metric.as_str(),"cpu_core_clocks"|"cpu_core_voltages") {continue;}
+            let rows=std::mem::take(&mut item.core_rows);
+            flattened.push((item,false));
+            for row in rows { let count=row.cells.len();for (index,mut cell) in row.cells.into_iter().enumerate(){
+                cell.label=if index==0{row.label.clone()}else{"/".into()};flattened.push((cell,index+1<count));
+            }}
         }
-        for custom in &settings.custom_items {
-            if custom.enabled && !custom.text.is_empty() {
-                let color = parse_hex_color(&custom.color);
-                items.push(DisplayItem {
-                    label: String::new(),
-                    value: custom.text.clone(),
-                    label_width: 0,
-                    value_width: 0,
-                    total_width: 0,
-                    custom_color: Some(color),
-                });
-            }
-        }
-        items
-    }
-
-    unsafe fn measure_and_layout_items(
-        hdc: HDC,
-        hfont: HFONT,
-        items: &mut [DisplayItem],
-        dpi_scale: f32,
-    ) -> i32 {
-        let gap = (10.0 * dpi_scale) as i32;
-        let mut total = 0i32;
-        for item in items.iter_mut() {
-            item.label_width = measure_text_width(hdc, hfont, &item.label);
-            item.value_width = measure_text_width(hdc, hfont, &item.value);
-            if item.label.is_empty() {
-                item.total_width = item.value_width;
-            } else {
-                item.total_width = item.label_width + gap + item.value_width;
-            }
-            total += item.total_width;
-        }
-        total
+        flattened.into_iter().map(|(item,keep_with_next)|DisplayItem {
+            label:item.label,value:item.value,label_width:0,value_width:0,total_width:0,
+            custom_color:item.color.as_deref().map(parse_hex_color),font_size:item.font_size,font_bold:item.font_bold,
+            keep_with_next,
+        }).collect()
     }
 
     struct ItemLayout {
@@ -901,6 +866,8 @@ mod win32 {
                 label_width, value_width,
                 total_width: label_width + value_width + if value_part.is_empty() { 0 } else { gap },
                 custom_color: item.custom_color,
+                font_size:item.font_size,font_bold:item.font_bold,
+                keep_with_next:false,
             });
             label = &label[label_end..];
             value = &value[value_end..];
@@ -910,7 +877,7 @@ mod win32 {
 
     fn layout_measured_items(
         items: Vec<DisplayItem>, area: RECT, dpi_scale: f32, row_height: i32,
-        font_color: u32, measure: impl Fn(&str) -> i32,
+        font_color: u32, measure: impl Fn(u32, bool, &str) -> i32,
     ) -> Result<ItemLayout, String> {
         let padding = (16.0 * dpi_scale) as i32;
         let item_gap = (16.0 * dpi_scale) as i32;
@@ -925,9 +892,19 @@ mod win32 {
         };
         let mut x = padding;
         let mut y = 0;
-        for item in items {
+        let mut group_widths=vec![0;items.len()];
+        for index in (0..items.len()).rev() {
+            group_widths[index]=items[index].total_width;
+            if items[index].keep_with_next && index+1<items.len(){group_widths[index]+=item_gap+group_widths[index+1];}
+        }
+        for (item_index,item) in items.into_iter().enumerate() {
+            let group_width=group_widths[item_index];
+            if group_width<=content_width && x>padding && x+item_gap+group_width>padding+content_width {
+                x=padding;y+=row_height;
+            }
             let oversized = item.total_width > content_width;
-            let parts = wrap_item(item, content_width, text_gap, font_color, &measure)?;
+            let (size, bold) = (item.font_size, item.font_bold);
+            let parts = wrap_item(item, content_width, text_gap, font_color, &|text| measure(size, bold, text))?;
             for (index, part) in parts.into_iter().enumerate() {
                 if x > padding && (oversized || x + item_gap + part.total_width > padding + content_width)
                     || index > 0
@@ -960,6 +937,45 @@ mod win32 {
         (metrics.tmHeight + (4.0 * dpi_scale) as i32).max((base * dpi_scale) as i32)
     }
 
+    unsafe fn measure_item_text(hdc: HDC, settings: &super::OverlaySettings, scale: f32,
+        size: u32, bold: bool, text: &str, island: bool, padding: i32) -> i32 {
+        if text.is_empty() { return 0; }
+        let font = create_compatible_font(scale, &settings.font, size, bold);
+        let old = SelectObject(hdc, font as _);
+        let mut graphics = ptr::null_mut();
+        let mut gp_font = ptr::null_mut();
+        let mut format = ptr::null_mut();
+        let width = if island && GdipCreateFromHDC(hdc, &mut graphics) == 0
+            && GdipCreateFontFromDC(hdc, &mut gp_font) == 0
+            && GdipCreateStringFormat(StringFormatFlagsNoWrap as i32, 0, &mut format) == 0 {
+            GdipSetTextRenderingHint(graphics, TextRenderingHintAntiAliasGridFit);
+            measure_gdiplus_text(graphics, gp_font, format, text)
+        } else if padding > 0 { measure_path_text(hdc, font, text) }
+        else { measure_text_width(hdc, font, text) };
+        if !format.is_null() { GdipDeleteStringFormat(format); }
+        if !gp_font.is_null() { GdipDeleteFont(gp_font); }
+        if !graphics.is_null() { GdipDeleteGraphics(graphics); }
+        SelectObject(hdc, old);
+        DeleteObject(font as _);
+        width + padding * 2
+    }
+
+    unsafe fn item_layout(hdc: HDC, settings: &super::OverlaySettings, data: &super::OverlayHardwareData,
+        area: RECT, scale: f32, island: bool, padding: i32) -> Result<ItemLayout, String> {
+        let mut items = build_display_items(settings, data);
+        let measure = |size, bold, text: &str| measure_item_text(hdc, settings, scale, size, bold, text, island, padding);
+        let mut height = ((if island {36.0} else {28.0}) * scale) as i32 + padding * 2;
+        for item in &mut items {
+            item.label_width = measure(item.font_size, item.font_bold, &item.label);
+            item.value_width = measure(item.font_size, item.font_bold, &item.value);
+            item.total_width = item.label_width + item.value_width + if item.label.is_empty() {0} else {(10.0 * scale) as i32};
+            let font = create_compatible_font(scale, &settings.font, item.font_size, item.font_bold);
+            height = height.max(measured_row_height(hdc, font, scale, island) + padding * 2);
+            DeleteObject(font as _);
+        }
+        layout_measured_items(items, area, scale, height, parse_hex_color(&settings.font_color), measure)
+    }
+
     unsafe fn measure_gdiplus_text(graphics: *mut GpGraphics, font: *mut GpFont, format: *mut GpStringFormat, text: &str) -> i32 {
         if text.is_empty() {
             return 0;
@@ -975,7 +991,7 @@ mod win32 {
         bounds.Width.ceil() as i32
     }
 
-    #[cfg(feature = "uiaccess-acceptance")]
+    #[cfg(any(test,feature = "uiaccess-acceptance"))]
     unsafe fn record_render(hwnd: HWND, bits: *mut std::ffi::c_void, width: i32, height: i32, settings: &super::OverlaySettings, success: bool) {
         if bits.is_null() { return; }
         let pixels = std::slice::from_raw_parts(bits as *const u32, (width * height) as usize);
@@ -986,6 +1002,14 @@ mod win32 {
             let alpha = pixel >> 24;
             if ((pixel >> 16) & 255) > alpha || ((pixel >> 8) & 255) > alpha || (pixel & 255) > alpha { invalid += 1; }
         }
+        #[cfg(test)]
+        if let Ok(path)=std::env::var("FRAMESCOPE_NATIVE_TEXT_BMP") {
+            let mut bmp=vec![0u8;54];bmp[0..2].copy_from_slice(b"BM");
+            bmp[2..6].copy_from_slice(&(54u32+pixels.len() as u32*4).to_le_bytes());bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+            bmp[14..18].copy_from_slice(&40u32.to_le_bytes());bmp[18..22].copy_from_slice(&width.to_le_bytes());bmp[22..26].copy_from_slice(&(-height).to_le_bytes());
+            bmp[26..28].copy_from_slice(&1u16.to_le_bytes());bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+            for pixel in pixels {bmp.extend(pixel.to_le_bytes());}std::fs::write(path,bmp).unwrap();
+        }
         let dominant = histogram.iter().max_by_key(|(_,count)|*count).map(|(pixel,_)|*pixel).unwrap_or(0);
         *super::RENDER_DIAGNOSTICS.lock().unwrap_or_else(|p|p.into_inner()) = Some(serde_json::json!({
             "hwnd":hwnd as usize,"style":settings.style,"opacity":settings.opacity,"width":width,"height":height,
@@ -993,191 +1017,52 @@ mod win32 {
             "transparent_pixels":pixels.iter().filter(|pixel|**pixel >> 24 == 0).count(),"pixels":pixels.len()}));
     }
 
-    fn repair_gdi_text_alpha(pixels: &mut [u32]) {
-        for pixel in pixels.iter_mut() {
-            let alpha = (*pixel >> 24) & 0xFF;
-            let rgb = *pixel & 0x00FFFFFF;
-            if alpha == 0 { *pixel = if rgb == 0x000001 { 0 } else { 0xFF000000 | rgb }; }
+    #[cfg(test)]
+    thread_local! {static TEST_SCALE: std::cell::Cell<Option<f32>> = const {std::cell::Cell::new(None)};}
+
+
+    #[cfg(test)]
+    #[test]
+    #[ignore = "renders hidden native windows; use isolated output directory"]
+    fn native_text_matrix_renders_without_alpha_corruption_or_resource_growth() {
+        unsafe {
+            let _guard=super::POSITION_TEST_LOCK.lock().unwrap();
+            let output=std::path::PathBuf::from(std::env::var("FRAMESCOPE_NATIVE_TEXT_OUTPUT").expect("output directory"));
+            std::fs::create_dir_all(&output).unwrap();assert!(init_gdiplus());
+            let class:Vec<u16>="STATIC\0".encode_utf16().collect();
+            let hwnd=CreateWindowExW(WS_EX_LAYERED|WS_EX_TOOLWINDOW,class.as_ptr(),class.as_ptr(),WS_POPUP,0,0,800,150,ptr::null_mut(),ptr::null_mut(),GetModuleHandleW(ptr::null()),ptr::null());
+            assert!(!hwnd.is_null());
+            let mut results=Vec::new();
+            let process=windows_sys::Win32::System::Threading::GetCurrentProcess();
+            let resources_before=windows_sys::Win32::System::Threading::GetGuiResources(process,0);
+            for scale in [1.0,1.5,2.0] {TEST_SCALE.with(|v|v.set(Some(scale)));
+                for style in ["default","dynamic_island"] {for bold in [false,true] {for outline in [false,true] {for width in [0.5,3.0] {for opacity in [0,128,255] {
+                    let mut settings=super::OverlaySettings::default();settings.style=style.into();settings.font_bold=bold;settings.text_outline_enabled=outline;settings.text_outline_width=width;settings.opacity=opacity;
+                    if let Ok(font)=std::env::var("FRAMESCOPE_NATIVE_TEXT_FONT"){settings.font=font;}
+                    if let Ok(size)=std::env::var("FRAMESCOPE_NATIVE_TEXT_SIZE"){settings.font_size=size.parse().unwrap();}
+                    settings.display_items=vec![super::DisplayItem{id:"cpu_clock".into(),label:"CPU 频率".into(),enabled:true, options: Default::default() },super::DisplayItem{id:"fps".into(),label:"FPS".into(),enabled:true, options: Default::default() }];
+                    settings.custom_items=vec![super::CustomOverlayItem{id:"long".into(),text:"中文 / Aa 0123456789 GHz".into(),color:"#ffffff".into(),enabled:true, options: Default::default() }];
+                    let mut data=super::OverlayHardwareData::default();data.cpu_clock=Some(5524.87);data.fps=Some(160);
+                    let name=format!("{style}-{scale}-{bold}-{outline}-{width}-{opacity}");
+                    std::env::set_var("FRAMESCOPE_NATIVE_TEXT_BMP",output.join(format!("{name}.bmp")));
+                    if style=="default"{draw_overlay_content(hwnd,&settings,&data);}else{draw_overlay_content_dynamic_island(hwnd,&settings,&data);}
+                    let result=super::render_diagnostics();assert_eq!(result["updated"],true,"{name}: {result}");
+                    assert_eq!(result["invalid_premultiplied_pixels"],0,"{name}: {result}");
+                    if opacity==0 {assert!(result["transparent_pixels"].as_u64().unwrap()>0,"{name}");}
+                    results.push(serde_json::json!({"case":name,"result":result}));
+                }}}}}
+            }
+            std::env::remove_var("FRAMESCOPE_NATIVE_TEXT_BMP");TEST_SCALE.with(|v|v.set(None));DestroyWindow(hwnd);shutdown_gdiplus();
+            let resources_after=windows_sys::Win32::System::Threading::GetGuiResources(process,0);
+            assert!(resources_after<=resources_before+2,"GDI resources grew: {resources_before} -> {resources_after}");
+            std::fs::write(output.join("resources.json"),format!("{{\"before\":{resources_before},\"after\":{resources_after}}}")).unwrap();
+            std::fs::write(output.join("native-matrix.json"),serde_json::to_vec_pretty(&results).unwrap()).unwrap();
+            assert_eq!(results.len(),144);
         }
     }
 
-    pub unsafe fn draw_overlay_content(
-        hwnd: HWND,
-        settings: &super::OverlaySettings,
-        data: &super::OverlayHardwareData,
-    ) {
-        let dpi_scale = {
-            let dc = GetDC(hwnd);
-            let dpi = if dc.is_null() { 96 } else { GetDeviceCaps(dc, 88) };
-            if !dc.is_null() {
-                ReleaseDC(hwnd, dc);
-            }
-            dpi as f32 / 96.0
-        };
-
-        let hfont = create_compatible_font(dpi_scale, &settings.font, settings.font_size);
-        if hfont.is_null() {
-            eprintln!("[osd-draw] create_compatible_font failed");
-            return;
-        }
-
-        let font_color = parse_hex_color(&settings.font_color);
-        let temp_dc = GetDC(ptr::null_mut());
-        let mut items = build_display_items(settings, data);
-        measure_and_layout_items(temp_dc, hfont, &mut items, dpi_scale);
-        let area = monitor_work_area(settings);
-        let row_height = measured_row_height(temp_dc, hfont, dpi_scale, false);
-        let layout = layout_measured_items(items, area, dpi_scale, row_height, font_color,
-            |text| measure_text_width(temp_dc, hfont, text));
-        ReleaseDC(ptr::null_mut(), temp_dc);
-        let layout = match layout {
-            Ok(layout) => layout,
-            Err(error) => {
-                log::error!("{error}");
-                DeleteObject(hfont as _);
-                return;
-            }
-        };
-        let dib_width = layout.width;
-        let dib_height = layout.height;
-
-        let screen_dc = GetDC(ptr::null_mut());
-        let mut bmi: BITMAPINFO = std::mem::zeroed();
-        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = dib_width;
-        bmi.bmiHeader.biHeight = -dib_height;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-
-        let mut bits: *mut std::ffi::c_void = ptr::null_mut();
-        let hbitmap = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
-        ReleaseDC(ptr::null_mut(), screen_dc);
-
-        if hbitmap.is_null() {
-            DeleteObject(hfont as _);
-            return;
-        }
-
-        let mem_dc = CreateCompatibleDC(ptr::null_mut());
-        let old_bmp = SelectObject(mem_dc, hbitmap as HGDIOBJ);
-
-        let mut graphics: *mut GpGraphics = ptr::null_mut();
-        if GdipCreateFromHDC(mem_dc, &mut graphics) != 0 {
-            SelectObject(mem_dc, old_bmp);
-            DeleteObject(hbitmap as HGDIOBJ);
-            DeleteDC(mem_dc);
-            DeleteObject(hfont as _);
-            return;
-        }
-
-        GdipSetSmoothingMode(graphics, SmoothingModeAntiAlias);
-
-        // An alpha-zero GDI+ brush does not initialize the DIB. Write the
-        // transparent sentinel directly so blank pixels are not mistaken for text.
-        if !bits.is_null() {
-            std::slice::from_raw_parts_mut(bits as *mut u32, (dib_width * dib_height) as usize).fill(0x00000001);
-        }
-
-        // opacity>0 时才填充背景：opacity=0 时跳过，避免 GDI+ 预乘 alpha 把背景 rgb 归零，
-        // 与纯黑文字 rgb=0 混淆（否则背景会被误判为文字而变不透明）。
-        if settings.opacity > 0 {
-            let bg_argb: u32 = ((settings.opacity as u32) << 24) | 0x00111111;
-            let mut bg_brush: *mut GpSolidFill = ptr::null_mut();
-            GdipCreateSolidFill(bg_argb, &mut bg_brush);
-            GdipFillRectangle(graphics, bg_brush as *mut GpBrush, 0.0, 0.0, dib_width as f32, dib_height as f32);
-            GdipDeleteBrush(bg_brush as *mut GpBrush);
-        }
-        GdipDeleteGraphics(graphics);
-
-        let old_font = SelectObject(mem_dc, hfont as _);
-        SetBkMode(mem_dc, TRANSPARENT as i32);
-
-        let gap = (10.0 * dpi_scale) as i32;
-        for (item, &(current_x, current_y)) in layout.items.iter().zip(&layout.positions) {
-
-            if !item.label.is_empty() {
-                let wide_label: Vec<u16> = item.label.encode_utf16().chain(std::iter::once(0)).collect();
-                let mut label_rect = RECT {
-                    left: current_x,
-                    top: current_y,
-                    right: current_x + item.label_width,
-                    bottom: current_y + layout.row_height,
-                };
-                SetTextColor(mem_dc, font_color);
-                DrawTextW(
-                    mem_dc,
-                    wide_label.as_ptr(),
-                    (wide_label.len() - 1) as i32,
-                    &mut label_rect,
-                    DT_RIGHT | DT_VCENTER | DT_SINGLELINE,
-                );
-            }
-
-            let value_x = if item.label.is_empty() {
-                current_x
-            } else {
-                current_x + item.label_width + gap
-            };
-            let wide_value: Vec<u16> = item.value.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut value_rect = RECT {
-                left: value_x,
-                top: current_y,
-                right: value_x + item.value_width,
-                bottom: current_y + layout.row_height,
-            };
-
-            SetTextColor(mem_dc, item_color(item, font_color));
-            DrawTextW(
-                mem_dc,
-                wide_value.as_ptr(),
-                (wide_value.len() - 1) as i32,
-                &mut value_rect,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-            );
-        }
-
-        SelectObject(mem_dc, old_font);
-
-        if !bits.is_null() {
-            let pixels = std::slice::from_raw_parts_mut(
-                bits as *mut u32,
-                (dib_width * dib_height) as usize,
-            );
-            repair_gdi_text_alpha(pixels);
-        }
-
-        let ppt_dst = fitted_position(settings, area, dib_width, dib_height);
-        let psize = SIZE { cx: dib_width, cy: dib_height };
-        let ppt_src = POINT { x: 0, y: 0 };
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
-
-        let updated = UpdateLayeredWindow(
-            hwnd,
-            ptr::null_mut(),
-            &ppt_dst,
-            &psize,
-            mem_dc,
-            &ppt_src,
-            0,
-            &blend,
-            ULW_ALPHA,
-        );
-        #[cfg(feature = "uiaccess-acceptance")]
-        record_render(hwnd,bits,dib_width,dib_height,settings,updated != 0);
-        if updated != 0 {
-            remember_position_reference(settings, area, dib_width, dib_height);
-        }
-
-        SelectObject(mem_dc, old_bmp);
-        DeleteObject(hbitmap as HGDIOBJ);
-        DeleteDC(mem_dc);
-        DeleteObject(hfont as _);
+    pub unsafe fn draw_overlay_content(hwnd:HWND, settings:&super::OverlaySettings, data:&super::OverlayHardwareData) {
+        draw_overlay_content_dynamic_island(hwnd,settings,data);
     }
 
     pub unsafe fn draw_overlay_content_dynamic_island(
@@ -1194,13 +1079,16 @@ mod win32 {
             dpi as f32 / 96.0
         };
 
-        let hfont = create_compatible_font(dpi_scale, &settings.font, settings.font_size);
+        #[cfg(test)]
+        let dpi_scale = TEST_SCALE.with(|value|value.get()).unwrap_or(dpi_scale);
+        let hfont = create_compatible_font(dpi_scale, &settings.font, settings.font_size, settings.font_bold);
         if hfont.is_null() {
             eprintln!("[osd-island] create_compatible_font failed");
             return;
         }
 
         let font_color = parse_hex_color(&settings.font_color);
+        let outline_padding = if settings.text_outline_enabled {(settings.text_outline_width*dpi_scale).ceil() as i32 + 1}else{0};
         let text_gap = (10.0 * dpi_scale) as i32;
         let area = monitor_work_area(settings);
 
@@ -1211,49 +1099,10 @@ mod win32 {
         {
             let temp_dc = GetDC(ptr::null_mut());
             let old_temp_font = SelectObject(temp_dc, hfont as _);
-            let mut layout_items_tmp = build_display_items(settings, data);
-
-            let mut mg: *mut GpGraphics = ptr::null_mut();
-            let gdiplus_ok = !temp_dc.is_null()
-                && GdipCreateFromHDC(temp_dc, &mut mg) == 0 && !mg.is_null()
-                && GdipCreateFontFromDC(temp_dc, &mut font_handle) == 0 && !font_handle.is_null();
-
-            let mut fmt: *mut GpStringFormat = ptr::null_mut();
-            let mut measured = false;
-            if gdiplus_ok {
-                if GdipCreateStringFormat(StringFormatFlagsNoWrap as i32, 0, &mut fmt) == 0 && !fmt.is_null() {
-                    GdipSetTextRenderingHint(mg, TextRenderingHintAntiAliasGridFit);
-                    for item in layout_items_tmp.iter_mut() {
-                        let measure_w = |s: &str| measure_gdiplus_text(mg, font_handle, fmt, s);
-                        item.label_width = measure_w(&item.label);
-                        item.value_width = measure_w(&item.value);
-                        item.total_width = if item.label.is_empty() {
-                            item.value_width
-                        } else {
-                            item.label_width + text_gap + item.value_width
-                        };
-                    }
-                    measured = true;
-                }
-            }
-
-            // GDI+ 测量失败时退回 GDI 测量（保持兼容）
-            if !measured {
-                measure_and_layout_items(temp_dc, hfont, &mut layout_items_tmp, dpi_scale);
-            }
-            let row_height = measured_row_height(temp_dc, hfont, dpi_scale, true);
-            layout = layout_measured_items(layout_items_tmp, area, dpi_scale, row_height, font_color,
-                |text| if measured { measure_gdiplus_text(mg, font_handle, fmt, text) }
-                    else { measure_text_width(temp_dc, hfont, text) });
-            if !fmt.is_null() {
-                GdipDeleteStringFormat(fmt);
-            }
-
+            GdipCreateFontFromDC(temp_dc, &mut font_handle);
+            layout = item_layout(temp_dc, settings, data, area, dpi_scale, true, outline_padding);
             SelectObject(temp_dc, old_temp_font);
             ReleaseDC(ptr::null_mut(), temp_dc);
-            if !mg.is_null() {
-                GdipDeleteGraphics(mg);
-            }
         }
         let layout = match layout {
             Ok(layout) => layout,
@@ -1319,7 +1168,10 @@ mod win32 {
 
             let mut path: *mut GpPath = ptr::null_mut();
             GdipCreatePath(FillModeAlternate, &mut path);
-            if !path.is_null() {
+            if settings.style=="default" {
+                GdipFillRectangle(graphics,bg_brush as *mut GpBrush,0.0,0.0,dib_width as f32,dib_height as f32);
+                if !path.is_null(){GdipDeletePath(path);}
+            } else if !path.is_null() {
                 let w = dib_width as f32;
                 let h = dib_height as f32;
                 let r = corner_r;
@@ -1352,24 +1204,33 @@ mod win32 {
 
                 let gap = text_gap;
                 for (item, &(current_x, current_y)) in layout.items.iter().zip(&layout.positions) {
+                    let item_font = create_compatible_font(dpi_scale, &settings.font, item.font_size, item.font_bold);
+                    let previous_font = SelectObject(mem_dc, item_font as _);
+                    let mut item_gp_font = ptr::null_mut();
+                    GdipCreateFontFromDC(mem_dc, &mut item_gp_font);
+                    if item_gp_font.is_null() {
+                        SelectObject(mem_dc, previous_font);
+                        DeleteObject(item_font as _);
+                        continue;
+                    }
 
                     // label：右对齐
                     if !item.label.is_empty() {
                         let mut brush_handle: *mut GpSolidFill = ptr::null_mut();
-                        if GdipCreateSolidFill(gdi_to_argb(font_color), &mut brush_handle) == 0 && !brush_handle.is_null() {
+                        if GdipCreateSolidFill(gdi_to_argb(item.custom_color.unwrap_or(font_color)), &mut brush_handle) == 0 && !brush_handle.is_null() {
                             let rect_f = RectF {
-                                X: current_x as f32,
+                                X: (current_x + outline_padding) as f32,
                                 Y: current_y as f32,
-                                Width: item.label_width as f32,
+                                Width: (item.label_width - 2*outline_padding) as f32,
                                 Height: layout.row_height as f32,
                             };
                             GdipSetStringFormatAlign(string_format, StringAlignmentFar);
                             let wide: Vec<u16> = item.label.encode_utf16().chain(std::iter::once(0)).collect();
-                            GdipDrawString(
+                            draw_gdiplus_text(settings,dpi_scale,
                                 graphics,
                                 wide.as_ptr(),
                                 (wide.len() - 1) as i32,
-                                font_handle,
+                                item_gp_font,
                                 &rect_f,
                                 string_format,
                                 brush_handle as *mut GpBrush,
@@ -1390,24 +1251,27 @@ mod win32 {
                     let mut brush_handle: *mut GpSolidFill = ptr::null_mut();
                     if GdipCreateSolidFill(gdi_to_argb(color), &mut brush_handle) == 0 && !brush_handle.is_null() {
                         let rect_f = RectF {
-                            X: value_x as f32,
+                            X: (value_x + outline_padding) as f32,
                             Y: current_y as f32,
-                            Width: item.value_width as f32,
+                            Width: (item.value_width - 2*outline_padding) as f32,
                             Height: layout.row_height as f32,
                         };
                         GdipSetStringFormatAlign(string_format, StringAlignmentNear);
                         let wide: Vec<u16> = item.value.encode_utf16().chain(std::iter::once(0)).collect();
-                        GdipDrawString(
+                        draw_gdiplus_text(settings,dpi_scale,
                             graphics,
                             wide.as_ptr(),
                             (wide.len() - 1) as i32,
-                            font_handle,
+                            item_gp_font,
                             &rect_f,
                             string_format,
                             brush_handle as *mut GpBrush,
                         );
                         GdipDeleteBrush(brush_handle as *mut GpBrush);
                     }
+                    GdipDeleteFont(item_gp_font);
+                    SelectObject(mem_dc, previous_font);
+                    DeleteObject(item_font as _);
                 }
                 GdipDeleteStringFormat(string_format);
             }
@@ -1444,7 +1308,7 @@ mod win32 {
             &blend,
             ULW_ALPHA,
         );
-        #[cfg(feature = "uiaccess-acceptance")]
+        #[cfg(any(test,feature = "uiaccess-acceptance"))]
         record_render(hwnd,bits,dib_width,dib_height,settings,ulw_ret != 0);
         if ulw_ret == 0 {
             eprintln!("[osd-island] UpdateLayeredWindow failed err={} size={}x{}", GetLastError(), psize.cx, psize.cy);

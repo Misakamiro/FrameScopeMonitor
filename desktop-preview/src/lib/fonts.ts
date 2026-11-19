@@ -8,6 +8,11 @@
 
 import { store } from "@/lib/store";
 
+export const BUILTIN_CHINESE_FONTS = [
+  'Microsoft YaHei', 'Microsoft YaHei UI', 'SimSun', 'NSimSun', 'SimHei',
+  'KaiTi', 'FangSong', 'DengXian', 'Microsoft JhengHei', 'YouYuan',
+];
+
 /** 自定义字体记录（持久化，与 font-context 保持一致） */
 interface CustomFontRecord {
   /** CSS font-family 名称 */

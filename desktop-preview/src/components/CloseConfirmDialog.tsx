@@ -11,6 +11,8 @@ import { useTranslation } from "react-i18next";
 import { useState } from "react";
 import { LiquidGlassCard } from "./special/liquid-glass-card";
 import { LiquidGlassButton } from "./special/liquid-glass-button";
+import { useMotionPreferences } from '@/lib/motion-preferences';
+import { motionVariants } from './ui/motion-components';
 
 interface CloseConfirmDialogProps {
   exitError?: string | null;
@@ -28,6 +30,7 @@ export function CloseConfirmDialog({
   onMinimizeToTray,
 }: CloseConfirmDialogProps) {
   const { t } = useTranslation();
+  const prefs = useMotionPreferences();
   const [dontAskAgain, setDontAskAgain] = useState(false);
 
   const overlayBg = useColorModeValue(
@@ -63,7 +66,7 @@ export function CloseConfirmDialog({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
+          transition={{ duration: prefs.reduced || prefs.mode === 'off' ? 0 : .18 }}
         >
           <Box
             position="absolute"
@@ -76,10 +79,8 @@ export function CloseConfirmDialog({
           />
           
           <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.9, opacity: 0 }}
-            transition={{ duration: 0.2 }}
+            data-motion-owned=""
+            initial="exit" animate="enter" exit="exit" variants={motionVariants(prefs)}
           >
             <LiquidGlassCard
               p={6}

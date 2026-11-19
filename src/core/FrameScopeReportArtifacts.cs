@@ -25,8 +25,10 @@ internal sealed class FrameScopeReportArtifactState
     internal string ReportKind = "error";
     internal double? DurationSeconds;
     internal string Error = "";
+    internal bool InspectionUnavailable;
+    internal FrameScopeReportInputFingerprint InspectedInput;
 
-    internal bool IsReadable { get { return IsComplete || ArtifactStatus == "legacy-readable"; } }
+    internal bool IsReadable { get { return IsComplete || ArtifactStatus == "legacy-readable" || ArtifactStatus == "raw-unavailable-readable"; } }
 
     internal bool IsComplete
     {
@@ -79,14 +81,17 @@ internal static class FrameScopeReportArtifacts
                 ? finalCharts
                 : Path.GetFullPath(generatedDirectory);
             state.RunDirectory = run;
-            state.DurationSeconds = ReadDuration(run, null);
+            // Read the manifest first. Falling back here scans the same CSVs
+            // even when the generated report already records its duration.
             state.HtmlPath = Path.Combine(finalCharts, ReportFileName);
             state.DataPath = Path.Combine(finalCharts, DataFileName);
             state.ManifestPath = Path.Combine(actualCharts, ManifestFileName);
             string actualHtmlPath = Path.Combine(actualCharts, ReportFileName);
             string actualDataPath = Path.Combine(actualCharts, DataFileName);
-            state.HtmlExists = File.Exists(actualHtmlPath);
-            state.DataExists = File.Exists(actualDataPath);
+            state.HtmlExists = ArtifactFileExists(actualHtmlPath);
+            state.DataExists = ArtifactFileExists(actualDataPath);
+            if (!state.HtmlExists || !state.DataExists || !ArtifactFileExists(state.ManifestPath))
+                state.DurationSeconds = ReadDuration(run, null);
 
             if (!state.HtmlExists)
             {
@@ -98,7 +103,7 @@ internal static class FrameScopeReportArtifacts
                 state.Error = "Report data.js is missing.";
                 return state;
             }
-            if (!File.Exists(state.ManifestPath))
+            if (!ArtifactFileExists(state.ManifestPath))
             {
                 state.Error = "Report manifest is missing.";
                 return state;
@@ -112,6 +117,7 @@ internal static class FrameScopeReportArtifacts
             }
             catch (Exception ex)
             {
+                state.InspectionUnavailable = ex is IOException || ex is UnauthorizedAccessException;
                 state.Error = "Report manifest is invalid: " + ex.Message;
                 return state;
             }
@@ -149,10 +155,20 @@ internal static class FrameScopeReportArtifacts
             bool hasFingerprint = !string.IsNullOrWhiteSpace(state.ManifestInputFingerprint);
             int inspectVersion = state.FingerprintVersion <= 1 ? 1 : 2;
             FrameScopeReportInputFingerprint currentFingerprint = CaptureInputFingerprint(run, inspectVersion);
+            if (inspectVersion == 2) state.InspectedInput = currentFingerprint;
+            state.InspectionUnavailable = !currentFingerprint.Stable;
             state.CurrentInputFingerprint = currentFingerprint.Value;
             state.InputFingerprintMatches = currentFingerprint.Stable && hasFingerprint &&
                 string.Equals(state.ManifestInputFingerprint, currentFingerprint.Value, StringComparison.OrdinalIgnoreCase);
             state.LegacyReadable = state.FingerprintVersion <= 1;
+            if (!state.InputFingerprintMatches && currentFingerprint.Stable &&
+                ((!HasUsableMonitorData(run) && IsHistoricalStatistics(actualDataPath)) ||
+                 (HasHistoricalFrameStatistics(actualDataPath) && !HasUsableFrameData(run))))
+            {
+                state.ArtifactStatus = "raw-unavailable-readable";
+                state.Error = "原始采样数据不足，继续显示历史报告；统计未升级。";
+                return state;
+            }
             if (state.InputFingerprintMatches && !state.LegacyReadable) state.ArtifactStatus = "complete";
             else if (state.LegacyReadable && currentFingerprint.Stable && (state.InputFingerprintMatches || !hasFingerprint))
             {
@@ -172,6 +188,7 @@ internal static class FrameScopeReportArtifacts
         }
         catch (Exception ex)
         {
+            state.InspectionUnavailable = ex is IOException || ex is UnauthorizedAccessException;
             state.Error = "Report artifacts could not be inspected: " + ex.Message;
             return state;
         }
@@ -180,6 +197,13 @@ internal static class FrameScopeReportArtifacts
     internal static FrameScopeReportInputFingerprint CaptureInputFingerprint(string runDirectory)
     {
         return CaptureInputFingerprint(runDirectory, 2);
+    }
+
+    private static bool ArtifactFileExists(string path)
+    {
+        try { return (File.GetAttributes(path) & FileAttributes.Directory) == 0; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
     }
 
     internal static FrameScopeReportInputFingerprint CaptureInputFingerprint(string runDirectory, int version)
@@ -202,6 +226,61 @@ internal static class FrameScopeReportArtifacts
             if (HasCsvDataRow(Path.Combine(runDirectory, name))) return true;
         }
         return false;
+    }
+
+    internal static bool HasHistoricalFrameStatistics(string path)
+    {
+        try {
+            string text = File.ReadAllText(path, Encoding.UTF8);
+            int start = text.IndexOf('{'), end = text.LastIndexOf('}');
+            if (start < 0 || end < start) return false;
+            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            var data = serializer.Deserialize<Dictionary<string, object>>(text.Substring(start, end-start+1));
+            object raw, average;
+            var stats = data.TryGetValue("frameStats", out raw) ? raw as Dictionary<string, object> : null;
+            return stats != null && stats.TryGetValue("average", out average) && average != null && Convert.ToDouble(average) > 0;
+        } catch { return false; }
+    }
+
+    internal static bool HasUsableFrameData(string run)
+    {
+        foreach (string name in new[] { "presentmon.csv", "hardware-samples.csv" }) {
+            string path = Path.Combine(run, name);
+            if (!File.Exists(path)) continue;
+            using (var reader = new StreamReader(path, Encoding.UTF8, true)) {
+                string header = reader.ReadLine();
+                if (header == null) continue;
+                var columns = ParseCsvFields(header);
+                int valueIndex = columns.FindIndex(c => c.Equals(name == "presentmon.csv" ? "MsBetweenPresents" : "FPS", StringComparison.OrdinalIgnoreCase));
+                int timeIndex = columns.FindIndex(c => c.Equals("Time", StringComparison.OrdinalIgnoreCase) || c.Equals("TimeInDateTime", StringComparison.OrdinalIgnoreCase) || c.Equals("TimeInSeconds", StringComparison.OrdinalIgnoreCase));
+                if (valueIndex < 0 || timeIndex < 0) continue;
+                string line;
+                while ((line = reader.ReadLine()) != null) {
+                    var fields = ParseCsvFields(line);
+                    double value; DateTime time;
+                    if (fields.Count == columns.Count && DateTime.TryParse(fields[timeIndex], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out time)
+                        && double.TryParse(fields[valueIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                        && !double.IsNaN(value) && !double.IsInfinity(value) && value > 0) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static bool IsHistoricalStatistics(string path)
+    {
+        try
+        {
+            string text = File.ReadAllText(path, Encoding.UTF8).TrimStart('\ufeff').Trim();
+            const string prefix = "window.FRAMESCOPE_DATA = ";
+            if (!text.StartsWith(prefix, StringComparison.Ordinal) || !text.EndsWith(";", StringComparison.Ordinal)) return false;
+            var serializer = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            var data = serializer.Deserialize<Dictionary<string, object>>(text.Substring(prefix.Length, text.Length - prefix.Length - 1));
+            foreach (string key in new[] { "target", "run", "notes", "counts", "fps", "system", "process" })
+                if (!data.ContainsKey(key) || !(data[key] is Dictionary<string, object>)) return false;
+            return ReadInt(data, "statisticsVersion") < 3 || ReadInt(data, "statisticsRevision") < 1 || ReadInt(data, "renderVersion") < 2;
+        }
+        catch { return false; }
     }
 
     internal static bool HasCsvDataRow(string path)

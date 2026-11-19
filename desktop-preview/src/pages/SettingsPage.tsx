@@ -1,19 +1,5 @@
-import {
-  Box,
-  Flex,
-  HStack,
-  Text,
-  Badge,
-  VStack,
-  Divider,
-  useColorModeValue,
-  Button,
-  Slider,
-  SliderTrack,
-  SliderFilledTrack,
-  SliderThumb,
-  Tooltip,
-} from "@chakra-ui/react";
+import { Box, Flex, HStack, Text, Badge, VStack, Divider, useColorModeValue, Button, Slider, SliderTrack, SliderFilledTrack, SliderThumb } from "@chakra-ui/react";
+import { Tooltip } from "@/components/ui/motion-components";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 
 import {
@@ -27,6 +13,7 @@ import {
   LuSlidersHorizontal,
 } from "react-icons/lu";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { navigationLabels } from '@/lib/motion-preferences';
 import { useTranslation } from "react-i18next";
 import { useBackground } from "@/contexts/background-context";
 import { useGlassTextColor, useBackgroundTextColor } from "@/hooks/use-adaptive-text-color";
@@ -44,7 +31,7 @@ import { ThemeSwitch } from "@/components/special/theme-switch";
 import { CustomSelect } from "@/components/special/custom-select";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useSearchParams } from "react-router-dom";
+import { Navigate, useSearchParams } from "react-router-dom";
 import { loadCloseBehavior, persistCloseBehavior, type CloseBehavior } from "@/lib/close-behavior";
 import {
   DndContext,
@@ -166,7 +153,7 @@ function GeneralSettings() {
     const stored = localStorage.getItem("nexbox_close_behavior");
     return stored === "minimize" || stored === "ask" ? stored : "close";
   });
-  const [sidebarShowLabel, setSidebarShowLabel] = useState(false);
+  const [sidebarShowLabel, setSidebarShowLabel] = useState(() => navigationLabels(localStorage.getItem('nexbox_sidebar_show_label')));
   const [navVisibility, setNavVisibility] = useState<Record<string, boolean>>({});
   const [navPosition, setNavPosition] = useState<"left" | "top">("left");
   const NAV_ORDER_KEY = "nexbox_nav_order";
@@ -240,7 +227,7 @@ function GeneralSettings() {
       const read = async <T,>(key: string, fallback: T): Promise<T> =>
         (await store.get<T>(key)) ?? fallback;
       const [labels, position, transition, order, visibility] = await Promise.all([
-        read("nexbox_sidebar_show_label", localStorage.getItem("nexbox_sidebar_show_label") === "true"),
+        read("nexbox_sidebar_show_label", navigationLabels(localStorage.getItem("nexbox_sidebar_show_label"))),
         read("nexbox_nav_position", localStorage.getItem("nexbox_nav_position") || "left"),
         read("nexbox_page_transition", localStorage.getItem("nexbox_page_transition") || "fade"),
         read("nexbox_nav_order", localStorage.getItem("nexbox_nav_order")),
@@ -250,7 +237,7 @@ function GeneralSettings() {
         })),
       ]);
       if (disposed) return;
-      setSidebarShowLabel(labels);
+      setSidebarShowLabel(navigationLabels(labels));
       setNavPosition(position === "top" ? "top" : "left");
       setPageTransitionMode(transition === "slide" || transition === "off" ? transition : "fade");
       // Desktop: the real config decides (same value the host enforces for
@@ -1604,29 +1591,6 @@ export default function SettingsPage() {
   const section = searchParams.get("section");
   const activeItem = settingItems.some(item => item.id === section) ? section! : "general";
   const { t } = useTranslation();
-  const { jellyBounceEnabled, jellyBounceActive } = useBackground();
-  const jellyAllowed=useRef(jellyBounceActive);
-  jellyAllowed.current=jellyBounceActive;
-  const isFirstRender = useRef(true);
-
-  // 子菜单切换时触发果冻弹跳动画（跳过首次挂载，避免与路由切换动画重复）
-  useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
-    if (!jellyAllowed.current) return;
-    document.body.classList.remove("jelly-bounce-active");
-    void document.body.offsetWidth; // 强制 reflow
-    document.body.classList.add("jelly-bounce-active");
-    const timer = setTimeout(() => {
-      document.body.classList.remove("jelly-bounce-active");
-    }, 700);
-    return () => {
-      clearTimeout(timer);
-      document.body.classList.remove("jelly-bounce-active");
-    };
-  }, [activeItem, jellyBounceEnabled]);
 
   return (
     <Flex gap={6} pt={8}>
@@ -1655,8 +1619,7 @@ export default function SettingsPage() {
       </Box>
 
       <Box flex={1}>
-        {/* 直接渲染子菜单，不做 motion 动画：opacity/transform 动画会让 backdrop-filter 失效，
-            导致液态玻璃卡片在切换时先透明、动画结束后瞬间出现模糊 */}
+        {/* Shared route transitions include section changes and snapshot composed glass for fades. */}
         <div id={`search-settings-${activeItem}`} key={activeItem} style={{ position: 'relative', zIndex: 1 }}>
           {activeItem === "general" && <GeneralSettings />}
           {activeItem === "appearance" && <AppearanceSettings />}

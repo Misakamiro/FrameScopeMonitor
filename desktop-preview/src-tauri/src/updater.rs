@@ -34,7 +34,11 @@ impl Service {
         let (preferences,error)=match loaded{Ok(p)=>(p,None),Err(e)=>{let mut p=Preferences::default();p.startup_check=false;(p,Some(e))}};
         Ok(Self {root,state:Mutex::new(State{preferences,phase:"idle".into(),error,releases:vec![],downloaded:0,total:0,ready:None,last_checked:None,download_route:None,bytes_per_second:0}),busy:AtomicBool::new(false),cancel:AtomicBool::new(false)})
     }
-    fn source(&self)->Result<Source,String>{Source::github(update::public_key(),self.state.lock().unwrap().preferences.accelerated)?.with_edition(env!("FRAMESCOPE_EDITION"))}
+    fn source(&self)->Result<Source,String>{
+        let executable=std::env::current_exe().map_err(|e|e.to_string())?;
+        Source::github(update::public_key(),self.state.lock().unwrap().preferences.accelerated)?
+            .with_edition(env!("FRAMESCOPE_EDITION"))?.with_installation(executable.parent().ok_or("缺少安装目录")?.to_path_buf())
+    }
     fn snapshot(&self)->Value {
         let state=self.state.lock().unwrap();
         let target=std::env::current_exe().ok().and_then(|p|p.parent().map(Path::to_path_buf));
@@ -60,7 +64,7 @@ impl Service {
                 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct Selection {release_id:u64}
                 let selection:Selection=serde_json::from_value(args).map_err(|e|e.to_string())?;
                 let candidate=self.state.lock().unwrap().releases.iter().find(|r|r.id==selection.release_id).cloned().ok_or("请先检查并选择有效发行")?;
-                {let mut s=self.state.lock().unwrap();s.phase="downloading".into();s.ready=None;s.downloaded=0;s.total=candidate.manifest.installer.size;s.download_route=None;s.bytes_per_second=0;}
+                {let mut s=self.state.lock().unwrap();s.phase="downloading".into();s.ready=None;s.downloaded=0;s.total=candidate.component_plan.as_ref().map_or(candidate.manifest.installer.size,|plan|plan.download_size);s.download_route=None;s.bytes_per_second=0;}
                 self.emit(app);
                 let mut last=std::time::Instant::now();
                 let last=Mutex::new(&mut last);

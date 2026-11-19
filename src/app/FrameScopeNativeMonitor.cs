@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -54,6 +54,19 @@ internal static partial class FrameScopeNativeMonitor
                 status = exitCode == 0 ? string.IsNullOrEmpty(LastStopWarning) ? "stopped" : "stopped-with-warning" : "failed",
                 warning = exitCode == 0 ? LastStopWarning ?? "" : "" }));
             Environment.Exit(exitCode);
+            return;
+        }
+
+        bool background = HasArg(args, "--monitor-session") || HasArg(args, "--watcher") || HasArg(args, "--generate-diagnostic-report");
+        try
+        {
+            if (!FrameScopeStartupElevation.Ensure(args, background)) return;
+        }
+        catch (Exception error)
+        {
+            if (background) Console.Error.WriteLine(error.Message);
+            else MessageBox.Show(error.Message, "FrameScope", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Environment.Exit(1);
             return;
         }
 

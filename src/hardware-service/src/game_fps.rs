@@ -43,6 +43,77 @@ static TARGET_PROCESS: RwLock<String> = parking_lot::RwLock::new(String::new());
 static LAST_FRAME_TIME: AtomicU64 = AtomicU64::new(0);
 /// 目标切换代次（每次切换/过期归零 +1），ETW 回调检测到变化后清空统计
 static TARGET_GENERATION: AtomicU64 = AtomicU64::new(0);
+static TARGET_START_MS: AtomicU64 = AtomicU64::new(0);
+static FRAME_SNAPSHOT: RwLock<Option<FrameSnapshot>> = RwLock::new(None);
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FrameSnapshot {
+    pub target_pid: u32,
+    pub target_start_ms: u64,
+    pub target_generation: u64,
+    pub window_start_ms: u64,
+    pub window_end_ms: u64,
+    pub frame_count: usize,
+    pub source: &'static str,
+    pub statistics_version: u32,
+    pub fps: Option<f64>,
+    pub fps_1low: Option<f64>,
+    pub fps_01low: Option<f64>,
+    pub valid: bool,
+    #[serde(skip)]
+    observed_at: Instant,
+    #[serde(skip)]
+    age_at_observation: u64,
+}
+impl FrameSnapshot {
+    fn source_age_ms(&self)->u64 {self.age_at_observation.saturating_add(self.observed_at.elapsed().as_millis().min(u64::MAX as u128) as u64)}
+    pub fn value(&self)->serde_json::Value {
+        let mut value=serde_json::json!(self);
+        value["valid_until_ms"]=serde_json::json!(self.window_end_ms.saturating_add(2000));
+        value["source_age_ms"]=serde_json::json!(self.source_age_ms());
+        value["unavailable_reason"]=serde_json::Value::Null;
+        value
+    }
+    fn fresh_for(&self, pid:u32, start:u64, generation:u64, now:u64)->bool {
+        self.valid && pid>0 && self.target_pid==pid && self.target_start_ms==start
+            && self.target_generation==generation && self.frame_count>0
+            && self.window_end_ms<=now && now-self.window_end_ms<2000
+            && self.source_age_ms()<2000
+            && self.fps.is_some_and(|v|v.is_finite()&&v>0.0)
+    }
+}
+pub fn frame_snapshot()->Option<FrameSnapshot> {
+    frame_state().3
+}
+
+// Target identity survives a temporarily unavailable frame window.
+pub fn frame_state()->(u32,u64,u64,Option<FrameSnapshot>) {
+    let _target=TARGET_PROCESS.read();
+    let pid=TARGET_PID.load(Ordering::Relaxed);
+    let start=TARGET_START_MS.load(Ordering::Relaxed);
+    let generation=TARGET_GENERATION.load(Ordering::Relaxed);
+    if pid>0 && (start==0 || process_start_ms(pid)!=start){return (0,0,generation,None);}
+    let frames=FRAME_SNAPSHOT.read().as_ref().filter(|s|s.fresh_for(pid,start,generation,now_unix_ms())).cloned();
+    (pid,start,generation,frames)
+}
+
+#[cfg(windows)]
+fn process_start_ms(pid:u32)->u64 {
+    use windows_sys::Win32::{Foundation::{CloseHandle,FILETIME,WAIT_TIMEOUT},System::Threading::*};
+    unsafe {
+        let handle=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE,0,pid);
+        if handle.is_null(){return 0;}
+        if WaitForSingleObject(handle,0)!=WAIT_TIMEOUT {CloseHandle(handle);return 0;}
+        let mut times=[FILETIME{dwLowDateTime:0,dwHighDateTime:0};4];
+        let ok=GetProcessTimes(handle,&mut times[0],&mut times[1],&mut times[2],&mut times[3]);
+        CloseHandle(handle);
+        if ok==0{return 0;}
+        let ticks=((times[0].dwHighDateTime as u64)<<32)|times[0].dwLowDateTime as u64;
+        ticks.saturating_sub(116_444_736_000_000_000)/10_000
+    }
+}
+#[cfg(not(windows))]
+fn process_start_ms(_pid:u32)->u64{0}
 /// 1% Low FPS（10s 窗口内最慢 1% 帧的平均帧时间取倒数）
 static ONE_PCT_LOW_FPS: AtomicU64 = AtomicU64::new(0);
 /// 0.1% Low FPS（30s 窗口内最慢 0.1% 帧的平均帧时间取倒数）
@@ -352,6 +423,7 @@ pub(crate) struct FpsTracker {
     total_frames: u64,
     total_frame_time: f64,
     cached: Option<Metrics>,
+    cached_count: usize,
     last_calc_tick: Option<i64>,
 }
 
@@ -363,6 +435,7 @@ impl FpsTracker {
             total_frames: 0,
             total_frame_time: 0.0,
             cached: None,
+            cached_count: 0,
             last_calc_tick: None,
         }
     }
@@ -392,6 +465,7 @@ impl FpsTracker {
         if self.last_calc_tick.is_none_or(|last|ticks-last>=TICKS_PER_SECOND/10) {
             let mut values=Vec::new();
             let filled=self.window.collect_window(LOW1_WINDOW_TICKS,&mut values);
+            self.cached_count=values.len();
             self.cached=if self.window.count==self.window.ticks.len()&&!filled {None}else{
                 values.reverse();
                 let ms=values.iter().map(|v|v*1000.0).collect::<Vec<_>>();
@@ -435,6 +509,7 @@ impl FpsTracker {
         self.total_frames = 0;
         self.total_frame_time = 0.0;
         self.cached = None;
+        self.cached_count = 0;
         self.last_calc_tick = None;
     }
 }
@@ -467,6 +542,7 @@ fn is_non_game_process(name: &str) -> bool {
         "sihost.exe", "ctfmon.exe", "textinputhost.exe",
         "applicationframehost.exe", "winlogon.exe", "fontdrvhost.exe",
         "systemsettings.exe", "taskmgr.exe",
+        "weixin.exe", "wechat.exe", "wechatappex.exe", "qq.exe", "qqnt.exe",
     ];
     NON_GAME_PROCESSES.iter().any(|p| name.eq_ignore_ascii_case(p))
 }
@@ -487,6 +563,7 @@ fn strip_exe_suffix(s: &str) -> &str {
 }
 
 fn clear_cached_statistics() {
+    *FRAME_SNAPSHOT.write()=None;
     SMOOTHED_FPS.store(0, Ordering::Relaxed);
     ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
     ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
@@ -500,6 +577,7 @@ fn select_target(pid: u32, name: &str) {
     let mut target = TARGET_PROCESS.write();
     *target = name.to_string();
     TARGET_PID.store(pid, Ordering::Relaxed);
+    TARGET_START_MS.store(process_start_ms(pid),Ordering::Relaxed);
     clear_cached_statistics();
     TARGET_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
@@ -911,6 +989,18 @@ mod etw {
         // Publish all three values from the same cached 100ms snapshot,
         // including when ETW delivers recorded events in a fast backlog.
         let statistics=rt.tracker.statistics();
+        let mut current_qpc=0;
+        windows_sys::Win32::System::Performance::QueryPerformanceCounter(&mut current_qpc);
+        let age_ms=(qpc_to_100ns(current_qpc)-rt.tracker.last_calc_tick.unwrap_or(ticks)).max(0) as u64/10_000;
+        let window_end=now_unix_ms().saturating_sub(age_ms);
+        *FRAME_SNAPSHOT.write()=statistics.map(|s|FrameSnapshot {
+            target_pid:pid,target_start_ms:TARGET_START_MS.load(Ordering::Relaxed),target_generation:gen,
+            window_start_ms:window_end.saturating_sub(1000),window_end_ms:window_end,
+            frame_count:rt.tracker.cached_count,source:if is_runtime{"etw-dxgi-present"}else{"etw-kernel-estimate"},
+            statistics_version:frame_statistics::VERSION,fps:s.average_fps,fps_1low:s.low1_fps,fps_01low:s.low01_fps,
+            valid:rt.tracker.cached_count>0,
+            observed_at:Instant::now(),age_at_observation:age_ms,
+        });
         store_fps(&SMOOTHED_FPS,statistics.and_then(|v|v.average_fps));
         store_fps(&WINDOW_AVG_FPS,statistics.and_then(|v|v.average_fps));
         store_low(&ONE_PCT_LOW_FPS,statistics.and_then(|v|v.low1_fps).unwrap_or(-1.0));
@@ -1064,6 +1154,11 @@ mod etw {
         while FPS_ACTIVE.load(Ordering::SeqCst) {
             let session_start = Instant::now();
             let keep = run_etw_session();
+            {
+                let _target=TARGET_PROCESS.write();
+                clear_cached_statistics();
+                TARGET_GENERATION.fetch_add(1,Ordering::Relaxed);
+            }
 
             if !keep {
                 log::error!("FPS监控: ETW 会话无法建立/恢复，停止监控");
@@ -1814,14 +1909,26 @@ fn process_tracker_loop() {
                     now - last_frame
                 );
                 clear_cached_statistics();
-                TARGET_GENERATION.fetch_add(1, Ordering::Relaxed);
+                // Expire published values, but keep the last event timestamp:
+                // the next actual frame may represent a real long stall.
             }
         }
 
+        // A target may exit after another application has become foreground.
+        // Clear its identity before foreground debounce or any cached process lookup.
+        let selected=TARGET_PID.load(Ordering::Relaxed);
+        if selected>0 && process_start_ms(selected)!=TARGET_START_MS.load(Ordering::Relaxed) {
+            select_target(0, "");last_pid=0;pending_target=None;pending_since=None;
+        }
         // 3. 查询进程名（耗时操作放在后台线程）
         let pid = CURRENT_FG_PID.load(Ordering::Relaxed);
         if pid == 0 {
             continue;
+        }
+        // PID reuse while the foreground PID stays unchanged is still a new target.
+        if pid==TARGET_PID.load(Ordering::Relaxed) && process_start_ms(pid)!=TARGET_START_MS.load(Ordering::Relaxed) {
+            select_target(0, "");
+            last_pid=0;
         }
 
         // PID 变化时才刷新进程列表
@@ -1832,7 +1939,7 @@ fn process_tracker_loop() {
 
         if let Some(process) = sys.process(Pid::from_u32(pid)) {
             let name = process.name().to_string();
-            let is_game = !name.is_empty() && !is_excluded_process(&name) && !is_non_game_process(&name);
+            let is_game = !name.is_empty() && process_start_ms(pid)>0 && !is_excluded_process(&name) && !is_non_game_process(&name);
             let selected_pid = if is_game { pid } else { 0 };
 
             if selected_pid == TARGET_PID.load(Ordering::Relaxed) {
@@ -1937,7 +2044,9 @@ pub fn stop_fps_monitor() {
     ZERO_DOT_ONE_PCT_LOW_FPS.store(0, Ordering::Relaxed);
     WINDOW_AVG_FPS.store(0, Ordering::Relaxed);
     LAST_FRAME_TIME.store(0, Ordering::Relaxed);
-    TARGET_GENERATION.store(0, Ordering::Relaxed);
+    TARGET_GENERATION.fetch_add(1, Ordering::Relaxed);
+    *FRAME_SNAPSHOT.write()=None;
+    TARGET_START_MS.store(0,Ordering::Relaxed);
     PRESENT_MODE.store(MODE_UNKNOWN, Ordering::Relaxed);
     *TARGET_PROCESS.write() = String::new();
     TARGET_PID.store(0, Ordering::Relaxed);
@@ -2030,6 +2139,72 @@ pub fn cleanup() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn dead_target_with_a_retained_handle_is_not_a_live_identity() {
+        use std::os::windows::process::CommandExt;
+        let mut child=std::process::Command::new("cmd.exe").args(["/d","/c","exit 0"])
+            .creation_flags(0x08000000).spawn().unwrap();
+        child.wait().unwrap();
+        assert_eq!(super::process_start_ms(child.id()),0);
+    }
+    #[test]
+    fn repeated_reads_and_a_wall_clock_rollback_cannot_renew_a_frame() {
+        let sample=super::FrameSnapshot {target_pid:42,target_start_ms:500,target_generation:3,
+            window_start_ms:1000,window_end_ms:2000,frame_count:60,source:"etw-dxgi-present",
+            statistics_version:3,fps:Some(60.0),fps_1low:Some(40.0),fps_01low:Some(30.0),valid:true,
+            observed_at:super::Instant::now(),age_at_observation:0};
+        assert!(sample.fresh_for(42,500,3,2500));
+        std::thread::sleep(std::time::Duration::from_millis(2005));
+        assert!(!sample.fresh_for(42,500,3,2100));
+    }
+    #[test]
+    fn beta16_sample_survives_delivery_gap_but_not_target_change() {
+        let s=super::FrameSnapshot {target_pid:42,target_start_ms:500,target_generation:3,
+            window_start_ms:1000,window_end_ms:2000,frame_count:60,source:"etw-dxgi-present",
+            statistics_version:3,fps:Some(60.0),fps_1low:Some(40.0),fps_01low:Some(30.0),valid:true,
+            observed_at:super::Instant::now(),age_at_observation:0};
+        assert!(s.fresh_for(42,500,3,3500));
+        assert!(!s.fresh_for(42,500,3,4000));
+        assert!(!s.fresh_for(42,501,3,3500));
+        assert!(!s.fresh_for(42,500,4,3500));
+    }
+    #[test]
+    fn beta16_desktop_chat_renderers_are_not_games() {
+        for name in ["Weixin.exe","WECHAT.EXE","WeChatAppEx.exe","QQ.exe","QQNT.exe"] {
+            assert!(super::is_non_game_process(name),"{name}");
+        }
+        assert!(!super::is_non_game_process("cs2.exe"));
+        assert!(!super::is_non_game_process("unregistered-game.exe"));
+    }
+    #[test]
+    fn target_identity_survives_an_empty_or_expired_window() {
+        use super::*;
+        select_target(std::process::id(),"fixture");
+        let (pid,start,generation,frames)=frame_state();
+        assert_eq!(pid,std::process::id());assert!(start>0);assert!(frames.is_none());
+        *FRAME_SNAPSHOT.write()=Some(FrameSnapshot {target_pid:pid,target_start_ms:start,target_generation:generation,
+            window_start_ms:1,window_end_ms:1001,frame_count:1,source:"etw-dxgi-present",statistics_version:3,
+            fps:Some(60.0),fps_1low:Some(40.0),fps_01low:Some(30.0),valid:true,
+            observed_at:Instant::now(),age_at_observation:0});
+        let (after,after_start,after_generation,expired)=frame_state();
+        assert_eq!((after,after_start,after_generation),(pid,start,generation));assert!(expired.is_none());
+        select_target(0,"");
+    }
+    #[test]
+    fn atomic_snapshot_rejects_stale_future_and_reused_target() {
+        let s=super::FrameSnapshot {target_pid:42,target_start_ms:500,target_generation:3,
+            window_start_ms:1000,window_end_ms:2000,frame_count:60,source:"etw-dxgi-present",
+            statistics_version:3,fps:Some(60.0),fps_1low:Some(40.0),fps_01low:Some(30.0),valid:true,
+            observed_at:super::Instant::now(),age_at_observation:0};
+        assert!(s.fresh_for(42,500,3,2500));
+        assert!(s.fresh_for(42,500,3,3000));
+        assert!(!s.fresh_for(42,500,3,4000));
+        assert!(!s.fresh_for(42,500,3,1999));
+        assert!(!s.fresh_for(42,501,3,2500));
+        assert!(!s.fresh_for(43,500,3,2500));
+        assert!(!s.fresh_for(42,500,4,2500));
+    }
     #[test]
     fn statistics_v2_uses_one_second_floor_tails_and_keeps_long_frames() {
         let mut tracker=super::FpsTracker::new();
@@ -2289,7 +2464,7 @@ mod tests {
         // 恢复后的下一帧间隔正常
         tracker.on_present(t + tick(15_000) + frame_ticks);
         assert_eq!(tracker.total_frames(), 31);
-        assert_eq!(tracker.one_percent_low(),0.0);
+        assert_eq!(tracker.one_percent_low(),1.0/15.0);
     }
 
     // ---- 1%/0.1% low 时间窗口（翻译自 FpsServiceTests.cs:349-478） ----

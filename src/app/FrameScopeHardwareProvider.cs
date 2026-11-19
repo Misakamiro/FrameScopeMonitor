@@ -7,6 +7,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
 
 // Small out-of-process adapter for the official LibreHardwareMonitor library.
@@ -14,6 +15,11 @@ using System.Web.Script.Serialization;
 internal static class FrameScopeHardwareProvider
 {
     private static readonly string ProviderVersion=ReadProviderVersion();
+    private static readonly string ProviderInstanceId = Guid.NewGuid().ToString("N");
+    private static Dictionary<string, object> ProviderIdentity()
+    {
+        return new Dictionary<string, object> { { "version", ProviderVersion }, { "instanceId", ProviderInstanceId } };
+    }
     private static string ReadProviderVersion()
     {
         try { return AssemblyName.GetAssemblyName(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"LibreHardwareMonitorLib.dll")).Version.ToString(); }
@@ -26,11 +32,14 @@ internal static class FrameScopeHardwareProvider
         public string hardware = "";
         public string hardwareType = "";
         public string identifier = null;
+        public string sensorIdentifier = null;
+        public string deviceId = null;
         public string subHardware = null;
         public string name = "";
         public string sensorType = "";
         public double value;
         public string unit = null;
+        public Dictionary<string, object> cpuSource = null;
     }
 
     private static int Main(string[] args)
@@ -57,7 +66,8 @@ internal static class FrameScopeHardwareProvider
             {
                 { "availability", "unavailable" }, { "static", null }, { "dynamic", null },
                 { "sensors", new object[0] }, { "errors", new[] { "LibreHardwareMonitor provider failed: " + RootMessage(ex) } },
-                { "capturedAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) }, { "sequence", 0L }
+                { "capturedAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) }, { "sequence", 0L },
+                { "provider", ProviderIdentity() }
             }));
             return 0;
         }
@@ -119,12 +129,15 @@ internal static class FrameScopeHardwareProvider
             line = line.Trim('\0').TrimStart('\uFEFF').Trim();
             if (line.Length == 0) continue;
             string cmd = "";
+            bool cpuOnly = false;
             try
             {
                 Dictionary<string, object> request = Json.Deserialize<Dictionary<string, object>>(line);
                 object value;
                 if (request != null && request.TryGetValue("cmd", out value) && value != null)
                     cmd = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+                if (request != null && request.TryGetValue("scope", out value))
+                    cpuOnly = String.Equals(value as string, "cpu", StringComparison.Ordinal);
             }
             catch { continue; }
             if (cmd == "exit") break;
@@ -160,6 +173,7 @@ internal static class FrameScopeHardwareProvider
 
             sequence++;
             string capturedAt = DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture);
+            Stopwatch sampling = Stopwatch.StartNew();
             List<Reading> readings = new List<Reading>();
             List<string> errors;
             lock (openErrors) { errors = new List<string>(openErrors); }
@@ -167,7 +181,7 @@ internal static class FrameScopeHardwareProvider
             {
                 foreach (object hardware in Enumerate(Get(computer, "Hardware")))
                 {
-                    try { ReadHardware(hardware, readings, null, errors); }
+                    try { ReadHardwareScope(hardware, readings, errors, cpuOnly); }
                     catch (Exception ex) { errors.Add("hardware read failed: " + RootMessage(ex)); }
                 }
             }
@@ -180,10 +194,12 @@ internal static class FrameScopeHardwareProvider
             Dictionary<string, object> payload = new Dictionary<string, object>
             {
                 { "capturedAt", capturedAt }, { "sequence", sequence }, { "availability", availability },
+                { "completedAt", DateTimeOffset.Now.ToString("O", CultureInfo.InvariantCulture) },
+                { "samplingDurationMs", sampling.Elapsed.TotalMilliseconds }, { "scope", cpuOnly ? "cpu" : "all" },
                 { "static", BuildStatic(readings) }, { "dynamic", BuildDynamic(readings, capturedAt) },
                 { "sensors", readings.Select(ToJson).Cast<object>().ToArray() },
                 { "errors", errors.ToArray() }, { "pawnIo", pawnIoStatus },
-                { "provider", new Dictionary<string,object>{{"version",ProviderVersion}} }
+                { "provider", ProviderIdentity() }
             };
             stdout.WriteLine(Json.Serialize(payload));
         }
@@ -230,14 +246,20 @@ internal static class FrameScopeHardwareProvider
         }
         else pawnIoStatus["availability"] = "available";
         if (string.Equals(method, "get_sensors", StringComparison.OrdinalIgnoreCase))
-            return new Dictionary<string, object> { { "availability", availability }, { "sensors", sensorObjects }, { "errors", errors.ToArray() }, { "updatedAt", capturedAt }, { "capturedAt", capturedAt }, { "pawnIo", pawnIoStatus } };
+            return new Dictionary<string, object> { { "availability", availability }, { "sensors", sensorObjects }, { "errors", errors.ToArray() }, { "updatedAt", capturedAt }, { "capturedAt", capturedAt }, { "pawnIo", pawnIoStatus }, { "sequence", 1L }, { "provider", ProviderIdentity() } };
         if (string.Equals(method, "get_static_info", StringComparison.OrdinalIgnoreCase))
             return new Dictionary<string, object> { { "availability", availability }, { "static", stat }, { "errors", errors.ToArray() }, { "capturedAt", capturedAt }, { "pawnIo", pawnIoStatus } };
         return new Dictionary<string, object>
         {
-            { "capturedAt", capturedAt }, { "sequence", DateTime.UtcNow.Ticks }, { "availability", availability },
+            { "capturedAt", capturedAt }, { "sequence", 1L }, { "provider", ProviderIdentity() }, { "availability", availability },
             { "static", stat }, { "dynamic", dynamic }, { "sensors", sensorObjects }, { "errors", errors.ToArray() }, { "pawnIo", pawnIoStatus }
         };
+    }
+
+    private static void ReadHardwareScope(object hardware, List<Reading> output, List<string> errors, bool cpuOnly)
+    {
+        if (!cpuOnly || String.Equals(Convert.ToString(Get(hardware, "HardwareType")), "Cpu", StringComparison.Ordinal))
+            ReadHardware(hardware, output, null, errors);
     }
 
     private static void ReadHardware(object hardware, List<Reading> output, string parent, List<string> errors)
@@ -247,18 +269,84 @@ internal static class FrameScopeHardwareProvider
         try { Invoke(hardware, "Update"); } catch (Exception ex) { updated = false; if (errors != null) errors.Add("hardware update failed: " + RootMessage(ex)); }
         string hw = StringValue(Get(hardware, "Name"));
         string type = StringValue(Get(hardware, "HardwareType"));
+        var cpuSources = updated && type == "Cpu" ? ReadCpuSources(hardware) : new Dictionary<object, Dictionary<string, object>>();
         foreach (object sensor in updated ? Enumerate(Get(hardware, "Sensors")) : Enumerable.Empty<object>())
         {
             double value;
             if (!TryDouble(Get(sensor, "Value"), out value) || Double.IsNaN(value) || Double.IsInfinity(value)) continue;
+            Dictionary<string, object> cpuSource;
+            cpuSources.TryGetValue(sensor, out cpuSource);
             output.Add(new Reading
             {
                 hardware = hw, hardwareType = type, identifier = StringValue(Get(hardware, "Identifier")), subHardware = parent,
+                sensorIdentifier = StringValue(Get(sensor, "Identifier")),
+                deviceId = StringValue(Get(hardware, "DeviceId")),
                 name = StringValue(Get(sensor, "Name")), sensorType = StringValue(Get(sensor, "SensorType")),
-                value = value, unit = UnitFor(StringValue(Get(sensor, "SensorType")))
+                value = value, unit = UnitFor(StringValue(Get(sensor, "SensorType"))), cpuSource = cpuSource
             });
         }
         foreach (object child in Enumerate(Get(hardware, "SubHardware"))) ReadHardware(child, output, hw, errors);
+    }
+
+    private static object CpuField(object value, string name)
+    {
+        for (var type = value == null ? null : value.GetType(); type != null; type = type.BaseType)
+        {
+            var field = type.GetField(name, BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            if (field != null) return field.GetValue(value);
+        }
+        return null;
+    }
+
+    private static Dictionary<string, object> CpuSource(object cpu, string kind, string scope)
+    {
+        var affinity = Get(cpu, "Affinity");
+        var groupValue = Get(affinity, "Group");
+        var maskValue = Get(affinity, "Mask");
+        if (groupValue == null || maskValue == null) return null;
+        int group = Convert.ToInt32(groupValue, CultureInfo.InvariantCulture);
+        ulong mask = Convert.ToUInt64(maskValue, CultureInfo.InvariantCulture);
+        if (group < 0 || group > ushort.MaxValue || mask == 0 || (mask & (mask - 1)) != 0) return null;
+        int logical = 0;
+        while ((mask >>= 1) != 0) logical++;
+        return new Dictionary<string, object> {
+            { "mapping", "lhm-owned-sensor-affinity-v1" }, { "kind", kind }, { "scope", scope },
+            { "processorGroup", group }, { "logicalProcessor", logical }
+        };
+    }
+
+    private static Dictionary<object, Dictionary<string, object>> ReadCpuSources(object hardware)
+    {
+        var result = new Dictionary<object, Dictionary<string, object>>();
+        // Use the actual sensor references owned by each AMD core. Display
+        // names and sparse sensor indices do not identify Windows processors.
+        var processor = CpuField(hardware, "_processor");
+        foreach (var node in Enumerate(Get(processor, "Nodes")))
+        foreach (var core in Enumerate(Get(node, "Cores")))
+        {
+            var firstThread = Enumerate(Get(core, "Threads")).FirstOrDefault();
+            var cpu = Get(firstThread, "Cpu");
+            foreach (var field in new[] { "_clock", "_vcore" })
+            {
+                var sensor = CpuField(core, field);
+                var source = CpuSource(cpu, field == "_clock" ? "Clock" : "VID", "core");
+                if (sensor != null && source != null) result.Add(sensor, source);
+            }
+        }
+        var loads = CpuField(hardware, "_threadLoads") as Array;
+        if (loads != null)
+        foreach (var core in Enumerate(Get(hardware, "CpuId")))
+        foreach (var cpu in Enumerate(core))
+        {
+            var threadValue = Get(cpu, "Thread");
+            if (threadValue == null) continue;
+            int thread = Convert.ToInt32(threadValue, CultureInfo.InvariantCulture);
+            if (thread < 0 || thread >= loads.Length) continue;
+            var sensor = loads.GetValue(thread);
+            var source = CpuSource(cpu, "Usage", "thread");
+            if (sensor != null && source != null) result.Add(sensor, source);
+        }
+        return result;
     }
 
     private static Dictionary<string, object> _staticCache;
@@ -320,10 +408,23 @@ internal static class FrameScopeHardwareProvider
     private static string GpuVendorFor(string adapterCompatibility)
     {
         string value = adapterCompatibility ?? "";
-        if (value.IndexOf("NVIDIA", StringComparison.OrdinalIgnoreCase) >= 0) return "NVIDIA";
-        if (value.IndexOf("Advanced Micro", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("ATI", StringComparison.OrdinalIgnoreCase) >= 0) return "AMD";
-        if (value.IndexOf("Intel", StringComparison.OrdinalIgnoreCase) >= 0) return "Intel";
+        if (Regex.IsMatch(value, @"\bNVIDIA\b", RegexOptions.IgnoreCase)) return "NVIDIA";
+        if (Regex.IsMatch(value, @"\b(Advanced Micro Devices|AMD|ATI)\b", RegexOptions.IgnoreCase)) return "AMD";
+        if (Regex.IsMatch(value, @"\bIntel\b", RegexOptions.IgnoreCase)) return "Intel";
         return "Unknown";
+    }
+
+    private static string GpuVendorForDevice(string manufacturer, string pnpId)
+    {
+        Match pci = Regex.Match(pnpId ?? "", @"^PCI\\VEN_([0-9A-F]{4})(?:&|$)", RegexOptions.IgnoreCase);
+        if (!pci.Success) return GpuVendorFor(manufacturer);
+        switch (pci.Groups[1].Value.ToUpperInvariant())
+        {
+            case "8086": return "Intel";
+            case "1002": return "AMD";
+            case "10DE": return "NVIDIA";
+            default: return "Unknown";
+        }
     }
 
     // Heuristic for indirect/virtual display adapters (GameViewer, Duet,
@@ -337,6 +438,55 @@ internal static class FrameScopeHardwareProvider
         return lower.Contains("virtual") || lower.Contains("indirect") || lower.Contains("remote")
             || lower.Contains("mirroring") || lower.Contains("vmware") || lower.Contains("parallels")
             || lower.Contains("displaylink") || lower.Contains("spacedesk");
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    private struct DisplayDevice
+    {
+        public int Size;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=32)] public string Name;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string Description;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string DeviceId;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=128)] public string Key;
+    }
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)]
+    [return:MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumDisplayDevices(string device,uint index,ref DisplayDevice result,uint flags);
+    private static Dictionary<string,uint> DisplayAdapterFlags()
+    {
+        var result=new Dictionary<string,uint>(StringComparer.OrdinalIgnoreCase);
+        var seen=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for(uint index=0;index<256;index++) {
+            var device=new DisplayDevice();device.Size=Marshal.SizeOf(typeof(DisplayDevice));
+            if(!EnumDisplayDevices(null,index,ref device,0))break;
+            if(!String.IsNullOrEmpty(device.DeviceId)) {
+                if(seen.Add(device.DeviceId))result[device.DeviceId]=device.Flags;
+                else result.Remove(device.DeviceId); // Ambiguous identical adapters never share properties.
+            }
+        }
+        return result;
+    }
+    private static string GpuDeviceKind(Dictionary<string, object> gpu)
+    {
+        object raw;
+        string id=gpu.TryGetValue("pnp_device_id",out raw)?Convert.ToString(raw):"";
+        string drivers=gpu.TryGetValue("installed_drivers",out raw)?Convert.ToString(raw):"";
+        if (id.StartsWith("PCI\\VEN_15AD&",StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("PCI\\VEN_80EE&",StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("PCI\\VEN_1414&DEV_008C",StringComparison.OrdinalIgnoreCase)
+            || drivers.IndexOf("BasicRender",StringComparison.OrdinalIgnoreCase)>=0) return "software-adapter";
+        object displayFlags;
+        if(gpu.TryGetValue("display_state_flags",out displayFlags)&&displayFlags!=null
+            &&(Convert.ToUInt32(displayFlags)&0x04000008u)!=0)return "virtual-display";
+        // WMI's VideoController class also includes indirect and remote displays.
+        // A physical PCI adapter remains a GPU even with Microsoft's basic driver.
+        if (id.StartsWith("PCI\\",StringComparison.OrdinalIgnoreCase)) return "physical";
+        if (id.StartsWith("ROOT\\DISPLAY\\",StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("ROOT\\RDP",StringComparison.OrdinalIgnoreCase)
+            || id.StartsWith("SWD\\",StringComparison.OrdinalIgnoreCase)) return "virtual-display";
+        if (LooksLikeVirtualGpu(gpu)) return "virtual-display";
+        return "unknown";
     }
 
     private static string[] WmiStringArray(System.Management.ManagementObject o, string p)
@@ -472,7 +622,7 @@ internal static class FrameScopeHardwareProvider
                     gpus.Add(new Dictionary<string, object>
                     {
                         { "name", WmiGet(o, "Name") },
-                        { "vendor", GpuVendorFor(WmiGet(o, "AdapterCompatibility")) },
+                        { "vendor", GpuVendorForDevice(WmiGet(o, "AdapterCompatibility"), WmiGet(o, "PNPDeviceID")) },
                         { "memory_gb", memoryGb },
                         { "driver_version", WmiGet(o, "DriverVersion") },
                         { "temperature", (object)null },
@@ -497,11 +647,17 @@ internal static class FrameScopeHardwareProvider
         }
         catch (Exception ex) { errors.Add("Win32_VideoController failed: " + RootMessage(ex)); }
 
-        // WMI returns virtual display adapters (GameViewer/indirect screens)
-        // before the physical GPU on some machines, which made the hero card
-        // present a virtual device as the main graphics card (audit F-3).
-        // Stable sort: physical adapters first, virtual ones last.
-        gpus = gpus.OrderBy(g => LooksLikeVirtualGpu(g as Dictionary<string, object>)).ToList();
+        try {
+            var flags=DisplayAdapterFlags();
+            foreach(Dictionary<string,object> gpu in gpus) {
+                string instance=StringValue(gpu["pnp_device_id"]);
+                var matches=flags.Where(p => instance.Equals(p.Key,StringComparison.OrdinalIgnoreCase)||instance.StartsWith(p.Key+"\\",StringComparison.OrdinalIgnoreCase)).ToArray();
+                gpu["display_state_flags"]=matches.Length==1&&gpus.Count(g => StringValue(((Dictionary<string,object>)g)["pnp_device_id"]).StartsWith(matches[0].Key,StringComparison.OrdinalIgnoreCase))==1?(object)matches[0].Value:null;
+            }
+        }catch(Exception ex){errors.Add("Display adapter properties failed: "+RootMessage(ex));}
+        foreach (Dictionary<string,object> gpu in gpus) gpu["device_kind"]=GpuDeviceKind(gpu);
+        var displayDevices=gpus.Where(g => (string)((Dictionary<string,object>)g)["device_kind"]!="physical").ToArray();
+        gpus=gpus.Where(g => (string)((Dictionary<string,object>)g)["device_kind"]=="physical").ToList();
 
         try
         {
@@ -737,7 +893,7 @@ internal static class FrameScopeHardwareProvider
 
         return new Dictionary<string, object>
         {
-            { "cpu", cpu }, { "gpu", gpus.ToArray() }, { "memory", memory.ToArray() },
+            { "cpu", cpu }, { "gpu", gpus.ToArray() }, { "display_devices", displayDevices }, { "memory", memory.ToArray() },
             { "motherboard", motherboard }, { "disk", disks.ToArray() }, { "sound_card", soundCards.ToArray() },
             { "network_card", networkCards.ToArray() }, { "monitor", monitors.ToArray() }
         };
@@ -801,7 +957,7 @@ internal static class FrameScopeHardwareProvider
 
     private static Dictionary<string, object> Metric(Reading r, string unit, string at) { return Metric(r == null ? (double?)null : r.value, unit, r == null ? "framescope-lhm" : "librehardwaremonitor", at); }
     private static Dictionary<string, object> Metric(double? value, string unit, string source, string at) { return new Dictionary<string, object> { { "value", value }, { "unit", unit }, { "source", source }, { "capturedAt", at } }; }
-    private static Dictionary<string, object> ToJson(Reading r) { return new Dictionary<string, object> { { "hardware", r.hardware }, { "hardwareType", r.hardwareType }, { "identifier", r.identifier }, { "subHardware", r.subHardware }, { "name", r.name }, { "sensorType", r.sensorType }, { "value", r.value }, { "unit", r.unit } }; }
+    private static Dictionary<string, object> ToJson(Reading r) { return new Dictionary<string, object> { { "hardware", r.hardware }, { "hardwareType", r.hardwareType }, { "identifier", r.identifier }, { "sensorIdentifier", r.sensorIdentifier }, { "deviceId", r.deviceId }, { "subHardware", r.subHardware }, { "name", r.name }, { "sensorType", r.sensorType }, { "value", r.value }, { "unit", r.unit }, { "cpuSource", r.cpuSource } }; }
     private static Reading Find(List<Reading> rows, string hardwareType, params string[] terms)
     {
         if (terms == null || terms.Length == 0) return null;

@@ -28,7 +28,8 @@ internal static class FrameScopeBoundedProcessRunner
         string arguments,
         string workingDirectory,
         int timeoutMs,
-        Action waitingCallback)
+        Action waitingCallback,
+        Func<string> progressIdentity = null)
     {
         var result = new FrameScopeProcessResult();
         var output = new RollingTextTail(MaxCapturedOutputBytes);
@@ -71,14 +72,20 @@ internal static class FrameScopeBoundedProcessRunner
 
             int totalTimeoutMs = Math.Max(1, timeoutMs);
             Stopwatch timer = Stopwatch.StartNew();
+            string previousProgress = null;
             while (true)
             {
+                if (progressIdentity != null)
+                {
+                    string progress = progressIdentity();
+                    if (progress != null && progress != previousProgress) { previousProgress = progress; timer.Restart(); }
+                }
                 int remaining = totalTimeoutMs - (int)Math.Min(Int32.MaxValue, timer.ElapsedMilliseconds);
                 if (remaining <= 0)
                 {
                     result.TimedOut = true;
                     result.CanRetry = true;
-                    result.Error = "Process timed out after " + totalTimeoutMs + " ms.";
+                    result.Error = "Process made no progress for " + totalTimeoutMs + " ms.";
                     KillProcessTree(process);
                     break;
                 }

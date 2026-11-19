@@ -2,26 +2,43 @@ import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import type { Location } from "react-router-dom";
 import type { TransitionMode } from "./animated-page";
+import { markMotionInteraction, playSurface, startContentTransition, useMotionPreferences } from '@/lib/motion-preferences';
+
+export function navigationMotionKey(location: Pick<Location, 'pathname' | 'search'>) {
+  const params = new URLSearchParams(location.search);
+  return location.pathname + ['section','tab','board','conversation','page','block'].map(key => ':' + (params.get(key) || '')).join('');
+}
 
 export function usePageLocation(location: Location, mode: TransitionMode): Location {
+  return useContentValue(location, navigationMotionKey(location), '[data-page-content]', mode);
+}
+
+export function useContentValue<T>(location: T, identity: string, selector: string, requestedMode?: TransitionMode): T {
+  const prefs = useMotionPreferences();
+  const mode = prefs.reduced ? 'off' : requestedMode ?? prefs.mode;
   const [displayed, setDisplayed] = useState(location);
   const committed = useRef(location);
+  const previousIdentity = useRef(identity);
   const activeTransition = useRef<symbol | null>(null);
 
   useEffect(() => {
     if (committed.current === location) return;
+    const changed = previousIdentity.current !== identity;
+    if (changed) markMotionInteraction();
     const commit = () => {
       committed.current = location;
+      previousIdentity.current = identity;
       setDisplayed(location);
     };
-    if (mode === "off" || committed.current.pathname === location.pathname ||
+    if (mode === "off" || previousIdentity.current === identity ||
         window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       commit();
+      if (changed) { const content = document.querySelector<HTMLElement>(selector); if(content) playSurface(content,true,'control'); }
       return;
     }
 
     if (mode === "slide") {
-      const content = document.querySelector<HTMLElement>("[data-page-content]");
+      const content = document.querySelector<HTMLElement>(selector);
       if (!content?.animate) { commit(); return; }
       let cancelled = false;
       const owner = Symbol("page-slide");
@@ -51,7 +68,12 @@ export function usePageLocation(location: Location, mode: TransitionMode): Locat
       return () => { cancelled = true; clear(); };
     }
 
-    if (!document.startViewTransition) { commit(); return; }
+    if (!document.startViewTransition) {
+      commit();
+      const content = document.querySelector<HTMLElement>(selector);
+      const animation = content ? playSurface(content) : null;
+      return () => animation?.cancel();
+    }
 
     // Snapshot the fully composed wallpaper and glass. Fading a live ancestor
     // changes its backdrop root until opacity reaches 1 and makes blur jump.
@@ -59,7 +81,7 @@ export function usePageLocation(location: Location, mode: TransitionMode): Locat
     const owner = Symbol("page-transition");
     activeTransition.current = owner;
     document.documentElement.dataset.pageTransition = mode;
-    const transition = document.startViewTransition(() => {
+    const transition = startContentTransition(() => {
       if (!cancelled) flushSync(commit);
     });
     const removeListener = () => {
@@ -75,7 +97,7 @@ export function usePageLocation(location: Location, mode: TransitionMode): Locat
       removeListener();
       transition.skipTransition();
     };
-  }, [location, mode]);
+  }, [location, mode, identity, selector]);
 
   return displayed;
 }

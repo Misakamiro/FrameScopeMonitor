@@ -64,7 +64,11 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       if (realBackend) { result = await nativeOperation("clear_hardware_data"); break; }
       mutatePreview(next => { next.tick = 0; }); result = null; break;
     case "get_overlay_current_settings":
-      if (realBackend) { result = await nativeOperation("get_overlay_current_settings"); break; }
+      if (realBackend) {
+        const current = await nativeOperation<OverlaySettings>("get_overlay_current_settings");
+        mutatePreview(next => { next.overlay.settings = current; });
+        result = current; break;
+      }
       result = state.overlay.settings; break;
     case "update_overlay_settings": {
       const settings = args.settings as OverlaySettings;
@@ -77,12 +81,15 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       // belongs to the map dialog - pass it through untouched.
       const known = new Set(settings.display_items.map(item => item.id));
       const missing = defaultOverlay.display_items.filter(item => !known.has(item.id));
-      const normalized = {
+      let normalized: OverlaySettings = {
         ...settings,
         display_items: [...settings.display_items, ...missing],
         delta_password_maps: settings.delta_password_maps ?? getPreviewState().overlay.settings.delta_password_maps ?? [],
       };
-      if (isDesktop()) await nativeOperation("update_overlay_settings", { settings: normalized });
+      if (isDesktop()) {
+        await nativeOperation("update_overlay_settings", { settings: normalized });
+        normalized = await nativeOperation<OverlaySettings>("get_overlay_current_settings");
+      }
       mutatePreview(next => { next.overlay.settings = normalized; });
       await emitPreviewEvent("vertical-overlay-settings", normalized);
       result = { success: true, message: "预览设置已保存" }; break;

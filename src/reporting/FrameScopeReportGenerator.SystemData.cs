@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -24,6 +24,8 @@ internal static partial class FrameScopeReportGenerator
                 rows.Add(new SystemRow
                 {
                     Time = t,
+                    CpuCoreVoltages = Get(row, h, "CpuCoreVoltages"),
+                    CpuCoreVoltageKind = Get(row, h, "CpuCoreVoltageKind"),
                     Cpu = ParseNullableDouble(Get(row, h, "TotalCpuPct")),
                     CpuFrequency = ParseNullableDouble(Get(row, h, "CpuClockMHz")),
                     CpuHardwareClock = h.ContainsKey("CpuClockMHz"),
@@ -34,6 +36,7 @@ internal static partial class FrameScopeReportGenerator
                     DiskBytesPerSec = ParseNullableDouble(Get(row, h, "DiskBytesPerSec")),
                     NetBytesPerSec = ParseNullableDouble(Get(row, h, "NetBytesPerSec")),
                     Gpu = ParseNullableDouble(Get(row, h, "GpuUtilPct")),
+                    GpuUsageSource=Get(row,h,"GpuUsageSource"),
                     GpuMem = ParseNullableDouble(Get(row, h, "GpuMemUtilPct")),
                     GpuTemp = ParseNullableDouble(Get(row, h, "GpuTempC")),
                     GpuClock = ParseNullableDouble(Get(row, h, "GpuClockMHz")),
@@ -41,12 +44,33 @@ internal static partial class FrameScopeReportGenerator
                     Power = ParseNullableDouble(Get(row, h, "PowerW")),
                     VramUsedMiB = ParseNullableDouble(Get(row, h, "VramUsedMiB")),
                     VramTotalMiB = ParseNullableDouble(Get(row, h, "VramTotalMiB")),
-                    Fps = ParseNullableDouble(Get(row, h, "Fps"))
+                    Fps = ParseNullableDouble(Get(row, h, "Fps")),
+                    Fps1Low=ValidPositiveTelemetryOrNull(ParseNullableDouble(Get(row,h,"Fps1Low"))),
+                    Fps01Low=ValidPositiveTelemetryOrNull(ParseNullableDouble(Get(row,h,"Fps01Low"))),
+                    FpsIdentityRecorded=h.ContainsKey("FpsValid"),
+                    FpsValid=Get(row,h,"FpsValid").Equals("true",StringComparison.OrdinalIgnoreCase),
+                    FpsTargetPid=CsvInteger(Get(row,h,"FpsTargetPid")), FpsTargetStartMs=CsvInteger(Get(row,h,"FpsTargetStartMs")),
+                    FpsGeneration=CsvInteger(Get(row,h,"FpsTargetGeneration")),
+                    FpsWindowStartMs=CsvInteger(Get(row,h,"FpsWindowStartMs")), FpsWindowEndMs=CsvInteger(Get(row,h,"FpsWindowEndMs")),
+                    FpsFrameCount=CsvInteger(Get(row,h,"FpsFrameCount")), FpsSource=Get(row,h,"FpsSource"),
+                    RecordingTargetPid=CsvInteger(Get(row,h,"RecordingTargetPid")), RecordingTargetStartMs=CsvInteger(Get(row,h,"RecordingTargetStartMs"))
                 });
             }
         }
         rows.Sort(delegate(SystemRow a, SystemRow b) { return a.Time.CompareTo(b.Time); });
         return rows;
+    }
+    private static long CsvInteger(string value) { long parsed; return long.TryParse(value,NumberStyles.Integer,CultureInfo.InvariantCulture,out parsed)?parsed:0; }
+    private static bool ValidFpsRow(SystemRow row) {
+        if(!ValidPositiveTelemetryOrNull(row.Fps).HasValue)return false;
+        if(!row.FpsIdentityRecorded)return true; // Historical CSV: FPS only, identity/Low remain unknown.
+        long recorded=(row.Time.ToUniversalTime()-new DateTime(1970,1,1)).Ticks/TimeSpan.TicksPerMillisecond;
+        return row.FpsValid && row.RecordingTargetPid>0 && row.RecordingTargetStartMs>0
+            && row.FpsTargetPid==row.RecordingTargetPid && row.FpsTargetStartMs==row.RecordingTargetStartMs
+            && row.FpsFrameCount>0 && row.FpsGeneration>=0
+            && row.FpsWindowEndMs<=recorded && recorded-row.FpsWindowEndMs<1000
+            && row.FpsWindowStartMs>0 && row.FpsWindowEndMs-row.FpsWindowStartMs==1000
+            && (row.FpsSource=="etw-dxgi-present"||row.FpsSource=="etw-kernel-estimate");
     }
 
     /// Overlays CPU clock and GPU columns of systemRows with hardware-samples.csv values
@@ -54,11 +78,11 @@ internal static partial class FrameScopeReportGenerator
     /// row inherits the nearest overlay row's non-null GPU fields within a
     /// two-second window; system data stays untouched otherwise. Returns the
     /// number of system rows that received overlay values.
-    private static int MergeHardwareOverlaySamples(List<SystemRow> systemRows, string path)
+    private static int MergeHardwareOverlaySamples(List<SystemRow> systemRows, string path, List<SystemRow> overlayRows)
     {
         if (systemRows == null || systemRows.Count == 0 || !File.Exists(path)) return 0;
-        List<SystemRow> overlayRows = ReadSystem(path);
         if (overlayRows.Count == 0) return 0;
+        bool modernGpuSource=FileHasGpuSource(path);
 
         var merged = 0;
         // Both lists are time-sorted (ReadSystem sorts, and the caller's rows
@@ -70,6 +94,7 @@ internal static partial class FrameScopeReportGenerator
         var cursor = 0;
         foreach (SystemRow row in systemRows)
         {
+            if(modernGpuSource){row.Gpu=null;row.GpuUsageSource=null;}
             // Overlay rows more than two seconds in the past can never be
             // nearest for this or any later system row - drop them for good.
             while (cursor < overlayRows.Count &&
@@ -96,7 +121,10 @@ internal static partial class FrameScopeReportGenerator
             row.CpuFrequency=nearest.CpuFrequency;
             row.CpuHardwareClock=nearest.CpuHardwareClock;
             if (nearest.CpuFrequency.HasValue) applied=true;
-            if (nearest.Gpu.HasValue) { row.Gpu = nearest.Gpu; applied = true; }
+            // A modern provider's explicit missing value must not resurrect generic system GPU load.
+            if (!string.IsNullOrEmpty(nearest.GpuUsageSource)||modernGpuSource) {
+                row.Gpu=nearest.Gpu;row.GpuUsageSource=nearest.GpuUsageSource;applied=true;
+            } else if(nearest.Gpu.HasValue){row.Gpu=nearest.Gpu;row.GpuUsageSource="unknown";applied=true;}
             if (nearest.GpuTemp.HasValue) { row.GpuTemp = nearest.GpuTemp; applied = true; }
             if (nearest.GpuClock.HasValue) { row.GpuClock = nearest.GpuClock; applied = true; }
             if (nearest.MemClock.HasValue) { row.MemClock = nearest.MemClock; applied = true; }
@@ -107,6 +135,7 @@ internal static partial class FrameScopeReportGenerator
         }
         return merged;
     }
+    private static bool FileHasGpuSource(string path) {using(var table=CsvTable.Open(path))return table.Headers.ContainsKey("GpuUsageSource");}
 
     private static Dictionary<string, object> BuildSampledFps(List<SystemRow> rows, DateTime start)
     {
@@ -116,7 +145,7 @@ internal static partial class FrameScopeReportGenerator
         var counts = new List<int>();
         foreach (SystemRow row in rows)
         {
-            bool valid = row.Fps.HasValue && row.Fps.Value >= 0;
+            bool valid = ValidFpsRow(row);
             times.Add(RoundDouble((row.Time - start).TotalSeconds, 3));
             values.Add(valid ? row.Fps : null);
             unavailableLows.Add(null);
@@ -134,6 +163,7 @@ internal static partial class FrameScopeReportGenerator
     private static Dictionary<string, object> SeriesFromSystem(List<SystemRow> rows, DateTime start, double? totalMemoryMb)
     {
         List<double> t = new List<double>();
+        var gpuSources=new List<string>();var gpu3d=new List<double?>();var gpuCore=new List<double?>();var gpuUnknown=new List<double?>();
         List<double?> cpu = new List<double?>(), gpu = new List<double?>(), gpuMem = new List<double?>(), mem = new List<double?>(), vram = new List<double?>();
         List<double?> cpuFreq = new List<double?>(), cpuFreqReference = new List<double?>(), gpuClock = new List<double?>(), memClock = new List<double?>();
         List<double?> disk = new List<double?>(), net = new List<double?>(), diskLatency = new List<double?>(), power = new List<double?>(), temp = new List<double?>();
@@ -143,6 +173,9 @@ internal static partial class FrameScopeReportGenerator
             t.Add(RoundDouble((row.Time - start).TotalSeconds, 3));
             cpu.Add(RoundNullable(row.Cpu, 2));
             gpu.Add(RoundNullable(row.Gpu, 2));
+            string source=row.GpuUsageSource=="3d"?"3d":row.GpuUsageSource=="core-fallback"?"core-fallback":"unknown";
+            gpuSources.Add(source);gpu3d.Add(source=="3d"?RoundNullable(row.Gpu,2):null);
+            gpuCore.Add(source=="core-fallback"?RoundNullable(row.Gpu,2):null);gpuUnknown.Add(source=="unknown"?RoundNullable(row.Gpu,2):null);
             gpuMem.Add(RoundNullable(row.GpuMem, 2));
             double? memPct = null;
             if (totalMemoryMb.HasValue && row.AvailableMb.HasValue) memPct = Math.Max(0, Math.Min(100, (totalMemoryMb.Value - row.AvailableMb.Value) / totalMemoryMb.Value * 100.0));
@@ -164,7 +197,7 @@ internal static partial class FrameScopeReportGenerator
         return new Dictionary<string, object>
         {
             { "t", t },
-            { "usage", new Dictionary<string, object> { { "cpu", cpu }, { "gpu", gpu }, { "gpuMem", gpuMem }, { "mem", mem }, { "vram", vram } } },
+            { "usage", new Dictionary<string, object> { { "cpu", cpu }, { "gpu", gpu }, {"gpuSources",gpuSources},{"gpu3d",gpu3d},{"gpuCore",gpuCore},{"gpuUnknown",gpuUnknown}, { "gpuMem", gpuMem }, { "mem", mem }, { "vram", vram } } },
             { "perf", new Dictionary<string, object> { { "cpuFreq", cpuFreq }, { "cpuFreqReference", cpuFreqReference }, { "gpuClock", gpuClock }, { "memClock", memClock } } },
             { "io", new Dictionary<string, object> { { "disk", disk }, { "net", net }, { "diskLatency", diskLatency }, { "power", power }, { "temp", temp } } }
         };
@@ -273,6 +306,18 @@ internal static partial class FrameScopeReportGenerator
 
     private static Dictionary<string, object> ReadCpuVoltageChart(string runDir, DateTime start, Dictionary<string, object> metadata)
     {
+        Dictionary<string, object> recorded = ReadHardwareVoltageChart(runDir, start);
+        if (recorded != null)
+        {
+            bool available=Convert.ToBoolean(recorded["available"]);
+            int vcore=Convert.ToInt32(recorded["vcoreSampleCount"]),vid=Convert.ToInt32(recorded["vidSampleCount"]);
+            metadata["cpuVoltageAvailable"]=available;metadata["cpuVoltageVcoreAvailable"]=vcore>0;
+            metadata["cpuVoltageStatus"]=vcore>0?(vid>0?"mixed-sources":"vcore-available"):(vid>0?"vid-average-available":"unavailable");
+            metadata["cpuVoltageReason"]=recorded["reason"];metadata["cpuVoltageSource"]=recorded["source"];
+            metadata["cpuVoltageSampleCount"]=vcore+vid;metadata["cpuVoltageVcoreSampleCount"]=vcore;
+            metadata["cpuVoltageSamplesCsv"]=recorded["samplesCsv"];
+            return recorded;
+        }
         Dictionary<string, object> missingTimeChart = null;
         string dedicatedPath = Path.Combine(runDir, "cpu-voltage-samples.csv");
         if (File.Exists(dedicatedPath))
@@ -294,6 +339,44 @@ internal static partial class FrameScopeReportGenerator
         Dictionary<string, object> empty = EmptyCpuCoreChart("V", CpuVoltageUnavailableReason(metadata));
         AddCpuVoltageChartMetadata(empty, metadata);
         return empty;
+    }
+
+    private static Dictionary<string, object> ReadHardwareVoltageChart(string runDir, DateTime start)
+    {
+        string path=Path.Combine(runDir,"hardware-samples.csv");
+        if(!File.Exists(path))return null;
+        var times=new SortedSet<double>();
+        var points=new Dictionary<string,SortedDictionary<double,CpuCoreBucketValue>>();
+        var sources=new Dictionary<string,string>();
+        int vcoreCount=0,vidCount=0;
+        using(var table=CsvTable.Open(path))
+        {
+            if(!table.Headers.ContainsKey("CpuVoltageKind"))return null;
+            List<string> row;
+            while((row=table.ReadRow())!=null)
+            {
+                DateTime at;if(!TryParseDate(Get(row,table.Headers,"Time"),out at)||at<start)continue;
+                double time=RoundDouble((at-start).TotalSeconds,3);times.Add(time);
+                string kind=Get(row,table.Headers,"CpuVoltageKind");
+                double? value=ParseNullableDouble(Get(row,table.Headers,"CpuVoltage"));
+                if((kind!="vcore"&&kind!="vid-average")||!IsValidVoltageValue(value))continue;
+                if(!points.ContainsKey(kind))points[kind]=new SortedDictionary<double,CpuCoreBucketValue>();
+                AddCpuVoltagePoint(points[kind],time,value.Value);
+                sources[kind]=Get(row,table.Headers,"CpuVoltageSource");
+                if(kind=="vcore")vcoreCount++;else vidCount++;
+            }
+        }
+        var series=new List<Dictionary<string,object>>();
+        foreach(string kind in new[]{"vcore","vid-average"})
+        {
+            if(!points.ContainsKey(kind))continue;
+            var data=new List<double?>();
+            foreach(double time in times){CpuCoreBucketValue value;data.Add(points[kind].TryGetValue(time,out value)?RoundNullable(value.Average(),3):null);}
+            series.Add(new Dictionary<string,object>{{"key","cpu-voltage:"+kind},{"name",kind=="vcore"?"CPU 电压 / Vcore":"CPU 平均 VID"},{"kind",kind},{"source",sources[kind]},{"color",kind=="vcore"?"#009dff":"#b799ff"},{"data",data}});
+        }
+        return new Dictionary<string,object>{{"available",series.Count>0},{"unit","V"},{"t",times.ToList()},{"series",series},{"sourceField","CpuVoltage"},{"source","hardware-service-overlay"},{"samplesCsv",path},{"vcoreSampleCount",vcoreCount},{"vidSampleCount",vidCount},
+            {"reason",series.Count>0?"":"本次记录没有有效的 CPU Vcore 或平均 VID。"},
+            {"note","实测 Vcore 与核心请求电压的平均 VID 按来源分别呈现；两者不是同一种测量，不合并计算。"}};
     }
 
     private static Dictionary<string, object> ReadCpuVoltageChartFromCsv(string path, DateTime start, Dictionary<string, object> metadata)
@@ -342,6 +425,11 @@ internal static partial class FrameScopeReportGenerator
 
     private static Dictionary<string, object> ReadCpuOsdVoltageChart(string runDir, DateTime start)
     {
+        return BuildCpuOsdVoltageChart(runDir, start, ReadSystem(Path.Combine(runDir, "hardware-samples.csv")));
+    }
+
+    private static Dictionary<string, object> BuildCpuOsdVoltageChart(string runDir, DateTime start, List<SystemRow> samples)
+    {
         const string reason = "本次记录未保存 OSD 分核心电压数据；需要更新后重新采集，不会用整体 Vcore 或旧 VID 补齐。";
         var chart = EmptyCpuCoreChart("V", reason);
         chart["source"] = "hardware-service overlay snapshot: cpu_core_voltages";
@@ -353,17 +441,17 @@ internal static partial class FrameScopeReportGenerator
         var points = new SortedDictionary<double, Dictionary<string, CpuCoreBucketValue>>();
         var cores = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         int count = 0;
-        using (CsvTable table = CsvTable.Open((string)chart["samplesCsv"]))
+        var voltageKinds = new HashSet<string>();
+        foreach (SystemRow row in samples)
         {
-            List<string> row;
-            while ((row = table.ReadRow()) != null)
-            {
-                DateTime sampleTime;
-                if (!TryParseDate(Get(row, table.Headers, "Time"), out sampleTime) || sampleTime < start) continue;
+                DateTime sampleTime = row.Time;
+                if (sampleTime < start) continue;
                 double time = RoundDouble((sampleTime - start).TotalSeconds, 3);
                 if (!points.ContainsKey(time)) points[time] = new Dictionary<string, CpuCoreBucketValue>();
-                string raw = Get(row, table.Headers, "CpuCoreVoltages");
+                string raw = row.CpuCoreVoltages;
                 if (String.IsNullOrWhiteSpace(raw)) continue;
+                string voltageKind=row.CpuCoreVoltageKind;
+                if(!String.IsNullOrWhiteSpace(voltageKind))voltageKinds.Add(voltageKind);
                 string[] values = raw.Split(';');
                 for (int i = 0; i < values.Length; i++)
                 {
@@ -374,7 +462,6 @@ internal static partial class FrameScopeReportGenerator
                     AddCpuCorePoint(points, time, core, volts.Value);
                     count++;
                 }
-            }
         }
         if (count == 0) return chart;
         var valuesChart = BuildCpuCoreChart("V", points, cores, 3, true, "");
@@ -383,7 +470,7 @@ internal static partial class FrameScopeReportGenerator
         {
             int index = Int32.Parse(((string)item["key"]).Substring("cpu-core:".Length), CultureInfo.InvariantCulture);
             item["key"] = "cpu-osd-voltage:" + index.ToString(CultureInfo.InvariantCulture);
-            item["name"] = "核心 " + (index + 1).ToString(CultureInfo.InvariantCulture) + " 电压";
+            item["name"] = "核心 " + (index + 1).ToString(CultureInfo.InvariantCulture) + (voltageKinds.SetEquals(new[]{"vid"})?" VID":" 电压");
         }
         chart["available"] = true;
         chart["reason"] = "";
@@ -391,6 +478,8 @@ internal static partial class FrameScopeReportGenerator
         chart["series"] = series;
         chart["sampleCount"] = count;
         chart["coreCount"] = cores.Count;
+        if(voltageKinds.Contains("vid"))chart["note"]="来自记录时 OSD 的分核心 VID（核心请求电压），单位 V；不代表各核心独立实测 Vcore。";
+        chart["voltageKinds"]=voltageKinds.OrderBy(v=>v).ToArray();
         return chart;
     }
 

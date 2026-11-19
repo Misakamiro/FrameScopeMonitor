@@ -32,3 +32,9 @@ export function foregroundTokens(branch:ForegroundBranch) {
     ?{foreground:'#17202b',muted:'#394553',border:'rgba(24,35,48,.3)',hover:'rgba(0,0,0,.07)'}
     :{foreground:'#f5f7fa',muted:'#d4dbe4',border:'rgba(255,255,255,.3)',hover:'rgba(255,255,255,.08)'};
 }
+
+/** MR uses one stable material reference, including nested controls and portals. */
+export function mrMaterialForeground(settings:MaterialSettings):ForegroundBranch {
+  const material=glassMaterial(settings);
+  return foregroundForSurface(composeLuminance(.03,material.channel,material.alpha),'light');
+}

@@ -1,4 +1,4 @@
-//! Current controller timings, not SPD profile timings. Public transport stays a string.
+//! Current controller timings, not SPD profile timings. Public inventory excludes unique identifiers.
 mod intel;
 mod pawnio;
 use serde::{Serialize,Deserialize};
@@ -74,11 +74,25 @@ pub fn current()->RuntimeMemory {RuntimeMemory::missing("test-no-hardware")}
 
 pub fn enrich(hardware:&mut Value,runtime:&RuntimeMemory) {
     hardware["memory_details"]=serde_json::to_value(runtime).unwrap_or(Value::Null);
+    hardware["memory_specification"]=specification(hardware,runtime);
     match summary(hardware,runtime) {
         Ok(text)=>{hardware["memory_summary"]=json!(text);hardware["memory_summary_error"]=Value::Null;},
         Err(error)=>{hardware["memory_summary"]=Value::Null;hardware["memory_summary_error"]=json!(error);},
     }
 }
+pub fn specification(hardware:&Value,runtime:&RuntimeMemory)->Value {
+    let modules=hardware["memory"].as_array().into_iter().flatten().take(64).map(|m|{
+        let label=|key:&str|m[key].as_str().map(str::trim).filter(|s|!s.is_empty()&&s.chars().count()<=256&&!s.chars().any(char::is_control));
+        let number=|key:&str|max_positive(&m[key]);
+        json!({"manufacturer":label("manufacturer"),"part_number":label("part_number"),"capacity_gb":number("capacity_gb"),
+            "memory_type":label("memory_type"),"configured_speed_mts":number("configured_clock_speed")})
+    }).collect::<Vec<_>>();
+    let total=modules.iter().map(|m|m["capacity_gb"].as_f64()).collect::<Option<Vec<_>>>().filter(|v|!v.is_empty()).map(|v|v.iter().sum::<f64>());
+    json!({"schema":1,"total_capacity_gb":total,"module_count":modules.len(),"modules":modules,
+        "runtime":{"status":runtime.status,"source":runtime.source,"memory_type":runtime.memory_type,
+            "data_rate_mts":runtime.data_rate_mts.filter(|v|v.is_finite()&&*v>0.0),"channels":runtime.channels}})
+}
+fn max_positive(value:&Value)->Option<f64>{value.as_f64().filter(|v|v.is_finite()&&*v>0.0)}
 pub fn summary(hardware:&Value,runtime:&RuntimeMemory)->Result<String,String> {
     let modules=hardware["memory"].as_array().ok_or("内存信息未读取")?;
     let mut total=0.0;let mut brands=BTreeMap::<String,usize>::new();let mut configured=0.0_f64;let mut kind="";
@@ -111,6 +125,13 @@ fn opt(v:Option<u32>)->String {v.map(|v|v.to_string()).unwrap_or_else(||"?".into
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn structured_inventory_preserves_partial_modules_and_does_not_export_serials(){
+        let mut h=json!({"memory":[{"manufacturer":"Kingston","part_number":"X".repeat(240),"capacity_gb":16,"memory_type":"DDR5","configured_clock_speed":6000,"serial_number":"SECRET"},{"manufacturer":"Corsair","capacity_gb":null,"speed_mhz":8000}]});
+        enrich(&mut h,&RuntimeMemory::missing("access-unavailable"));
+        let d=&h["memory_specification"];assert_eq!(d["module_count"],2);assert!(d["total_capacity_gb"].is_null());
+        assert_eq!(d["modules"][0]["part_number"],"X".repeat(240));assert_eq!(d["modules"][0]["configured_speed_mts"],6000.0);
+        assert!(d["runtime"]["data_rate_mts"].is_null());assert!(d["modules"][1]["configured_speed_mts"].is_null());assert!(!d.to_string().contains("SECRET"));
+    }
     #[test] fn amd_current_main_timings_separate_read_write_and_command_rate(){
         let c=amd_channel(0,true,3000|(1<<18),30|(76<<8)|(36<<16)|(32<<24),36<<16).unwrap();assert_eq!((c.cl,c.rcdrd,c.rcdwr,c.rp,c.ras,c.cr,c.gdm),(30,Some(36),Some(32),36,76,Some(1),Some(true)));
         let c=amd_channel(1,false,48|(1<<10),16|(36<<8)|(18<<16)|(12<<24),18<<16).unwrap();assert_eq!(c.cr,Some(2));assert!(amd_channel(0,true,0,u32::MAX,0).is_none());

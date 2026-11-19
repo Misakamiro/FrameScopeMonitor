@@ -26,8 +26,15 @@ export class LazyStore {
   async reload() { this.read(); }
   async onKeyChange<T>(key: string, callback: ChangeCallback<T>) {
     const listener = (event: Event) => { const value = (event as CustomEvent).detail; if (value.key === key) callback(value.value); };
+    const storage = (event: StorageEvent) => {
+      if (event.key !== PREFIX + this.path && event.key !== null) return;
+      let before: Record<string, unknown> = {}, after: Record<string, unknown> = {};
+      try { before = JSON.parse(event.oldValue || '{}'); after = JSON.parse(event.newValue || '{}'); } catch { return; }
+      if (JSON.stringify(before?.[key]) !== JSON.stringify(after?.[key])) callback(after?.[key] as T | undefined);
+    };
     window.addEventListener(PREFIX + this.path, listener);
-    return () => window.removeEventListener(PREFIX + this.path, listener);
+    window.addEventListener('storage', storage);
+    return () => { window.removeEventListener(PREFIX + this.path, listener); window.removeEventListener('storage', storage); };
   }
 }
 export class Store extends LazyStore {

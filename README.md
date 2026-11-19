@@ -9,7 +9,7 @@ Windows 游戏性能监控 · 本地交互报告 · 多形态 OSD · 可定制�
 [![正式版](https://img.shields.io/github/v/release/Misakamiro/FrameScopeMonitor?label=正式版&color=59bfa5)](https://github.com/Misakamiro/FrameScopeMonitor/releases/latest)
 [![平台](https://img.shields.io/badge/平台-Windows%2010%20%2F%2011%20x64-4267b2)](#快速上手)
 [![源码](https://img.shields.io/badge/公开源码-离线客户端-7c6bc4)](#版型与隐私)
-[![许可证](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
+[![许可证](https://img.shields.io/badge/License-GPL--3.0-blue)](desktop-preview/LICENSE)
 
 [下载正式版](https://github.com/Misakamiro/FrameScopeMonitor/releases/latest) · [反馈问题](https://github.com/Misakamiro/FrameScopeMonitor/issues) · [源码构建](#从源码构建) · [更新记录](https://github.com/Misakamiro/FrameScopeMonitor/releases)
 
@@ -17,7 +17,23 @@ Windows 游戏性能监控 · 本地交互报告 · 多形态 OSD · 可定制�
 
 FrameScope 是一款 Windows 游戏性能监控工具，支持 FPS、1% Low、0.1% Low、帧时间和硬件监控。游戏中可以用悬浮窗查看数据，结束后可以打开本地网页报告，查看曲线、缩放时间范围，并导出图片。原始 CSV 会保留在本机，方便之后重新生成报告。
 
-当前版本：**2.1.2**。安装包在 [Releases](https://github.com/Misakamiro/FrameScopeMonitor/releases/latest) 下载。本仓库提供离线客户端源码，完整版对应的客户端源码放在发行附件中。
+**2.1.3 正式版**提供完整版 Windows 安装包，本次更新使用全量包。公开源码保留主页、硬件信息、报告（不含 AI Agent）、监控目标和 OSD，以及这些功能必需的设置、采集、存储、安装和签名更新实现。下方配图沿用 **2.1.2** 并保留原版本标注。
+
+## 2.1.3 更新内容
+
+- 报告上传在准备和上传阶段切换页面后保留步骤、进度与结果；耗时处理期间可继续打开用户页面。
+- 完整版报告 Agent 提供三栏工作区、主侧独立会话、模型与推理档位选择、上下文查看、文件检查与撤销；敏感操作通过本机授权。
+- 硬件价格支持中文常用名称和中文搜索，显示拼多多不同商品的价格条件及采集时间。已有报价覆盖仍在持续补齐，页面价格不代表全市场最低成交价。
+- 继续完善报告加载、退出进度、传感器状态及运行依赖处理，保留液态玻璃外观与已有布局。
+- 公开仓库与本次源码附件统一为五功能范围。硬件评测、驯龙大师、游戏滤镜、AI Agent、硬件价格和其他扩展只通过完整版安装包分发。
+
+| 下载文件 | 适用情况 |
+| --- | --- |
+| `FrameScope_2.1.3_x64-setup.exe` | 标准全量包，适用于已有 WebView2 的电脑和已有用户更新。 |
+| `FrameScope_2.1.3_x64-full-setup.exe` | 附带 WebView2 离线运行时的完整包；仍是同一完整版产品。 |
+| `FrameScope_2.1.3_public-five-functions-source.zip` | 与公开仓库一致的五功能源码，不含闭源扩展源码和运行时二进制。 |
+
+从 [2.1.3 发行页](https://github.com/Misakamiro/FrameScopeMonitor/releases/tag/v2.1.3) 下载，已有用户也可在软件内检查更新。新版保留后续累计更新所需的组件信息；本次不启用累计包发现，无需重启的热更新尚未提供。
 
 ## 界面预览
 
@@ -26,7 +42,7 @@ FrameScope 是一款 Windows 游戏性能监控工具，支持 FPS、1% Low、0.
 <table>
 <tr><td width="50%"><img src="docs/readme/home-mr.webp" alt="深色 MR 主页，演示硬件数据" /><br/><b>深色 MR 主页</b> · 动态光带与玻璃卡片</td><td width="50%"><img src="docs/readme/home-light.webp" alt="浅色透明玻璃主页，原创渐变背景" /><br/><b>浅色透明玻璃</b> · 自定义背景与通透表面</td></tr>
 <tr><td><img src="docs/readme/hardware.webp" alt="硬件信息与监控页面，演示数据" /><br/><b>硬件监控</b> · 配置与实时传感器</td><td><img src="docs/readme/report.webp" alt="本地网页报告，合成帧数据" /><br/><b>本地交互报告</b> · 查看曲线和筛选数据</td></tr>
-<tr><td align="center"><img src="docs/readme/osd-vertical.webp" width="280" alt="2.1.2 竖排 OSD 原生窗口" /><br/><b>竖排 OSD</b> · 可调整显示项、字号和透明度</td><td><img src="docs/readme/leaderboard-full.webp" alt="完整版榜单预览，合成用户及成绩" /><br/><b>完整版可选榜单</b> · 示例成绩</td></tr>
+<tr><td align="center"><img src="docs/readme/osd-vertical.webp" width="280" alt="2.1.2 竖排 OSD 原生窗口新截图" /><br/><b>竖排 OSD</b> · 可调整显示项、字号和透明度</td><td><img src="docs/readme/leaderboard-full.webp" alt="完整版榜单预览，合成用户及成绩" /><br/><b>完整版可选榜单</b> · 示例成绩</td></tr>
 </table>
 
 ## 主要功能
@@ -56,6 +72,20 @@ FrameScope 是一款 Windows 游戏性能监控工具，支持 FPS、1% Low、0.
 
 悬浮窗提供横向栏、面板和竖排三种样式，可以选择监控项目、调整字号和透明度，拖动后保存位置。硬件指标是否可用取决于设备和驱动。
 
+## 公开源码范围
+
+公开源码提供五项功能，以及运行它们所需的设置、主题、采集、存储、安装和签名更新。上方配图保留原 2.1.2 展示素材，其中“完整版可选榜单”展示的是完整版安装包功能。
+
+| 页面 | 公开实现 |
+| --- | --- |
+| 主页 | 监控状态、实时概览和开始／停止监控。 |
+| 硬件信息 | 设备配置与可用传感器数据。 |
+| 报告 | 本地报告列表、统计、曲线、筛选与重新生成；不包含 AI Agent。 |
+| 监控目标 | 管理目标进程与采集设置。 |
+| OSD | 横向、面板、竖排与自定义布局，保存显示项目和位置。 |
+
+完整版安装包可以包含硬件评测、驯龙大师、游戏滤镜、AI Agent、硬件价格及在线服务。这些扩展的源码不在公开仓库或今后的源码附件中。安装包能力与验证范围以对应发行说明为准。
+
 ## 与游戏加加对比
 
 游戏加加和 FrameScope 都有 FPS、硬件监控和悬浮显示。FrameScope 主要提供本地数据记录、网页报告和界面定制，适合需要保存原始数据、之后再回看曲线的用户。游戏加加还提供滤镜、跑分等功能，详情可查看 [游戏加加官网](https://www.gamepp.com/)。
@@ -66,7 +96,7 @@ FrameScope 是一款 Windows 游戏性能监控工具，支持 FPS、1% Low、0.
 | 游戏结束后的复查 | 本地交互报告、原始 CSV、输入指纹、重新生成与筛选解释 | 性能评估和硬件分析，具体功能以对应版本为准 |
 | 可审阅实现 | 本仓库提供离线客户端源码与统计实现 | 以官方公开资料为准 |
 | 视觉定制 | 两种液态玻璃、MR、图片／视频、字体、透明度和动画 | 监控皮肤和显示自定义 |
-| 画面增强与跑分 | 本项目侧重采集、回看与展示 | 游戏滤镜、电脑跑分等 |
+| 画面增强与跑分 | 完整版可提供滤镜与评测；公开五功能源码不包含这些实现 | 游戏滤镜、电脑跑分等 |
 
 FrameScope 的 FPS／Low 统计参考游戏加加普通 FPS 指标的计算方式。对照两款软件时，需要使用相同的目标、录制区间和帧生成设置；采集源不同也可能导致结果不同。
 
@@ -95,13 +125,15 @@ FrameScope 的 FPS／Low 统计参考游戏加加普通 FPS 指标的计算方�
 
 | 分发内容 | 包含范围 |
 | --- | --- |
-| 本 GitHub 仓库（`EDITION=offline`） | 本地采集、硬件、OSD、报告、设置和签名更新代码；移除完整版在线专属页面、命令和上传实现。 |
+| 本 GitHub 仓库（`EDITION=offline`） | 主页、硬件信息、报告（不含 AI Agent）、监控目标和 OSD，以及必要设置、采集、存储、安装与签名更新实现。 |
 | Releases 安装包 | 以发行说明标注版型；完整版仍通过 GitHub 分发和更新。 |
-| Releases 的 `full-client-source.zip` | 对应完整版的净化客户端源码；不包含独立服务端、生产部署配置、凭据、密钥或用户数据。 |
+| 今后的 Releases 源码附件 | 与公开仓库相同的五项功能；不再提供完整版客户端源码附件。硬件评测、驯龙大师、游戏滤镜、AI Agent、硬件价格及其他扩展功能源码不公开。 |
 
 本地采集和报告不要求登录。完整版的账号、反馈和上传功能会连接对应服务，具体说明见 [隐私说明](PRIVACY.md)。分享报告前，请检查设备信息、进程名、路径和窗口标题。
 
 ## 从源码构建
+
+公开源码按五项功能的离线客户端组织。完整版的硬件评测、驯龙大师、游戏滤镜、AI Agent、硬件价格和在线功能不包含在公开源码中。
 
 主界面使用 Tauri 2、Rust、React 和 Chakra UI，位于 `desktop-preview/`。硬件服务使用 Rust，采集和报告工具使用 C#。`src/frontend/` 是保留的兼容前端，构建 C# 工具时仍会用到。
 
@@ -113,7 +145,7 @@ FrameScope 的 FPS／Low 统计参考游戏加加普通 FPS 指标的计算方�
 在仓库根目录执行：
 
 ```powershell
-./tools/Restore-BuildDependencies.ps1
+./tools/Restore-BuildDependencies.ps1 -RuntimeArchive C:\path\to\FrameScope-runtime-dependencies.zip
 npm ci --prefix src/frontend
 npm run build --prefix src/frontend
 npm ci --prefix desktop-preview
@@ -122,7 +154,9 @@ $env:CARGO_INCREMENTAL = '0'
 ./tools/Package-Installer.ps1 -StageOnly
 ```
 
-依赖恢复脚本会校验下载归档和每个文件的 SHA256，并提取 WebView2、PawnIO 安装依赖，不执行安装。`-StageOnly` 构建客户端和后端工具，不安装软件或发布版本。宿主产物位于 `desktop-preview/src-tauri/target/release/`。
+源码附件不携带可执行文件。请准备由四项固定 SHA256 约束的运行依赖归档（PresentMon、WebView2、.NET Framework 4.8、PawnIO），归档内路径须与 `build-dependencies.lock.json` 一致。恢复脚本逐文件校验 SHA256 并提取，不执行安装；已存在且一致的文件直接复用。`-StageOnly` 构建客户端和后端工具，不安装软件或发布版本。宿主产物位于 `desktop-preview/src-tauri/target/release/`。
+
+本项目暂不接入 GitHub Actions。
 
 制作安装包使用 `desktop-preview/installer/build-installer.ps1`，还需要在安装器目录执行 `npm ci`。请保留依赖锁文件和许可证，签名使用自己的密钥。
 
@@ -139,7 +173,7 @@ npm run dev --prefix desktop-preview
 
 </details>
 
-[GPL-3.0](LICENSE) · [附加声明](desktop-preview/LICENSE.EXTRA) · [第三方声明](THIRD-PARTY-NOTICES.md)
+[GPL-3.0](desktop-preview/LICENSE) · [附加声明](desktop-preview/LICENSE.EXTRA) · [第三方声明](THIRD-PARTY-NOTICES.md)
 
 ## 致谢
 

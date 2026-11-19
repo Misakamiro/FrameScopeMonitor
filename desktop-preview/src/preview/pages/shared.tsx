@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import {
-  Modal, ModalOverlay, ModalContent, ModalHeader, ModalCloseButton, ModalBody,
-  Divider, Text, useColorModeValue,
-} from "@chakra-ui/react";
+import { Modal, ModalHeader, ModalCloseButton, ModalBody, ModalFooter, Divider, Text, useColorModeValue } from "@chakra-ui/react";
+import { ModalOverlay } from "@/components/ui/motion-components";
+import { ModalContent } from "@/components/ui/motion-components";
 import {
   getPreviewState, subscribePreviewState, previewAction,
   type PreviewAction, type PreviewActionPayloads,
@@ -61,23 +60,24 @@ export function usePreviewAction() {
 }
 
 // HardwareDetailModal's surface, sizing and scroll pattern, shared by business dialogs.
-export function PreviewDialog({ title, isOpen, onClose, children, size = 'md', closeDisabled = false }: {
+export function PreviewDialog({ title, isOpen, onClose, children, size = 'md', closeDisabled = false, opaque = false, footer }: {
   title: string; isOpen: boolean; onClose: () => void; children: ReactNode;
-  size?: string; closeDisabled?: boolean;
+  size?: string; closeDisabled?: boolean; opaque?: boolean; footer?: ReactNode;
 }) {
   const overlayBg = 'rgba(0,0,0,.18)';
-  const contentBg = 'var(--framescope-panel-bg)';
+  const contentBg = opaque?'var(--framescope-popup-bg)':'var(--framescope-panel-bg)';
   const borderColor = 'var(--framescope-control-border)';
   const color = 'var(--framescope-surface-fg)';
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size={size} isCentered scrollBehavior="inside" closeOnOverlayClick={!closeDisabled} closeOnEsc={!closeDisabled}>
+    <Modal isOpen={isOpen} onClose={onClose} size={size} isCentered={size!=='full'} scrollBehavior="inside" closeOnOverlayClick={!closeDisabled} closeOnEsc={!closeDisabled}>
       <ModalOverlay bg={overlayBg} backdropFilter="none" />
       <ModalContent data-glass-surface="panel" bg={contentBg} color={color} border="1px solid" borderColor={borderColor}
-        borderRadius="xl" mx={4} maxH="80vh" overflow="hidden">
-        <ModalHeader fontSize="lg" overflowWrap="anywhere" pr={12}>{title}</ModalHeader>
+        borderRadius={size==='full'?0:'xl'} mx={size==='full'?0:4} maxH={size==='full'?'100vh':'80vh'} minH={size==='full'?'100vh':undefined} overflow="hidden">
+        <ModalHeader flexShrink={0} fontSize="lg" overflowWrap="anywhere" pr={12}>{title}</ModalHeader>
         <ModalCloseButton isDisabled={closeDisabled} />
         <Divider borderColor={borderColor} />
-        <ModalBody pb={6} overflowY="auto">{children}</ModalBody>
+        <ModalBody minH={0} pb={6} overflowY="auto">{children}</ModalBody>
+        {footer&&<ModalFooter flexShrink={0} display="block" borderTopWidth="1px" borderColor={borderColor}>{footer}</ModalFooter>}
       </ModalContent>
     </Modal>
   );

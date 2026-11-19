@@ -1,3 +1,4 @@
+import {searchMatches} from '@/lib/unified-search';
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Box, Heading, Text, HStack, VStack, Input, Button, Badge, SimpleGrid, Spinner } from "@chakra-ui/react";
@@ -9,33 +10,61 @@ import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
 import { usePreviewState, usePreviewAction, PreviewDialog, ActionError, formatMetric, useFloatingFieldStyle } from "./shared";
 import { isDesktop, backendInvoke } from "@/preview/runtime/platform";
 import { refreshDesktopReports } from "@/preview/runtime/state";
-
-
+import type { PreviewReport } from '@/preview/runtime/types';
 const labels = { full: "完整", partial: "部分数据", diagnostic: "诊断", error: "失败" };
 const colors = { full: "green", partial: "yellow", diagnostic: "blue", error: "red" };
 const artifactLabels: Record<string, string> = {
-  complete: "产物完整", "legacy-readable": "历史兼容，建议重新生成",
-  incomplete: "产物不完整", "inputs-changed": "输入已变化，需重新生成",
+  complete: "产物完整", "legacy-readable": "历史兼容，建议重新生成", "raw-unavailable-readable": "原始数据不足，保留历史统计",
+  incomplete: "产物不完整", "inputs-changed": "输入已变化，显示已生成的报告",
 };
+function artifactLabel(report: PreviewReport) {
+  if (report.inspectionStatus === 'unavailable') return '检查暂不可用';
+  if (report.inspectionStatus === 'pending') return '等待校验';
+  if (report.inspectionStatus === 'checking') return '正在校验原始数据';
+  return artifactLabels[report.artifactStatus ?? 'incomplete'] ?? '产物不完整';
+}
 export default function ReportsPage() {
   const state = usePreviewState();
   const color = useAdaptiveTextColor();
   const [params] = useSearchParams();
-  const [selected, setSelected] = useState<string | null>(params.get("view") === "upload" ? null : params.get("id"));
+  const [selected, setSelected] = useState<string | null>(params.get("id"));
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
+  const [page, setPage] = useState(1);
   const [openError, setOpenError] = useState("");
   const [directory, setDirectory] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [refresh, setRefresh] = useState(0);
   const { run, pending, error, clearError } = usePreviewAction();
   const field = useFloatingFieldStyle();
   // Real backend reports arrive through the runtime sync; refresh on mount so
   // a completed capture (or backend-side run) shows up without a restart.
   useEffect(() => {
-    if (isDesktop()) void refreshDesktopReports();
-  }, []);
-  useEffect(() => { if (params.get("view") !== "upload" && params.get("id")) setSelected(params.get("id")); }, [params]);
-  const reports = state.reports.filter(r => (kind === "all" || r.kind === kind) && r.targetName.toLowerCase().includes(query.toLowerCase()));
+    if (!isDesktop()) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const delays = [1000, 3000, 5000];
+    const errorDelays = [1000, 3000, 10000];
+    let failures = 0;
+    const check = async (attempt: number) => {
+      const retry = await refreshDesktopReports({page, search:query, kind}, controller.signal, refresh > 0 && attempt === 0);
+      if (cancelled || !retry) return;
+      if (retry === 'error') {
+        if (failures < errorDelays.length) timer = setTimeout(() => void check(attempt + 1), errorDelays[failures++]);
+      } else {
+        failures = 0;
+        timer = setTimeout(() => void check(attempt + 1), delays[Math.min(attempt, delays.length - 1)]);
+      }
+    };
+    void check(0);
+    return () => { cancelled = true; controller.abort(); clearTimeout(timer); };
+  }, [page, query, kind, refresh]);
+  useEffect(() => { if (params.get("id")) setSelected(params.get("id")); }, [params]);
+  const filtered = state.reports.filter(r => (kind === "all" || r.kind === kind) && searchMatches(query,[r.targetName,r.createdAt,r.id]));
+  const pages = isDesktop() ? (state.reportPage?.pages ?? 1) : Math.max(1, Math.ceil(filtered.length/50));
+  const currentPage = isDesktop() ? (state.reportPage?.page ?? 1) : Math.min(page, pages);
+  const reports = isDesktop() ? state.reports : filtered.slice((currentPage-1)*50,currentPage*50);
   const report = state.reports.find(r => r.id === selected);
   const deleteBlocked = report?.operation === "regenerating" || report?.operation === "diagnosing"
     || (state.monitor.reportId === report?.id && ["waiting", "capturing", "stopping", "generating"].includes(state.monitor.phase));
@@ -61,15 +90,18 @@ export default function ReportsPage() {
   return <Box id="search-reports" pt={8}>
     <Heading size="lg" mb={6} color={color.text} textShadow={color.shadow}>报告</Heading>
     <HStack spacing={3} mb={5}>
-      <Input aria-label="搜索报告" placeholder="搜索游戏报告" value={query} onChange={e => setQuery(e.target.value)} maxW="360px" sx={field.sx} />
-      <CustomSelect ariaLabel="报告类型" width="160px" value={kind} onChange={setKind}
+      <Button aria-label="刷新报告" onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16}/></Button>
+      <Input aria-label="搜索报告" placeholder="搜索全部历史报告" value={query} onChange={e => {setQuery(e.target.value);setPage(1);}} maxW="360px" sx={field.sx} />
+      <CustomSelect ariaLabel="报告类型" width="160px" value={kind} onChange={value=>{setKind(value);setPage(1);}}
         options={[{ value: "all", label: "全部类型" }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]} />
     </HStack>
+    <ActionError message={state.reportListError || (reports.some(item => item.inspectionStatus === 'unavailable') ? '部分报告的完整校验失败。可查看具体原因并刷新重试；已生成报告与原始输入的状态分别保留。' : '')}/>
+    <HStack mb={4} justify="space-between"><Text fontSize="sm">共 {isDesktop() ? state.reportPage?.total ?? 0 : state.reports.length} 份报告 · 匹配 {isDesktop() ? state.reportPage?.filteredTotal ?? 0 : filtered.length} 份</Text><HStack><Button size="sm" isDisabled={currentPage<=1} onClick={()=>setPage(currentPage-1)}>上一页</Button><Text fontSize="sm">{currentPage} / {pages}</Text><Button size="sm" isDisabled={currentPage>=pages} onClick={()=>setPage(currentPage+1)}>下一页</Button></HStack></HStack>
     <VStack spacing={3} align="stretch">
       {reports.map(item => <LiquidGlassCard key={item.id} p={5} borderRadius="xl">
         <HStack justify="space-between" spacing={4}>
           <Box flex={1} minW={0}><HStack mb={2}><Text fontWeight="bold" noOfLines={1}>{item.targetName}</Text>
-            <Badge colorScheme={colors[item.kind]}>{labels[item.kind]}</Badge>{item.simulated ? <Badge colorScheme="purple">模拟</Badge> : <Badge>{artifactLabels[item.artifactStatus ?? "incomplete"] ?? "产物不完整"}</Badge>}</HStack>
+            <Badge colorScheme={colors[item.kind]}>{labels[item.kind]}</Badge>{item.simulated ? <Badge colorScheme="purple">模拟</Badge> : <Badge>{artifactLabel(item)}</Badge>}</HStack>
             <Text fontSize="sm" opacity={.7}>{new Date(item.createdAt).toLocaleString("zh-CN")} · {item.durationSeconds == null ? "时长不可用" : `${item.durationSeconds} 秒`} · {formatMetric(item.averageFps, " FPS")}</Text></Box>
           {item.operation && item.operation !== "ready" && <Spinner size="sm" />}
           <Button size="sm" variant="outline" onClick={() => { setSelected(item.id); setOpenError(""); }}>查看详情</Button>
@@ -79,7 +111,7 @@ export default function ReportsPage() {
     </VStack>
     <PreviewDialog title="报告详情" isOpen={!!report} onClose={() => { if (!pending) { setDeleteConfirm(false); setSelected(null); } }}>
       {report && <VStack spacing={4} align="stretch">
-        <HStack><Text fontWeight="bold">{report.targetName}</Text><Badge colorScheme={colors[report.kind]}>{labels[report.kind]}</Badge>{report.simulated ? <Badge colorScheme="purple">模拟</Badge> : <Badge>{artifactLabels[report.artifactStatus ?? "incomplete"] ?? "产物不完整"}</Badge>}</HStack>
+        <HStack><Text fontWeight="bold">{report.targetName}</Text><Badge colorScheme={colors[report.kind]}>{labels[report.kind]}</Badge>{report.simulated ? <Badge colorScheme="purple">模拟</Badge> : <Badge>{artifactLabel(report)}</Badge>}</HStack>
         {!report.simulated && report.artifactError && report.artifactError !== error && report.artifactError !== report.diagnostic && <Text fontSize="sm">{report.artifactError}</Text>}
         <SimpleGrid columns={2} spacing={4}>
           {[["平均 FPS", formatMetric(report.averageFps)], ["1% Low", formatMetric(report.low1Fps)],
@@ -88,7 +120,6 @@ export default function ReportsPage() {
         </SimpleGrid>
         <HStack wrap="wrap">
           <Button size="sm" leftIcon={<ExternalLink size={14} />} isDisabled={report.simulated === false && report.canOpenReport === false} onClick={() => void open()}>打开图表报告</Button>
-
           <Button size="sm" leftIcon={<FolderOpen size={14} />} variant="outline" onClick={() => void openDirectory()}>报告目录</Button>
         </HStack>
         <HStack wrap="wrap">

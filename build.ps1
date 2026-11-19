@@ -1,4 +1,10 @@
+param(
+    [string]$NuGetSource = $env:FRAMESCOPE_NUGET_SOURCE,
+    [switch]$PreserveStaging,
+    [switch]$SkipLegacyPackages
+)
 $ErrorActionPreference = 'Stop'
+
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -7,6 +13,9 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found: $csc"
 }
+if ($PreserveStaging) {
+    . (Join-Path $root 'desktop-preview/installer/pack-payload.ps1') -RepoRoot $root -FunctionsOnly -PreserveStaging
+}
 $lockPath = Join-Path $root 'dependencies.lock.json'
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
     throw "Native dependency lock was not found: $lockPath"
@@ -14,7 +23,7 @@ if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
 $lock = Get-Content -Raw -LiteralPath (Join-Path $root 'dependencies.lock.json') | ConvertFrom-Json
 $webView2Version = [string]$lock.microsoftWebView2
 $libreHardwareMonitorVersion = [string]$lock.libreHardwareMonitorLib
-$nugetSource = [string]$lock.nuget.source
+if ([string]::IsNullOrWhiteSpace($NuGetSource)) { $NuGetSource = [string]$lock.nuget.source }
 $nativePackagesLockPath = Join-Path $root ([string]$lock.nuget.lockFile -replace '/', '\')
 $nugetCache = Join-Path $root 'tools\.cache\nuget'
 $version = (Get-Content -Raw -LiteralPath (Join-Path $root 'VERSION')).Trim()
@@ -52,7 +61,7 @@ function Assert-LockedFileHash {
 }
 
 $presentMon = Assert-LockedFileHash -Name 'PresentMon' -Entry $lock.presentMon
-$webView2StandaloneInstaller = Assert-LockedFileHash -Name 'WebView2 standalone installer' -Entry $lock.webView2StandaloneInstaller
+$webView2StandaloneInstaller = if (-not $SkipLegacyPackages) { Assert-LockedFileHash -Name 'WebView2 standalone installer' -Entry $lock.webView2StandaloneInstaller }
 
 function Assert-LockedRuntimeFiles {
     param(
@@ -109,7 +118,9 @@ function Restore-NativeDependencies {
     }
 
     New-Item -ItemType Directory -Path $NugetCache -Force | Out-Null
-    $temp = Join-Path $env:TEMP ('framescope-native-deps-' + [guid]::NewGuid().ToString('N'))
+    $tempRoot = if ($PreserveStaging) { Join-Path $root 'obj/build-staging' } else { $env:TEMP }
+    $temp = Join-Path $tempRoot ('framescope-native-deps-' + [guid]::NewGuid().ToString('N'))
+    if ($PreserveStaging) { Assert-PayloadPath -Path $temp -Root $root }
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     try {
         $project = Join-Path $temp 'FrameScopeNativeDependencies.csproj'
@@ -199,7 +210,9 @@ function Restore-NativeDependencies {
         }
     }
     finally {
-        if (Test-Path -LiteralPath $temp) {
+        if ($PreserveStaging) {
+            Write-Host "Retained dependency staging: $temp"
+        } elseif (Test-Path -LiteralPath $temp) {
             Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
@@ -234,11 +247,15 @@ function Build-HardwareService {
             if ($LASTEXITCODE -ne 0) { throw 'cargo generate-lockfile failed: FrameScopeHardwareService' }
         }
         & (Join-Path $root 'tools\Verify-IsolatedBuildStage.ps1') -RepoRoot $root
-        & $cargo.Source build --release --locked
+        $messages = @(& $cargo.Source build --release --locked --message-format=json-render-diagnostics)
         if ($LASTEXITCODE -ne 0) { throw 'cargo build --release --locked failed: FrameScopeHardwareService.exe' }
+        $artifacts = @($messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object {
+            $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'framescope-hardware-service' -and $_.executable
+        })
+        if ($artifacts.Count -ne 1) { throw 'Cargo did not identify exactly one hardware service executable' }
+        $built = [string]$artifacts[0].executable
     }
     finally { Pop-Location }
-    $built = Join-Path (Split-Path -Parent $manifest) 'target\release\framescope-hardware-service.exe'
     if (-not (Test-Path -LiteralPath $built -PathType Leaf)) { throw "Rust hardware service output was not found: $built" }
     Copy-Item -LiteralPath $built -Destination (Join-Path $root 'FrameScopeHardwareService.exe') -Force
     return (Join-Path $root 'FrameScopeHardwareService.exe')
@@ -344,6 +361,7 @@ $monitorSources = @(
     'src\app\FrameScopeWebHostLifecycle.cs'
     'src\app\FrameScopeAppIcon.cs'
     'src\app\FrameScopeNativeMonitor.cs'
+    'src\app\FrameScopeStartupElevation.cs'
     'src\app\FrameScopeNativeMonitor.SingleInstance.cs'
     'src\app\FrameScopeNativeMonitor.WebHost.cs'
     'src\app\FrameScopeNativeMonitor.ReportOrchestration.cs'
@@ -482,8 +500,14 @@ function Resolve-GeneratedReleasePath {
 
 $dist = Join-Path $root 'dist'
 $releaseToken = [guid]::NewGuid().ToString('N')
-$distStage = Resolve-GeneratedReleasePath -Path (Join-Path $root ("dist.stage.$releaseToken")) -ExpectedPrefix 'dist.stage.'
-$distBackup = Resolve-GeneratedReleasePath -Path (Join-Path $root ("dist.backup.$releaseToken")) -ExpectedPrefix 'dist.backup.'
+$releaseStageRoot = if ($PreserveStaging) { Join-Path $root 'obj/build-staging' } else { $root }
+$distStage = Resolve-GeneratedReleasePath -Path (Join-Path $releaseStageRoot ("dist.stage.$releaseToken")) -ExpectedPrefix 'dist.stage.'
+$distBackup = Resolve-GeneratedReleasePath -Path (Join-Path $releaseStageRoot ("dist.backup.$releaseToken")) -ExpectedPrefix 'dist.backup.'
+if ($PreserveStaging) {
+    Assert-PayloadPath -Path $distStage -Root $root
+    Assert-PayloadPath -Path $distBackup -Root $root
+    Assert-PayloadPath -Path $dist -Root $root
+}
 $distPublished = $false
 
 Push-Location $root
@@ -497,9 +521,11 @@ try {
     Invoke-CSharpBuild -OutputPath 'FrameScopeSystemSampler.exe' -Target 'winexe' `
         -Sources @($commonCoreSources + $systemSamplerSources) `
         -References $systemSamplerReferences
-    Invoke-CSharpBuild -OutputPath 'FrameScopeReportGenerator.exe' -Target 'exe' `
+    & node (Join-Path $PSScriptRoot 'desktop-preview/scripts/build-report.mjs')
+    if ($LASTEXITCODE -ne 0) { throw 'Shared report build failed' }
+    Invoke-CSharpBuild -OutputPath 'FrameScopeReportGenerator.exe'  -Target 'exe' `
         -Sources @($commonCoreSources + $reportSources) `
-        -References $reportReferences
+        -References $reportReferences -Resources @("$(Join-Path $PSScriptRoot 'desktop-preview/report-dist/report.html'),FrameScopeReportApplication")
     Invoke-CSharpBuild -OutputPath 'FrameScopeUninstaller.exe' -Target 'winexe' `
         -Sources @($commonCoreSources + $uninstallerSources) -References @($windowsFormsReferences + 'System.Web.Extensions.dll' + 'System.Management.dll') -Win32Icon $appIcon
     Invoke-CSharpBuild -OutputPath 'FrameScopeLegacyCleanup.exe' -Target 'winexe' `
@@ -513,6 +539,11 @@ try {
     Copy-Item -LiteralPath $webView2WinForms -Destination (Join-Path $root 'Microsoft.Web.WebView2.WinForms.dll') -Force
     Copy-Item -LiteralPath $webView2Loader -Destination (Join-Path $root 'WebView2Loader.dll') -Force
 
+    if ($SkipLegacyPackages) {
+        Write-Host 'Backend build complete; native installer owns payload and component packaging'
+        return
+    }
+
     New-Item -ItemType Directory -Path $distStage -Force | Out-Null
     $payloadRoot = Join-Path $distStage 'FrameScopeMonitor-payload'
     $sourceRoot = Join-Path $distStage 'FrameScopeMonitor-installer-source'
@@ -521,6 +552,7 @@ try {
         throw "Frontend dist was not found. Run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\Run-Frontend.ps1 build"
     }
     foreach ($path in @($payloadRoot, $sourceRoot)) {
+        if ($PreserveStaging -and (Test-Path -LiteralPath $path)) { throw "Staging path must be new: $path" }
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
         New-Item -ItemType Directory -Path $path -Force | Out-Null
     }
@@ -614,7 +646,7 @@ try {
         Move-Item -LiteralPath $payloadManifestTemp -Destination $payloadManifestPath -Force
     }
     finally {
-        if (Test-Path -LiteralPath $payloadManifestTemp) {
+        if (-not $PreserveStaging -and (Test-Path -LiteralPath $payloadManifestTemp)) {
             Remove-Item -LiteralPath $payloadManifestTemp -Force -ErrorAction SilentlyContinue
         }
     }
@@ -644,14 +676,17 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'packaging\README-FrameScopeMonitor.txt') -Destination $distReadme -Force
 
     $releaseZip = Join-Path $distStage 'FrameScopeMonitor-Installer.zip'
+    if ($PreserveStaging -and (Test-Path -LiteralPath $releaseZip)) { throw "Staging archive must be new: $releaseZip" }
     if (Test-Path -LiteralPath $releaseZip) { Remove-Item -LiteralPath $releaseZip -Force }
     Compress-Archive -LiteralPath @($setupExe, $fullSetupExe, $legacyCleanupExe, $distReadme, $sourceRoot) -DestinationPath $releaseZip -Force
 
-    & (Join-Path $root 'tools\Validate-PackagePayload.ps1') -RepoRoot $root -DistRoot $distStage | Out-Host
+    & (Join-Path $root 'tools\Validate-PackagePayload.ps1') -RepoRoot $root -DistRoot $distStage -PreserveStaging:$PreserveStaging | Out-Host
 
     $hadPreviousDist = Test-Path -LiteralPath $dist -PathType Container
     if ($hadPreviousDist) {
-        Move-Item -LiteralPath $dist -Destination $distBackup
+        if ($PreserveStaging) {
+            $distBackup = Move-PreservedBuildStaging -Path $dist -Root $root
+        } else { Move-Item -LiteralPath $dist -Destination $distBackup }
     }
     try {
         Move-Item -LiteralPath $distStage -Destination $dist
@@ -663,7 +698,7 @@ try {
         }
         throw
     }
-    if (Test-Path -LiteralPath $distBackup) {
+    if (-not $PreserveStaging -and (Test-Path -LiteralPath $distBackup)) {
         try {
             Remove-Item -LiteralPath $distBackup -Recurse -Force
         }
@@ -676,16 +711,17 @@ try {
     "Full setup complete: $(Join-Path $dist 'FrameScopeMonitor-Full-Setup.exe')"
 }
 finally {
-    if (-not $distPublished -and (Test-Path -LiteralPath $distStage)) {
+    if (-not $PreserveStaging -and -not $distPublished -and (Test-Path -LiteralPath $distStage)) {
         Remove-Item -LiteralPath $distStage -Recurse -Force -ErrorAction SilentlyContinue
     }
     if (Test-Path -LiteralPath $distBackup) {
         if (-not (Test-Path -LiteralPath $dist)) {
             Move-Item -LiteralPath $distBackup -Destination $dist -ErrorAction SilentlyContinue
         }
-        else {
+        elseif (-not $PreserveStaging) {
             Remove-Item -LiteralPath $distBackup -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+    if ($PreserveStaging) { Write-Host "Retained build staging root: $releaseStageRoot" }
     Pop-Location
 }

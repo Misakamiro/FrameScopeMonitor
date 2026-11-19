@@ -6,7 +6,7 @@ fn main() {
         Ok(false) => (),
         Err(error) => { eprintln!("Installer relaunch failed: {error}"); std::process::exit(1); }
     }
-    // Headless dispatch must run BEFORE the webview runtime: /S installs and
+    // Headless dispatch runs before the native window: /S installs and
     // silent uninstalls never show a window at all.
     let action = framescope_installer_lib::parse_headless_args();
     let code = framescope_installer_lib::run_headless(action);
@@ -17,3 +17,4 @@ fn main() {
     framescope_installer_lib::run();
     if let Err(error)=framescope_installer_lib::cleanup_relaunch_copy(){eprintln!("Temporary installer cleanup incomplete: {error}");}
 }
+

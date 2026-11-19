@@ -29,8 +29,7 @@ pub fn completed(exited: bool, state: &Value, token: Option<&str>) -> Result<boo
     let code = state["StopErrorCode"].as_str().unwrap_or("");
     let error = state["StopError"].as_str().filter(|s|!s.is_empty());
     if code == "report-finalization-failed" {
-        log::warn!("监控已停止，报告生成失败证据已保留：{}", error.unwrap_or(code));
-        return Ok(true);
+        return Err("报告生成失败，原始数据已保留，请重试或选择保留原始数据并退出".into());
     }
     if !code.is_empty() || error.is_some() {
         let error = error.unwrap_or(code);
@@ -61,11 +60,11 @@ mod tests {
         assert!(completed(true, &state, Some("owned")).is_err());
     }
     #[test]
-    fn stopped_failed_report_allows_exit_but_keeps_failure_evidence() {
+    fn stopped_failed_report_requires_a_decision_and_keeps_failure_evidence() {
         let state = json!({"WatcherInstanceId":"owned", "Phase":"stopped", "ActiveMonitors":[],
             "StopErrorCode":"report-finalization-failed", "StopError":"Report finalization failed for fixture"});
         let before = state.clone();
-        assert!(completed(true, &state, Some("owned")).unwrap());
+        assert!(completed(true, &state, Some("owned")).is_err());
         assert!(!completed(false, &state, Some("owned")).unwrap());
         assert_eq!(state, before, "failure state must remain intact");
         let mut worker_missing = state.clone();
@@ -118,5 +117,23 @@ mod tests {
         args[0] = exe.to_string_lossy().into_owned();
         args.extend(["--request-exit-root".into(), exe.to_string_lossy().into_owned()]);
         assert!(!same_installation_request(&args, &exe, root));
+    }
+}
+
+
+// A heartbeat alone does not count as progress. Only a changed phase, completed
+// count, active count or report phase/percentage renews this bounded idle budget.
+pub struct ProgressDeadline { last: std::time::Instant, state: Value }
+impl ProgressDeadline {
+    pub fn new(now:std::time::Instant)->Self {Self{last:now,state:Value::Null}}
+    pub fn observe(&mut self,state:&Value,now:std::time::Instant) {if self.state!=*state{self.state=state.clone();self.last=now;}}
+    pub fn expired(&self,now:std::time::Instant)->bool {now.saturating_duration_since(self.last)>=Duration::from_secs(600)}
+}
+#[cfg(test)] mod progress_tests {
+    use super::*;
+    #[test] fn long_progress_renews_but_a_stalled_phase_expires(){
+        let start=std::time::Instant::now();let mut deadline=ProgressDeadline::new(start);
+        for n in 0..20 {let now=start+Duration::from_secs(n*500);deadline.observe(&serde_json::json!({"percent":n}),now);assert!(!deadline.expired(now));}
+        assert!(deadline.expired(start+Duration::from_secs(19*500+600)));
     }
 }

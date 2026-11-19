@@ -37,21 +37,23 @@ internal static partial class FrameScopeReportGenerator
                     try
                     {
                         FrameScopeReportArtifactState state = FrameScopeReportArtifacts.Inspect(Path.GetFullPath(run));
-                        FrameScopeReportInputFingerprint currentInput = FrameScopeReportArtifacts.CaptureInputFingerprint(state.RunDirectory, 2);
+                        FrameScopeReportInputFingerprint currentInput = state.InspectedInput ?? FrameScopeReportArtifacts.CaptureInputFingerprint(state.RunDirectory, 2);
                         results.Add(new Dictionary<string, object>
                         {
                             { "runDir", state.RunDirectory }, { "artifactStatus", state.ArtifactStatus },
+                            { "inspectionStatus", state.InspectionUnavailable ? "unavailable" : "checked" },
                             { "isComplete", state.IsComplete }, { "legacyReadable", state.LegacyReadable },
                             { "fingerprintVersion", state.FingerprintVersion },
                             { "manifestInputFingerprint", state.ManifestInputFingerprint },
                             { "currentInputFingerprintVersion", 2 }, { "currentInputFingerprint", currentInput.Value }, { "currentInputFingerprintStable", currentInput.Stable },
                             { "inputFingerprintMatches", state.InputFingerprintMatches }, { "error", state.Error ?? "" },
-                            { "reportKind", state.ReportKind }, { "durationSeconds", state.DurationSeconds }, { "canOpen", state.IsReadable }, { "canRegenerate", FrameScopeReportArtifacts.HasUsableMonitorData(state.RunDirectory) }
+                            { "reportKind", state.ReportKind }, { "durationSeconds", state.DurationSeconds }, { "canOpen", state.IsReadable },
+                            { "canRegenerate", state.ArtifactStatus != "raw-unavailable-readable" && FrameScopeReportArtifacts.HasUsableMonitorData(state.RunDirectory) }
                         });
                     }
                     catch (Exception ex)
                     {
-                        results.Add(new Dictionary<string, object> { { "runDir", run }, { "artifactStatus", "incomplete" }, { "reportKind", "error" }, { "durationSeconds", null }, { "error", ex.Message }, { "canOpen", false }, { "canRegenerate", false } });
+                        results.Add(new Dictionary<string, object> { { "runDir", run }, { "inspectionStatus", "unavailable" }, { "error", ex.Message } });
                     }
                 }
                 Console.WriteLine(CreateArtifactJsonSerializer().Serialize(new Dictionary<string, object> { { "protocol", ReportInspectionProtocol }, { "status", "inspected" }, { "count", results.Count }, { "reports", results } }));
@@ -70,9 +72,11 @@ internal static partial class FrameScopeReportGenerator
                 Console.WriteLine(CreateArtifactJsonSerializer().Serialize(new Dictionary<string, object>
                 {
                     { "protocol", ReportInspectionProtocol }, { "runDir", state.RunDirectory }, { "artifactStatus", state.ArtifactStatus },
+                    { "inspectionStatus", state.InspectionUnavailable ? "unavailable" : "checked" },
                     { "isComplete", state.IsComplete }, { "legacyReadable", state.LegacyReadable },
                     { "inputFingerprintMatches", state.InputFingerprintMatches }, { "error", state.Error ?? "" },
-                    { "reportKind", state.ReportKind }, { "durationSeconds", state.DurationSeconds }, { "canOpen", state.IsReadable }, { "canRegenerate", FrameScopeReportArtifacts.HasUsableMonitorData(state.RunDirectory) }
+                    { "reportKind", state.ReportKind }, { "durationSeconds", state.DurationSeconds }, { "canOpen", state.IsReadable },
+                    { "canRegenerate", state.ArtifactStatus != "raw-unavailable-readable" && FrameScopeReportArtifacts.HasUsableMonitorData(state.RunDirectory) }
                 }));
                 return 0;
             }
@@ -173,15 +177,16 @@ internal static partial class FrameScopeReportGenerator
         List<SystemRow> systemRows = ReadSystem(Path.Combine(runDir, "system-samples.csv"));
         // The GPU columns come from the hardware-service snapshot stream (the
         // overlay's own data source) when hardware-samples.csv exists.
-        int overlayMergedRows = MergeHardwareOverlaySamples(systemRows, Path.Combine(runDir, "hardware-samples.csv"));
+        List<SystemRow> fpsSampleRows = ReadSystem(Path.Combine(runDir, "hardware-samples.csv"));
+        int overlayMergedRows = MergeHardwareOverlaySamples(systemRows, Path.Combine(runDir, "hardware-samples.csv"), fpsSampleRows);
         string processPath = Path.Combine(runDir, "process-samples.csv");
         int timeShiftHours;
         List<KeyValuePair<DateTime, double>> frames = AlignPresentMonTime(present.Frames, systemRows, out timeShiftHours);
-        List<SystemRow> fpsSampleRows = frames.Count == 0
-            ? ReadSystem(Path.Combine(runDir, "hardware-samples.csv"))
-            : new List<SystemRow>();
-        List<double> fpsSamples = fpsSampleRows.Where(r => r.Fps.HasValue && r.Fps.Value >= 0).Select(r => r.Fps.Value).ToList();
+        List<double> fpsSamples = fpsSampleRows.Where(ValidFpsRow).Select(r => r.Fps.Value).ToList();
         bool hasFpsSamples = fpsSamples.Count > 0;
+        if (frames.Count == 0 && !hasFpsSamples && FrameScopeReportArtifacts.HasHistoricalFrameStatistics(
+            Path.Combine(runDir, "charts", FrameScopeReportArtifacts.DataFileName)))
+            throw new InvalidOperationException("原始帧数据不足，保留已有报告及历史 FPS，未重新生成。");
         WriteProgress(progressPath, "处理数据", 20, "对齐帧时间和系统采样时间线", progressStart, null, false);
 
         DateTime start;
@@ -215,6 +220,11 @@ internal static partial class FrameScopeReportGenerator
             start = end = DateTime.MinValue;
         }
 
+        // Preserve leading/trailing recording gaps in real time; only the FPS chart compresses them.
+        foreach(var row in systemRows.Concat(fpsSampleRows)) {
+            if(start==DateTime.MinValue||row.Time<start)start=row.Time;
+            if(row.Time>end)end=row.Time;
+        }
         if (hasTrustedTime && end <= start) hasTrustedTime = false;
         double? durationSeconds = ReadRecordedCaptureDuration(runDir) ?? (hasTrustedTime ? (double?)((end - start).TotalSeconds) : FrameScopeReportArtifacts.ReadDuration(runDir, null));
         Dictionary<string, object> hardware = LoadRecordedHardware(runDir);
@@ -225,7 +235,7 @@ internal static partial class FrameScopeReportGenerator
         captureDiagnostics["OverlayMergedRows"] = overlayMergedRows;
         captureDiagnostics["FramesFromHardwareSamples"] = false;
         captureDiagnostics["FpsSampleCount"] = fpsSamples.Count;
-        captureDiagnostics["FpsSampleTargetVerified"] = false;
+        captureDiagnostics["FpsSampleTargetVerified"] = fpsSampleRows.Any(ValidFpsRow)&&fpsSampleRows.Where(ValidFpsRow).All(r=>r.FpsIdentityRecorded);
         FrameScopeSamplerEvidence processSampler = LoadSamplerEvidence(runDir, "ProcessSampler", "process-samples.csv", new[] { "Time", "ProcessName" });
         FrameScopeSamplerEvidence systemSampler = LoadSamplerEvidence(runDir, "SystemSampler", "system-samples.csv", new[] { "Time" });
         FrameScopeRunContract.AddStatusFields(captureDiagnostics, "ProcessSampler", processSampler);
@@ -244,7 +254,7 @@ internal static partial class FrameScopeReportGenerator
         ProcessMatrixResult process = ReadProcessMatrix(processPath, start, targetProcess);
         int processSampleCount = process.SamplingInstantCount;
         int systemSampleCount = systemRows.Count;
-        string reportKind = hasFpsSamples ? "diagnostic" : FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);
+        string reportKind = frames.Count==0&&hasFpsSamples ? "diagnostic" : FrameScopeRunContract.Classify(frames.Count, processSampler, systemSampler);
         Dictionary<string, object> systemSeries = SeriesFromSystem(systemRows, start, totalMemoryMb);
         Dictionary<string, object> cpuCoreCharts = ReadCpuCoreCharts(runDir, start, cpuCoreTelemetry);
 
@@ -296,13 +306,15 @@ internal static partial class FrameScopeReportGenerator
             { "memUsedAvgGb", Round(memUsedAvgGb, 2) },
             { "memUsedPctAvg", Round(memUsedPctAvg, 2) }
         };
+        var gpuBySource=systemRows.Where(r=>r.Gpu.HasValue).GroupBy(r=>r.GpuUsageSource=="3d"?"3d":r.GpuUsageSource=="core-fallback"?"core-fallback":"unknown")
+            .Select(g=>new Dictionary<string,object>{{"source",g.Key},{"average",Round(g.Average(r=>r.Gpu.Value),2)},{"samples",g.Count()}}).ToList();
+        systemStats["gpuBySource"]=gpuBySource;
+        if(gpuBySource.Count>1)systemStats["gpuAvg"]=null;
 
         WriteProgress(progressPath, "降采样", 55, "计算 FPS、1% Low、0.1% Low 和图表序列", progressStart, null, false);
-        Dictionary<string, object> fps = hasFpsSamples
-            ? BuildSampledFps(fpsSampleRows, start)
-            : BuildStatisticsV2(frames, start);
-        fps["source"] = hasFpsSamples ? "etw-fps-sampled" : (frames.Count > 0 ? "presentmon" : "none");
-        if(frames.Count>0) {
+        Dictionary<string, object> fps = BuildStatisticsV3(frames,fpsSampleRows,start,
+            Math.Max(durationSeconds??0,hasTrustedTime?(end-start).TotalSeconds:0),GetIntDiagnostic(captureDiagnostics,"TargetPid",0));
+        if(frames.Count>0||hasFpsSamples) {
             var summary=(Dictionary<string,object>)fps["filteredSummary"];
             frameStats["average"]=summary["average"];frameStats["low1"]=summary["low1"];frameStats["low01"]=summary["low01"];
             frameStats["statisticsVersion"]=FrameScopeFrameStatistics.Version;
@@ -312,14 +324,16 @@ internal static partial class FrameScopeReportGenerator
             { "frameDataCaptured", frames.Count > 0 },
             { "cpuFrequencyCaptured", ListHasValue(((Dictionary<string, object>)((Dictionary<string, object>)systemSeries["perf"]))["cpuFreq"]) },
             { "presentMonSelectionMode", present.Diagnostics.ContainsKey("selectionMode") ? present.Diagnostics["selectionMode"] : null },
-            { "frameCaptureStatus", hasFpsSamples ? "etw-fps-sampled" : (captureDiagnostics.ContainsKey("FrameCaptureStatus") ? captureDiagnostics["FrameCaptureStatus"] : (frames.Count > 0 ? "captured" : "no-frame-data")) },
-            { "frameCaptureMessage", hasFpsSamples ? "No valid PresentMon frames were captured. Resident ETW FPS samples provide a diagnostic trend and an arithmetic sample mean, not per-frame statistics. Sample target identity was not recorded." : (captureDiagnostics.ContainsKey("FrameCaptureMessage") ? captureDiagnostics["FrameCaptureMessage"] : "") },
+            { "frameCaptureStatus", frames.Count==0&&hasFpsSamples?"etw-fps-sampled":captureDiagnostics.ContainsKey("FrameCaptureStatus")?captureDiagnostics["FrameCaptureStatus"]:frames.Count>0?"captured":"no-frame-data" },
+            { "frameCaptureMessage", frames.Count==0&&hasFpsSamples?"Resident ETW window samples; missing Low and historical target identity are not reconstructed.":captureDiagnostics.ContainsKey("FrameCaptureMessage")?captureDiagnostics["FrameCaptureMessage"]:"" },
             { "generator", "native-csharp" }
         };
 
         Dictionary<string, object> data = new Dictionary<string, object>
         {
-            { "statisticsVersion", frames.Count>0?FrameScopeFrameStatistics.Version:0 },
+            { "statisticsRevision", 1 },
+            { "renderVersion", 3 },
+            { "statisticsVersion", FrameScopeFrameStatistics.Version },
             { "inputFingerprint", inputFingerprint },
             { "brand", Brand },
             { "colors", Colors },
@@ -346,7 +360,7 @@ internal static partial class FrameScopeReportGenerator
             { "cpuCore", cpuCoreCharts["frequency"] },
             { "cpuVoltage", cpuCoreCharts["voltage"] },
             { "cpuVid", cpuCoreCharts["vid"] },
-            { "cpuOsdVoltage", ReadCpuOsdVoltageChart(runDir, start) },
+            { "cpuOsdVoltage", BuildCpuOsdVoltageChart(runDir, start, fpsSampleRows) },
             { "process", new Dictionary<string, object> { { "t", process.Times }, { "names", process.Names }, { "codec", process.Codec }, { "cpu", process.Cpu }, { "mem", process.Mem }, { "stats", process.Stats } } },
             { "capture", captureDiagnostics },
             { "notes", notes }
@@ -372,6 +386,8 @@ internal static partial class FrameScopeReportGenerator
             { "targetDisplayName", targetDisplayName },
             { "targetProcessName", targetProcess },
             { "frames", frames.Count },
+            { "frameStats", frameStats },
+            { "startedAt", hasTrustedTime ? start.ToString("o", CultureInfo.InvariantCulture) : null },
             { "fpsSamples", fpsSamples.Count },
             { "fpsSource", fps["source"] },
             { "fpsSampleStats", fpsSampleStats },
@@ -383,7 +399,8 @@ internal static partial class FrameScopeReportGenerator
             { "reportKind", reportKind },
             { "durationSeconds", durationSeconds },
             { "inputFingerprintVersion", 2 },
-            { "statisticsVersion", frames.Count>0?FrameScopeFrameStatistics.Version:0 },
+            { "renderVersion", 3 },
+            { "statisticsVersion", FrameScopeFrameStatistics.Version },
             { FrameScopeReportArtifacts.InputFingerprintFieldName, inputFingerprint },
             { "processes", process.Names.Count },
             { "processSamples", processSampleCount },

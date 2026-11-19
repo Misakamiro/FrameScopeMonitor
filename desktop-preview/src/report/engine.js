@@ -1,0 +1,2642 @@
+export function mountReport(root, DATA, savePng, onState = () => {}) {
+  const document = {
+    getElementById: (id) => root.querySelector("#" + id),
+    querySelector: (q) => root.querySelector(q),
+    querySelectorAll: (q) => root.querySelectorAll(q),
+  };
+  const controller = new AbortController();
+  const listen = (target, event, fn, options = {}) =>
+    target.addEventListener(event, fn, {
+      ...options,
+      signal: controller.signal,
+    });
+  let disposed = false,
+    exportDims = null;
+  const hiddenSeries = new Set();
+  let layoutFrame = 0;
+  let zoomActive = false,
+    automaticHeight = true;
+  function activateZoom(active) {
+    if (zoomActive === active) return;
+    zoomActive = active;
+    notify();
+  }
+  function zoomBy(factor) {
+    const range = visibleTimeRange();
+    const span = Math.max(
+      Math.max(0.5, range.full.span / 2000),
+      Math.min(range.full.span, range.span * factor),
+    );
+    setTimeView(
+      (range.start + range.end - span) / 2,
+      (range.start + range.end + span) / 2,
+    );
+  }
+
+  let filterInfo = "";
+  const fpsFilterKey =
+    DATA &&
+    DATA.fps &&
+    DATA.fps.statisticsVersion >= 2 &&
+    DATA.inputFingerprint
+      ? "framescope-fps-filter-v2:" + DATA.inputFingerprint
+      : null;
+  let fpsFiltering = true,
+    filteredFpsCache = null;
+  try {
+    if (fpsFilterKey) fpsFiltering = localStorage.getItem(fpsFilterKey) !== "0";
+  } catch {
+    /* Storage may be disabled for local files. */
+  }
+  function hasStatisticsV2() {
+    return (
+      DATA &&
+      DATA.statisticsVersion >= 2 &&
+      DATA.fps &&
+      DATA.fps.statisticsVersion >= 2
+    );
+  }
+  function activeFps() {
+    const raw = DATA.fps || {};
+    if (!hasStatisticsV2() || !fpsFiltering) return raw;
+    if (!filteredFpsCache) {
+      const mask = raw.included || [];
+      filteredFpsCache = {
+        ...raw,
+        avg: (raw.avg || []).map((v, i) => (mask[i] ? v : null)),
+        low1: (raw.low1 || []).map((v, i) => (mask[i] ? v : null)),
+        low01: (raw.low01 || []).map((v, i) => (mask[i] ? v : null)),
+      };
+    }
+    return filteredFpsCache;
+  }
+  function activeFpsSummary() {
+    return hasStatisticsV2()
+      ? fpsFiltering
+        ? DATA.fps.filteredSummary
+        : DATA.fps.rawSummary
+      : null;
+  }
+  function activeFrameStats() {
+    const raw = DATA.frameStats || {},
+      summary = activeFpsSummary();
+    return summary
+      ? { ...raw, ...summary, minInstant: summary.min, maxInstant: summary.max }
+      : raw;
+  }
+  function updateFpsFilter() {
+    const f = (DATA.fps || {}).filter || {};
+    filterInfo = fpsFiltering
+      ? `按平均 FPS 已排除 ${f.excluded || 0} / ${f.valid || 0} 个有效采样；范围 ${f.minimum ?? "-"}–${f.maximum ?? "-"} FPS；无帧区间已移除，真实 Low 保留`
+      : "使用全部有效采样；无帧区间已移除，真实 Low 与原始逐帧数据保留";
+  }
+  const COLORS = (DATA && DATA.colors) || [
+    "#009dff",
+    "#31e35f",
+    "#ffd84a",
+    "#ff3b45",
+    "#65a7ff",
+    "#d77cff",
+  ];
+  const PROCESS_TOP_N = 10,
+    PROCESS_PREWARM_N = 24;
+  let view = "fps",
+    fpsMetric = "all",
+    perfMetric = "all",
+    systemMetric = "all",
+    ioMetric = "diskNet",
+    processMetric = "cpu",
+    cpuCoreMetric = "summary",
+    cpuVidMetric = "summary",
+    legendKey = "",
+    hoverFrame = 0,
+    pendingHoverEvent = null,
+    timeViewStart = null,
+    timeViewEnd = null,
+    dragState = null;
+  const canvas = document.getElementById("chart"),
+    initialContext = canvas.getContext("2d"),
+    overlay = document.getElementById("overlay"),
+    octx = overlay.getContext("2d"),
+    tooltip = document.getElementById("tooltip"),
+    metricSelect = { value: "", options: [], disabled: false },
+    processSearch = { value: "" },
+    legend = document.getElementById("legend"),
+    chartBox = document.getElementById("chartBox"),
+    chartScroll = document.getElementById("chartScroll"),
+    viewTitle = document.getElementById("viewTitle"),
+    viewNote = document.getElementById("viewNote"),
+    widthScale = { value: 1 },
+    readMode = { value: "trend" },
+    modeStats = document.getElementById("modeStats"),
+    captureAlert = document.getElementById("captureAlert");
+  let ctx = initialContext;
+  const readModes = { fps: "trend" };
+  function mapFpsTime(value, toReal) {
+    if (!Number.isFinite(value) || !DATA.fps?.timeMap?.length) return value;
+    const from = toReal ? "effective" : "real", to = toReal ? "real" : "effective";
+    const map = DATA.fps.timeMap;
+    const part = map.find((p) => value <= p[from + "End"]) || map[map.length - 1];
+    const length = part[from + "End"] - part[from + "Start"];
+    const fraction = length > 0 ? Math.max(0, Math.min(1, (value - part[from + "Start"]) / length)) : 0;
+    return part[to + "Start"] + fraction * (part[to + "End"] - part[to + "Start"]);
+  }
+  const PAD = { l: 72, r: 150, t: 40, b: 52 };
+  let currentSeries = [],
+    currentTimes = [],
+    currentUnit = "",
+    lastRenderStats = { raw: 0, drawn: 0, buckets: 0 };
+  const renderCache = new Map(),
+    yMaxCache = new Map(),
+    processHoverCache = new Map(),
+    processSeriesCache = new Map();
+  let processSearchIndex = (
+      (DATA && DATA.process && DATA.process.names) ||
+      []
+    ).map((name, idx) => ({
+      idx,
+      name: String(name),
+      search: String(name).toLowerCase(),
+    })),
+    processTopIndexes = processSearchIndex
+      .slice(0, PROCESS_TOP_N)
+      .map((item) => item.idx),
+    processPrewarmIndexes = processSearchIndex
+      .slice(0, Math.max(PROCESS_TOP_N, PROCESS_PREWARM_N))
+      .map((item) => item.idx);
+  let resizeObserver = null,
+    processSearchFrame = 0;
+  function esc(v) {
+    return String(v ?? "").replace(/[&<>']/g, (ch) => {
+      if (ch === "&") return "&amp;";
+      if (ch === "<") return "&lt;";
+      if (ch === ">") return "&gt;";
+      return "&#39;";
+    });
+  }
+  function n(v, d = 1) {
+    const num = Number(v);
+    return v === null || v === undefined || !Number.isFinite(num)
+      ? "无数据"
+      : num.toFixed(d);
+  }
+  function hms(sec) {
+    sec = Math.max(0, Math.round(Number(sec) || 0));
+    const h = Math.floor(sec / 3600),
+      m = Math.floor((sec % 3600) / 60),
+      s = sec % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  function formatTimeTick(sec, span) {
+    sec = Math.max(0, Number(sec) || 0);
+    span = Math.max(0.001, Number(span) || 0);
+    if (span <= 5) return `${sec.toFixed(1)}s`;
+    if (span < 30) return `${sec.toFixed(1)}s`;
+    return hms(sec);
+  }
+  function niceTimeStep(span, maxTicks) {
+    span = Math.max(0.001, Number(span) || 0);
+    maxTicks = Math.max(2, Number(maxTicks) || 6);
+    const rough = span / (maxTicks - 1),
+      pow = Math.pow(10, Math.floor(Math.log10(rough))),
+      steps = [1, 2, 2.5, 5, 10];
+    for (const s of steps) {
+      const step = s * pow;
+      if (step >= rough) return step;
+    }
+    return 10 * pow;
+  }
+  function timeTicks(range, pixelWidth) {
+    const span = Math.max(0.001, Number(range && range.span) || 1),
+      maxTicks = Math.max(
+        3,
+        Math.min(8, Math.floor((Number(pixelWidth) || 800) / 110) + 1),
+      ),
+      step = niceTimeStep(span, maxTicks),
+      start = Number(range && range.start) || 0,
+      end = Number(range && range.end) || span,
+      ticks = [];
+    let t = Math.ceil((start - 1e-9) / step) * step;
+    for (
+      let guard = 0;
+      t <= end + step * 0.25 && guard < 16;
+      guard++, t += step
+    ) {
+      if (t >= start - step * 0.01 && t <= end + step * 0.01)
+        ticks.push(Number(t.toFixed(3)));
+    }
+    if (!ticks.length) ticks.push(start, end);
+    return ticks.slice(0, 8);
+  }
+  function setText(id, v) {
+    const e = document.getElementById(id);
+    if (e) e.textContent = v;
+  }
+  function pct(v) {
+    return Math.max(0, Math.min(100, Number(v) || 0));
+  }
+  function maxFinite(arr, fallback = 1) {
+    let m = fallback;
+    for (let i = 0; i < arr.length; i++) {
+      const v = Number(arr[i]);
+      if (Number.isFinite(v) && v > m) m = v;
+    }
+    return m;
+  }
+  function finiteOrNull(v) {
+    if (v === null || v === undefined || v === "") return null;
+    const num = Number(v);
+    return Number.isFinite(num) ? num : null;
+  }
+  function isSampledFps() {
+    return DATA && DATA.fps && DATA.fps.source === "etw-fps-sampled";
+  }
+  function axisLabel(v, maxY) {
+    if (maxY >= 100) return v.toFixed(0);
+    if (maxY >= 10) return v.toFixed(1);
+    if (maxY >= 1) return v.toFixed(2);
+    return v.toPrecision(2);
+  }
+  function canvasRoundRect(c, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+  function lineWidth(si) {
+    const mode = readMode.value;
+    if (view === "process") return mode === "trend" ? 0.95 : 0.72;
+    if (view === "fps") return mode === "trend" ? 1.15 : 0.9;
+    if (view === "cpuCore" || view === "cpuVoltage" || view === "cpuVid")
+      return si === 0 ? 2.2 : 1.45;
+    return si === 0 ? 2.05 : 1.35;
+  }
+  function seriesAlpha(si) {
+    const mode = readMode.value;
+    if (view === "process")
+      return mode === "trend"
+        ? si < PROCESS_TOP_N
+          ? 0.78
+          : 0.22
+        : si < PROCESS_TOP_N
+          ? 0.66
+          : 0.2;
+    if (view === "cpuCore" || view === "cpuVoltage" || view === "cpuVid")
+      return si === 0 ? 1 : 0.78;
+    return si === 0 ? 0.96 : 0.78;
+  }
+  function hexToRgb(color) {
+    const m = String(color || "").match(/^#?([0-9a-f]{6})$/i);
+    if (!m) return { r: 0, g: 157, b: 255 };
+    const n = parseInt(m[1], 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  function rgba(color, a) {
+    const c = hexToRgb(color);
+    return `rgba(${c.r},${c.g},${c.b},${a})`;
+  }
+  function clearOverlay() {
+    if (exportDims) return;
+    octx.save();
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    octx.restore();
+  }
+  function applyWidth() {
+    const scale = Number(widthScale.value) || 1;
+    const base = chartScroll.clientWidth || 900,
+      minWidth = Math.min(900, base);
+    chartBox.style.width = Math.max(minWidth, Math.round(base * scale)) + "px";
+    renderCache.clear();
+    resizeCanvas();
+  }
+  function resizeCanvas() {
+    if (disposed) return;
+    if (automaticHeight) {
+      const scroller = document.querySelector(".report-scroll"),
+        panel = document.querySelector(".analysis-content");
+      if (scroller && panel) {
+        const before =
+            panel.getBoundingClientRect().top -
+            scroller.getBoundingClientRect().top +
+            scroller.scrollTop,
+          chrome = panel.offsetHeight - chartBox.offsetHeight;
+        const height = Math.max(
+          240,
+          Math.min(
+            1000,
+            Math.floor(scroller.clientHeight - before - chrome - 20),
+          ),
+        );
+        if (chartBox.style.height !== height + "px")
+          chartBox.style.height = height + "px";
+      }
+    }
+    const r = { width: chartBox.clientWidth, height: chartBox.clientHeight },
+      d = window.devicePixelRatio || 1;
+    if (!r.width || !r.height) return;
+    canvas.width = overlay.width = Math.max(1, Math.round(r.width * d));
+    canvas.height = overlay.height = Math.max(1, Math.round(r.height * d));
+    ctx.setTransform(
+      canvas.width / r.width,
+      0,
+      0,
+      canvas.height / r.height,
+      0,
+      0,
+    );
+    octx.setTransform(
+      overlay.width / r.width,
+      0,
+      0,
+      overlay.height / r.height,
+      0,
+      0,
+    );
+    renderCache.clear();
+    draw();
+  }
+  function chartDims() {
+    if (exportDims) return exportDims;
+    const r = { width: chartBox.clientWidth, height: chartBox.clientHeight };
+    return {
+      w: r.width,
+      h: r.height,
+      pw: r.width - PAD.l - PAD.r,
+      ph: r.height - PAD.t - PAD.b,
+    };
+  }
+  function fullTimeRange() {
+    const maxT = maxFinite(currentTimes, 1);
+    return { start: 0, end: maxT, span: Math.max(0.001, maxT) };
+  }
+  function visibleTimeRange() {
+    const full = fullTimeRange();
+    let start = Number.isFinite(timeViewStart) ? timeViewStart : full.start,
+      end = Number.isFinite(timeViewEnd) ? timeViewEnd : full.end;
+    if (end - start < Math.max(0.5, full.span / 10000)) {
+      const mid = (start + end) / 2,
+        half = Math.max(0.25, full.span / 20000);
+      start = mid - half;
+      end = mid + half;
+    }
+    if (start < full.start) {
+      end += full.start - start;
+      start = full.start;
+    }
+    if (end > full.end) {
+      start -= end - full.end;
+      end = full.end;
+    }
+    start = Math.max(full.start, start);
+    end = Math.min(full.end, Math.max(start + 0.001, end));
+    return { start, end, span: end - start, full };
+  }
+  function setTimeView(start, end) {
+    const full = fullTimeRange(),
+      span = Math.max(0.001, end - start);
+    if (span >= full.span * 0.995) {
+      timeViewStart = null;
+      timeViewEnd = null;
+    } else {
+      timeViewStart = Math.max(full.start, Math.min(full.end - span, start));
+      timeViewEnd = timeViewStart + span;
+    }
+    renderCache.clear();
+    processHoverCache.clear();
+    draw();
+  }
+  function resetTimeView() {
+    timeViewStart = null;
+    timeViewEnd = null;
+    renderCache.clear();
+    processHoverCache.clear();
+    draw();
+  }
+  function samplingProfile(len, pixelWidth) {
+    const mode = readMode.value,
+      width = Math.max(1, Math.round(pixelWidth)),
+      manyProcess = view === "process" && currentSeries.length > PROCESS_TOP_N;
+    if (mode === "trend") {
+      const factor =
+          view === "process"
+            ? manyProcess
+              ? 0.1
+              : 0.18
+            : view === "fps"
+              ? 0.5
+              : 0.45,
+        buckets = Math.max(80, Math.min(len, Math.ceil(width * factor))),
+        smooth = view === "fps" ? 3 : 5;
+      return { mode, buckets, smooth };
+    }
+    if (len <= width) return { mode: "spike", buckets: len, envelope: true };
+    const factor =
+        view === "process"
+          ? manyProcess
+            ? 0.18
+            : 0.32
+          : view === "fps"
+            ? 0.64
+            : 0.52,
+      buckets = Math.max(96, Math.min(len, Math.ceil(width * factor)));
+    return { mode: "spike", buckets, envelope: true };
+  }
+  function lowerBoundTime(times, sec) {
+    let lo = 0,
+      hi = times.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(times[mid]) < sec) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+  function upperBoundTime(times, sec) {
+    let lo = 0,
+      hi = times.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(times[mid]) <= sec) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+  let getRenderablePoints = function (series, pixelWidth, range) {
+    const data = series.data || [],
+      fullLen = Math.min(currentTimes.length, data.length);
+    let offset = 0,
+      endIdx = fullLen;
+    if (
+      range &&
+      Number.isFinite(range.start) &&
+      Number.isFinite(range.end) &&
+      fullLen > 0
+    ) {
+      offset = Math.max(
+        0,
+        Math.min(fullLen - 1, lowerBoundTime(currentTimes, range.start) - 1),
+      );
+      endIdx = Math.max(
+        offset + 1,
+        Math.min(fullLen, upperBoundTime(currentTimes, range.end) + 1),
+      );
+    }
+    const len = Math.max(0, endIdx - offset);
+    if (len <= 0) return { t: [], y: [], rawCount: 0, bucketCount: 0 };
+    const mode = readMode.value === "trend" ? "trend" : "spike",
+      widthBucket = Math.max(1, Math.round(pixelWidth)),
+      profile = samplingProfile(len, pixelWidth),
+      rangeKey = range
+        ? `${Number(range.start).toFixed(3)}-${Number(range.end).toFixed(3)}`
+        : "full",
+      cacheKey = `${series.key || series.name}|${offset}|${len}|${widthBucket}|${view}|${mode}|${currentSeries.length}|${rangeKey}`;
+    if (renderCache.has(cacheKey)) return renderCache.get(cacheKey);
+    const tAt = (i) => currentTimes[offset + i],
+      yAt = (i) => data[offset + i],
+      bucketCount = Math.max(1, Math.min(len, profile.buckets || len)),
+      t = [],
+      y = [],
+      step = len / bucketCount;
+    for (let b = 0; b < bucketCount; b++) {
+      const start = Math.floor(b * step),
+        end = Math.min(len, Math.max(start + 1, Math.floor((b + 1) * step)));
+      let first = -1,
+        minI = -1,
+        maxI = -1,
+        minV = Infinity,
+        maxV = -Infinity,
+        sum = 0,
+        count = 0;
+      for (let i = start; i < end; i++) {
+        const v = Number(yAt(i));
+        if (!Number.isFinite(v)) continue;
+        if (first < 0) first = i;
+        if (v < minV) {
+          minV = v;
+          minI = i;
+        }
+        if (v > maxV) {
+          maxV = v;
+          maxI = i;
+        }
+        sum += v;
+        count++;
+      }
+      if (first < 0) {
+        const gap = Math.min(len - 1, Math.floor((start + end) / 2));
+        t.push(Number(tAt(gap)) || 0);
+        y.push(null);
+        continue;
+      }
+      if (mode === "trend") {
+        const mid = Math.min(len - 1, Math.floor((start + end) / 2));
+        t.push(tAt(mid));
+        y.push(count ? sum / count : null);
+      } else {
+        const mid = Math.min(len - 1, Math.floor((start + end) / 2)),
+          center = Number(tAt(mid)) || 0;
+        if (minI === maxI) {
+          t.push(center);
+          y.push(yAt(minI));
+        } else {
+          t.push(center);
+          y.push(yAt(minI));
+          t.push(center);
+          y.push(yAt(maxI));
+          t.push(center);
+          y.push(null);
+        }
+      }
+    }
+    if (mode === "trend" && y.length > 2) {
+      const radius = Math.max(1, profile.smooth || 5),
+        smoothed = [];
+      for (let i = 0; i < y.length; i++) {
+        if (y[i] === null) {
+          smoothed.push(null);
+          continue;
+        }
+        let sum = 0,
+          count = 0;
+        for (
+          let j = Math.max(0, i - radius);
+          j <= Math.min(y.length - 1, i + radius);
+          j++
+        ) {
+          const v = Number(y[j]);
+          if (Number.isFinite(v)) {
+            sum += v;
+            count++;
+          }
+        }
+        smoothed.push(count ? sum / count : y[i]);
+      }
+      const result = { t, y: smoothed, rawCount: len, bucketCount };
+      renderCache.set(cacheKey, result);
+      return result;
+    }
+    const result = { t, y, rawCount: len, bucketCount };
+    renderCache.set(cacheKey, result);
+    return result;
+  };
+  getRenderablePoints = function (series, pixelWidth, range) {
+    if (view === "fps" && DATA.fps?.statisticsVersion >= 3)
+      return fpsWindowPoints(series, pixelWidth, range);
+    const data = series.data || [],
+      fullLen = Math.min(currentTimes.length, data.length);
+    let offset = 0,
+      endIdx = fullLen;
+    const rangeIsFull =
+      range &&
+      range.full &&
+      Number.isFinite(range.span) &&
+      Number.isFinite(range.full.span) &&
+      range.span >= range.full.span * 0.995;
+    if (
+      range &&
+      !rangeIsFull &&
+      Number.isFinite(range.start) &&
+      Number.isFinite(range.end) &&
+      fullLen > 0
+    ) {
+      offset = Math.max(
+        0,
+        Math.min(fullLen - 1, lowerBoundTime(currentTimes, range.start) - 1),
+      );
+      endIdx = Math.max(
+        offset + 1,
+        Math.min(fullLen, upperBoundTime(currentTimes, range.end) + 1),
+      );
+    }
+    const len = Math.max(0, endIdx - offset);
+    if (len <= 0) return { t: [], y: [], rawCount: 0, bucketCount: 0 };
+    const mode = readMode.value === "trend" ? "trend" : "spike",
+      widthBucket = Math.max(1, Math.round(pixelWidth)),
+      profile = samplingProfile(len, pixelWidth),
+      rangeKey = range
+        ? `${Number(range.start).toFixed(3)}-${Number(range.end).toFixed(3)}`
+        : "full",
+      cacheKey = `v5|${series.key || series.name}|${offset}|${len}|${widthBucket}|${view}|${mode}|${currentSeries.length}|${rangeKey}`;
+    if (renderCache.has(cacheKey)) return renderCache.get(cacheKey);
+    const tAt = (i) => currentTimes[offset + i],
+      yAt = (i) => data[offset + i],
+      bucketCount = Math.max(1, Math.min(len, profile.buckets || len)),
+      t = [],
+      y = [],
+      step = len / bucketCount;
+    for (let b = 0; b < bucketCount; b++) {
+      const start = Math.floor(b * step),
+        end = Math.min(len, Math.max(start + 1, Math.floor((b + 1) * step)));
+      if (view === "fps" && hasStatisticsV2()) {
+        let gap = false;
+        for (let i = start; i < end; i++)
+          if (yAt(i) === null) {
+            gap = true;
+            break;
+          }
+        if (gap) {
+          for (let i = start; i < end; i++) {
+            t.push(tAt(i));
+            y.push(finiteOrNull(yAt(i)));
+          }
+          continue;
+        }
+      }
+      let minI = -1,
+        maxI = -1,
+        minV = Infinity,
+        maxV = -Infinity,
+        sum = 0,
+        count = 0;
+      for (let i = start; i < end; i++) {
+        const raw = yAt(i);
+        if (raw === null || raw === undefined || raw === "") continue;
+        const v = Number(raw);
+        if (!Number.isFinite(v)) continue;
+        if (v < minV) {
+          minV = v;
+          minI = i;
+        }
+        if (v > maxV) {
+          maxV = v;
+          maxI = i;
+        }
+        sum += v;
+        count++;
+      }
+      if (count < 1) {
+        const gap = Math.min(len - 1, Math.floor((start + end) / 2));
+        t.push(Number(tAt(gap)) || 0);
+        y.push(null);
+        continue;
+      }
+      if (mode === "trend") {
+        const mid = Math.min(len - 1, Math.floor((start + end) / 2));
+        t.push(tAt(mid));
+        y.push(sum / count);
+      } else if (minI === maxI) {
+        t.push(tAt(minI));
+        y.push(yAt(minI));
+      } else {
+        const a = Math.min(minI, maxI),
+          c = Math.max(minI, maxI);
+        t.push(tAt(a));
+        y.push(yAt(a));
+        t.push(tAt(c));
+        y.push(yAt(c));
+      }
+    }
+    let outY = y;
+    if (mode === "trend" && outY.length > 2) {
+      const radius = Math.max(1, profile.smooth || 5),
+        smoothed = [];
+      for (let i = 0; i < outY.length; i++) {
+        if (outY[i] === null) {
+          smoothed.push(null);
+          continue;
+        }
+        let sum = 0,
+          count = 0;
+        for (
+          let j = Math.max(0, i - radius);
+          j <= Math.min(outY.length - 1, i + radius);
+          j++
+        ) {
+          if (statisticsGapBetween(outY, i, j)) continue;
+          const raw = outY[j];
+          if (raw === null || raw === undefined || raw === "") continue;
+          const v = Number(raw);
+          if (Number.isFinite(v)) {
+            sum += v;
+            count++;
+          }
+        }
+        smoothed.push(count ? sum / count : outY[i]);
+      }
+      outY = smoothed;
+    }
+    const compact = compactScreenPoints(t, outY, pixelWidth, range, mode);
+    const result = { t: compact.t, y: compact.y, rawCount: len, bucketCount };
+    renderCache.set(cacheKey, result);
+    return result;
+  };
+  // Time buckets stop at source/gap boundaries; drawing bridges compressed gaps
+  // within the same source. Smoothing is performed by bounded
+  // Bezier interpolation when drawing, never by replacing original hover values.
+  function fpsWindowPoints(series, pixelWidth, range) {
+    const t = [], y = [], values = series.data || [], segments = DATA.fps.segments || [];
+    const width = Math.max(0.001, range.span / Math.max(1, pixelWidth / 4));
+    let bucket = null, sum = 0, count = 0, sumTime = 0, min = null, max = null, lastSegment = null, lastSource = null;
+    let needsWindowStart = true, lastPoint = null;
+    const flush = () => {
+      if (!count) return;
+      if (readMode.value === "trend") { t.push(sumTime / count); y.push(sum / count); }
+      else {
+        const pair = min.i <= max.i ? [min, max] : [max, min];
+        for (const p of pair) { if (p === pair[0] || p.i !== pair[0].i) { t.push(p.t); y.push(p.v); } }
+      }
+      sum = count = sumTime = 0; min = max = null;
+    };
+    const finishSegment = () => {
+      flush();
+      if (lastPoint && t[t.length - 1] < lastPoint.t) { t.push(lastPoint.t); y.push(lastPoint.v); }
+      lastPoint = null;
+    };
+    const begin = Math.max(0, lowerBoundTime(currentTimes, range.start) - 1);
+    const end = Math.min(currentTimes.length, upperBoundTime(currentTimes, range.end) + 1);
+    for (let i = begin; i < end; i++) {
+      const time = currentTimes[i], value = finiteOrNull(values[i]), nextBucket = Math.floor((time - range.start) / width);
+      const field = { 'fps:avg': 'avg', 'fps:low1': 'low1', 'fps:low01': 'low01' }[series.key];
+      const excluded = fpsFiltering && DATA.fps.included?.[i] === false
+        && field && finiteOrNull(DATA.fps[field]?.[i]) !== null;
+      const source = DATA.fps.sources?.[i];
+      const segmentChanged = lastSegment !== null && segments[i] !== lastSegment;
+      const boundary = lastSegment !== null && (source !== lastSource || (segmentChanged && !source));
+      if (boundary || (value === null && !excluded)) {
+        finishSegment();
+        t.push(DATA.fps.timeMap?.[i]?.effectiveStart ?? time); y.push(null); bucket = null;
+        needsWindowStart = true;
+      }
+      else if (segmentChanged) { flush(); bucket = null; }
+      lastSegment = segments[i]; lastSource = source;
+      // End the previous bucket so excluded values cannot alter either endpoint.
+      // Keep the original times; only filter-created gaps are bridged.
+      if (excluded) { flush(); bucket = null; continue; }
+      if (value === null) continue;
+      // Each value describes a measured window, not an instantaneous reading.
+      // Extend only its own left edge; statistics and sample timestamps stay intact.
+      if (needsWindowStart) {
+        const start = DATA.fps.timeMap?.[i]?.effectiveStart;
+        if (Number.isFinite(start) && start < time) { t.push(start); y.push(value); }
+        needsWindowStart = false;
+      }
+      if (bucket !== nextBucket) { flush(); bucket = nextBucket; }
+      sum += value; sumTime += time; count++;
+      const point = { i, t: time, v: value };
+      lastPoint = point;
+      if (!min || value < min.v) min = point;
+      if (!max || value > max.v) max = point;
+    }
+    finishSegment();
+    return { t, y, rawCount: end - begin, bucketCount: t.length };
+  }
+  // Filtering keeps null values for statistics and tooltips; only the drawing path bridges excluded samples.
+  function fpsPlotPoints(series, pixelWidth, range) {
+    const points = getRenderablePoints(series, pixelWidth, range);
+    if (DATA.fps?.statisticsVersion >= 3) return points;
+    if (view !== "fps" || !hasStatisticsV2() || !fpsFiltering) return points;
+    const field = {
+      "fps:avg": "avg",
+      "fps:low1": "low1",
+      "fps:low01": "low01",
+    }[series.key];
+    if (!field) return points;
+    const raw = DATA.fps[field] || [],
+      mask = DATA.fps.included || [],
+      t = [],
+      y = [];
+    for (let i = 0; i < points.y.length; i++) {
+      if (points.y[i] === null) {
+        let previous = i - 1,
+          next = i + 1;
+        while (previous >= 0 && points.y[previous] === null) previous--;
+        while (next < points.y.length && points.y[next] === null) next++;
+        const start =
+            previous >= 0
+              ? upperBoundTime(currentTimes, points.t[previous])
+              : 0,
+          end =
+            next < points.y.length
+              ? lowerBoundTime(currentTimes, points.t[next])
+              : currentTimes.length;
+        let excludedOnly = true;
+        for (let j = start; j < end; j++) {
+          if (
+            series.data[j] === null &&
+            (mask[j] || finiteOrNull(raw[j]) === null)
+          ) {
+            excludedOnly = false;
+            break;
+          }
+        }
+        if (excludedOnly) continue;
+      }
+      t.push(points.t[i]);
+      y.push(points.y[i]);
+    }
+    return { ...points, t, y };
+  }
+  function compactScreenPoints(t, y, pixelWidth, range, mode) {
+    if (view === "fps" && hasStatisticsV2() && y.some((v) => v === null)) {
+      const ot = [],
+        oy = [];
+      let begin = 0;
+      for (let i = 0; i <= y.length; i++) {
+        if (i < y.length && y[i] !== null) continue;
+        if (i > begin) {
+          const part = compactScreenPoints(
+            t.slice(begin, i),
+            y.slice(begin, i),
+            pixelWidth,
+            range,
+            mode,
+          );
+          ot.push(...part.t);
+          oy.push(...part.y);
+        }
+        if (i < y.length && (oy.length === 0 || oy[oy.length - 1] !== null)) {
+          ot.push(t[i]);
+          oy.push(null);
+        }
+        begin = i + 1;
+      }
+      return { t: ot, y: oy };
+    }
+    const len = Math.min(t.length, y.length),
+      width = Math.max(1, Math.round(pixelWidth));
+    if (len <= 1) return { t: t.slice(), y: y.slice() };
+    let start =
+        range && Number.isFinite(range.start)
+          ? Number(range.start)
+          : Number(t[0]) || 0,
+      end =
+        range && Number.isFinite(range.end)
+          ? Number(range.end)
+          : Number(t[len - 1]) || start,
+      span =
+        range && Number.isFinite(range.span) ? Number(range.span) : end - start;
+    if (!Number.isFinite(span) || span <= 0)
+      span = Math.max(0.001, end - start);
+    const outT = [],
+      outY = [];
+    let currentBin = null,
+      items = [];
+    function binFor(sec) {
+      return Math.round(((Number(sec) - start) / span) * width);
+    }
+    function flush() {
+      if (!items.length) return;
+      let finite = [],
+        nullTime = items[0].t;
+      for (const item of items) {
+        const raw = item.y;
+        if (raw === null || raw === undefined || raw === "") {
+          nullTime = item.t;
+          continue;
+        }
+        const v = Number(raw);
+        if (Number.isFinite(v)) finite.push({ t: item.t, y: v });
+        else nullTime = item.t;
+      }
+      if (finite.length) {
+        let chosen;
+        if (view === "process")
+          chosen = finite.reduce(
+            (best, item) => (item.y > best.y ? item : best),
+            finite[0],
+          );
+        else if (view === "fps" && mode === "spike") {
+          const max = finite.reduce(
+              (best, item) => (item.y > best.y ? item : best),
+              finite[0],
+            ),
+            min = finite.reduce(
+              (best, item) => (item.y < best.y ? item : best),
+              finite[0],
+            );
+          chosen =
+            Math.abs(max.y - finite[0].y) >= Math.abs(finite[0].y - min.y)
+              ? max
+              : min;
+        } else {
+          let sum = 0,
+            timeSum = 0;
+          for (const item of finite) {
+            sum += item.y;
+            timeSum += Number(item.t) || 0;
+          }
+          chosen = { t: timeSum / finite.length, y: sum / finite.length };
+        }
+        outT.push(chosen.t);
+        outY.push(chosen.y);
+      } else {
+        outT.push(nullTime);
+        outY.push(null);
+      }
+      items = [];
+    }
+    for (let i = 0; i < len; i++) {
+      const b = binFor(t[i]);
+      if (currentBin !== null && b !== currentBin) flush();
+      currentBin = b;
+      items.push({ t: t[i], y: y[i] });
+    }
+    flush();
+    return { t: outT, y: outY };
+  }
+  function fixedYAxisMax() {
+    return view === "system" ? 100 : null;
+  }
+  function aggregateCoreSeries(series, prefix) {
+    const len = Math.max(
+        0,
+        ...(series || []).map((s) => (s.data || []).length),
+      ),
+      avg = [],
+      hi = [],
+      lo = [];
+    for (let i = 0; i < len; i++) {
+      let sum = 0,
+        count = 0,
+        max = -Infinity,
+        min = Infinity;
+      for (const s of series || []) {
+        const raw = (s.data || [])[i];
+        if (raw == null) continue;
+        const v = Number(raw);
+        if (!Number.isFinite(v)) continue;
+        sum += v;
+        count++;
+        if (v > max) max = v;
+        if (v < min) min = v;
+      }
+      avg.push(
+        count
+          ? Number((sum / count).toFixed(prefix === "cpuVid" ? 3 : 0))
+          : null,
+      );
+      hi.push(count ? Number(max.toFixed(prefix === "cpuVid" ? 3 : 0)) : null);
+      lo.push(count ? Number(min.toFixed(prefix === "cpuVid" ? 3 : 0)) : null);
+    }
+    const labels =
+      prefix === "cpuVid"
+        ? { avg: "平均核心电压", max: "最高核心电压", min: "最低核心电压" }
+        : { avg: "平均核心频率", max: "最高核心频率", min: "最低核心频率" };
+    return [
+      { key: `${prefix}:avg`, name: labels.avg, color: "#009dff", data: avg },
+      { key: `${prefix}:max`, name: labels.max, color: "#ff3b45", data: hi },
+      { key: `${prefix}:min`, name: labels.min, color: "#31e35f", data: lo },
+    ];
+  }
+  function seriesStats(series) {
+    const data = (series && series.data) || [];
+    let count = 0,
+      sum = 0,
+      max = -Infinity,
+      min = Infinity,
+      current = null;
+    for (const raw of data) {
+      const v = finiteOrNull(raw);
+      if (v === null) continue;
+      current = v;
+      sum += v;
+      count++;
+      if (v > max) max = v;
+      if (v < min) min = v;
+    }
+    return {
+      current,
+      avg: count ? sum / count : null,
+      peak: count ? max : null,
+      min: count ? min : null,
+    };
+  }
+  function unitDigits() {
+    if (currentUnit === "V") return 3;
+    if (currentUnit === "FPS") return 2;
+    if (currentUnit === "MB" || currentUnit === "MB/s" || currentUnit === "ms")
+      return 2;
+    if (currentUnit === "%" || currentUnit === "°C") return 1;
+    return 0;
+  }
+  function updateLegend() {
+    const key = `${view}|${currentUnit}|${fpsFiltering}|${currentSeries.map((s) => s.key || s.name).join(";")}|${DATA.cpuVoltage && DATA.cpuVoltage.available}|${DATA.cpuOsdVoltage && DATA.cpuOsdVoltage.available}|${DATA.frameStats && DATA.frameStats.maxInstant}`;
+    if (key === legendKey) return;
+    legendKey = key;
+    if (view === "fps") {
+      const fs = fpsFrameStats();
+      legend.innerHTML = isSampledFps()
+        ? `<span class='fps-legend-min'>采样最小值：${esc(n(fs.min, 0))}</span><span class='fps-legend-max'>采样最大值：${esc(n(fs.max, 0))}</span><span class='fps-legend-avg'>采样均值（算术平均）：${esc(n(fs.average, 0))}</span>`
+        : `<span class='fps-legend-low'>1% Low（采样汇总）：${esc(n(fs.low1, 0))}</span><span class='fps-legend-low'>0.1% Low（采样汇总）：${esc(n(fs.low01, 0))}</span><span class='fps-legend-min'>最小值：${esc(n(fs.min, 0))}</span><span class='fps-legend-max'>最大值：${esc(n(fs.max, 0))}</span><span class='fps-legend-avg'>平均值：${esc(n(fs.average, 0))}</span>`;
+      return;
+    }
+    const digits = unitDigits();
+    legend.innerHTML =
+      currentSeries
+        .slice(0, 12)
+        .map((s) => {
+          const st = seriesStats(s);
+          const id = s.key || s.name;
+          return `<button type='button' data-series='${esc(id)}' aria-pressed='${!hiddenSeries.has(id)}' aria-label='显示 ${esc(s.name)}'><i class='dot' style='background:${s.color}'></i>${esc(s.name)} <b>当前 ${esc(n(st.current, digits))}</b> 平均 ${esc(n(st.avg, view === "process" && currentUnit === "%" ? 2 : digits))} 峰值 ${esc(n(st.peak, digits))}</button>`;
+        })
+        .join("") +
+      (currentSeries.length > 12
+        ? `<span>+${currentSeries.length - 12} 条序列，图表/提示中可查看</span>`
+        : "");
+  }
+  function fpsFrameStats() {
+    const selected = activeFpsSummary();
+    if (selected) return selected;
+    const fs = DATA.frameStats || {},
+      ss = DATA.fpsSampleStats || {};
+    return isSampledFps()
+      ? {
+          low1: null,
+          low01: null,
+          min: finiteOrNull(ss.minimum),
+          max: finiteOrNull(ss.maximum),
+          average: finiteOrNull(ss.average),
+        }
+      : {
+          low1: finiteOrNull(fs.low1),
+          low01: finiteOrNull(fs.low01),
+          min: finiteOrNull(fs.minInstant),
+          max: finiteOrNull(fs.maxInstant),
+          average: finiteOrNull(fs.average),
+        };
+  }
+  function statisticsGapBetween(values, a, b) {
+    if (view !== "fps" || !hasStatisticsV2()) return false;
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++)
+      if (values[i] === null) return true;
+    return false;
+  }
+  function drawGameppArea(item, x, y, baseY, alpha = 0.2) {
+    if (view === "process") return;
+    if (!item || !item.points) return;
+    const color = item.series.color || "#009dff",
+      grad = ctx.createLinearGradient(0, PAD.t, 0, baseY);
+    grad.addColorStop(0, rgba(color, alpha));
+    grad.addColorStop(0.54, rgba(color, alpha * 0.48));
+    grad.addColorStop(1, rgba(color, 0.02));
+    ctx.save();
+    ctx.fillStyle = grad;
+    let open = false,
+      firstX = 0,
+      lastX = 0;
+    ctx.beginPath();
+    for (let i = 0; i < item.len; i++) {
+      const v = item.points.y[i];
+      if (v === null || !Number.isFinite(Number(v))) {
+        if (open) {
+          ctx.lineTo(lastX, baseY);
+          ctx.lineTo(firstX, baseY);
+          ctx.closePath();
+          ctx.fill();
+          ctx.beginPath();
+          open = false;
+        }
+        continue;
+      }
+      const xx = x(item.points.t[i]),
+        yy = y(v);
+      if (!open) {
+        firstX = xx;
+        ctx.moveTo(xx, baseY);
+        ctx.lineTo(xx, yy);
+        open = true;
+      } else ctx.lineTo(xx, yy);
+      lastX = xx;
+    }
+    if (open) {
+      ctx.lineTo(lastX, baseY);
+      ctx.lineTo(firstX, baseY);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  function drawFpsArea(item, x, y, baseY) {
+    if (item) item.series.color = "#009dff";
+    drawGameppArea(item, x, y, baseY, 0.42);
+  }
+  function drawRightLabel(text, color, yy, pw) {
+    const minY = PAD.t + 12,
+      maxY = PAD.t + chartDims().ph - 12,
+      yc = Math.max(minY, Math.min(maxY, yy)),
+      tx = PAD.l + pw + 8;
+    ctx.save();
+    ctx.font = "700 13px Segoe UI, Microsoft YaHei UI";
+    ctx.textBaseline = "middle";
+    const w = Math.min(
+      PAD.r - 14,
+      Math.max(42, ctx.measureText(text).width + 12),
+    );
+    ctx.fillStyle = "rgba(1,5,10,.82)";
+    ctx.strokeStyle = rgba(color, 0.7);
+    canvasRoundRect(ctx, tx, yc - 12, w, 24, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.fillText(text, tx + 6, yc);
+    ctx.restore();
+  }
+  function drawFpsReferenceLines(x, y, pw, topY, baseY) {
+    const fs = fpsFrameStats(),
+      sampled = isSampledFps(),
+      guides = [
+        {
+          label: sampled ? "采样高" : "最大值",
+          value: fs.max,
+          color: "#ff3b45",
+          dash: [5, 5],
+        },
+        {
+          label: sampled ? "采样均" : "平均值",
+          value: fs.average,
+          color: "#31e35f",
+          dash: [5, 5],
+        },
+        {
+          label: sampled ? "采样低" : "最小值",
+          value: fs.min,
+          color: "#009dff",
+          dash: [5, 5],
+        },
+      ];
+    ctx.save();
+    ctx.font = "700 13px Segoe UI, Microsoft YaHei UI";
+    ctx.textBaseline = "middle";
+    for (const g of guides) {
+      if (g.value === null) continue;
+      const yy = Math.max(topY + 10, Math.min(baseY - 10, y(g.value)));
+      ctx.strokeStyle = g.color;
+      ctx.globalAlpha = 0.92;
+      ctx.setLineDash(g.dash);
+      ctx.beginPath();
+      ctx.moveTo(PAD.l, yy);
+      ctx.lineTo(PAD.l + pw, yy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      drawRightLabel(`${g.label}：${n(g.value, 0)}`, g.color, yy, pw);
+    }
+    ctx.restore();
+  }
+  function drawGameppReferenceLines(rendered, x, y, pw, topY, baseY) {
+    const digits = unitDigits();
+    ctx.save();
+    ctx.font = "700 13px Segoe UI, Microsoft YaHei UI";
+    ctx.textBaseline = "middle";
+    if (view === "system") {
+      const yy = y(100);
+      ctx.strokeStyle = "rgba(255,216,74,.55)";
+      ctx.setLineDash([4, 6]);
+      ctx.beginPath();
+      ctx.moveTo(PAD.l, yy);
+      ctx.lineTo(PAD.l + pw, yy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawRightLabel("100%", "#ffd84a", yy, pw);
+    }
+    for (const item of rendered.slice(0, 3)) {
+      const st = seriesStats(item.series);
+      if (st.avg === null) continue;
+      const yy = Math.max(topY + 10, Math.min(baseY - 10, y(st.avg)));
+      ctx.strokeStyle = item.series.color;
+      ctx.globalAlpha = 0.68;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(PAD.l, yy);
+      ctx.lineTo(PAD.l + pw, yy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      const label =
+        currentUnit === "%"
+          ? `${n(st.current, digits)}%`
+          : `${n(st.current, digits)} ${currentUnit}`;
+      drawRightLabel(label, item.series.color, yy, pw);
+    }
+    ctx.restore();
+  }
+  function ring(title, value, sub, p, color, foot) {
+    return `<div class='gauge'><h3>${esc(title)}</h3><div class='ring ${title === "FPS" ? "big" : ""}' style='--p:${pct(p)};--c:${color}'><div><b>${esc(value)}</b><small>${esc(sub)}</small></div></div><div class='foot'>${esc(foot || "")}</div></div>`;
+  }
+  function initStatic() {
+    const h = DATA.hardware || {},
+      hd = DATA.hardwareDerived || {},
+      fs = activeFrameStats(),
+      ss = DATA.systemStats || {},
+      cap = DATA.capture || {},
+      sampled = isSampledFps(),
+      sampleStats = DATA.fpsSampleStats || {},
+      targetName =
+        (DATA.target && (DATA.target.displayName || DATA.target.processName)) ||
+        "未知进程";
+    if (!DATA.notes.frameDataCaptured && captureAlert) {
+      captureAlert.classList.add("show");
+      captureAlert.innerHTML = sampled
+        ? "<b>ETW FPS 采样诊断报告，并非逐帧报告。</b> 保留常驻 ETW FPS 采样趋势；均值是有效样本的算术平均，不是时间加权或逐帧平均。无法据此计算真实帧数、1% / 0.1% Low 或长帧数。采样未记录目标 PID，仅作诊断参考。"
+        : `<b>未采集到 FPS 数据。</b> ${esc(cap.FrameCaptureMessage || DATA.notes.frameCaptureMessage || "PresentMon 未写入有效帧数据。")}<br>状态：${esc(cap.FrameCaptureStatus || DATA.notes.frameCaptureStatus || "no-frame-data")}；CSV：${esc(cap.PresentMonCsvBytes ?? 0)} 字节；目标：${esc(cap.TargetResolvedProcess || cap.TargetProcess || targetName)}。`;
+    }
+    setText("gameName", targetName);
+    setText(
+      "gameIcon",
+      targetName
+        .replace(/\.exe$/i, "")
+        .slice(0, 2)
+        .toUpperCase() || "FS",
+    );
+    setText("hwCpu", h.CpuName || "无数据");
+    setText(
+      "hwCore",
+      h.CpuCores ? `${h.CpuCores} / ${h.CpuThreads}` : "无数据",
+    );
+    setText(
+      "hwCpuClock",
+      h.CpuMaxClockMHz ? `${h.CpuMaxClockMHz} MHz（标称）` : "无数据",
+    );
+    setText("hwGpu", h.GpuName || "无数据");
+    setText("hwDriver", h.GpuDriver || "无数据");
+    setText("hwVram", hd.vramTotalGb ? `${n(hd.vramTotalGb, 1)} GB` : "无数据");
+    setText("hwOs", `${h.OsCaption || "Windows"} ${h.OsArch || ""}`.trim());
+    setText(
+      "hwMem",
+      h.MemorySummary ||
+        (hd.totalMemoryGb ? `${n(hd.totalMemoryGb, 1)} GB` : "无数据"),
+    );
+    let memoryDetail = document.getElementById('hwMemDetails');
+    if (!memoryDetail && document.getElementById('hwMem')) {
+      memoryDetail = root.ownerDocument.createElement('div'); memoryDetail.id = 'hwMemDetails';
+      memoryDetail.style.cssText = 'white-space:pre-line;overflow-wrap:anywhere;font-size:12px;margin-top:8px';
+      document.getElementById('hwMem').parentElement.append(memoryDetail);
+    }
+    if (memoryDetail) {
+      const spec = h.MemorySpecification, runtime = spec?.runtime;
+      memoryDetail.textContent = !spec ? '完整内存规格：当时未记录' : [
+        `${spec.module_count} 条内存`,
+        ...(spec.modules || []).map((m,i) => `第 ${i+1} 条：${m.capacity_gb ?? '未知'} GB · ${m.manufacturer || '厂商未记录'} · ${m.part_number || '型号未记录'} · ${m.memory_type || 'DDR 代际未记录'} · ${m.configured_speed_mts ? `系统配置 ${m.configured_speed_mts} MT/s` : '配置速率未记录'}`),
+        runtime?.data_rate_mts ? `实测速率 ${runtime.data_rate_mts} MT/s（${runtime.source}）` : '实测速率：当时未取得',
+        ...(runtime?.channels?.length ? runtime.channels.map(c => `通道 ${c.channel} 实际时序：${Object.entries(c).filter(([k,v]) => k !== 'channel' && v != null).map(([k,v]) => `${k.toUpperCase()} ${v}`).join(' / ')}（${runtime.source}）`) : ['实际时序：当时未取得']),
+      ].join('\n');
+    }
+    setText(
+      "hwSamples",
+      `${DATA.counts.frames} 帧 / ${sampled ? `${DATA.counts.fpsSamples} 个 FPS 采样 / ` : ""}${DATA.counts.processSamples} 个进程采样`,
+    );
+    setText("runStart", `开始：${DATA.run.startLabel}`);
+    setText("runEnd", `结束：${DATA.run.endLabel}`);
+    setText("runDuration", `时长：${DATA.run.durationLabel}`);
+    document.getElementById("gauges").innerHTML = [
+      ring(
+        "FPS",
+        n(sampled ? sampleStats.average : fs.average, 0),
+        sampled ? "采样均值" : "平均",
+        100,
+        "#009dff",
+        sampled ? "有效样本的算术平均" : "",
+      ),
+      ring(
+        "CPU",
+        `${n(ss.cpuAvg, 0)}%`,
+        "占用",
+        ss.cpuAvg,
+        "#31e35f",
+        `峰值 ${n(ss.cpuMax, 0)}%`,
+      ),
+      ring(
+        "GPU",
+        `${n(ss.gpuAvg, 0)}%`,
+        "占用",
+        ss.gpuAvg,
+        "#009dff",
+        ss.gpuBySource?.length ? ss.gpuBySource.map((s) => `${s.source === "3d" ? "3D" : s.source === "core-fallback" ? "Core 回退" : "来源未知"} ${n(s.average, 1)}%`).join(" · ") : `功耗 ${n(ss.powerAvg, 0)}W`,
+      ),
+      ring(
+        "GPU 温度",
+        `${n(ss.gpuTempAvg, 0)}°C`,
+        "温度",
+        ss.gpuTempAvg,
+        "#ffd84a",
+        `GPU 频率 ${n(ss.gpuClockAvg, 0)}MHz`,
+      ),
+      ring(
+        "VRAM",
+        `${n(ss.vramUsedPctAvg, 0)}%`,
+        `${n(ss.vramUsedAvg, 2)}/${n(hd.vramTotalGb, 1)} GB`,
+        ss.vramUsedPctAvg,
+        "#65a7ff",
+        "",
+      ),
+      ring(
+        "内存",
+        `${n(ss.memUsedPctAvg, 0)}%`,
+        `${n(ss.memUsedAvgGb, 1)}/${n(hd.totalMemoryGb, 1)} GB`,
+        ss.memUsedPctAvg,
+        "#d77cff",
+        "",
+      ),
+      ring(
+        "长帧",
+        n(fs.framesOver33, 0),
+        ">33ms",
+        Math.min(100, (fs.framesOver33 || 0) * 2),
+        "#ff3b45",
+        DATA.notes.frameDataCaptured
+          ? `最大帧时间 ${n(fs.maxFrameMs, 1)}ms`
+          : "逐帧统计不可用",
+      ),
+    ].join("");
+    const top = (DATA.process.stats || []).slice(0, 16),
+      max = maxFinite(
+        top.map((p) => p.maxCpu),
+        1,
+      );
+    document.getElementById("processRows").innerHTML = top
+      .map(
+        (p) =>
+          `<div class='row'><span title='${esc(p.name)}'>${esc(p.name)}</span><span>${n(p.maxCpu, 1)}%</span><div class='bar'><i style='width:${Math.max(3, (Number(p.maxCpu || 0) / max) * 100)}%'></i></div></div>`,
+      )
+      .join("");
+    const rows = [
+      [
+        sampled ? "采样均值" : "平均 FPS",
+        n(sampled ? sampleStats.average : fs.average, 2),
+      ],
+      ["1% Low（采样汇总）", n(fs.low1, 2)],
+      ["0.1% Low（采样汇总）", n(fs.low01, 2)],
+      [
+        hasStatisticsV2() ? "最低 FPS（有效采样）" : "最低瞬时 FPS",
+        n(fs.minInstant, 3),
+      ],
+      [">20ms 帧", n(fs.framesOver20, 0)],
+      [">33ms 帧", n(fs.framesOver33, 0)],
+      [">100ms 帧", n(fs.framesOver100, 0)],
+      ["最大帧时间", `${n(fs.maxFrameMs, 3)} ms`],
+    ];
+    document.getElementById("summaryRows").innerHTML = rows
+      .map(
+        (r) =>
+          `<div class='row'><span>${esc(r[0])}</span><span>${esc(r[1])}</span><div class='bar'><i style='width:64%'></i></div></div>`,
+      )
+      .join("");
+  }
+  function decodeRleSeries(encoded, expectedLength) {
+    if (Array.isArray(encoded)) return encoded;
+    if (typeof encoded !== "string") return [];
+    const target = Math.max(0, Number(expectedLength) || 0),
+      out = new Array(target);
+    let outIndex = 0,
+      tokenStart = 0;
+    while (tokenStart < encoded.length && outIndex < target) {
+      let tokenEnd = encoded.indexOf(";", tokenStart);
+      if (tokenEnd < 0) tokenEnd = encoded.length;
+      if (tokenEnd > tokenStart) {
+        let star = encoded.indexOf("*", tokenStart);
+        if (star < 0 || star >= tokenEnd) star = -1;
+        const count =
+            star > tokenStart ? Number(encoded.slice(tokenStart, star)) : 1,
+          valueText =
+            star > tokenStart
+              ? encoded.slice(star + 1, tokenEnd)
+              : encoded.slice(tokenStart, tokenEnd),
+          value = valueText === "n" ? null : Number(valueText);
+        if (count > 0) {
+          const next = Math.min(target, outIndex + count);
+          out.fill(valueText === "n" ? null : value, outIndex, next);
+          outIndex = next;
+        }
+      }
+      tokenStart = tokenEnd + 1;
+    }
+    while (outIndex < target) out[outIndex++] = null;
+    return out;
+  }
+  function decodeProcessSeriesForMetric(metric, matrix, idx) {
+    const raw = matrix[idx];
+    if (DATA.process.codec !== "rle-v1") return raw || [];
+    const key = `${metric}:${idx}`;
+    if (processSeriesCache.has(key)) return processSeriesCache.get(key);
+    const decoded = decodeRleSeries(raw, (DATA.process.t || []).length);
+    if (processSeriesCache.size > 320) processSeriesCache.clear();
+    processSeriesCache.set(key, decoded);
+    return decoded;
+  }
+  function processSeriesData(matrix, idx) {
+    return decodeProcessSeriesForMetric(processMetric, matrix, idx);
+  }
+  function visibleProcessIndexes() {
+    const q = processSearch.value.trim().toLowerCase(),
+      limit = q ? 24 : PROCESS_TOP_N;
+    if (!q) return processTopIndexes.slice(0, limit);
+    const idx = [];
+    for (const item of processSearchIndex) {
+      if (item.search.includes(q)) idx.push(item.idx);
+      if (idx.length >= limit) break;
+    }
+    return idx;
+  }
+  function scheduleProcessSearchDraw() {
+    if (view !== "process") return;
+    if (processSearchFrame) return;
+    processSearchFrame = window.requestAnimationFrame(() => {
+      processSearchFrame = 0;
+      renderCache.clear();
+      processHoverCache.clear();
+      legendKey = "";
+      draw();
+    });
+  }
+  function warmProcessTopSeries() {
+    if (!DATA || !DATA.process || DATA.process.codec !== "rle-v1") return;
+    const cpu = DATA.process.cpu || [],
+      mem = DATA.process.mem || [];
+    for (const idx of processPrewarmIndexes)
+      decodeProcessSeriesForMetric("cpu", cpu, idx);
+    for (const idx of processTopIndexes)
+      decodeProcessSeriesForMetric("mem", mem, idx);
+  }
+  const seriesOptions = (series, label) => [
+    ["summary", label],
+    ...series.map((s) => [s.key, s.name]),
+  ];
+  let setOptions = function () {
+    updateFpsFilter();
+    metricSelect.disabled = false;
+    const core = DATA.cpuCore?.series || [],
+      vid = DATA.cpuOsdVoltage || {},
+      voltage = DATA.cpuVoltage || {};
+    const options = {
+      fps: [
+        ["all", "平均 FPS / 1% Low / 0.1% Low"],
+        ["avg", "仅平均 FPS"],
+        ["low1", "仅 1% Low"],
+        ["low01", "仅 0.1% Low"],
+      ],
+      process: [
+        ["cpu", "后台进程 CPU"],
+        ["mem", "后台进程内存"],
+      ],
+      cpuCore: core.length
+        ? seriesOptions(core, "平均 / 最高 / 最低核心频率")
+        : [["none", "无 CPU 核心频率数据"]],
+      cpuVoltage:
+        voltage.available && voltage.series?.length
+          ? [["vcore", "CPU 电压（按来源）"]]
+          : [["none", "无 CPU 电压 / Vcore 数据"]],
+      cpuVid:
+        vid.available && vid.series?.length
+          ? seriesOptions(vid.series, "平均 / 最高 / 最低核心电压")
+          : [["none", "无 OSD 分核心电压数据"]],
+      perf: [
+        ["all", "CPU / GPU / 内存频率"],
+        ["cpu", "CPU 频率"],
+        ["gpu", "GPU 频率"],
+        ["mem", "内存频率"],
+      ],
+      system: [
+        ["all", "CPU / GPU / 内存占用"],
+        ["cpu", "CPU 占用"],
+        ["gpu", "GPU 占用"],
+        ["gpuMem", "GPU 显存控制器"],
+        ["mem", "系统内存占用"],
+        ["vram", "VRAM 占用"],
+      ],
+      io: [
+        ["diskNet", "磁盘 / 网络 MB/s"],
+        ["diskLatency", "磁盘延迟 ms"],
+        ["power", "GPU 功耗 W"],
+        ["temp", "GPU 温度 °C"],
+      ],
+    };
+    metricSelect.options = options[view];
+    const selected = {
+      fps: fpsMetric,
+      process: processMetric,
+      cpuCore: cpuCoreMetric,
+      cpuVid: cpuVidMetric,
+      perf: perfMetric,
+      system: systemMetric,
+      io: ioMetric,
+    };
+    metricSelect.value = options[view].some(([key]) => key === selected[view])
+      ? selected[view]
+      : options[view][0][0];
+    if (view === "cpuCore") cpuCoreMetric = metricSelect.value;
+    if (view === "cpuVid") cpuVidMetric = metricSelect.value;
+  };
+  let setTitle = function () {
+    if (view === "fps") {
+      viewTitle.textContent = DATA.notes.frameDataCaptured
+        ? "帧率与流畅度"
+        : "FPS 数据不可用";
+      viewNote.textContent =
+        "每秒汇总显示帧率，保留原始逐帧记录；参考线标出最低、最高和平均值。";
+    }
+    if (view === "cpuCore") {
+      viewTitle.textContent = "CPU 核心频率";
+      viewNote.textContent =
+        "默认显示平均、最高和最低核心频率，避免多核心曲线重叠；提示仍列出每核心 MHz。";
+    }
+    if (view === "cpuVoltage") {
+      viewTitle.textContent = DATA.cpuVoltage?.note ? "CPU 电压（按来源）" : "CPU 电压 / Vcore";
+      viewNote.textContent =
+        DATA.cpuVoltage?.note || "记录的 CPU Vcore，单位 V；不以 VID、SOC、Package、VBAT 或 VIN 替代。";
+    }
+    if (view === "cpuVid") {
+      viewTitle.textContent = "CPU 分核心电压（OSD）";
+      viewNote.textContent =
+        (DATA.cpuOsdVoltage && DATA.cpuOsdVoltage.note) ||
+        "来自记录时 OSD 的分核心电压数组，单位 V。";
+    }
+    if (view === "perf") {
+      viewTitle.textContent = "性能频率";
+      viewNote.textContent =
+        "CPU、GPU 和内存频率使用同一套深色面积折线样式，并在右侧显示当前标记。";
+    }
+    if (view === "system") {
+      viewTitle.textContent = "系统占用";
+      viewNote.textContent =
+        "CPU、GPU、内存、VRAM 和 GPU 显存控制器统一使用 0-100% 的 Y 轴。";
+    }
+    if (view === "process") {
+      viewTitle.textContent = "后台进程";
+      viewNote.textContent = `默认按记录到的峰值绘制前 ${PROCESS_TOP_N} 个进程；搜索会收窄曲线集合，表格保留更完整排序。`;
+    }
+    if (view === "io") {
+      viewTitle.textContent = "IO / 温度";
+      viewNote.textContent =
+        "不同单位拆成独立图表模式，避免温度、延迟、功耗和吞吐共用误导性的 Y 轴。";
+    }
+  };
+  function pickSeries(series, metric) {
+    return metric === "all" ? series : series.filter((s) => s.key === metric);
+  }
+  let buildSeries = function () {
+    if (view === "fps") {
+      const fps = activeFps();
+      currentTimes = fps.t || [];
+      currentUnit = "FPS";
+      const all = [
+          {
+            key: "fps:avg",
+            name: "平均 FPS",
+            color: "#009dff",
+            data: activeFps().avg || [],
+          },
+          {
+            key: "fps:low1",
+            name: "1% Low（1秒窗口）",
+            color: "#dce6f0",
+            data: fps.low1 || [],
+          },
+          {
+            key: "fps:low01",
+            name: "0.1% Low（1秒窗口）",
+            color: "#b7c4d2",
+            data: fps.low01 || [],
+          },
+        ],
+        map = { avg: 0, low1: 1, low01: 2 };
+      currentSeries = fpsMetric === "all" ? all : [all[map[fpsMetric] || 0]];
+      return;
+    }
+    if (view === "cpuCore") {
+      const c = DATA.cpuCore || {},
+        raw = c.series || [];
+      currentTimes = c.t || [];
+      currentUnit = "MHz";
+      currentSeries =
+        cpuCoreMetric === "summary"
+          ? aggregateCoreSeries(raw, "cpuCore")
+          : pickSeries(raw, cpuCoreMetric);
+      if (c.source !== "hardware-service-core-clock")
+        currentSeries = currentSeries.map((s) => ({
+          ...s,
+          name: s.name + "（系统参考）",
+        }));
+      return;
+    }
+    if (view === "cpuVoltage") {
+      const v = DATA.cpuVoltage || {},
+        raw = v.available ? v.series || [] : [];
+      currentTimes = v.available ? v.t || [] : [];
+      currentUnit = "V";
+      currentSeries = raw;
+      return;
+    }
+    if (view === "cpuVid") {
+      const v = DATA.cpuOsdVoltage || {},
+        raw = v.available ? v.series || [] : [];
+      currentTimes = v.available ? v.t || [] : [];
+      currentUnit = "V";
+      currentSeries = raw.length
+        ? cpuVidMetric === "summary"
+          ? aggregateCoreSeries(raw, "cpuVid")
+          : pickSeries(raw, cpuVidMetric)
+        : [];
+      return;
+    }
+    if (view === "perf") {
+      currentTimes = DATA.system.t || [];
+      currentUnit = "MHz";
+      const all = [
+          {
+            key: "perf:cpu",
+            name: (DATA.system.perf.cpuFreq || []).some(Number.isFinite)
+              ? "CPU 核心频率（传感器）"
+              : "CPU 频率（系统参考）",
+            color: "#009dff",
+            data: (DATA.system.perf.cpuFreq || []).some(Number.isFinite)
+              ? DATA.system.perf.cpuFreq
+              : DATA.system.perf.cpuFreqReference || [],
+          },
+          {
+            key: "perf:gpu",
+            name: "GPU 频率",
+            color: "#31e35f",
+            data: DATA.system.perf.gpuClock || [],
+          },
+          {
+            key: "perf:mem",
+            name: "内存频率",
+            color: "#ffd84a",
+            data: DATA.system.perf.memClock || [],
+          },
+        ],
+        map = { cpu: 0, gpu: 1, mem: 2 };
+      currentSeries = perfMetric === "all" ? all : [all[map[perfMetric] || 0]];
+      return;
+    }
+    if (view === "system") {
+      currentTimes = DATA.system.t || [];
+      currentUnit = "%";
+      const all = [
+          {
+            key: "system:cpu",
+            name: "CPU 占用",
+            color: "#009dff",
+            data: DATA.system.usage.cpu || [],
+          },
+          {
+            key: "system:gpu",
+            name: "GPU 占用",
+            color: "#31e35f",
+            data: DATA.system.usage.gpu || [],
+          },
+          {
+            key: "system:gpuMem",
+            name: "GPU 显存控制器",
+            color: "#ffd84a",
+            data: DATA.system.usage.gpuMem || [],
+          },
+          {
+            key: "system:mem",
+            name: "内存占用",
+            color: "#d77cff",
+            data: DATA.system.usage.mem || [],
+          },
+          {
+            key: "system:vram",
+            name: "VRAM 占用",
+            color: "#65a7ff",
+            data: DATA.system.usage.vram || [],
+          },
+        ],
+        map = { cpu: 0, gpu: 1, gpuMem: 2, mem: 3, vram: 4 };
+      currentSeries =
+        systemMetric === "all" ? all : [all[map[systemMetric] || 0]];
+      if (DATA.system.usage.gpuSources) {
+        currentSeries = currentSeries.flatMap((s) => s.key !== "system:gpu" ? [s] : [
+          { key: "system:gpu3d", name: "GPU 3D", color: "#31e35f", data: DATA.system.usage.gpu3d || [] },
+          { key: "system:gpuCore", name: "GPU Core（回退）", color: "#ffd84a", data: DATA.system.usage.gpuCore || [] },
+          { key: "system:gpuUnknown", name: "GPU（历史来源未知）", color: "#a9bac8", data: DATA.system.usage.gpuUnknown || [] },
+        ].filter((entry) => entry.data.some((v) => v !== null)));
+      }
+      return;
+    }
+    if (view === "io") {
+      currentTimes = DATA.system.t || [];
+      const io = DATA.system.io || {},
+        sets = {
+          diskNet: {
+            unit: "MB/s",
+            series: [
+              {
+                key: "io:disk",
+                name: "磁盘吞吐",
+                color: "#009dff",
+                data: io.disk || [],
+              },
+              {
+                key: "io:net",
+                name: "网络吞吐",
+                color: "#31e35f",
+                data: io.net || [],
+              },
+            ],
+          },
+          diskLatency: {
+            unit: "ms",
+            series: [
+              {
+                key: "io:latency",
+                name: "磁盘延迟",
+                color: "#ffd84a",
+                data: io.diskLatency || [],
+              },
+            ],
+          },
+          power: {
+            unit: "W",
+            series: [
+              {
+                key: "io:power",
+                name: "GPU 功耗",
+                color: "#ff3b45",
+                data: io.power || [],
+              },
+            ],
+          },
+          temp: {
+            unit: "°C",
+            series: [
+              {
+                key: "io:temp",
+                name: "GPU 温度",
+                color: "#65a7ff",
+                data: io.temp || [],
+              },
+            ],
+          },
+        };
+      const selected = sets[ioMetric] || sets.diskNet;
+      currentUnit = selected.unit;
+      currentSeries = selected.series;
+      return;
+    }
+    const idxs = visibleProcessIndexes();
+    currentTimes = DATA.process.t || [];
+    currentUnit = processMetric === "cpu" ? "%" : "MB";
+    const matrix =
+      processMetric === "cpu" ? DATA.process.cpu || [] : DATA.process.mem || [];
+    currentSeries = idxs.map((idx, n) => ({
+      key: `process:${processMetric}:${idx}`,
+      name: DATA.process.names[idx],
+      color: COLORS[n % COLORS.length],
+      data: processSeriesData(matrix, idx),
+    }));
+  };
+  let emptyMessage = function () {
+    if (view === "process" && processSearch.value.trim())
+      return "没有匹配的后台进程，请尝试其他名称或清除搜索。";
+    if (view === "cpuVoltage")
+      return (
+        (DATA.cpuVoltage && DATA.cpuVoltage.reason) ||
+        "没有采集到 CPU 电压 / Vcore 样本；不会用 VID 伪造。"
+      );
+    if (view === "cpuVid")
+      return (
+        (DATA.cpuOsdVoltage && DATA.cpuOsdVoltage.reason) ||
+        "本次记录未保存 OSD 分核心电压数据；需要更新后重新采集，不会用整体 Vcore 或旧 VID 补齐。"
+      );
+    if (view === "cpuCore")
+      return (
+        (DATA.cpuCore && DATA.cpuCore.reason) || "没有采集到 CPU 核心频率样本。"
+      );
+    return "无可绘制数据。";
+  };
+  function emptyMessageLines(message, maxWidth, measureCtx = ctx) {
+    const text = String(message || ""),
+      chars = Array.from(text),
+      lines = [];
+    let line = "";
+    const limit = Math.max(80, Number(maxWidth) || 360);
+    function push() {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+    }
+    for (const ch of chars) {
+      const next = line + ch;
+      if (line && measureCtx.measureText(next).width > limit) {
+        push();
+        line = ch;
+      } else line = next;
+      if (
+        (ch === "\u3002" || ch === "\uff1b") &&
+        line &&
+        measureCtx.measureText(line).width > limit * 0.72
+      )
+        push();
+    }
+    push();
+    return lines.length
+      ? lines
+      : ["\u65e0\u53ef\u7ed8\u5236\u6570\u636e\u3002"];
+  }
+  function drawEmptyMessage(message, w) {
+    ctx.fillStyle = "#a9bac8";
+    ctx.font = "15px Segoe UI";
+    const maxWidth = Math.max(
+        220,
+        (Number(w) || chartDims().w) - PAD.l - PAD.r - 24,
+      ),
+      lines = emptyMessageLines(message, maxWidth, ctx).slice(0, 6);
+    for (let i = 0; i < lines.length; i++)
+      ctx.fillText(lines[i], PAD.l, PAD.t + 24 + i * 22);
+  }
+  const baseSetOptions = setOptions;
+  setOptions = function () {
+    baseSetOptions();
+    if (view === "fps" && isSampledFps()) {
+      metricSelect.options = [["avg", "ETW FPS 采样"]];
+      metricSelect.value = fpsMetric = "avg";
+      metricSelect.disabled = true;
+    }
+  };
+  const baseSetTitle = setTitle;
+  setTitle = function () {
+    baseSetTitle();
+    if (view === "fps" && isSampledFps()) {
+      viewTitle.textContent = "ETW FPS 采样趋势";
+      viewNote.textContent =
+        "按实际采样时间显示；均值为有效样本的算术平均，不代表逐帧统计。";
+    }
+    if (view === "cpuVid") {
+      const v = (DATA && DATA.cpuOsdVoltage) || {};
+      if (!v.available) viewNote.textContent = emptyMessage();
+    }
+  };
+  const baseBuildSeries = buildSeries;
+  buildSeries = function () {
+    if (view === "fps" && isSampledFps()) {
+      currentTimes = DATA.fps.t || [];
+      currentUnit = "FPS";
+      currentSeries = [
+        {
+          key: "fps:avg",
+          name: "ETW FPS 采样",
+          color: "#009dff",
+          data: activeFps().avg || [],
+        },
+      ];
+      return;
+    }
+    baseBuildSeries();
+  };
+  emptyMessage = function () {
+    if (view === "process" && processSearch.value.trim())
+      return "没有匹配的后台进程，请尝试其他名称或清除搜索。";
+    if (view === "cpuVoltage")
+      return (
+        (DATA.cpuVoltage && DATA.cpuVoltage.reason) ||
+        "\u6ca1\u6709\u91c7\u96c6\u5230 CPU \u7535\u538b / Vcore \u6837\u672c\uff1b\u4e0d\u4f1a\u7528 VID \u4f2a\u9020\u3002"
+      );
+    if (view === "cpuVid")
+      return (
+        (DATA.cpuOsdVoltage && DATA.cpuOsdVoltage.reason) ||
+        "本次记录未保存 OSD 分核心电压数据；需要更新后重新采集，不会用整体 Vcore 或旧 VID 补齐。"
+      );
+    if (view === "cpuCore")
+      return (
+        (DATA.cpuCore && DATA.cpuCore.reason) ||
+        "\u6ca1\u6709\u91c7\u96c6\u5230 CPU \u6838\u5fc3\u9891\u7387\u6837\u672c\u3002"
+      );
+    return "\u65e0\u53ef\u7ed8\u5236\u6570\u636e\u3002";
+  };
+  function draw() {
+    if (!DATA) return;
+    setTitle();
+    buildSeries();
+    const { w, h, ph } = chartDims(),
+      range = visibleTimeRange();
+    let pw = chartDims().pw;
+    clearOverlay();
+    lastRenderStats = { raw: 0, drawn: 0, buckets: 0 };
+    ctx.clearRect(0, 0, w, h);
+    const bg = ctx.createLinearGradient(0, 0, w, h);
+    bg.addColorStop(0, "#171b22");
+    bg.addColorStop(1, "#111318");
+    if (exportDims) {
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+    }
+    if (!currentTimes.length || !currentSeries.length) {
+      drawEmptyMessage(emptyMessage(), w);
+      legend.innerHTML = "";
+      updateModeStats();
+      return;
+    }
+    const rendered = [];
+    let maxY = 0;
+    for (let si = 0; si < currentSeries.length; si++) {
+      if (hiddenSeries.has(currentSeries[si].key || currentSeries[si].name))
+        continue;
+      const points = fpsPlotPoints(currentSeries[si], pw, range),
+        len = Math.min(points.t.length, points.y.length);
+      rendered.push({ series: currentSeries[si], points, len });
+      lastRenderStats.raw += points.rawCount || 0;
+      lastRenderStats.drawn += len;
+      lastRenderStats.buckets += points.bucketCount || 0;
+      for (let i = 0; i < len; i++) {
+        const v = Number(points.y[i]);
+        if (Number.isFinite(v) && v > maxY) maxY = v;
+      }
+    }
+    if (view === "fps") {
+      const fs = fpsFrameStats();
+      for (const v of [fs.min, fs.average])
+        if (v !== null && v > maxY) maxY = v;
+    }
+    const fixedMax = fixedYAxisMax();
+    if (fixedMax !== null) maxY = fixedMax;
+    if (!Number.isFinite(Number(maxY)) || Number(maxY) <= 0) maxY = 1;
+    if (fixedMax === null) maxY = maxY * 1.08;
+    // Measure labels at the current canvas scale instead of stretching old pixels.
+    ctx.font = "13px Segoe UI, Microsoft YaHei UI";
+    PAD.l = Math.max(
+      56,
+      ...Array.from(
+        { length: 7 },
+        (_, i) =>
+          Math.ceil(
+            ctx.measureText(axisLabel(maxY - (maxY * i) / 6, maxY)).width,
+          ) + 24,
+      ),
+    );
+    ctx.font = "700 13px Segoe UI, Microsoft YaHei UI";
+    const labels =
+      view === "fps"
+        ? Object.values(fpsFrameStats())
+            .filter((v) => typeof v === "number")
+            .map((v) => `最大值：${n(v, 0)}`)
+        : currentSeries
+            .slice(0, 3)
+            .map(
+              (s) =>
+                `${n(seriesStats(s).current, unitDigits())} ${currentUnit}`,
+            );
+    PAD.r = Math.max(
+      150,
+      ...labels.map((text) => Math.ceil(ctx.measureText(text).width) + 34),
+    );
+    pw = Math.max(40, w - PAD.l - PAD.r);
+    function x(sec) {
+      return PAD.l + ((Number(sec) - range.start) / range.span) * pw;
+    }
+    function y(v) {
+      return PAD.t + ph - (Number(v) / maxY) * ph;
+    }
+    const ticks = timeTicks(range, pw);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD.l, PAD.t, pw, ph);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(160,173,196,.12)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 6; i++) {
+      const yy = PAD.t + (ph / 6) * i;
+      ctx.beginPath();
+      ctx.moveTo(PAD.l, yy);
+      ctx.lineTo(PAD.l + pw, yy);
+      ctx.stroke();
+    }
+    for (const tick of ticks) {
+      const xx = x(tick);
+      ctx.beginPath();
+      ctx.moveTo(xx, PAD.t);
+      ctx.lineTo(xx, PAD.t + ph);
+      ctx.stroke();
+    }
+    if (view === "fps")
+      drawFpsArea(
+        rendered.find((r) => r.series.key === "fps:avg") || rendered[0],
+        x,
+        y,
+        PAD.t + ph,
+      );
+    else
+      rendered
+        .slice(0, Math.min(4, rendered.length))
+        .forEach((item, i) =>
+          drawGameppArea(item, x, y, PAD.t + ph, i === 0 ? 0.28 : 0.13),
+        );
+    for (let si = 0; si < rendered.length; si++) {
+      const item = rendered[si],
+        primary =
+          (view === "fps" &&
+            (item.series.key === "fps:avg" || rendered.length === 1)) ||
+          si === 0,
+        alpha = view === "fps" ? (primary ? 1 : 0.72) : seriesAlpha(si);
+      ctx.strokeStyle =
+        view === "fps" && primary ? "#009dff" : item.series.color;
+      ctx.globalAlpha = alpha;
+      ctx.lineWidth = view === "fps" ? (primary ? 2.4 : 1.35) : lineWidth(si);
+      ctx.shadowColor = primary ? rgba(item.series.color, 0.72) : "transparent";
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      let started = false, previousX = 0, previousY = 0;
+      for (let i = 0; i < item.len; i++) {
+        const v = item.points.y[i];
+        if (v === null || !Number.isFinite(Number(v))) {
+          started = false;
+          continue;
+        }
+        const xx = x(item.points.t[i]),
+          yy = y(v);
+        if (!started) {
+          ctx.moveTo(xx, yy);
+          started = true;
+        } else if (view === "fps" && readMode.value === "trend") {
+          const middle = (previousX + xx) / 2;
+          ctx.bezierCurveTo(middle, previousY, middle, yy, xx, yy);
+        } else ctx.lineTo(xx, yy);
+        previousX = xx; previousY = yy;
+      }
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+    }
+    ctx.restore();
+    if (view === "fps") drawFpsReferenceLines(x, y, pw, PAD.t, PAD.t + ph);
+    else drawGameppReferenceLines(rendered, x, y, pw, PAD.t, PAD.t + ph);
+    ctx.strokeStyle = "rgba(130,149,180,.24)";
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#a9bac8";
+    ctx.font = "13px Segoe UI, Microsoft YaHei UI";
+    for (let i = 0; i <= 6; i++) {
+      const yy = PAD.t + (ph / 6) * i;
+      ctx.fillText(axisLabel(maxY - (maxY / 6) * i, maxY), 10, yy + 4);
+    }
+    for (const tick of ticks) {
+      const xx = x(tick);
+      ctx.fillText(formatTimeTick(tick, range.span), xx - 24, h - 18);
+    }
+    ctx.strokeStyle = "rgba(130,149,180,.3)";
+    ctx.strokeRect(PAD.l, PAD.t, pw, ph);
+    ctx.fillStyle = "rgba(239,247,255,.86)";
+    ctx.font = "13px Segoe UI, Microsoft YaHei UI";
+    ctx.fillText(currentUnit, PAD.l + 6, PAD.t + 16);
+    if (view === "fps" && DATA.fps?.statisticsVersion >= 3) {
+      ctx.fillText("有效监测时间", PAD.l + pw - 100, h - 36);
+      let prior = null;
+      for (const part of DATA.fps.timeMap || []) {
+        if (prior !== null && part.segment !== prior && part.effectiveStart >= range.start && part.effectiveStart <= range.end) {
+          const seam = x(part.effectiveStart);
+          ctx.fillText("⋮", seam - 4, PAD.t + 30);
+        }
+        prior = part.segment;
+      }
+    }
+    if (range.full && range.span < range.full.span * 0.995) {
+      ctx.fillStyle = "rgba(255,216,74,.94)";
+      ctx.fillText(
+        `${formatTimeTick(range.start, range.span)} - ${formatTimeTick(range.end, range.span)}`,
+        PAD.l + 96,
+        PAD.t + 16,
+      );
+    }
+    updateLegend();
+    updateModeStats();
+  }
+  function updateModeStats() {
+    notify();
+    if (!modeStats) return;
+    const label = readMode.value === "trend" ? "趋势易读" : "保留尖峰",
+      range = visibleTimeRange();
+    const raw = lastRenderStats.raw || 0,
+      drawn = lastRenderStats.drawn || 0,
+      buckets = lastRenderStats.buckets || 0,
+      windowText =
+        range.span < range.full.span * 0.995
+          ? `${formatTimeTick(range.start, range.span)}-${formatTimeTick(range.end, range.span)}`
+          : "全范围";
+    modeStats.textContent = `${label} | ${windowText} | 已绘制 ${drawn.toLocaleString()} / 原始 ${raw.toLocaleString()} 点 | 分桶 ${buckets.toLocaleString()}`;
+  }
+  function redraw() {
+    tooltip.style.opacity = 0;
+    draw();
+  }
+
+  function nearestIndex(times, sec) {
+    if (!times.length) return 0;
+    if (sec <= Number(times[0])) return 0;
+    let lo = 0,
+      hi = times.length - 1;
+    if (sec >= Number(times[hi])) return hi;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (Number(times[mid]) < sec) lo = mid;
+      else hi = mid;
+    }
+    return Math.abs(Number(times[lo]) - sec) <=
+      Math.abs(Number(times[hi]) - sec)
+      ? lo
+      : hi;
+  }
+  function sourceRowsForTooltip(idx) {
+    if (view === "cpuVid" && cpuVidMetric === "summary")
+      return ((DATA.cpuOsdVoltage && DATA.cpuOsdVoltage.series) || []).map(
+        (s) => ({ name: s.name, value: (s.data || [])[idx], color: s.color }),
+      );
+    if (view === "cpuCore" && cpuCoreMetric === "summary")
+      return ((DATA.cpuCore && DATA.cpuCore.series) || []).map((s) => ({
+        name: s.name,
+        value: (s.data || [])[idx],
+        color: s.color,
+      }));
+    return currentSeries.map((s) => ({
+      name: s.name,
+      value: s.data[idx],
+      color: s.color,
+    }));
+  }
+  function hover(evt) {
+    const { pw, ph } = chartDims(),
+      rect = chartBox.getBoundingClientRect(),
+      mx = evt.clientX - rect.left,
+      my = evt.clientY - rect.top;
+    if (mx < PAD.l || mx > PAD.l + pw || my < PAD.t || my > PAD.t + ph) {
+      tooltip.style.opacity = 0;
+      clearOverlay();
+      return;
+    }
+    const range = visibleTimeRange(),
+      sec = range.start + ((mx - PAD.l) / pw) * range.span,
+      idx = nearestIndex(currentTimes, sec);
+    clearOverlay();
+    octx.strokeStyle = "rgba(255,255,255,.62)";
+    octx.lineWidth = 1;
+    octx.beginPath();
+    octx.moveTo(mx, PAD.t);
+    octx.lineTo(mx, PAD.t + ph);
+    octx.stroke();
+    let html = `<b>${formatTimeTick(currentTimes[idx], range.span)}</b><br>`;
+    if (view === "fps" && DATA.fps?.statisticsVersion >= 3) {
+      html += `有效监测时间 · 真实时间 ${formatTimeTick(DATA.fps.realT[idx], range.span)}<br>${esc(DATA.fps.sources[idx])}<br>`;
+    }
+    if (view === "fps") {
+      const fps = activeFps(),
+        samples = (fps.samples || [])[idx],
+        bucketMs = Number(fps.bucketMs) || 1000;
+      if (hasStatisticsV2() && fpsFiltering && !DATA.fps.included[idx]) {
+        html += "此采样已排除；实线仅连接前后保留点，不代表区间测量值。";
+      } else {
+        const rows = isSampledFps()
+          ? [
+              {
+                name: "ETW FPS 采样",
+                value: (fps.avg || [])[idx],
+                color: "#009dff",
+              },
+            ]
+          : [
+              {
+                name: "平均 FPS",
+                value: (fps.avg || [])[idx],
+                color: "#009dff",
+              },
+              {
+                name: "1% Low（1秒窗口）",
+                value: (fps.low1 || [])[idx],
+                color: "#dce6f0",
+              },
+              {
+                name: "0.1% Low（1秒窗口）",
+                value: (fps.low01 || [])[idx],
+                color: "#b7c4d2",
+              },
+            ];
+        html += rows
+          .map(
+            (r) =>
+              `<span style='color:${r.color}'>&#9632;</span> ${esc(r.name)}：${n(r.value, 2)} FPS`,
+          )
+          .join("<br>");
+        html += isSampledFps()
+          ? `<br>有效采样数：${samples ?? "无数据"} 次（非帧数）`
+          : `<br>样本数：${samples ?? "无数据"} 帧，bucketMs=${bucketMs} ms`;
+      }
+    } else {
+      let rows = [];
+      if (view === "process") {
+        const q = processSearch.value.trim().toLowerCase(),
+          cacheKey = `${processMetric}|${q}|${idx}|${currentSeries.length}`;
+        if (processHoverCache.has(cacheKey))
+          rows = processHoverCache.get(cacheKey);
+        else {
+          for (const s of currentSeries) {
+            const v = s.data[idx];
+            if (v !== null && Number.isFinite(Number(v)))
+              rows.push({ name: s.name, value: v, color: s.color });
+          }
+          rows.sort((a, b) => Number(b.value) - Number(a.value));
+          rows = rows.slice(0, 26);
+          if (processHoverCache.size > 4000) processHoverCache.clear();
+          processHoverCache.set(cacheKey, rows);
+        }
+      } else
+        rows = sourceRowsForTooltip(idx).filter(
+          (r) => r.value !== null && Number.isFinite(Number(r.value)),
+        );
+      const digits = unitDigits();
+      html += rows
+        .map(
+          (r) =>
+            `<span style='color:${r.color}'>&#9632;</span> ${esc(r.name)}：${n(r.value, digits)} ${currentUnit}`,
+        )
+        .join("<br>");
+    }
+    tooltip.innerHTML = html;
+    const maxLeft = Math.max(8, rect.width - tooltip.offsetWidth - 8);
+    tooltip.style.left = Math.min(maxLeft, Math.max(8, mx + 14)) + "px";
+    tooltip.style.top =
+      Math.max(8, Math.min(rect.height - tooltip.offsetHeight - 8, my + 14)) +
+      "px";
+    tooltip.style.opacity = 1;
+  }
+  function scheduleHover(evt) {
+    pendingHoverEvent = evt;
+    if (hoverFrame) return;
+    hoverFrame = window.requestAnimationFrame(() => {
+      hoverFrame = 0;
+      const e = pendingHoverEvent;
+      pendingHoverEvent = null;
+      if (e) hover(e);
+    });
+  }
+  function plotPoint(evt) {
+    const { pw, ph } = chartDims(),
+      rect = chartBox.getBoundingClientRect(),
+      mx = evt.clientX - rect.left,
+      my = evt.clientY - rect.top;
+    return {
+      mx,
+      my,
+      pw,
+      ph,
+      inside:
+        mx >= PAD.l && mx <= PAD.l + pw && my >= PAD.t && my <= PAD.t + ph,
+    };
+  }
+  function zoomChart(evt) {
+    if (!zoomActive && !evt.ctrlKey) return;
+    const p = plotPoint(evt);
+    if (!p.inside) return;
+    evt.preventDefault();
+    const range = visibleTimeRange(),
+      ratio = (p.mx - PAD.l) / p.pw,
+      focus = range.start + ratio * range.span,
+      full = range.full,
+      minSpan = Math.max(0.5, full.span / 2000),
+      zoom = evt.deltaY < 0 ? 0.78 : 1.28,
+      newSpan = Math.max(minSpan, Math.min(full.span, range.span * zoom)),
+      nextStart = focus - newSpan * ratio;
+    setTimeView(nextStart, nextStart + newSpan);
+    hover(evt);
+  }
+  function startPan(evt) {
+    if (evt.button !== 0) return;
+    const p = plotPoint(evt);
+    if (!p.inside) return;
+    activateZoom(true);
+    chartBox.focus({ preventScroll: true });
+    const range = visibleTimeRange();
+    dragState = {
+      x: evt.clientX,
+      start: range.start,
+      end: range.end,
+      span: range.span,
+      moved: false,
+    };
+    chartBox.classList.add("dragging");
+    tooltip.style.opacity = 0;
+    evt.preventDefault();
+  }
+  function movePan(evt) {
+    if (!plotPoint(evt).inside) activateZoom(false);
+    if (!dragState) {
+      scheduleHover(evt);
+      return;
+    }
+    const { pw } = chartDims();
+    const dx = evt.clientX - dragState.x;
+    if (Math.abs(dx) > 2) dragState.moved = true;
+    const delta = (-dx / pw) * dragState.span;
+    setTimeView(dragState.start + delta, dragState.end + delta);
+  }
+  function endPan() {
+    if (!dragState) return;
+    dragState = null;
+    chartBox.classList.remove("dragging");
+  }
+  async function exportChartPng() {
+    const out = window.document.createElement("canvas");
+    out.width = 3200;
+    out.height = 2000;
+    const c = out.getContext("2d");
+    c.scale(2, 2);
+    c.fillStyle = "#111318";
+    c.fillRect(0, 0, 1600, 1000);
+    c.fillStyle = "#f0f2f5";
+    c.font = "700 28px Segoe UI, Microsoft YaHei UI";
+    c.fillText(
+      DATA.target?.displayName || DATA.target?.processName || "FrameScope",
+      42,
+      50,
+      1516,
+    );
+    c.fillStyle = "#b8c1d1";
+    c.font = "14px Segoe UI, Microsoft YaHei UI";
+    c.fillText(
+      `${viewTitle.textContent} · ${readMode.value === "trend" ? "趋势易读" : "保留尖峰"} · ${DATA.run.durationLabel}`,
+      42,
+      80,
+      1516,
+    );
+    c.fillText(modeStats.textContent || "", 42, 106, 1516);
+    c.fillText(
+      view === "fps" && hasStatisticsV2()
+        ? filterInfo
+        : "原始采样保留；沿用记录时的统计口径",
+      42,
+      130,
+      1516,
+    );
+    const saved = ctx;
+    try {
+      c.save();
+      c.translate(42, 154);
+      ctx = c;
+      exportDims = {
+        w: 1516,
+        h: 804,
+        pw: 1516 - PAD.l - PAD.r,
+        ph: 804 - PAD.t - PAD.b,
+      };
+      renderCache.clear();
+      draw();
+    } finally {
+      c.restore();
+      ctx = saved;
+      exportDims = null;
+      renderCache.clear();
+      draw();
+    }
+    await savePng(
+      out.toDataURL("image/png"),
+      `framescope-${view}-${readMode.value}.png`,
+    );
+  }
+
+  let lastState = "";
+  function notify() {
+    if (disposed) return;
+    const state = {
+      view,
+      metric: metricSelect.value,
+      metrics: metricSelect.options,
+      metricDisabled: metricSelect.disabled,
+      readMode: readMode.value,
+      widthScale: Number(widthScale.value),
+      chartHeight: chartBox.clientHeight,
+      zoomActive,
+      fpsFiltering,
+      fpsFilterAvailable: view === "fps" && hasStatisticsV2(),
+      filterInfo,
+      range: visibleTimeRange(),
+      summary: activeFrameStats(),
+      sampled: isSampledFps(),
+      sampledAverage: DATA.fpsSampleStats?.average,
+    };
+    const key = JSON.stringify(state);
+    if (key !== lastState) {
+      lastState = key;
+      onState(state);
+    }
+  }
+  function chooseMetric(value) {
+    if (!metricSelect.options.some(([key]) => key === value)) return;
+    metricSelect.value = value;
+    if (view === "fps") fpsMetric = value;
+    else if (view === "perf") perfMetric = value;
+    else if (view === "system") systemMetric = value;
+    else if (view === "io") ioMetric = value;
+    else if (view === "cpuCore") cpuCoreMetric = value;
+    else if (view === "cpuVid") cpuVidMetric = value;
+    else if (view === "process") processMetric = value;
+    processHoverCache.clear();
+    legendKey = "";
+    redraw();
+  }
+  let warmTimer = 0;
+  try {
+    if (DATA) {
+      listen(legend, "click", (event) => {
+        const button = event.target.closest("button[data-series]");
+        if (!button) return;
+        const id = button.dataset.series;
+        if (hiddenSeries.has(id)) hiddenSeries.delete(id);
+        else hiddenSeries.add(id);
+        renderCache.clear();
+        button.setAttribute("aria-pressed", String(!hiddenSeries.has(id)));
+        draw();
+      });
+      listen(chartBox, "wheel", zoomChart, { passive: false });
+      listen(chartBox, "mousedown", startPan);
+      listen(chartBox, "mousemove", movePan);
+      listen(window, "mouseup", endPan);
+      listen(chartBox, "mouseleave", () => {
+        activateZoom(false);
+        if (!dragState) {
+          tooltip.style.opacity = 0;
+          clearOverlay();
+        }
+      });
+      listen(window, "resize", () => applyWidth());
+      listen(window, "blur", () => {
+        activateZoom(false);
+        endPan();
+      });
+      listen(window.document, "pointerdown", (event) => {
+        if (!chartBox.contains(event.target)) activateZoom(false);
+      });
+      listen(window.document, "keydown", (event) => {
+        if (event.key === "Escape") activateZoom(false);
+      });
+      listen(chartBox, "keydown", (event) => {
+        if (event.target !== chartBox) return;
+        if (["+", "=", "-", "Subtract", "Add"].includes(event.key)) {
+          event.preventDefault();
+          zoomBy(event.key === "-" || event.key === "Subtract" ? 1.28 : 0.78);
+        }
+      });
+      if (window.ResizeObserver) {
+        resizeObserver = new ResizeObserver(() => {
+          renderCache.clear();
+          processHoverCache.clear();
+          window.cancelAnimationFrame(layoutFrame);
+          layoutFrame = window.requestAnimationFrame(resizeCanvas);
+        });
+        resizeObserver.observe(chartBox);
+        for (const element of document.querySelectorAll(
+          ".report-scroll,.chart-heading,.toolbar,.filter-summary,.chart-footer,.primary-stats",
+        ))
+          resizeObserver.observe(element);
+      }
+      initStatic();
+      setOptions();
+      applyWidth();
+      // Process RLE decoding is deferred until that tab is requested.
+    }
+  } catch (error) {
+    controller.abort();
+    resizeObserver?.disconnect();
+    window.clearTimeout(warmTimer);
+    throw error;
+  }
+  let dprQuery;
+  function watchDpr() {
+    dprQuery?.removeEventListener("change", onDpr);
+    dprQuery = window.matchMedia(
+      `(resolution: ${window.devicePixelRatio}dppx)`,
+    );
+    dprQuery.addEventListener("change", onDpr);
+  }
+  function onDpr() {
+    if (!disposed) {
+      applyWidth();
+      watchDpr();
+    }
+  }
+  watchDpr();
+  return {
+    updateData(part) {
+      Object.assign(DATA, part);
+      filteredFpsCache = null;
+      renderCache.clear(); yMaxCache.clear(); legendKey = "";
+      if (part.process) {
+        processSearchIndex = (DATA.process.names || []).map((name, idx) => ({idx, name: String(name), search: String(name).toLowerCase()}));
+        processTopIndexes = processSearchIndex.slice(0, PROCESS_TOP_N).map(item => item.idx);
+        processPrewarmIndexes = processSearchIndex.slice(0, PROCESS_PREWARM_N).map(item => item.idx);
+        processSeriesCache.clear(); processHoverCache.clear();
+      }
+      initStatic(); setOptions(); redraw();
+    },
+    setView(next) {
+      if (
+        ![
+          "fps",
+          "cpuCore",
+          "cpuVoltage",
+          "cpuVid",
+          "perf",
+          "system",
+          "process",
+          "io",
+        ].includes(next)
+      )
+        return;
+      if (view !== next) {
+        if (view === "fps") {
+          timeViewStart = mapFpsTime(timeViewStart, true); timeViewEnd = mapFpsTime(timeViewEnd, true);
+        } else if (next === "fps") {
+          timeViewStart = mapFpsTime(timeViewStart, false); timeViewEnd = mapFpsTime(timeViewEnd, false);
+        }
+      }
+      view = next;
+      if (view === "process") warmProcessTopSeries();
+      readMode.value = readModes[next] || "spike";
+      zoomActive = false;
+      hiddenSeries.clear();
+      processHoverCache.clear();
+      legendKey = "";
+      setOptions();
+      redraw();
+    },
+    setMetric: chooseMetric,
+    setReadMode(next) {
+      if (!["spike", "trend"].includes(next)) return;
+      readMode.value = next;
+      readModes[view] = next;
+      renderCache.clear();
+      processHoverCache.clear();
+      redraw();
+    },
+    search(value) {
+      processSearch.value = value;
+      scheduleProcessSearchDraw();
+    },
+    setFiltering(enabled) {
+      fpsFiltering = !!enabled;
+      try {
+        if (fpsFilterKey)
+          localStorage.setItem(fpsFilterKey, fpsFiltering ? "1" : "0");
+      } catch {
+        /* Local storage may be unavailable. */
+      }
+      renderCache.clear();
+      yMaxCache.clear();
+      legendKey = "";
+      initStatic();
+      updateFpsFilter();
+      redraw();
+    },
+    setWidth(scale) {
+      widthScale.value = Math.max(1, Math.min(8, Number(scale) || 1));
+      applyWidth();
+    },
+    setHeight(height) {
+      automaticHeight = height == null;
+      chartBox.style.height =
+        height == null ? "" : Math.max(240, Math.min(1000, height)) + "px";
+      resizeCanvas();
+    },
+    fit() {
+      widthScale.value = 1;
+      automaticHeight = true;
+      zoomActive = false;
+      endPan();
+      timeViewStart = null;
+      timeViewEnd = null;
+      processHoverCache.clear();
+      chartScroll.scrollLeft = 0;
+      applyWidth();
+    },
+    reset: resetTimeView,
+    setTimeRange: setTimeView,
+    zoom(factor) {
+      const range = visibleTimeRange(),
+        span = Math.max(
+          Math.max(0.5, range.full.span / 2000),
+          Math.min(range.full.span, range.span * factor),
+        );
+      setTimeView(
+        (range.start + range.end - span) / 2,
+        (range.start + range.end + span) / 2,
+      );
+    },
+    exportPng: exportChartPng,
+    inspect: () => ({
+      view,
+      series: currentSeries,
+      times: currentTimes,
+      summary: activeFrameStats(),
+      metrics: metricSelect.options,
+      metric: metricSelect.value,
+      range: visibleTimeRange(),
+    }),
+    dispose() {
+      disposed = true;
+      controller.abort();
+      resizeObserver?.disconnect();
+      dprQuery?.removeEventListener("change", onDpr);
+      window.clearTimeout(warmTimer);
+      window.cancelAnimationFrame(hoverFrame);
+      window.cancelAnimationFrame(layoutFrame);
+      window.cancelAnimationFrame(processSearchFrame);
+      renderCache.clear();
+      yMaxCache.clear();
+      processHoverCache.clear();
+      processSeriesCache.clear();
+    },
+  };
+}

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
@@ -63,6 +63,7 @@ internal static partial class FrameScopeReportGenerator
         public double? DiskBytesPerSec;
         public double? NetBytesPerSec;
         public double? Gpu;
+        public string GpuUsageSource;
         public double? GpuMem;
         public double? GpuTemp;
         public double? GpuClock;
@@ -71,6 +72,12 @@ internal static partial class FrameScopeReportGenerator
         public double? VramUsedMiB;
         public double? VramTotalMiB;
         public double? Fps;
+        public double? Fps1Low, Fps01Low;
+        public bool FpsIdentityRecorded, FpsValid;
+        public long FpsTargetPid, FpsTargetStartMs, FpsGeneration, FpsWindowStartMs, FpsWindowEndMs, FpsFrameCount;
+        public long RecordingTargetPid, RecordingTargetStartMs;
+        public string FpsSource;
+        public string CpuCoreVoltages, CpuCoreVoltageKind;
     }
 
     private sealed class FrameStatsSummary

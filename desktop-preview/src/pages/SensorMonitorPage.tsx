@@ -1,3 +1,4 @@
+import {searchMatches} from '@/lib/unified-search';
 /**
  * 传感器监控独立窗口页面
  *
@@ -8,31 +9,9 @@
 import { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import {
-  Box,
-  Text,
-  VStack,
-  HStack,
-  Input,
-  InputGroup,
-  InputLeftElement,
-  useColorModeValue,
-  Badge,
-  Spinner,
-  Center,
-  Flex,
-  Heading,
-  Tag,
-  TagLabel,
-  Tooltip,
-  IconButton,
-  Menu,
-  MenuButton,
-  MenuList,
-  MenuItem,
-  Button,
-} from "@chakra-ui/react";
-import { motion, AnimatePresence } from "framer-motion";
+import { Box, Text, VStack, HStack, Input, InputGroup, InputLeftElement, useColorModeValue, Badge, Spinner, Center, Flex, Heading, Tag, TagLabel, IconButton, Menu, MenuButton, MenuItem, Button } from "@chakra-ui/react";
+import { Tooltip } from "@/components/ui/motion-components";
+import { MenuList, Collapse } from "@/components/ui/motion-components";
 import {
   Search, X, Cpu, Monitor, MemoryStick, HardDrive, CircuitBoard,
   Thermometer, Gauge, Fan, Zap, Clock, Activity, RefreshCw, ChevronDown,
@@ -420,24 +399,13 @@ const SensorGroupCard = memo(function SensorGroupCard({ group, collapsed, onTogg
       </HStack>
 
       {/* 可折叠的传感器列表 */}
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div
-            key="sensor-list"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-            style={{ overflow: "hidden" }}
-          >
+      <Collapse in={!collapsed}>
             <Box>
               {group.sensors.map((sensor, i) => (
                 <SensorRow key={`${sensor.name}-${sensor.sensorType}-${i}`} sensor={sensor} />
               ))}
             </Box>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      </Collapse>
     </Box>
   );
 });
@@ -591,7 +559,7 @@ export default function SensorMonitorPage() {
 
     if (search) {
       const q = search.toLowerCase();
-      if (!s.hardware.toLowerCase().includes(q) && !s.name.toLowerCase().includes(q) && !s.sensorType.toLowerCase().includes(q)) {
+      if (!searchMatches(q,[s.name,s.hardware,s.sensorType])) {
         return false;
       }
     }

@@ -33,6 +33,8 @@ export function UpdateSettings(){
       <Progress value={state.total?state.downloaded/state.total*100:0} mt={2}/><Button mt={2} onClick={()=>run("update_cancel")}>取消下载</Button></Box>}
     {state?.releases.map(release=><Box key={release.id} p={4} borderWidth="1px" borderRadius="lg">
       <Text fontWeight="bold">{release.manifest.version} · {release.manifest.channel==="beta"?"测试版":"正式版"}</Text>
+      <Text fontSize="sm" mt={1}>{release.v2?'累计更新':'全量安装'}{(release.component_plan?.download_size??release.manifest.installer?.size)>0?` · 下载 ${((release.component_plan?.download_size??release.manifest.installer.size)/1024/1024).toFixed(1)} MiB`:''}</Text>
+      {release.component_plan&&<Text fontSize="xs" mt={1} opacity={.7}>{release.component_plan.download.length?`需补齐 ${release.component_plan.download.length} 个工具或依赖组件，大小已计入下载量。`:'本机工具和依赖组件已核验，将直接复用。'}</Text>}
       <Text whiteSpace="pre-wrap" fontSize="sm" my={3} maxH="240px" overflowY="auto">{release.notes||"此发行没有更新说明。"}</Text>
       <Button isDisabled={busy} onClick={()=>run(state.ready===release.id?"update_install":"update_download",{release_id:release.id})}>
         {state.ready===release.id?"安装并重启":"下载此版本"}</Button>

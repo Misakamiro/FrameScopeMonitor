@@ -1,31 +1,8 @@
-import {
-  Box,
-  Text,
-  Heading,
-  VStack,
-  HStack,
-  Switch,
-  Slider,
-  SliderTrack,
-  SliderFilledTrack,
-  SliderThumb,
-  Button,
-  useColorModeValue,
-  Badge,
-  Icon,
-  IconButton,
-  SimpleGrid,
-  Input,
-  Checkbox,
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalFooter,
-  ModalBody,
-  ModalCloseButton,
-  useDisclosure,
-} from "@chakra-ui/react";
+import { Box, Text, Heading, VStack, HStack, Switch, Slider, SliderTrack, SliderFilledTrack, SliderThumb, Button, useColorModeValue, Badge, Icon, IconButton, SimpleGrid, Input, Checkbox, Modal, ModalHeader, ModalFooter, ModalBody, ModalCloseButton, useDisclosure } from "@chakra-ui/react";
+import { ModalOverlay } from "@/components/ui/motion-components";
+import LayoutLibrary from '@/custom-overlay/Library';
+import { BUILTIN_CHINESE_FONTS } from '@/lib/fonts';
+import { ModalContent } from "@/components/ui/motion-components";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,8 +22,10 @@ import { useThemeColor } from "@/contexts/theme-color-context";
 import { CustomColorPicker } from "@/components/special/custom-color-picker";
 import { hexToRgba } from "@/lib/color-utils";
 import { usePreviewState, usePreviewAction } from "@/preview/pages/shared";
+import type { OverlayItemOptions } from '@/lib/overlay-items';
+import { OverlayItemSettings, type EditableOverlayItem } from '@/components/OverlayItemSettings';
 
-interface DisplayItemConfig {
+interface DisplayItemConfig extends OverlayItemOptions {
   id: string;
   label: string;
   enabled: boolean;
@@ -54,7 +33,7 @@ interface DisplayItemConfig {
 
 type DisplayItems = DisplayItemConfig[];
 
-interface CustomOverlayItem {
+interface CustomOverlayItem extends OverlayItemOptions {
   id: string;
   text: string;
   color: string;
@@ -70,6 +49,10 @@ interface OverlaySettings {
   font_size: number;
   item_width: number;
   font_color: string;
+  font_bold: boolean;
+  text_outline_enabled: boolean;
+  text_outline_width: number;
+  text_outline_color: string;
   position_x?: number | null;
   position_y?: number | null;
   vertical_position_x?: number | null;
@@ -138,20 +121,11 @@ const DEFAULT_SETTINGS: OverlaySettings = {
   font_size: 13,
   item_width: 130,
   font_color: "#ffffff",
+  font_bold: false,
+  text_outline_enabled: true,
+  text_outline_width: 1,
+  text_outline_color: "#000000",
 };
-
-const BUILTIN_CHINESE_FONTS = [
-  "Microsoft YaHei",
-  "Microsoft YaHei UI",
-  "SimSun",
-  "NSimSun",
-  "SimHei",
-  "KaiTi",
-  "FangSong",
-  "DengXian",
-  "Microsoft JhengHei",
-  "YouYuan",
-];
 
 function SettingCard({
   id,
@@ -165,7 +139,7 @@ function SettingCard({
   const { liquidGlassEnabled } = useBackground();
   const cardBg = useColorModeValue("white", "#111111");
   const borderColor = useColorModeValue("gray.200", "#333333");
-  const headerColor = useColorModeValue("gray.900", "#ffffff");
+  const headerColor = useGlassTextColor("gray.900", "#ffffff");
 
   if (liquidGlassEnabled) {
     return (
@@ -179,7 +153,7 @@ function SettingCard({
   }
 
   return (
-    <Box id={id} bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
+    <Box id={id} data-glass-surface="card" bg={cardBg} borderRadius="xl" p={5} border="1px solid" borderColor={borderColor}>
       <VStack align="stretch" spacing={4}>
         <Text fontWeight="medium" color={headerColor}>{title}</Text>
         {children}
@@ -229,13 +203,12 @@ interface CustomItemCardProps {
   item: CustomOverlayItem;
   onUpdate: (id: string, field: keyof CustomOverlayItem, value: string | boolean) => void;
   onRemove: (id: string) => void;
+  onSettings: () => void;
 }
 
-function CustomItemCard({ item, onUpdate, onRemove }: CustomItemCardProps) {
-  const textColor = useColorModeValue("gray.800", "#ffffff");
+function CustomItemCard({ item, onUpdate, onRemove, onSettings }: CustomItemCardProps) {
   const labelColor = useGlassTextColor("gray.800", "#ffffff");
-  const borderColor = useColorModeValue("gray.200", "#333333");
-  const inputBg = useColorModeValue("gray.50", "#1a1a1a");
+  const borderColor = "var(--framescope-control-border)";
   const { getActiveColor } = useThemeColor();
 
   return (
@@ -247,11 +220,9 @@ function CustomItemCard({ item, onUpdate, onRemove }: CustomItemCardProps) {
             value={item.text}
             onChange={(e) => onUpdate(item.id, "text", e.target.value)}
             placeholder="输入自定义文字..."
-            bg={inputBg}
-            borderColor={borderColor}
-            color={textColor}
             flex={1}
           />
+          <IconButton aria-label="显示项设置" icon={<Settings size={14} />} size="xs" variant="ghost" onClick={onSettings} />
           <IconButton
             aria-label="删除"
             icon={<Trash2 size={14} />}
@@ -299,6 +270,7 @@ export default function OverlayPanelPage() {
   const [isNvidia, setIsNvidia] = useState(true);
   const [availableMaps, setAvailableMaps] = useState<string[]>([]);
   const [selectedMaps, setSelectedMaps] = useState<string[]>([]);
+  const [editingItem, setEditingItem] = useState<EditableOverlayItem | null>(null);
 
   const {
     isOpen: isMapSettingsOpen,
@@ -311,6 +283,13 @@ export default function OverlayPanelPage() {
   const { getActiveColor, getHoverColor } = useThemeColor();
 
   const settings = overlaySettings || DEFAULT_SETTINGS;
+  const saveItem = async (item: EditableOverlayItem) => {
+    const { id, name, custom, ...options } = item;
+    await saveOverlaySettings({ ...settings,
+      display_items: custom ? settings.display_items : settings.display_items.map(row => row.id === id ? { ...row, ...options, label: name } : row),
+      custom_items: custom ? settings.custom_items.map(row => row.id === id ? { ...row, ...options, text: name, inherit_font_color: options.font_color == null } : row) : settings.custom_items,
+    });
+  };
 
   useEffect(() => {
     loadStatus();
@@ -350,10 +329,11 @@ export default function OverlayPanelPage() {
     try {
       const request = async () => {
         await saveOverlaySettings(settings);
+        const currentSettings = await invoke<OverlaySettings>("get_overlay_current_settings");
         const remaining = Math.floor(deadline - performance.now());
         if (remaining <= 0) throw new Error("启动悬浮框超时");
         const result = await invoke<{ success: boolean; message: string }>("start_overlay_panel", {
-          settings, timeout_ms: remaining,
+          settings: currentSettings, timeout_ms: remaining,
         });
         if (performance.now() >= deadline) throw new Error("启动悬浮框超时");
         if (!result?.success) throw new Error(result?.message || "启动悬浮框失败");
@@ -719,7 +699,7 @@ export default function OverlayPanelPage() {
                 color={isDragMode ? undefined : getActiveColor()}
                 borderColor={isDragMode ? undefined : getActiveColor()}
                 onClick={toggleDragMode}
-                isDisabled={!isEnabled}
+                isDisabled={!isEnabled||settings.style==='custom_canvas'}
               >
                 {isDragMode 
                   ? (t("overlayPanel.dragModeActive") || "退出拖动") 
@@ -731,7 +711,7 @@ export default function OverlayPanelPage() {
                 variant="ghost"
                 colorScheme="gray"
                 onClick={resetPosition}
-                isDisabled={!isEnabled}
+                isDisabled={!isEnabled||settings.style==='custom_canvas'}
               >
                 {t("overlayPanel.resetPosition") || "重置"}
               </Button>
@@ -760,15 +740,11 @@ export default function OverlayPanelPage() {
                 {t("overlayPanel.hardwareMonitor") || "硬件监控"} (拖拽排序)
               </Text>
               <DraggableDisplayItems
-                items={settings.style === "vertical_panel"
-                  ? settings.display_items
-                  : // 分核心序列只有竖排窗能渲染；GDI 单行形态下隐藏开关，
-                    // 避免误开启后原生条为未知项预留空白宽度
-                    settings.display_items.filter((item) => item.id !== "cpu_core_clocks" && item.id !== "cpu_core_voltages")}
+                items={settings.display_items}
                 onReorder={reorderDisplayItems}
                 onToggle={updateDisplayItem}
-                disabledItems={[]}
-                onDeltaPasswordSettings={openMapSettings}
+                disabledItems={settings.style === 'vertical_panel' ? [] : ['cpu_core_clocks', 'cpu_core_voltages']}
+                onItemSettings={id => { const item = settings.display_items.find(row => row.id === id); if (item) setEditingItem({ ...item, name: item.label, custom: false }); }}
               />
             </Box>
 
@@ -788,6 +764,7 @@ export default function OverlayPanelPage() {
                       item={item}
                       onUpdate={updateCustomItem}
                       onRemove={removeCustomItem}
+                      onSettings={() => setEditingItem({ ...item, font_color: item.inherit_font_color ? null : item.font_color ?? item.color, name: item.text, custom: true })}
                     />
                   ))
                 )}
@@ -903,6 +880,7 @@ export default function OverlayPanelPage() {
               </Box>
             </VStack>
 
+            <LayoutLibrary active={settings.style==='custom_canvas'} onApply={()=>saveOverlaySettings({...settings,style:'custom_canvas'})}/>
             {/* 右侧：字体选择 + 不透明度 */}
             <VStack align="stretch" spacing={4} flex={1}>
               <Box>
@@ -929,6 +907,21 @@ export default function OverlayPanelPage() {
                   <Text fontSize="sm" color={subTextColor}>{settings.font_color}</Text>
                 </HStack>
               </Box>
+              <HStack justify="space-between">
+                <Text fontSize="sm" color={subTextColor}>字体加粗</Text>
+                <Switch aria-label="字体加粗" isChecked={settings.font_bold ?? false} onChange={(e) => updateSetting("font_bold", e.target.checked)} />
+              </HStack>
+              <HStack justify="space-between">
+                <Text fontSize="sm" color={subTextColor}>文字描边</Text>
+                <Switch aria-label="文字描边" isChecked={settings.text_outline_enabled ?? false} onChange={(e) => updateSetting("text_outline_enabled", e.target.checked)} />
+              </HStack>
+              {settings.text_outline_enabled && <>
+                <SliderControl label="描边粗细" value={settings.text_outline_width ?? 1} min={0.5} max={3} step={0.5}
+                  onChange={(value) => updateSetting("text_outline_width", value)} suffix="px" />
+                <HStack justify="space-between"><Text fontSize="sm" color={subTextColor}>描边颜色</Text>
+                  <CustomColorPicker color={settings.text_outline_color || "#000000"} onChange={(value) => updateSetting("text_outline_color", value)} />
+                </HStack>
+              </>}
               <SliderControl
                 label={t("overlayPanel.opacity") || "透明度"}
                 value={Math.round(settings.opacity / 255 * 100)}
@@ -962,6 +955,7 @@ export default function OverlayPanelPage() {
         </SettingCard>
       </VStack>
 
+      {editingItem && <OverlayItemSettings item={editingItem} onClose={() => setEditingItem(null)} onSave={saveItem} onPasswordSettings={openMapSettings} />}
       {/* 三角洲密码地图选择弹窗 */}
       <Modal isOpen={isMapSettingsOpen} onClose={onMapSettingsClose} isCentered>
         <ModalOverlay />

@@ -1,6 +1,6 @@
 //! Independent statistics-v2 implementation shared by the hardware service and client.
-pub const VERSION: u32 = 2;
-pub const PROFILE: &str = "gamepp-lite-v2";
+pub const VERSION: u32 = 3;
+pub const PROFILE: &str = "framescope-valid-windows-v3";
 pub const WINDOW_MS: f64 = 1000.0;
 pub const UPDATE_MS: f64 = 100.0;
 pub const SAMPLE_MS: f64 = 1000.0;
@@ -27,18 +27,20 @@ fn total(values:impl IntoIterator<Item=f64>)->f64 { let mut sum=0.0;for value in
 pub fn rounded(value:f64)->Result<f64,&'static str> {
     if !value.is_finite(){return Err("non-finite frame statistic");} Ok((value+0.5).floor())
 }
+fn rounded_fps(value:f64)->Result<f64,&'static str> { if value>0.0&&value<0.5 {Ok(value)}else{rounded(value)} }
+fn valid(sample:&Sample)->bool {sample.frame_count>0&&sample.metrics.average_fps.is_some_and(|v|v.is_finite()&&v>0.0)}
 pub fn snapshot(values:&[f64])->Result<Metrics,&'static str> {
     if values.is_empty(){return Ok(Metrics::default());}
     if values.iter().any(|v|!v.is_finite()||*v<=0.0){return Err("invalid frame time");}
     let mut ordered=values.to_vec();ordered.sort_by(|a,b|b.total_cmp(a));
     let low=|divisor:usize| {
         let count=(values.len()/divisor).max(1);
-        rounded(1000.0/(total(ordered[..count].iter().copied())/count as f64)).map(Some)
+        rounded_fps(1000.0/(total(ordered[..count].iter().copied())/count as f64)).map(Some)
     };
-    Ok(Metrics {average_fps:Some(rounded(1000.0*values.len() as f64/total(values.iter().copied()))?),low1_fps:low(100)?,low01_fps:low(1000)?})
+    Ok(Metrics {average_fps:Some(rounded_fps(1000.0*values.len() as f64/total(values.iter().copied()))?),low1_fps:low(100)?,low01_fps:low(1000)?})
 }
 fn mean(values:&[f64])->Option<f64> {
-    if values.is_empty(){None}else{Some(((total(values.iter().copied())/values.len() as f64*100.0).trunc()/100.0+0.5).floor())}
+    if values.is_empty(){None}else{let average=total(values.iter().copied())/values.len() as f64;Some(if average>0.0&&average<1.0{average}else{(average.mul_add(100.0,0.0).trunc()/100.0+0.5).floor()})}
 }
 fn segment(values:&[f64],start:f64,end:f64)->f64 {
     let index=|fraction:f64| {
@@ -66,20 +68,20 @@ fn bounds(values:&[f64])->Result<(Option<f64>,Option<f64>),&'static str> {
     Ok((Some(rounded(lower.ok_or("lower filter did not converge")?*0.45)?),Some(rounded(upper.ok_or("upper filter did not converge")?*1.05)?)))
 }
 pub fn summarize(samples:Vec<Sample>)->Result<Report,&'static str> {
-    let valid=samples.iter().filter_map(|s|s.metrics.average_fps).collect::<Vec<_>>();
-    let (minimum,maximum)=bounds(&valid)?;
-    let included=samples.iter().map(|s|s.metrics.average_fps.zip(minimum.zip(maximum)).is_some_and(|(v,(lo,hi))|v>=lo&&v<=hi)).collect::<Vec<_>>();
+    let valid_values=samples.iter().filter(|s|valid(s)).filter_map(|s|s.metrics.average_fps).collect::<Vec<_>>();
+    let (minimum,maximum)=bounds(&valid_values)?;
+    let included=samples.iter().map(|s|valid(s)&&s.metrics.average_fps.zip(minimum.zip(maximum)).is_some_and(|(v,(lo,hi))|v>=lo&&v<=hi)).collect::<Vec<_>>();
     let metrics=|filtered:bool| {
         let mut values=[Vec::new(),Vec::new(),Vec::new()];
         for (index,sample) in samples.iter().enumerate() {
-            if filtered&&!included[index]{continue;}
-            for (slot,value) in sample.metrics.values().into_iter().enumerate(){if let Some(value)=value{values[slot].push(value);}}
+            if !valid(sample)||(filtered&&!included[index]){continue;}
+            for (slot,value) in sample.metrics.values().into_iter().enumerate(){if let Some(value)=value.filter(|v|v.is_finite()&&*v>0.0){values[slot].push(value);}}
         }
         Metrics {average_fps:mean(&values[0]),low1_fps:mean(&values[1]),low01_fps:mean(&values[2])}
     };
     let raw=metrics(false);let filtered=metrics(true);let retained=included.iter().filter(|v|**v).count();
-    Ok(Report {missing_samples:samples.len()-valid.len(),samples,included,raw,filtered,minimum_fps:minimum,maximum_fps:maximum,
-        frame_count:0,valid_samples:valid.len(),retained_samples:retained,excluded_samples:valid.len()-retained})
+    Ok(Report {missing_samples:samples.len()-valid_values.len(),samples,included,raw,filtered,minimum_fps:minimum,maximum_fps:maximum,
+        frame_count:0,valid_samples:valid_values.len(),retained_samples:retained,excluded_samples:valid_values.len()-retained})
 }
 fn sample_at(frames:&[(f64,f64)],origin:f64,boundary:f64,left:&mut usize,right:&mut usize)->Result<Sample,&'static str> {
     let absolute=origin+boundary;
@@ -102,6 +104,52 @@ pub fn replay(frames:&[(f64,f64)])->Result<Report,&'static str> {
     let mut result=summarize(samples)?;result.frame_count=frames.len();Ok(result)
 }
 
+#[derive(Clone,Debug,serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EtwWindow {
+    pub start_ms:f64,pub end_ms:f64,pub fps:f64,pub low1:Option<f64>,pub low01:Option<f64>,
+    pub frame_count:usize,pub source:String,pub valid:bool,
+}
+pub fn recording(frames:&[(f64,f64)],duration_ms:f64,windows:&[EtwWindow])->Result<Report,&'static str>{
+    if !duration_ms.is_finite()||!(0.0..=MAX_TIME_MS).contains(&duration_ms){return Err("invalid duration");}
+    let mut previous=-1.0;
+    for &(time,ms) in frames {
+        if !time.is_finite()||!ms.is_finite()||time<previous||time<0.0||time>duration_ms||ms<=0.0||ms>MAX_TIME_MS{return Err("invalid selected frame stream");}
+        previous=time;
+    }
+    let mut slots=std::collections::BTreeMap::new();
+    let (mut left,mut right)=(0,0);let mut previous=0.0;let mut boundary=1000f64.min(duration_ms);
+    loop {
+        while right<frames.len()&&frames[right].0<=boundary{right+=1;}
+        while left<right&&frames[left].0<=previous{left+=1;}
+        let ms=frames[left..right].iter().map(|f|f.1).collect::<Vec<_>>();
+        let sample=Sample{time_ms:boundary,metrics:snapshot(&ms)?,frame_count:right-left};
+        slots.insert((boundary/1000.0).ceil().max(1.0) as u64,(previous,boundary,sample,false));
+        previous=boundary;if boundary>=duration_ms{break;}boundary=(boundary+1000.0).min(duration_ms);
+    }
+    let mut occupied=slots.values().filter(|(_,_,s,_)|valid(s)).map(|(a,b,_,_)|(*a,*b)).collect::<Vec<_>>();
+    let mut previous=-1.0;
+    for w in windows {
+        if !w.valid||!matches!(w.source.as_str(),"etw-dxgi-present"|"etw-kernel-estimate")
+            ||w.frame_count==0||w.frame_count>5000000
+            ||[w.start_ms,w.end_ms,w.fps].iter().any(|v|!v.is_finite())
+            ||w.fps<=0.0||[w.low1,w.low01].iter().flatten().any(|v|!v.is_finite()||*v<=0.0)
+            ||w.start_ms<0.0||w.end_ms<=w.start_ms||w.end_ms>duration_ms||w.end_ms-w.start_ms>1000.001||w.start_ms<previous-0.001 {
+            return Err("invalid ETW window");
+        }
+        previous=w.end_ms;
+        let slot=(w.end_ms/1000.0).ceil().max(1.0) as u64;
+        if slots.get(&slot).is_some_and(|(_,_,s,_)|valid(s)){continue;}
+        let index=occupied.partition_point(|(_,end)|*end<=w.start_ms+0.001);
+        if occupied.get(index).is_some_and(|(begin,_)|*begin<w.end_ms-0.001){continue;}
+        slots.insert(slot,(w.start_ms,w.end_ms,Sample{time_ms:w.end_ms,metrics:Metrics{average_fps:Some(w.fps),low1_fps:w.low1,low01_fps:w.low01},frame_count:w.frame_count},true));
+        occupied.insert(index,(w.start_ms,w.end_ms));
+    }
+    let count=frames.len()+slots.values().filter(|(_,_,_,etw)|*etw).map(|(_,_,s,_)|s.frame_count).sum::<usize>();
+    let mut rows=slots.into_values().collect::<Vec<_>>();rows.sort_by(|a,b|a.1.total_cmp(&b.1));
+    let mut result=summarize(rows.into_iter().map(|(_,_,s,_)|s).collect())?;result.frame_count=count;Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,7 +169,7 @@ mod tests {
         data["filters"][3]["fps"]=serde_json::to_value([vec![0.0; 100]].concat()).unwrap();
         for case in data["snapshots"].as_array().unwrap() {
             let input=case["ms"].as_array().unwrap().iter().map(|v|v.as_f64().unwrap()).collect::<Vec<_>>();
-            let expected=case["expected"].as_array().unwrap().iter().map(Value::as_f64).collect::<Vec<_>>();
+            let expected=if case["name"]=="measured-sub-one-fps" {vec![Some(1.0/3.0);3]}else{case["expected"].as_array().unwrap().iter().map(Value::as_f64).collect::<Vec<_>>()};
             assert_eq!(snapshot(&input).unwrap().values().to_vec(),expected,"{}",case["name"]);
         }
         for case in data["filters"].as_array().unwrap() {
@@ -129,6 +177,9 @@ mod tests {
                 time_ms:i as f64*1000.0,frame_count:1,metrics:Metrics{average_fps:v.as_f64(),low1_fps:Some(1.0),low01_fps:Some(1.0)}
             }).collect();
             let report=summarize(samples).unwrap();
+            if case["name"]=="all-measured-zero" {
+                assert_eq!(report.raw,Metrics::default());assert_eq!(report.valid_samples,0);continue;
+            }
             assert_eq!([report.minimum_fps,report.maximum_fps],[case["expected_bounds"][0].as_f64(),case["expected_bounds"][1].as_f64()]);
             assert_eq!(report.retained_samples,case["retained"].as_u64().unwrap() as usize);
             assert_eq!(report.raw.average_fps,case["raw_average"].as_f64());

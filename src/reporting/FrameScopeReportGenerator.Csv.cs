@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -107,32 +107,31 @@ internal static partial class FrameScopeReportGenerator
             }
             if (maxIndex < 0) return values;
 
-            if (line.IndexOf('"') >= 0)
-            {
-                List<string> fields = ParseLine(line);
-                for (int i = 0; i < indexes.Length; i++)
-                {
-                    int index = indexes[i];
-                    if (index >= 0 && index < fields.Count) values[i] = fields[index] ?? "";
-                }
-                return values;
-            }
-
-            int fieldIndex = 0;
-            int start = 0;
+            int fieldIndex = 0, start = 0;
+            bool quoted = false, escaped = false;
             for (int i = 0; i <= line.Length; i++)
             {
-                if (i < line.Length && line[i] != ',') continue;
+                if (i < line.Length && line[i] == '"')
+                {
+                    escaped = true;
+                    if (quoted && i + 1 < line.Length && line[i + 1] == '"') { i++; continue; }
+                    quoted = !quoted;
+                    continue;
+                }
+                if (i < line.Length && (line[i] != ',' || quoted)) continue;
+                string field = null;
                 for (int valueIndex = 0; valueIndex < indexes.Length; valueIndex++)
                 {
-                    if (indexes[valueIndex] == fieldIndex)
+                    if (indexes[valueIndex] != fieldIndex) continue;
+                    if (field == null)
                     {
-                        values[valueIndex] = line.Substring(start, i - start);
+                        string raw = line.Substring(start, i - start);
+                        field = escaped ? ParseLine(raw)[0] : raw;
                     }
+                    values[valueIndex] = field;
                 }
                 if (fieldIndex >= maxIndex) break;
-                fieldIndex++;
-                start = i + 1;
+                fieldIndex++; start = i + 1; escaped = false;
             }
             return values;
         }

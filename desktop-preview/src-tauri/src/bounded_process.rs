@@ -2,7 +2,12 @@
 use std::{io::Read, process::{Command, ExitStatus, Stdio}, time::{Duration, Instant}};
 
 #[cfg(windows)]
-pub fn run(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
+pub fn run(command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
+    run_controlled(command, timeout, None)
+}
+
+#[cfg(windows)]
+pub fn run_controlled(mut command: Command, timeout: Duration, progress: Option<&dyn Fn() -> Result<serde_json::Value, String>>) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
     use std::os::windows::{io::AsRawHandle, process::CommandExt};
     use windows_sys::Win32::{Foundation::*, System::{Diagnostics::ToolHelp::*, JobObjects::*, Pipes::PeekNamedPipe, Threading::*}};
     struct Handle(HANDLE);
@@ -25,24 +30,24 @@ pub fn run(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u
         Ok(false)
     }
     let started = Instant::now();
-    let deadline = started.checked_add(timeout).ok_or("invalid report timeout")?;
+    let mut deadline = started.checked_add(timeout).ok_or("invalid report timeout")?;
     if timeout.is_zero() { return Err("报告生成超时（总期限为零）".into()); }
     // Cleanup is part of the supplied total budget, rather than an additional wait after timeout.
     let cleanup_budget = Duration::from_millis(1000).min(timeout / 4);
-    let work_deadline = deadline - cleanup_budget;
-    struct Job { handle: Handle, deadline: Instant }
+    let mut work_deadline = deadline - cleanup_budget;
+    struct Job { handle: Handle, deadline: std::cell::Cell<Instant> }
     impl Drop for Job {
         fn drop(&mut self) {
             // Early error paths have the same ownership protection as the normal cleanup path.
             unsafe { TerminateJobObject(self.handle.0, 1); }
-            while Instant::now() < self.deadline {
+            while Instant::now() < self.deadline.get() {
                 let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
                 if unsafe { QueryInformationJobObject(self.handle.0, JobObjectBasicAccountingInformation, &mut accounting as *mut _ as _, std::mem::size_of_val(&accounting) as u32, std::ptr::null_mut()) } == 0 || accounting.ActiveProcesses == 0 { break; }
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
     }
-    let job_owner = Job { handle: Handle(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) }), deadline };
+    let job_owner = Job { handle: Handle(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) }), deadline: std::cell::Cell::new(deadline) };
     let job = &job_owner.handle;
     if job.0.is_null() { return Err(error("report job creation failed")); }
     let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
@@ -84,12 +89,28 @@ pub fn run(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u
     let mut err = Vec::new();
     let mut status = None;
     let mut failure = None;
+    let mut observed = serde_json::Value::Null;
+    let mut next_progress = Instant::now();
     loop {
+        if let Some(progress) = progress {
+            if Instant::now() >= next_progress {
+                match progress() {
+                    Ok(value) if value != observed => {
+                        observed = value; deadline = Instant::now() + timeout;
+                        work_deadline = deadline - cleanup_budget; job_owner.deadline.set(deadline);
+                    }
+                    Ok(_) => {},
+                    Err(error) => { failure = Some(error); break; }
+                }
+                next_progress = Instant::now() + Duration::from_millis(150);
+            }
+        }
         if Instant::now() >= work_deadline { failure = Some("报告生成超时（总期限包含子进程清理）".to_string()); break; }
         if let Err(e) = drain(&mut stdout, &mut out).and_then(|_| drain(&mut stderr, &mut err)) { failure = Some(e); break; }
         match child.try_wait() { Ok(Some(exit)) => { status = Some(exit); break; }, Ok(None) => {}, Err(e) => { failure = Some(format!("report process wait failed: {e}")); break; } }
         std::thread::sleep(Duration::from_millis(5));
     }
+    if progress.is_some() { deadline = Instant::now() + Duration::from_secs(10); job_owner.deadline.set(deadline); }
     // Also terminate descendants after normal/nonzero parent exit: inherited pipes must not prolong the operation.
     if unsafe { TerminateJobObject(job.0, 1) } == 0 { return Err(error("report process tree cleanup failed")); }
     let mut out_done = false;
@@ -110,3 +131,6 @@ pub fn run(mut command: Command, timeout: Duration) -> Result<(ExitStatus, Vec<u
 pub fn run(_command: Command, _timeout: Duration) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
     Err("bounded report execution requires Windows".into())
 }
+
+#[cfg(not(windows))]
+pub fn run_controlled(command: Command, timeout: Duration, _progress: Option<&dyn Fn() -> Result<serde_json::Value, String>>) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> { run(command, timeout) }

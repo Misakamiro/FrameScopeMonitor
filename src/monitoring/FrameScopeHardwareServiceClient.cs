@@ -101,11 +101,12 @@ internal static class FrameScopeHardwareServiceClient
                     {"Motherboard",get(get(hardware,"motherboard"),"product")},{"Monitor",get(first(get(hardware,"monitor")),"name")}};
                 snapshot["MemorySummary"]=get(hardware,"memory_summary");
                 snapshot["MemoryDetails"]=get(hardware,"memory_details");
+                snapshot["MemorySpecification"]=get(hardware,"memory_specification");
                 snapshot["MemorySummaryError"]=get(hardware,"memory_summary_error");
                 snapshot["CpuFrequencyInfo"]=get(cpu,"frequency_info");
                 snapshot["HardwareCapturedAt"]=DateTimeOffset.UtcNow.ToString("O");
                 var identities=new List<object>();
-                if(modules!=null) foreach(object module in modules) identities.Add(new Dictionary<string,object>{{"manufacturer",get(module,"manufacturer")},{"capacity_gb",get(module,"capacity_gb")},{"memory_type",get(module,"memory_type")}});
+                if(modules!=null) foreach(object module in modules) identities.Add(new Dictionary<string,object>{{"manufacturer",get(module,"manufacturer")},{"part_number",get(module,"part_number")},{"configured_clock_speed",get(module,"configured_clock_speed")},{"capacity_gb",get(module,"capacity_gb")},{"memory_type",get(module,"memory_type")}});
                 snapshot["MemoryModules"]=identities.ToArray();
                 foreach (var entry in os) snapshot[entry.Key]=entry.Value;
                 lock(capture.Sync) { if (!capture.Frozen && capture.Budget.ElapsedMilliseconds<=5000 && Directory.Exists(runDirectory)) FrameScopeJsonFile.Write(destination,serializer.Serialize(snapshot)); }
@@ -326,10 +327,17 @@ internal sealed class FrameScopeHardwareSampleRecorder
         // Fps is the resident ETW FPS session's value from the same overlay
         // snapshot. It lets the report still build a full FPS series when an
         // anti-cheat denies PresentMon's own ETW trace (Battlefield 6).
-        "Fps", "CpuCoreVoltages", "CpuClockSource", "CpuReferenceMHz", "CpuClockQuality", "CpuCoreClocksMHz"
+        "Fps", "CpuCoreVoltages", "CpuClockSource", "CpuReferenceMHz", "CpuClockQuality", "CpuCoreClocksMHz",
+        "CpuVoltageKind", "CpuVoltageSource", "CpuCoreVoltageKind",
+        "Fps1Low", "Fps01Low", "FpsTargetPid", "FpsTargetStartMs", "FpsTargetGeneration",
+        "FpsWindowStartMs", "FpsWindowEndMs", "FpsFrameCount", "FpsSource", "FpsValid", "FpsStatisticsVersion",
+        "RecordingTargetPid", "RecordingTargetStartMs", "GpuUsageSource"
     };
 
     private readonly string _csvPath;
+    private readonly int _targetPid;
+    private readonly long _targetStartMs;
+    private long _lastFrameWindowEnd;
     private Thread _thread;
     private volatile bool _stop;
 
@@ -343,9 +351,11 @@ internal sealed class FrameScopeHardwareSampleRecorder
     /// <summary>Last recorder error text, if any (empty when healthy).</summary>
     public string LastError { get; private set; }
 
-    public FrameScopeHardwareSampleRecorder(string csvPath)
+    public FrameScopeHardwareSampleRecorder(string csvPath, int targetPid=0, long targetStartMs=0)
     {
         _csvPath = csvPath;
+        _targetPid=targetPid;
+        _targetStartMs=targetStartMs;
         // No C# 6 auto-property initializers on the in-box compiler.
         LastError = "";
     }
@@ -408,6 +418,11 @@ internal sealed class FrameScopeHardwareSampleRecorder
         object rawFrequency;
         var frequency=data.TryGetValue("cpu_frequency_info",out rawFrequency)?rawFrequency as Dictionary<string,object>:null;
         if(frequency==null) frequency=new Dictionary<string,object>();
+        object rawFrames;
+        var frames=data.TryGetValue("frame_snapshot",out rawFrames)?rawFrames as Dictionary<string,object>:null;
+        long now=(DateTime.UtcNow-new DateTime(1970,1,1)).Ticks/TimeSpan.TicksPerMillisecond;
+        bool valid=ValidFrameSnapshot(frames,_targetPid,_targetStartMs,now,_lastFrameWindowEnd);
+        if(valid)_lastFrameWindowEnd=Number(frames,"window_end_ms");
         var values = new[]
         {
             DateTime.Now.ToString("o", CultureInfo.InvariantCulture),
@@ -426,8 +441,13 @@ internal sealed class FrameScopeHardwareSampleRecorder
             Text(data, "memory_usage"),
             Text(data, "ssd_temp"),
             Text(data, "game_ping"),
-            Text(data, "fps"),
-            CoreValues(data,"cpu_core_voltages"), Text(frequency,"source"), Text(frequency,"reference_mhz"), Text(frequency,"quality"), CoreValues(data,"cpu_core_clocks")
+            valid?Text(frames, "fps"):"",
+            CoreValues(data,"cpu_core_voltages"), Text(frequency,"source"), Text(frequency,"reference_mhz"), Text(frequency,"quality"), CoreValues(data,"cpu_core_clocks"),
+            Text(data,"cpu_voltage_kind"), Text(data,"cpu_voltage_source"), Text(data,"cpu_core_voltage_kind"),
+            valid?Text(frames,"fps_1low"):"", valid?Text(frames,"fps_01low"):"",
+            Text(frames,"target_pid"),Text(frames,"target_start_ms"),Text(frames,"target_generation"),
+            Text(frames,"window_start_ms"),Text(frames,"window_end_ms"),Text(frames,"frame_count"),Text(frames,"source"),valid?"true":"false",Text(frames,"statistics_version"),
+            _targetPid.ToString(CultureInfo.InvariantCulture),_targetStartMs.ToString(CultureInfo.InvariantCulture),Text(data,"gpu_usage_source")
         };
         try
         {
@@ -441,6 +461,19 @@ internal sealed class FrameScopeHardwareSampleRecorder
         }
     }
 
+    private static long Number(Dictionary<string,object> data,string key) {
+        long value;return long.TryParse(Text(data,key),NumberStyles.Integer,CultureInfo.InvariantCulture,out value)?value:0;
+    }
+    internal static bool ValidFrameSnapshot(Dictionary<string,object> data,int pid,long start,long now,long lastEnd) {
+        long end=Number(data,"window_end_ms"),begin=Number(data,"window_start_ms");double fps;
+        return pid>0 && start>0 && Text(data,"valid").Equals("true",StringComparison.OrdinalIgnoreCase)
+            && Number(data,"target_pid")==pid && Number(data,"target_start_ms")==start
+            && Number(data,"target_generation")>=0 && Number(data,"frame_count")>0
+            && end>lastEnd && end<=now && now-end<1000 && begin>0 && end-begin==1000
+            && (Text(data,"source")=="etw-dxgi-present"||Text(data,"source")=="etw-kernel-estimate")
+            && double.TryParse(Text(data,"fps"),NumberStyles.Float,CultureInfo.InvariantCulture,out fps)
+            && !double.IsInfinity(fps)&&!double.IsNaN(fps)&&fps>0;
+    }
     private static string Text(Dictionary<string, object> data, string key)
     {
         object value;

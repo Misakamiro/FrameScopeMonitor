@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -54,13 +54,18 @@ internal static partial class FrameScopeReportGenerator
                 HeaderIndex(h, "CpuPct"),
                 HeaderIndex(h, "WorkingSetMB")
             };
+            string lastTimeText = null;
+            DateTime lastTime = DateTime.MinValue;
             string[] row;
             while ((row = table.ReadFields(columns)) != null)
             {
                 string name = row[0].Trim();
                 if (string.IsNullOrEmpty(name)) continue;
-                DateTime t;
-                if (!TryParseDate(row[1], out t)) continue;
+                DateTime t = lastTime;
+                if (row[1] != lastTimeText) {
+                    if (!TryParseDate(row[1], out t)) continue;
+                    lastTimeText = row[1]; lastTime = t;
+                }
                 string sampleIndex = row[2];
                 string normalizedSampleIndex = sampleIndex.Trim();
                 string samplingInstantKey = !string.IsNullOrEmpty(normalizedSampleIndex)

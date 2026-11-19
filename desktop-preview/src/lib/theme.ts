@@ -78,6 +78,11 @@ const theme = extendTheme({
       baseStyle: {
         borderRadius: "lg",
         fontWeight: "medium",
+        '&[aria-pressed="true"]': {
+          bg:'var(--framescope-primary)',color:'var(--framescope-primary-fg)',borderColor:'var(--framescope-primary)',
+          _hover:{bg:'var(--framescope-primary)',color:'var(--framescope-primary-fg)'},
+          _active:{bg:'var(--framescope-primary)',color:'var(--framescope-primary-fg)'},
+        },
         _focusVisible:{outline:'2px solid var(--framescope-primary)',outlineOffset:'2px',boxShadow:'none'},
       },
       variants:{

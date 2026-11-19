@@ -1,16 +1,6 @@
-import {
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalCloseButton,
-  VStack,
-  HStack,
-  Text,
-  Divider,
-  Box,
-} from "@chakra-ui/react";
+import { Modal, ModalHeader, ModalBody, ModalCloseButton, VStack, HStack, Text, Divider, Box } from "@chakra-ui/react";
+import { ModalOverlay } from "@/components/ui/motion-components";
+import { ModalContent } from "@/components/ui/motion-components";
 import { useTranslation } from "react-i18next";
 import type { ElementType } from "react";
 

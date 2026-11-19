@@ -1,6 +1,7 @@
 import { Transition, Variants } from "framer-motion";
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect } from "react";
 import { store } from "@/lib/store";
+import { useMotionPreferences, setMotionPreference } from '@/lib/motion-preferences';
 
 interface AnimatedPageProps {
   children: ReactNode;
@@ -11,7 +12,6 @@ export type TransitionMode = "slide" | "fade" | "off";
 const STORE_KEY = "nexbox_page_transition";
 const OLD_STORAGE_KEY = "nexbox_page_transition_enabled";
 const LS_KEY = "nexbox_page_transition";
-const EVENT_NAME = "page-transition-setting-changed";
 
 export const slideVariants: Variants = {
   initial: { opacity: 0, x: 10 },
@@ -39,6 +39,7 @@ export const fadeTransition: Transition = {
 
 export function getVariants(mode: TransitionMode): Variants {
   switch (mode) {
+    case 'off': return { initial: {}, enter: {}, exit: {} };
     case "fade":
       return fadeVariants;
     case "slide":
@@ -49,6 +50,7 @@ export function getVariants(mode: TransitionMode): Variants {
 
 export function getTransitionConfig(mode: TransitionMode): Transition {
   switch (mode) {
+    case 'off': return { duration: 0 };
     case "fade":
       return fadeTransition;
     case "slide":
@@ -72,40 +74,11 @@ export function readTransitionMode(): TransitionMode {
 }
 
 export function useTransitionMode(): TransitionMode {
-  const [mode, setMode] = useState<TransitionMode>(readTransitionMode);
-
+  const prefs = useMotionPreferences();
   useEffect(() => {
-    let disposed = false;
-    let changed = false;
-    const handler = (event: Event) => {
-      changed = true;
-      const value = (event as CustomEvent<TransitionMode>).detail;
-      if (value === "slide" || value === "fade" || value === "off") {
-        localStorage.setItem(LS_KEY, value);
-        setMode(value);
-      } else {
-        setMode(readTransitionMode());
-      }
-    };
-    window.addEventListener(EVENT_NAME, handler);
-    (async () => {
-      try {
-        const saved = await store.get<string>(STORE_KEY);
-        if (!disposed && !changed && (saved === "slide" || saved === "fade" || saved === "off")) {
-          localStorage.setItem(LS_KEY, saved);
-          setMode(saved);
-        }
-      } catch (error) {
-        console.error("Failed to load page transition setting:", error);
-      }
-    })();
-    return () => {
-      disposed = true;
-      window.removeEventListener(EVENT_NAME, handler);
-    };
+    if (localStorage.getItem(OLD_STORAGE_KEY) !== null) setMotionPreference(STORE_KEY, readTransitionMode());
   }, []);
-
-  return mode;
+  return prefs.reduced ? 'off' : prefs.mode;
 }
 
 export function AnimatedPage({ children }: AnimatedPageProps) {

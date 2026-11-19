@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Text, useColorModeValue } from "@chakra-ui/react";
+import { Box, Text } from "@chakra-ui/react";
 import { useState, useCallback, useRef } from "react";
 import { useThemeColor } from "@/contexts/theme-color-context";
 
@@ -102,8 +102,8 @@ export function HotkeyRecorder({
   const [isRecording, setIsRecording] = useState(false);
   const [displayText, setDisplayText] = useState("");
   const pendingRef = useRef<string[]>([]);
-  const textColor = useColorModeValue("gray.800", "#ffffff");
-  const borderColor = useColorModeValue("gray.200", "#333333");
+  const textColor = "var(--framescope-control-fg)";
+  const borderColor = "var(--framescope-control-border)";
   const { getActiveColor, getHoverColor } = useThemeColor();
   const recordBg = getHoverColor();
   const recordBorder = getActiveColor();
@@ -182,8 +182,9 @@ export function HotkeyRecorder({
       border="2px solid"
       borderColor={isRecording ? recordBorder : borderColor}
       bg={isRecording ? recordBg : "transparent"}
-      transition="all 0.2s"
+      transition="border-color 0.2s, background-color 0.2s"
       _hover={{ borderColor: recordBorder }}
+      _focusVisible={{ outline: `2px solid ${recordBorder}`, outlineOffset: "2px" }}
       outline="none"
       minW="180px"
       textAlign="center"

@@ -1,7 +1,6 @@
 //! Current-user, interactive logon task for the administrator/UIAccess host.
 //! No passwords, service account or machine-wide logon trigger are used.
-use std::{path::Path, process::{Command, Stdio}, time::{Duration, Instant}};
-use std::os::windows::process::CommandExt;
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use winreg::{RegKey, enums::*};
@@ -10,66 +9,120 @@ const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State { pub exists: bool, pub enabled: bool }
 
-fn task_id(exe: &Path) -> String {
+fn normalized_executable_path(exe: &Path) -> String {
     let path = exe.to_string_lossy().replace('/', "\\").to_lowercase();
-    let path = if let Some(unc) = path.strip_prefix(r"\\?\unc\") { format!(r"\\{unc}") }
-        else { path.strip_prefix(r"\\?\").unwrap_or(&path).to_string() };
-    let hash = format!("{:x}", Sha256::digest(path.as_bytes()));
+    if let Some(unc) = path.strip_prefix(r"\\?\unc\") { format!(r"\\{unc}") }
+        else { path.strip_prefix(r"\\?\").unwrap_or(&path).to_string() }
+}
+
+fn task_id(exe: &Path) -> String {
+    let hash = format!("{:x}", Sha256::digest(normalized_executable_path(exe).as_bytes()));
     format!("FrameScope-Logon-{}", &hash[..16])
 }
 
-fn task(exe: &Path, operation: &str) -> Result<State, String> {
-    // Values cross the process boundary as environment data, never script code.
-    let script = r#"
-$ErrorActionPreference='Stop'
-[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
-$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$name=$env:FRAMESCOPE_TASK_ID+'-'+$sid
-$existing=Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $name
-if($existing -and ($existing.Actions.Count -ne 1 -or $existing.Actions[0].Execute -ne $env:FRAMESCOPE_TASK_EXE -or $existing.Actions[0].Arguments -ne '--autostart')){throw 'FrameScope logon task identity mismatch'}
-switch($env:FRAMESCOPE_TASK_OPERATION){
- 'enable' {
-  $action=New-ScheduledTaskAction -Execute $env:FRAMESCOPE_TASK_EXE -Argument '--autostart'
-  $trigger=New-ScheduledTaskTrigger -AtLogOn -User $sid
-  $principal=New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Highest
-  $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([timespan]::Zero) -MultipleInstances IgnoreNew
-  Register-ScheduledTask -TaskPath '\' -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
- }
- 'disable' { if($existing){Unregister-ScheduledTask -InputObject $existing -Confirm:$false} }
- 'restore-disabled' { if($existing){Disable-ScheduledTask -InputObject $existing | Out-Null} }
+fn current_sid() -> windows::core::Result<String> {
+    use windows::Win32::{Foundation::{CloseHandle,HANDLE,HLOCAL,LocalFree},Security::{*,Authorization::ConvertSidToStringSidW},System::Threading::{GetCurrentProcess,OpenProcessToken}};
+    unsafe {
+        let mut token=HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&mut token)?;
+        let result=(|| {
+            let mut needed=0;
+            let _=GetTokenInformation(token,TokenUser,None,0,&mut needed);
+            if needed==0 || needed>65536 {return Err(windows::core::Error::from_win32());}
+            let mut storage=vec![0usize;(needed as usize+std::mem::size_of::<usize>()-1)/std::mem::size_of::<usize>()];
+            GetTokenInformation(token,TokenUser,Some(storage.as_mut_ptr() as _),needed,&mut needed)?;
+            let user=&*(storage.as_ptr() as *const TOKEN_USER);
+            let mut sid=windows::core::PWSTR::null();
+            ConvertSidToStringSidW(user.User.Sid,&mut sid)?;
+            let text=sid.to_string();
+            LocalFree(Some(HLOCAL(sid.0 as _)));
+            text.map_err(|_|windows::core::Error::from_hresult(windows::core::HRESULT(0x80070057u32 as i32)))
+        })();
+        let _=CloseHandle(token);
+        result
+    }
 }
-$t=Get-ScheduledTask -TaskPath '\' | Where-Object TaskName -eq $name
-if($t -and ($t.Actions.Count -ne 1 -or $t.Actions[0].Execute -ne $env:FRAMESCOPE_TASK_EXE -or $t.Actions[0].Arguments -ne '--autostart')){throw 'FrameScope logon task identity mismatch'}
-@{exists=($null -ne $t);enabled=($null -ne $t -and $t.State -ne 'Disabled')} | ConvertTo-Json -Compress
-"#;
-    let root = std::env::temp_dir().join(format!("framescope-logon-{}-{}", std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
-    std::fs::create_dir(&root).map_err(|e| e.to_string())?;
-    let result = (|| {
-        // Files keep PowerShell output bounded without pipe-buffer deadlocks.
-        let output = root.join("out"); let error = root.join("err");
-        let shell = std::env::var_os("SystemRoot").ok_or("SystemRoot missing")?;
-        let mut child = Command::new(Path::new(&shell).join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
-            .env("FRAMESCOPE_TASK_ID", task_id(exe)).env("FRAMESCOPE_TASK_EXE", exe)
-            .env("FRAMESCOPE_TASK_OPERATION", operation).stdin(Stdio::null())
-            .stdout(std::fs::File::create(&output).map_err(|e| e.to_string())?)
-            .stderr(std::fs::File::create(&error).map_err(|e| e.to_string())?)
-            .creation_flags(0x0800_0000).spawn().map_err(|e| e.to_string())?;
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? { break status; }
-            if Instant::now() >= deadline { let _ = child.kill(); let _ = child.wait(); return Err("Windows 自启动任务操作超时".into()); }
-            std::thread::sleep(Duration::from_millis(30));
+
+fn task(exe: &Path, operation: &str) -> Result<State, String> {
+    task_configured(exe, operation, false)
+}
+fn task_configured(exe: &Path, operation: &str, amd: bool) -> Result<State, String> {
+    use windows::{core::{BSTR,Interface},Win32::{Foundation::{VARIANT_FALSE,VARIANT_TRUE,RPC_E_CHANGED_MODE},System::{Com::*,TaskScheduler::*,Variant::VARIANT}}};
+    struct Apartment(bool);
+    impl Drop for Apartment {fn drop(&mut self){if self.0 {unsafe{CoUninitialize();}}}}
+    let result=(|| -> windows::core::Result<State> {unsafe {
+        let initialized=CoInitializeEx(None,COINIT_APARTMENTTHREADED);
+        if initialized.is_err() && initialized!=RPC_E_CHANGED_MODE {initialized.ok()?;}
+        let _apartment=Apartment(initialized.is_ok());
+        let service:ITaskService=CoCreateInstance(&TaskScheduler,None,CLSCTX_INPROC_SERVER)?;
+        let empty=VARIANT::default();
+        service.Connect(&empty,&empty,&empty,&empty)?;
+        let folder=service.GetFolder(&BSTR::from("\\"))?;
+        let sid=current_sid()?;
+        let id=if amd{task_id(exe).replacen("FrameScope-Logon-","FrameScope-Amd-Logon-",1)}else{task_id(exe)};
+        let name=BSTR::from(format!("{id}-{sid}"));
+        let arguments=if amd{"--startup"}else{"--autostart"};
+        let read=|| -> windows::core::Result<Option<IRegisteredTask>> {
+            match folder.GetTask(&name) {
+                Ok(task)=>{
+                    let actions=task.Definition()?.Actions()?;
+                    let mut count=0;actions.Count(&mut count)?;
+                    if count!=1 {return Err(windows::core::Error::new(windows::core::HRESULT(0x8007000du32 as i32),"FrameScope logon task identity mismatch"));}
+                    let action:IExecAction=actions.get_Item(1)?.cast()?;
+                    let mut path=BSTR::new();let mut args=BSTR::new();
+                    action.Path(&mut path)?;action.Arguments(&mut args)?;
+                    if normalized_executable_path(Path::new(&path.to_string())) != normalized_executable_path(exe)
+                        || args.to_string()!=arguments {
+                        return Err(windows::core::Error::new(windows::core::HRESULT(0x8007000du32 as i32),"FrameScope logon task identity mismatch"));
+                    }
+                    Ok(Some(task))
+                },
+                Err(error) if matches!(error.code().0 as u32,0x80070002|0x80070003)=>Ok(None),
+                Err(error)=>Err(error)
+            }
         };
-        if !status.success() { return Err(format!("Windows 自启动任务操作失败：{}", std::fs::read_to_string(error).unwrap_or_default().trim())); }
-        serde_json::from_slice(&std::fs::read(output).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-    })();
-    let _ = std::fs::remove_dir_all(&root);
-    result
+        let existing=read()?;
+        match operation {
+            "enable"=>{
+                if let Some(task)=existing {
+                    if !task.Enabled()?.as_bool(){task.SetEnabled(VARIANT_TRUE)?;}
+                }else{
+                let definition=service.NewTask(0)?;
+                let principal=definition.Principal()?;
+                principal.SetUserId(&BSTR::from(&sid))?;
+                principal.SetLogonType(TASK_LOGON_INTERACTIVE_TOKEN)?;
+                principal.SetRunLevel(TASK_RUNLEVEL_HIGHEST)?;
+                let trigger:ILogonTrigger=definition.Triggers()?.Create(TASK_TRIGGER_LOGON)?.cast()?;
+                trigger.SetUserId(&BSTR::from(&sid))?;
+                let action:IExecAction=definition.Actions()?.Create(TASK_ACTION_EXEC)?.cast()?;
+                action.SetPath(&BSTR::from(exe.to_string_lossy().as_ref()))?;
+                action.SetArguments(&BSTR::from(arguments))?;
+                if let Some(parent)=exe.parent(){action.SetWorkingDirectory(&BSTR::from(parent.to_string_lossy().as_ref()))?;}
+                let settings=definition.Settings()?;
+                settings.SetDisallowStartIfOnBatteries(VARIANT_FALSE)?;
+                settings.SetStopIfGoingOnBatteries(VARIANT_FALSE)?;
+                settings.SetExecutionTimeLimit(&BSTR::from(if amd{"PT2M"}else{"PT0S"}))?;
+                settings.SetMultipleInstances(TASK_INSTANCES_IGNORE_NEW)?;
+                folder.RegisterTaskDefinition(&name,&definition,TASK_CREATE_OR_UPDATE.0,&VARIANT::from(sid.as_str()),&empty,TASK_LOGON_INTERACTIVE_TOKEN,&empty)?;
+                }
+            },
+            "disable"=>{if existing.is_some(){folder.DeleteTask(&name,0)?;}},
+            "restore-disabled"=>{if let Some(task)=existing {task.SetEnabled(VARIANT_FALSE)?;}},
+            "query"=>{},
+            _=>return Err(windows::core::Error::from_hresult(windows::core::HRESULT(0x80070057u32 as i32)))
+        }
+        match read()? {Some(task)=>Ok(State{exists:true,enabled:task.Enabled()?.as_bool()}),None=>Ok(State::default())}
+    }})();
+    result.map_err(|error|format!("Windows 自启动任务操作失败：{error}"))
 }
 
 pub fn state(exe: &Path) -> Result<State, String> { task(exe, "query") }
+pub fn amd_state(exe:&Path)->Result<State,String>{task_configured(exe,"query",true)}
+pub fn amd_set(exe:&Path,enabled:bool)->Result<State,String>{task_configured(exe,if enabled{"enable"}else{"disable"},true)}
+pub fn amd_restore(exe:&Path,state:&State)->Result<(),String>{
+    task_configured(exe,if state.exists{"enable"}else{"disable"},true)?;
+    if state.exists&&!state.enabled{task_configured(exe,"restore-disabled",true)?;}Ok(())
+}
 pub fn legacy_enabled(exe: &Path) -> Result<bool, String> {
     match RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN) {
         Ok(key) => {
@@ -129,5 +182,28 @@ mod tests {
     fn task_scheduler_query_returns_real_state_without_registration() {
         let state = state(&std::env::current_exe().unwrap()).unwrap();
         assert!(!state.exists && !state.enabled);
+    }
+    #[test]
+    #[ignore = "restores the current state of an explicitly selected installed logon task"]
+    fn task_scheduler_restore_preserves_existing_task() {
+        let exe = std::path::PathBuf::from(std::env::var_os("FRAMESCOPE_AUTOSTART_TEST_EXE")
+            .expect("an installed executable with an existing logon task is required"));
+        let before = state(&exe).unwrap();
+        assert!(before.exists, "the selected installation must have an existing logon task");
+        restore(&exe, &before).unwrap();
+        let after = state(&exe).unwrap();
+        assert_eq!((before.exists, before.enabled), (after.exists, after.enabled));
+    }
+    #[test]
+    #[ignore = "reads an explicitly selected installed logon task without registration"]
+    fn task_scheduler_accepts_equivalent_installation_paths_without_registration() {
+        let exe = std::path::PathBuf::from(std::env::var_os("FRAMESCOPE_AUTOSTART_TEST_EXE")
+            .expect("an installed executable with an existing logon task is required"));
+        let ordinary = state(&exe).unwrap();
+        assert!(ordinary.exists, "the selected installation must have an existing logon task");
+        let canonical = state(&exe.canonicalize().unwrap()).unwrap();
+        assert_eq!((ordinary.exists, ordinary.enabled), (canonical.exists, canonical.enabled));
+        let forward = state(Path::new(&exe.to_string_lossy().replace('\\', "/"))).unwrap();
+        assert_eq!((ordinary.exists, ordinary.enabled), (forward.exists, forward.enabled));
     }
 }

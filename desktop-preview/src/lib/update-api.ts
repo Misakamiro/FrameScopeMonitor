@@ -1,7 +1,8 @@
 import { nativeOperation } from "../preview/runtime/platform";
 export interface BuildInfo { version:string; git_sha:string; channel:"stable"|"beta"; edition?:"offline"|"full" }
 export interface UpdatePreferences { startup_check:boolean; include_beta:boolean; accelerated:boolean }
-export interface UpdateRelease {id:number;tag:string;notes:string;manifest:{version:string;channel:string;git_sha:string;installer:{size:number;name:string;sha256:string}}}
+export interface UpdateRelease {id:number;tag:string;notes:string;manifest:{version:string;channel:string;git_sha:string;installer:{size:number;name:string;sha256:string}};
+  v2?:{schema:number};component_plan?:{reuse:string[];download:string[];download_size:number}}
 export interface UpdateSnapshot {
   build:BuildInfo;
   state:{preferences:UpdatePreferences;phase:string;error:string|null;releases:UpdateRelease[];downloaded:number;total:number;ready:number|null;last_checked?:string|null;download_route?:'origin'|'accelerator'|null;bytes_per_second?:number};

@@ -21,6 +21,26 @@ mod clock_regression {
         assert_eq!(data.cpu_clock,Some(5263.0));
         assert_eq!(data.cpu_core_clocks,vec![Some(5250.25),Some(5275.75)]);
     }
+    #[test]
+    fn corrected_frequency_and_provenance_expire_together_without_rescaling() {
+        let now=Instant::now();let ttl=Duration::from_secs(2);
+        let mut old=OverlayData::default();old.cpu_clock=Some(5525.0);old.cpu_core_clocks=vec![Some(5525.0)];
+        old.cpu_frequency_info.current_mhz=old.cpu_clock;
+        old.cpu_frequency_info.per_core_mhz=old.cpu_core_clocks.clone();
+        old.cpu_frequency_info.raw_core_mhz=vec![Some(5200.0)];
+        old.cpu_frequency_info.reference_mhz=Some(106.25);
+        old.cpu_frequency_info.source="lhm-core-clock-reference-corrected".into();
+        old.cpu_frequency_info.quality="reference-corrected-estimate".into();
+        let mut times=HashMap::new();record_observed_fields(&old,now,&mut times);
+        let mut missing=OverlayData::default();missing.cpu_core_clocks=vec![None];
+        merge_overlay_with_ttl(&mut missing,&old,now+Duration::from_secs(1),&times,ttl);
+        assert_eq!(missing.cpu_clock,Some(5525.0));assert_eq!(missing.cpu_frequency_info.quality,"retained");
+        assert_eq!(missing.cpu_frequency_info.raw_core_mhz,vec![Some(5200.0)]);
+        let mut expired=OverlayData::default();expired.cpu_core_clocks=vec![None];
+        merge_overlay_with_ttl(&mut expired,&missing,now+Duration::from_secs(3),&times,ttl);
+        assert_eq!(expired.cpu_clock,None);assert_eq!(expired.cpu_core_clocks,vec![None]);
+        assert_eq!(expired.cpu_frequency_info.current_mhz,None);
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -30,6 +50,7 @@ pub struct GpuSensorData {
     pub hardware_type: String,
     pub temperature: Option<f64>,
     pub usage: Option<f64>,
+    pub usage_source: Option<String>,
     pub fan_speed: Option<f64>,
     pub power: Option<f64>,
     pub clock: Option<f64>,
@@ -49,10 +70,14 @@ pub struct OverlayData {
     pub cpu_clock: Option<f64>,
     pub cpu_frequency_info: crate::cpu_frequency::CpuFrequencyInfo,
     pub cpu_voltage: Option<f64>,
+    pub cpu_voltage_kind: Option<String>,
+    pub cpu_voltage_source: Option<String>,
+    pub cpu_core_voltage_kind: Option<String>,
     pub cpu_power: Option<f64>,
     pub cpu_fan_speed: Option<f64>,
     pub gpu_temp: Option<f64>,
     pub gpu_usage: Option<f64>,
+    pub gpu_usage_source: Option<String>,
     pub gpu_fan_speed: Option<f64>,
     pub gpu_power: Option<f64>,
     pub gpu_clock: Option<f64>,
@@ -134,6 +159,7 @@ fn project_gpu(data: &mut OverlayData) {
     let gpu = data.gpu_sensors.get(data.active_gpu_index);
     data.gpu_temp = gpu.and_then(|g| g.temperature);
     data.gpu_usage = gpu.and_then(|g| g.usage);
+    data.gpu_usage_source = gpu.and_then(|g|g.usage_source.clone());
     data.gpu_fan_speed = gpu.and_then(|g| g.fan_speed);
     data.gpu_power = gpu.and_then(|g| g.power);
     data.gpu_clock = gpu.and_then(|g| g.clock);
@@ -147,6 +173,7 @@ fn project_gpu(data: &mut OverlayData) {
 struct SensorRow<'a> {
     hardware: &'a str,
     identifier: &'a str,
+    sensor_identifier: &'a str,
     hardware_type: &'a str,
     name: &'a str,
     sensor_type: &'a str,
@@ -179,6 +206,7 @@ fn parse_sensors(snapshot: &Value) -> Vec<SensorRow<'_>> {
                     Some(SensorRow {
                         hardware: row.get("hardware").and_then(Value::as_str).unwrap_or(""),
                         identifier: row.get("identifier").and_then(Value::as_str).unwrap_or(""),
+                        sensor_identifier: row.get("sensorIdentifier").and_then(Value::as_str).unwrap_or(""),
                         hardware_type: row.get("hardwareType").and_then(Value::as_str).unwrap_or(""),
                         name: row.get("name").and_then(Value::as_str).unwrap_or(""),
                         sensor_type: row.get("sensorType").and_then(Value::as_str).unwrap_or(""),
@@ -291,9 +319,9 @@ fn collect_core_series(rows: &[SensorRow<'_>], sensor_type: &str, allow_vid: boo
         .filter(|row| {
             contains(row.sensor_type, sensor_type)
                 && contains(row.hardware_type, "cpu")
-                && core_index(row.name, allow_vid).is_some_and(|index| index < MAX_CORES)
+                && (if allow_vid { crate::cpu_frequency::sensor_core_index(row.name,row.identifier,row.sensor_identifier,"voltage") } else { core_index(row.name,false) }).is_some_and(|index| index < MAX_CORES)
         })
-        .map(|row| (core_index(row.name, allow_vid).unwrap_or(0), row.value))
+        .map(|row| ((if allow_vid { crate::cpu_frequency::sensor_core_index(row.name,row.identifier,row.sensor_identifier,"voltage") } else { core_index(row.name,false) }).unwrap_or(0), row.value))
         .collect();
     if indexed.is_empty() {
         return Vec::new();
@@ -334,12 +362,17 @@ pub fn build_overlay_data(
                 .filter(|row| if !identifier.is_empty() { row.identifier.eq_ignore_ascii_case(identifier) } else { row.identifier.is_empty() && row.hardware.eq_ignore_ascii_case(gpu) })
                 .copied()
                 .collect();
+            let load=|name:&str|per_gpu.iter().find(|r|r.sensor_type.eq_ignore_ascii_case("Load")&&r.name.eq_ignore_ascii_case(name))
+                .map(|r|r.value).filter(|v|v.is_finite()&&(0.0..=100.0).contains(v));
+            let (usage,usage_source)=if let Some(v)=load("Windows 3D") {
+                (Some(v),Some("3d".to_string()))
+            }else if let Some(v)=load("GPU Core") {(Some(v),Some("core-fallback".to_string()))}else{(None,None)};
             GpuSensorData {
                 name: (*gpu).to_string(),
                 identifier: (*identifier).to_string(),
                 hardware_type: per_gpu.first().map(|row| row.hardware_type).unwrap_or("").to_string(),
                 temperature: r1(sensor_value(&per_gpu, "Temperature", "", &["GPU Core", "GPU Hot Spot", "GPU"])),
-                usage: r1(sensor_value(&per_gpu, "Load", "", &["GPU Core", "GPU"])),
+                usage: r1(usage),usage_source,
                 fan_speed: sensor_value(&per_gpu, "Fan", "", &["GPU"]).map(|v| v.round()),
                 power: r2(sensor_value(&per_gpu, "Power", "", &["GPU Power", "GPU"])),
                 clock: sensor_value(&per_gpu, "Clock", "", &["GPU Core", "GPU"]).map(|v| v.round()),
@@ -382,7 +415,7 @@ pub fn build_overlay_data(
     }
     let mut cpu_core_voltages = collect_core_series(&rows, "Voltage", true);
     for value in cpu_core_voltages.iter_mut() {
-        *value = r2(*value);
+        *value = r2(value.filter(|v|v.is_finite()&&*v>0.0&&*v<=3.0));
     }
     // AMD exposes a single shared VDDCR voltage domain, so the honest
     // per-core voltage is the measured rail (same value on every core) —
@@ -403,6 +436,19 @@ pub fn build_overlay_data(
         }
     }
 
+    let is_intel=rows.iter().any(|row|contains(row.hardware_type,"cpu")&&(contains(row.hardware,"intel")||row.identifier.starts_with("/intelcpu/")));
+    let measured=board_vcore.or_else(||sensor_value(&rows,"Voltage","cpu",&["Vcore","VBcore","CPU Vcore"]))
+        .filter(|v|v.is_finite()&&*v>0.0&&*v<=3.0);
+    let vids:Vec<f64>=if is_intel{cpu_core_voltages.iter().flatten().copied().collect()}else{Vec::new()};
+    let (cpu_voltage,cpu_voltage_kind,cpu_voltage_source)=if let Some(vcore)=measured{
+        (r2(Some(vcore)),Some("vcore".into()),Some("lhm-measured-vcore".into()))
+    }else if !vids.is_empty(){
+        (r2(Some(vids.iter().sum::<f64>()/vids.len() as f64)),Some("vid-average".into()),Some("lhm-intel-core-vid-average".into()))
+    }else{(None,None,None)};
+    let cpu_core_voltage_kind=if cpu_core_voltages.iter().any(Option::is_some){
+        if is_intel{Some("vid".into())}else if is_amd&&measured.is_some(){Some("shared-vcore".into())}else{None}
+    }else{None};
+
     OverlayData {
         fps: fps.0.map(|v| (v * 10.0).round() / 10.0),
         fps_1low: r1(fps.1),
@@ -412,14 +458,14 @@ pub fn build_overlay_data(
         cpu_clock: cpu_frequency_info.current_mhz,
         cpu_frequency_info,
         cpu_power: r2(dynamic_value(snapshot, "cpuPower")),
-        cpu_voltage: r2(
-            // Prefer the board's measured rail over any LHM VID-derived value
-            // (AMD Zen4 VID scaling reads low, see the per-core note above).
-            board_vcore.or_else(|| sensor_value(&rows, "Voltage", "cpu", &["Vcore", "VBcore", "CPU Vcore"])),
-        ),
+        cpu_voltage,
+        cpu_voltage_kind,
+        cpu_voltage_source,
+        cpu_core_voltage_kind,
         cpu_fan_speed: sensor_value(&rows, "Fan", "", &["CPU"]).map(|v| v.round()),
         gpu_temp: active.and_then(|gpu| gpu.temperature),
         gpu_usage: active.and_then(|gpu| gpu.usage),
+        gpu_usage_source: active.and_then(|gpu|gpu.usage_source.clone()),
         gpu_fan_speed: active.and_then(|gpu| gpu.fan_speed),
         gpu_power: active.and_then(|gpu| gpu.power),
         gpu_clock: active.and_then(|gpu| gpu.clock),
@@ -450,6 +496,10 @@ macro_rules! carry_forward {
 
 /// Carry hardware values forward; FPS nulls explicitly invalidate a stream.
 pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
+    if new.gpu_usage.is_none(){new.gpu_usage_source=old.gpu_usage_source.clone();}
+    let voltage_missing=new.cpu_voltage.is_none();
+    let core_voltage_missing=!new.cpu_core_voltages.iter().any(Option::is_some);
+    let compatible_core_voltage=core_voltage_missing||new.cpu_core_voltage_kind==old.cpu_core_voltage_kind;
     carry_forward!(new.cpu_usage, old.cpu_usage);
     carry_forward!(new.cpu_temp, old.cpu_temp);
     carry_forward!(new.cpu_clock, old.cpu_clock);
@@ -482,15 +532,19 @@ pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
     for (value, old_value) in new.cpu_core_clocks.iter_mut().zip(old.cpu_core_clocks.iter()) {
         carry_forward!(*value, old_value);
     }
-    for (value, old_value) in new.cpu_core_voltages.iter_mut().zip(old.cpu_core_voltages.iter()) {
-        carry_forward!(*value, old_value);
+    if compatible_core_voltage {
+        for (value, old_value) in new.cpu_core_voltages.iter_mut().zip(old.cpu_core_voltages.iter()) {
+            carry_forward!(*value, old_value);
+        }
     }
+    merge_voltage_provenance(new,old,voltage_missing,core_voltage_missing);
     for gpu in new.gpu_sensors.iter_mut() {
         let Some(old_gpu) = old.gpu_sensors.iter().find(|candidate| {
             !gpu.identifier.is_empty() && !candidate.identifier.is_empty() && gpu.identifier.eq_ignore_ascii_case(&candidate.identifier)
                 || gpu.identifier.is_empty() && candidate.identifier.is_empty() && gpu.name.eq_ignore_ascii_case(&candidate.name)
         }) else { continue; };
         carry_forward!(gpu.temperature, old_gpu.temperature);
+        if gpu.usage.is_none(){gpu.usage_source=old_gpu.usage_source.clone();}
         carry_forward!(gpu.usage, old_gpu.usage);
         carry_forward!(gpu.fan_speed, old_gpu.fan_speed);
         carry_forward!(gpu.power, old_gpu.power);
@@ -503,6 +557,8 @@ pub fn merge_overlay(new: &mut OverlayData, old: &OverlayData) {
 }
 
 pub fn clear_hardware_values(data: &mut OverlayData) {
+    data.gpu_usage_source=None;
+    data.cpu_voltage_kind=None; data.cpu_voltage_source=None; data.cpu_core_voltage_kind=None;
     data.cpu_frequency_info.current_mhz=None;
     data.cpu_frequency_info.per_core_mhz.fill(None);
     data.cpu_frequency_info.quality="unavailable".into();
@@ -513,7 +569,7 @@ pub fn clear_hardware_values(data: &mut OverlayData) {
     data.cpu_core_clocks.fill(None);
     data.cpu_core_voltages.fill(None);
     for gpu in &mut data.gpu_sensors {
-        gpu.temperature = None; gpu.usage = None; gpu.fan_speed = None; gpu.power = None;
+        gpu.temperature = None; gpu.usage = None; gpu.usage_source=None; gpu.fan_speed = None; gpu.power = None;
         gpu.clock = None; gpu.voltage = None; gpu.memory_clock = None; gpu.vram_used = None; gpu.vram_total = None;
     }
 }
@@ -535,7 +591,9 @@ pub fn record_observed_fields(data: &OverlayData, now: Instant, times: &mut Hash
 }
 
 pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Instant, times: &HashMap<String, Instant>, ttl: Duration) {
-
+    let voltage_missing=new.cpu_voltage.is_none();
+    let core_voltage_missing=!new.cpu_core_voltages.iter().any(Option::is_some);
+    let compatible_core_voltage=core_voltage_missing||new.cpu_core_voltage_kind==old.cpu_core_voltage_kind;
     macro_rules! carry { ($name:expr, $field:expr, $old:expr) => { if $field.is_none() && times.get($name).map(|t| now.duration_since(*t) <= ttl).unwrap_or(false) { $field = $old; } }; }
     carry!("cpu_usage", new.cpu_usage, old.cpu_usage); carry!("cpu_temp", new.cpu_temp, old.cpu_temp); carry!("cpu_clock", new.cpu_clock, old.cpu_clock);
     carry!("cpu_voltage", new.cpu_voltage, old.cpu_voltage); carry!("cpu_power", new.cpu_power, old.cpu_power); carry!("cpu_fan_speed", new.cpu_fan_speed, old.cpu_fan_speed);
@@ -543,7 +601,9 @@ pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Ins
     if new.cpu_core_clocks.len() < old.cpu_core_clocks.len() { new.cpu_core_clocks.resize(old.cpu_core_clocks.len(), None); }
     if new.cpu_core_voltages.len() < old.cpu_core_voltages.len() { new.cpu_core_voltages.resize(old.cpu_core_voltages.len(), None); }
     for i in 0..new.cpu_core_clocks.len() { carry!(&format!("core_clock:{i}"), new.cpu_core_clocks[i], old.cpu_core_clocks.get(i).cloned().unwrap_or(None)); }
-    for i in 0..new.cpu_core_voltages.len() { carry!(&format!("core_voltage:{i}"), new.cpu_core_voltages[i], old.cpu_core_voltages.get(i).cloned().unwrap_or(None)); }
+    if compatible_core_voltage {
+        for i in 0..new.cpu_core_voltages.len() { carry!(&format!("core_voltage:{i}"), new.cpu_core_voltages[i], old.cpu_core_voltages.get(i).cloned().unwrap_or(None)); }
+    }
     for gpu in &mut new.gpu_sensors {
         let old_gpu = old.gpu_sensors.iter().find(|candidate| {
             (!gpu.identifier.is_empty() && gpu.identifier.eq_ignore_ascii_case(&candidate.identifier)) ||
@@ -551,7 +611,9 @@ pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Ins
         });
         let Some(old_gpu) = old_gpu else { continue; };
         let key = if gpu.identifier.is_empty() { format!("gpu:name:{}", gpu.name.to_ascii_lowercase()) } else { format!("gpu:id:{}", gpu.identifier.to_ascii_lowercase()) };
+        let usage_missing=gpu.usage.is_none();
         carry!(&format!("{key}:temp"), gpu.temperature, old_gpu.temperature); carry!(&format!("{key}:usage"), gpu.usage, old_gpu.usage);
+        if gpu.usage.is_none(){gpu.usage_source=None;}else if usage_missing{gpu.usage_source=old_gpu.usage_source.clone();}
         carry!(&format!("{key}:fan"), gpu.fan_speed, old_gpu.fan_speed); carry!(&format!("{key}:power"), gpu.power, old_gpu.power);
         carry!(&format!("{key}:clock"), gpu.clock, old_gpu.clock); carry!(&format!("{key}:voltage"), gpu.voltage, old_gpu.voltage);
         carry!(&format!("{key}:memclock"), gpu.memory_clock, old_gpu.memory_clock); carry!(&format!("{key}:vramused"), gpu.vram_used, old_gpu.vram_used); carry!(&format!("{key}:vramtotal"), gpu.vram_total, old_gpu.vram_total);
@@ -562,12 +624,37 @@ pub fn merge_overlay_with_ttl(new: &mut OverlayData, old: &OverlayData, now: Ins
     if new.cpu_frequency_info.current_mhz.is_none()&&new.cpu_clock.is_some(){new.cpu_frequency_info=old.cpu_frequency_info.clone();new.cpu_frequency_info.quality="retained".into();}
     new.cpu_frequency_info.current_mhz=new.cpu_clock;
     new.cpu_frequency_info.per_core_mhz=new.cpu_core_clocks.clone();
+    merge_voltage_provenance(new,old,voltage_missing,core_voltage_missing);
+}
+
+fn merge_voltage_provenance(new:&mut OverlayData,old:&OverlayData,voltage_missing:bool,core_voltage_missing:bool){
+    if new.cpu_voltage.is_none(){new.cpu_voltage_kind=None;new.cpu_voltage_source=None;}
+    else if voltage_missing{new.cpu_voltage_kind=old.cpu_voltage_kind.clone();new.cpu_voltage_source=old.cpu_voltage_source.clone();}
+    if !new.cpu_core_voltages.iter().any(Option::is_some){new.cpu_core_voltage_kind=None;}
+    else if core_voltage_missing{new.cpu_core_voltage_kind=old.cpu_core_voltage_kind.clone();}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn gpu_3d_prefers_matching_device_and_expires_with_source() {
+        let sensor=|id:&str,name:&str,value:f64|json!({"hardware":id,"hardwareType":"GpuNvidia","identifier":id,"sensorIdentifier":format!("{id}/load/{name}"),"name":name,"sensorType":"Load","value":value});
+        let snapshot=json!({"sensors":[sensor("gpu0","GPU Core",90.0),sensor("gpu1","Windows 3D",80.0),sensor("gpu0","Windows 3D",30.0)]});
+        let old=build_overlay_data(&snapshot,(None,None,None),None,0);
+        assert_eq!((old.gpu_usage,old.gpu_usage_source.as_deref()),(Some(30.0),Some("3d")));
+        let fallback=build_overlay_data(&json!({"sensors":[sensor("gpu0","Windows 3D",101.0),sensor("gpu0","GPU Core",0.0)]}),(None,None,None),None,0);
+        assert_eq!((fallback.gpu_usage,fallback.gpu_usage_source.as_deref()),(Some(0.0),Some("core-fallback")));
+        let missing=build_overlay_data(&json!({"sensors":[sensor("gpu0","GPU",90.0)]}),(None,None,None),None,0);
+        assert_eq!(missing.gpu_usage,None);assert_eq!(missing.gpu_usage_source,None);
+        let now=Instant::now();let mut times=HashMap::new();record_observed_fields(&old,now,&mut times);
+        let mut fresh=missing.clone();merge_overlay_with_ttl(&mut fresh,&old,now,&times,Duration::from_secs(1));
+        assert_eq!((fresh.gpu_usage,fresh.gpu_usage_source.as_deref()),(Some(30.0),Some("3d")));
+        let mut expired=missing;merge_overlay_with_ttl(&mut expired,&old,now+Duration::from_secs(2),&times,Duration::from_secs(1));
+        assert_eq!((expired.gpu_usage,expired.gpu_usage_source),(None,None));
+    }
 
     #[test]
     fn selection_prefers_dedicated_capacity_and_pins_identity_across_reorder_and_gaps() {

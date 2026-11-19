@@ -12,13 +12,18 @@
 param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$StageOnly,
+    [ValidateSet("Auto","Full","Cumulative")][string]$PackageMode = "Auto",
+    [string]$PreviousComponents,
+    [string]$ComponentOutputDirectory,
     [string]$OutputDirectory,
-    [string]$CandidateHostTransformScript
+    [string]$CandidateHostTransformScript,
+    [switch]$PreserveStaging
 )
 
 $ErrorActionPreference = 'Stop'
+
 if ($OutputDirectory) {
-    & (Join-Path $RepoRoot 'tools\Build-IsolatedInstaller.ps1') -RepoRoot $RepoRoot -OutputDirectory $OutputDirectory -StageOnly:$StageOnly -PackageOnly -CandidateHostTransformScript $CandidateHostTransformScript
+    & (Join-Path $RepoRoot 'tools\Build-IsolatedInstaller.ps1') -RepoRoot $RepoRoot -OutputDirectory $OutputDirectory -StageOnly:$StageOnly -PackageOnly -PackageMode $PackageMode -PreviousComponents $PreviousComponents -ComponentOutputDirectory $ComponentOutputDirectory -CandidateHostTransformScript $CandidateHostTransformScript -PreserveStaging:$PreserveStaging
     return
 }
 if ($CandidateHostTransformScript) {
@@ -32,16 +37,24 @@ $targetDir = Join-Path $previewDir 'src-tauri\target\release'
 $resourcesDir = Join-Path $previewDir 'src-tauri\resources'
 
 Write-Host '== [1/6] Build only; running applications are never stopped =='
-. (Join-Path $RepoRoot 'desktop-preview\installer\pack-payload.ps1') -RepoRoot $RepoRoot -FunctionsOnly
-$inputsBefore = Get-PayloadInputs -Root $RepoRoot
+. (Join-Path $RepoRoot 'desktop-preview\installer\pack-payload.ps1') -RepoRoot $RepoRoot -FunctionsOnly -PackageMode $PackageMode -PreserveStaging:$PreserveStaging
+$PackageMode = Resolve-FrameScopePackageMode -Root $RepoRoot -Mode $PackageMode
+if ($PackageMode -eq 'Cumulative' -and -not $PreviousComponents) { throw 'Cumulative staging requires the previous release update-components.json' }
+if (-not $StageOnly -and $PackageMode -eq 'Cumulative') { throw 'Cumulative packages use the native installer' }
+$inputsBefore = Get-PayloadInputs -Root $RepoRoot -Mode $PackageMode
 
 Write-Host '== [2/6] Building the C# chain and hardware service (build.ps1) =='
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'build.ps1')
+$buildArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $RepoRoot 'build.ps1'), '-SkipLegacyPackages')
+if ($PreserveStaging) { $buildArguments += '-PreserveStaging' }
+& powershell @buildArguments
 if ($LASTEXITCODE -ne 0) { throw "build.ps1 failed with exit code $LASTEXITCODE" }
+
 
 Write-Host '== [3/6] Staging the backend chain into bundle resources =='
 Assert-PayloadPath -Path $resourcesDir -Root $RepoRoot
-if (Test-Path -LiteralPath $resourcesDir) { Remove-Item -LiteralPath $resourcesDir -Recurse -Force }
+if ($PreserveStaging) {
+    Move-PreservedBuildStaging -Path $resourcesDir -Root $RepoRoot | Out-Null
+} elseif (Test-Path -LiteralPath $resourcesDir) { Remove-Item -LiteralPath $resourcesDir -Recurse -Force }
 $backendDir = Join-Path $resourcesDir 'backend'
 $toolsDir = Join-Path $backendDir 'tools'
 $fontsDir = Join-Path $resourcesDir 'fonts'
@@ -89,35 +102,28 @@ foreach ($lic in @('LICENSE', 'LICENSE.EXTRA')) {
         Write-Warning "License file missing: $licPath"
     }
 }
-# PawnIO driver setup: the app resolves dependencies\PawnIO\PawnIO_setup.exe
-# beside the deployed exe; without staging it here neither installer ships it.
-# Third-party exes are not committed - prefer the packaging copy, fall back to
-# the vendored reference tree.
-$pawnIOSources = @(
-    (Join-Path $RepoRoot 'packaging\PawnIO_setup.exe'),
-    (Join-Path $RepoRoot 'reference\nexbox\src-tauri\resources\binaries\PawnIO_setup.exe')
-)
-$pawnIOSetup = $pawnIOSources |
-    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-    Select-Object -First 1
-if ($pawnIOSetup) {
-    $dependenciesDir = Join-Path $resourcesDir 'dependencies\PawnIO'
-    New-Item -ItemType Directory -Path $dependenciesDir -Force | Out-Null
-    Copy-Item -LiteralPath $pawnIOSetup -Destination (Join-Path $dependenciesDir 'PawnIO_setup.exe') -Force
-    Write-Host "Staged PawnIO driver setup from $pawnIOSetup"
-} else {
-    Write-Warning 'PawnIO_setup.exe not found (packaging\ or reference\nexbox\...) - temperature driver install will be unavailable'
-}
 # Capture self-diagnosis script ships in tools\ for installed users.
 $captureDiagnostics = Join-Path $RepoRoot 'tools\diagnostics\diagnose-pubg-capture.ps1'
 if (Test-Path -LiteralPath $captureDiagnostics -PathType Leaf) {
     Copy-Item -LiteralPath $captureDiagnostics -Destination (Join-Path $toolsDir 'diagnose-pubg-capture.ps1') -Force
 }
 Write-Host ("Staged {0} backend files + PresentMon + font + licenses + PawnIO" -f $files.Count)
+if (-not $ComponentOutputDirectory) { $ComponentOutputDirectory = Join-Path $targetDir 'update-components' }
+Assert-PayloadPath -Path $ComponentOutputDirectory -Root $RepoRoot
+$componentArguments = @('-X','utf8',(Join-Path $RepoRoot 'tools/prepare-update-components.py'),'--root',$RepoRoot,
+    '--output',$ComponentOutputDirectory,'--tag',('v'+(Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw).Trim()),
+    '--stage',$resourcesDir,'--kind',$PackageMode.ToLowerInvariant())
+if ($PreviousComponents) { $componentArguments += @('--previous',[IO.Path]::GetFullPath($PreviousComponents)) }
+& python @componentArguments
+if ($LASTEXITCODE -ne 0) { throw 'Update component preparation failed' }
+
 
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'packaging\README-FrameScopeMonitor.txt') -Destination $backendDir -Force
 
 Write-Host '== [4/6] Building the frontend (npm run build) =='
+if ($PreserveStaging) {
+    Move-PreservedBuildStaging -Path (Join-Path $previewDir 'dist') -Root $RepoRoot | Out-Null
+}
 Push-Location $previewDir
 try {
     & npm run build
@@ -128,7 +134,16 @@ Write-Host '== [5/6] Building and verifying the production host =='
 & (Join-Path $RepoRoot 'tools\Verify-IsolatedBuildStage.ps1') -RepoRoot $RepoRoot
 # Cargo checks source freshness even when the final artifact is incremental.
 Push-Location (Join-Path $previewDir 'src-tauri')
+$previousHostConfig = $env:TAURI_CONFIG
 try {
+    if ($PackageMode -eq 'Cumulative') {
+        # The native installer validates and merges components; this host build
+        # does not produce a Tauri bundle containing those omitted files.
+        $hostConfig = if ($previousHostConfig) { $previousHostConfig | ConvertFrom-Json } else { [pscustomobject]@{} }
+        if (-not $hostConfig.bundle) { $hostConfig | Add-Member -NotePropertyName bundle -NotePropertyValue ([pscustomobject]@{}) }
+        $hostConfig.bundle | Add-Member -NotePropertyName resources -NotePropertyValue @() -Force
+        $env:TAURI_CONFIG = $hostConfig | ConvertTo-Json -Depth 40 -Compress
+    }
     $messages = @(& cargo build --release --locked --features tauri/custom-protocol --message-format=json-render-diagnostics)
     if ($LASTEXITCODE -ne 0) { throw 'Host cargo verification failed' }
     $decoded = @($messages | ForEach-Object { $_ | ConvertFrom-Json })
@@ -141,7 +156,7 @@ try {
     })
     if ($artifacts.Count -ne 1) { throw 'Cargo did not identify exactly one main host executable' }
     Copy-VerifiedHost -Source $artifacts[0].executable -Destination (Join-Path $targetDir 'FrameScope.exe')
-} finally { Pop-Location }
+} finally { $env:TAURI_CONFIG = $previousHostConfig; Pop-Location }
 # All host transforms (manifest/signing) must precede this marker and receipt.
 # A later transform invalidates both; this entry deliberately has no refresh bypass.
 Write-HostCapabilities -Root $RepoRoot
@@ -157,12 +172,13 @@ $buildInfo = [ordered]@{version=$version; git_sha=$sha; channel=$(if($version.Co
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'packaging/Restore-FrameScope.cmd') -Destination (Join-Path $backendDir 'Restore-FrameScope.cmd')
 $hostTransform = $null
 if ($CandidateHostTransformScript) { $hostTransform = Invoke-CandidateHostTransform -Root $RepoRoot -Script $CandidateHostTransformScript }
-$inputsAfter = Get-PayloadInputs -Root $RepoRoot
+$inputsAfter = Get-PayloadInputs -Root $RepoRoot -Mode $PackageMode
 if (($inputsBefore | ConvertTo-Json -Depth 5 -Compress) -cne ($inputsAfter | ConvertTo-Json -Depth 5 -Compress)) {
     throw 'Sources changed during build; rebuild before packaging'
 }
-$receipt = [ordered]@{ inputs = @($inputsAfter); files = @(Get-PayloadFiles -Root $RepoRoot); hostTransform = $hostTransform }
+$receipt = [ordered]@{ packageMode = $PackageMode; componentCatalog = (Join-Path $ComponentOutputDirectory "update-components.json"); inputs = @($inputsAfter); files = @(Get-PayloadFiles -Root $RepoRoot); hostTransform = $hostTransform }
 $receipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $targetDir 'payload-build-receipt.json') -Encoding UTF8
+
 if ($StageOnly) {
     Write-Host 'StageOnly: current backend, frontend and host verified; NSIS skipped'
     return

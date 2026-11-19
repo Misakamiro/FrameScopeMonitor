@@ -14,6 +14,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { ResolvedOverlayItem } from '@/lib/overlay-items';
 import {
   Gauge,
   Thermometer,
@@ -55,6 +56,10 @@ interface OverlaySettings {
   font_size: number;
   item_width: number;
   font_color: string;
+  font_bold: boolean;
+  text_outline_enabled: boolean;
+  text_outline_width: number;
+  text_outline_color: string;
   position_x?: number | null;
   position_y?: number | null;
   vertical_position_x?: number | null;
@@ -62,6 +67,7 @@ interface OverlaySettings {
 }
 
 interface HardwareData {
+  resolved_items?: ResolvedOverlayItem[];
   fps: number | null;
   fps_1low: number | null;
   fps_01low: number | null;
@@ -71,10 +77,14 @@ interface HardwareData {
   cpu_temp: number | null;
   cpu_clock: number | null;
   cpu_voltage: number | null;
+  cpu_voltage_kind?: string | null;
+  cpu_voltage_source?: string | null;
+  cpu_core_voltage_kind?: string | null;
   cpu_power: number | null;
   cpu_fan_speed: number | null;
   gpu_temp: number | null;
   gpu_usage: number | null;
+  gpu_usage_source?: string | null;
   gpu_fan_speed: number | null;
   gpu_power: number | null;
   gpu_clock: number | null;
@@ -158,6 +168,10 @@ const DEFAULT_SETTINGS: OverlaySettings = {
   font_size: 13,
   item_width: 220,
   font_color: "#ffffff",
+  font_bold: false,
+  text_outline_enabled: false,
+  text_outline_width: 1,
+  text_outline_color: "#000000",
 };
 
 // ===== 工具函数 =====
@@ -429,6 +443,9 @@ export default function VerticalOverlayPage() {
   return (
     <div
       ref={containerRef}
+      className="vertical-osd-text"
+      data-bold={settings.font_bold ? "true" : "false"}
+      data-outline={settings.text_outline_enabled ? "true" : "false"}
       style={{
         width: `${settings.item_width || 220}px`,
         // 底板只由这行 DOM 控制：透明窗口逐像素透出桌面，0% = alpha 0
@@ -436,7 +453,7 @@ export default function VerticalOverlayPage() {
         // LAYERED/LWA/blur-behind 处理（那会画毛砂底或连文字一起变淡）。
         background: `rgba(17, 17, 17, ${bgOpacity})`,
         borderRadius: "12px",
-        padding: "10px 12px",
+        padding: `${10 + (settings.text_outline_enabled ? settings.text_outline_width : 0)}px ${12 + (settings.text_outline_enabled ? settings.text_outline_width : 0)}px`,
         display: "flex",
         flexDirection: "column",
         gap: "2px",
@@ -446,7 +463,7 @@ export default function VerticalOverlayPage() {
         userSelect: "none",
         WebkitUserSelect: "none",
         // 背景拉到 0% 时只剩文字，多层描边保证亮色背景下仍可读
-        textShadow:
+        textShadow: settings.text_outline_enabled ? "none" :
           "0 1px 3px rgba(0, 0, 0, 0.9), 0 0 5px rgba(0, 0, 0, 0.6), 0 0 1.5px rgba(0, 0, 0, 1)",
         border: "none",
         overflow: "hidden",
@@ -467,6 +484,14 @@ export default function VerticalOverlayPage() {
         stopDrag.current = () => window.removeEventListener("mouseup", handleUp);
       }}
     >
+      <style>{`
+        .vertical-osd-text[data-bold="true"] > .legacy-items span { font-weight: 700 !important; }
+        .vertical-osd-text[data-outline="true"] span {
+          -webkit-text-stroke: ${2 * (settings.text_outline_width || 1)}px ${settings.text_outline_color || "#000000"};
+          paint-order: stroke fill;
+          text-shadow: none;
+        }
+      `}</style>
       {!settingsLoaded ? (
         <div style={{ padding: "1px 0" }} />
       ) : (
@@ -488,6 +513,33 @@ export default function VerticalOverlayPage() {
               检测到独占全屏：OSD 无法显示。建议在游戏内切换为「无边框窗口」模式。
             </div>
           )}
+      {hardwareData?.resolved_items ? hardwareData.resolved_items.map(item => {
+        const IconComp = ITEM_ICONS[item.metric] ?? Gauge;
+        if (item.core_rows?.length) return <div key={item.id} style={{ padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', color: item.color || settings.font_color }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 5, fontSize: item.font_size, fontWeight: item.font_bold ? 700 : 400 }}>
+            <IconComp size={14} style={{ flexShrink: 0 }} /><span>{item.label}</span>
+          </div>
+          <div style={{ paddingLeft: 22, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {item.core_rows.map(row => <div key={row.label} style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+              <span style={{ flex: 1, whiteSpace: 'nowrap', fontSize: item.font_size }}>{row.label}</span>
+              <span style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 6 }}>
+                {row.cells.map((cell, index) => <span key={cell.id} style={{ whiteSpace: 'nowrap', fontSize: cell.font_size, fontWeight: cell.font_bold ? 700 : 400, color: cell.color || settings.font_color }}>
+                  {index > 0 ? '/ ' : ''}{cell.value}
+                </span>)}
+              </span>
+            </div>)}
+          </div>
+        </div>;
+        const values = item.metric === 'delta_password' ? item.value.split(/\s{2,}/).filter(Boolean) : [item.value];
+        return <div key={item.id} style={{ padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', fontSize: item.font_size, fontWeight: item.font_bold ? 700 : 400, color: item.color || settings.font_color }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <IconComp size={14} style={{ flexShrink: 0 }} />
+            {item.label && <span style={{ flex: 1, overflowWrap: 'anywhere' }}>{item.label}</span>}
+            {values.length <= 1 && <span style={{ marginLeft: 'auto', overflowWrap: 'anywhere', color: item.color || getValueColor(item.value, settings.font_color) }}>{item.value}</span>}
+          </div>
+          {values.length > 1 && values.map((value, index) => <div key={index} style={{ paddingLeft: 22, overflowWrap: 'anywhere' }}><span>{value}</span></div>)}
+        </div>;
+      }) : <div className="legacy-items">
       {/* 内置项列表 */}
       {enabledItems.map((item) => {
         const rawValue = getItemValue(item, hardwareData);
@@ -502,7 +554,8 @@ export default function VerticalOverlayPage() {
           if (item.id !== coreHeaderId) return null;
           const rows = coreRows ?? [];
           const HeaderIcon = ITEM_ICONS[coreHeaderId ?? ""] ?? Gauge;
-          const headerLabel = coreHeaderId === "cpu_core_clocks" ? "CPU分核频率" : "CPU分核电压";
+          const voltageLabel = hardwareData?.cpu_core_voltage_kind === "vid" ? "VID" : "电压";
+          const headerLabel = coreHeaderId === "cpu_core_clocks" ? (voltsItem ? `CPU分核频率 / ${voltageLabel}` : "CPU分核频率") : `CPU分核${voltageLabel}`;
           return (
             <div key={item.id} style={{ padding: "3px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: rows.length > 0 ? "5px" : 0 }}>
@@ -585,7 +638,7 @@ export default function VerticalOverlayPage() {
           >
             <IconComp size={14} style={{ flexShrink: 0, color: settings.font_color }} />
             <span style={{ flex: 1, whiteSpace: "nowrap", color: settings.font_color }}>
-              {item.label}
+              {item.id === "cpu_voltage" && hardwareData?.cpu_voltage_kind === "vid-average" ? "CPU平均 VID" : item.id === "gpu_usage" && hardwareData?.gpu_usage_source ? `${item.label} (${hardwareData.gpu_usage_source === "3d" ? "3D" : "Core 回退"})` : item.label}
             </span>
             <span style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap", color: valueColor }}>
               {rawValue}
@@ -616,6 +669,7 @@ export default function VerticalOverlayPage() {
         </div>
       ))}
 
+      </div>}
       {/* 空状态 */}
       {enabledItems.length === 0 && enabledCustomItems.length === 0 && (
         <div style={{ textAlign: "center", padding: "12px 0", color: settings.font_color, opacity: 0.5 }}>

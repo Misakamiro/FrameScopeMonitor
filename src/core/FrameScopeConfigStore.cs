@@ -246,6 +246,8 @@ public static class FrameScopeConfigStore
             {
                 Enabled = editable.Enabled,
                 Name = name ?? processName,
+                PresetId = preserved == null ? editable.PresetId : preserved.PresetId,
+                Category = preserved == null ? editable.Category : preserved.Category,
                 ProcessName = processName,
                 SampleIntervalMs = sampleMs,
                 ProcessSamplingMode = processSamplingMode,
@@ -275,7 +277,9 @@ public static class FrameScopeConfigStore
             OverlayHotkey = existing.OverlayHotkey,
             TrayEnabled = existing.TrayEnabled,
             CpuTelemetry = CloneCpuTelemetry(existing.CpuTelemetry),
-            Targets = targets
+            Targets = targets,
+            GamePresetVersion = existing.GamePresetVersion,
+            DeletedGamePresets = existing.DeletedGamePresets
         };
         Normalize(merged);
         return merged;
@@ -441,6 +445,8 @@ public sealed class FrameScopeConfig
     public bool TrayEnabled { get; set; }
     public FrameScopeCpuTelemetryConfig CpuTelemetry { get; set; }
     public List<FrameScopeTarget> Targets { get; set; }
+    public int GamePresetVersion { get; set; }
+    public List<string> DeletedGamePresets { get; set; }
 }
 
 public sealed class FrameScopeCpuTelemetryConfig
@@ -477,6 +483,8 @@ public sealed class FrameScopeTarget
     public bool Enabled { get; set; }
     public string Name { get; set; }
     public string ProcessName { get; set; }
+    public string PresetId { get; set; }
+    public string Category { get; set; }
     public int SampleIntervalMs { get; set; }
     public string ProcessSamplingMode { get; set; }
     public int ProcessSampleIntervalMs { get; set; }

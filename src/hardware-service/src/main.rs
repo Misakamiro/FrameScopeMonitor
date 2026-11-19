@@ -18,9 +18,18 @@ static LOGGER: StderrLogger = StderrLogger;
 fn main() {
     let _ = log::set_logger(&LOGGER).map(|_| log::set_max_level(log::LevelFilter::Info));
     let args: Vec<String> = std::env::args().collect();
+    let cpu_seconds=match framescope_hardware_service::cpu_diagnostic::parse_seconds(&args) {
+        Ok(value)=>value,Err(error)=>{eprintln!("{error}");std::process::exit(2);}
+    };
     if args.iter().any(|arg|arg=="--hardware-diagnostic") {
         let helper=args.windows(2).find(|pair|pair[0]=="--lhm-helper").map(|pair|pair[1].clone());
         let Some(helper)=helper else{eprintln!("Diagnostic helper required");std::process::exit(2);};
+        if let Some(seconds)=cpu_seconds {
+            let result=framescope_hardware_service::cpu_diagnostic::capture(helper,seconds);
+            let success=result["status"]=="completed";
+            println!("{result}");
+            std::process::exit(if success{0}else{1});
+        }
         println!("{}",framescope_hardware_service::hardware_diagnostic(helper));return;
     }
     // 诊断子命令：--etw-diag [秒] —— 抓取 N 秒 present 事件，按 pid 打事件 ID

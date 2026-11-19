@@ -56,6 +56,7 @@ Thumbs.db
 reference/
 desktop-preview/node_modules/
 desktop-preview/dist/
+desktop-preview/report-dist/
 desktop-preview/src-tauri/target/
 desktop-preview/src-tauri/gen/
 desktop-preview/.vite/

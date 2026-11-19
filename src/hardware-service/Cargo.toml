@@ -21,6 +21,9 @@ sysinfo = "0.30"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Display",
+    "Wdk_Graphics_Direct3D",
     "Win32_Storage_FileSystem",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",

@@ -47,9 +47,7 @@ interface MainLayoutProps {
 
 export function MainLayout({ children }: MainLayoutProps) {
   const bgColor = useColorModeValue("#fafafa", "#0a0a0a");
-  const { backgroundMode, customBgImages, activeBgIndex, dynamicBgVideo, activePresetIndex, presetBackgrounds, backgroundBlur, jellyBounceEnabled, jellyBounceActive, mrColorMode, mrCustomColor } = useBackground();
-  const jellyAllowed=useRef(jellyBounceActive);
-  jellyAllowed.current=jellyBounceActive;
+  const { backgroundMode, customBgImages, activeBgIndex, dynamicBgVideo, activePresetIndex, presetBackgrounds, backgroundBlur, mrColorMode, mrCustomColor } = useBackground();
   const { config } = useThemeColor();
   const navPosition = useNavPosition();
   useEscBack();
@@ -173,38 +171,6 @@ export function MainLayout({ children }: MainLayoutProps) {
     };
   }, [navPosition]);
 
-  // 果冻弹跳效果开关：在 body 上添加/移除 class，供全局 CSS 使用
-  useEffect(() => {
-    if (jellyBounceActive) {
-      document.body.classList.add("jelly-bounce-enabled");
-    } else {
-      document.body.classList.remove("jelly-bounce-enabled");
-      document.body.classList.remove("jelly-bounce-active");
-    }
-    return () => {
-      document.body.classList.remove("jelly-bounce-enabled");
-      document.body.classList.remove("jelly-bounce-active");
-    };
-  }, [jellyBounceActive]);
-
-  // 路由切换时触发果冻弹跳动画：在 body 添加 .jelly-bounce-active，
-  // 所有带 jelly-bounce-* className 的元素会播放动画。动画时长后移除 class。
-  // 这样异步加载的内容（如三角洲改枪码列表）不会在挂载时触发动画，避免布局跳动。
-  useEffect(() => {
-    if (!jellyAllowed.current) return;
-    // 移除再添加以重新触发 CSS animation
-    document.body.classList.remove("jelly-bounce-active");
-    void document.body.offsetWidth; // 强制 reflow
-    document.body.classList.add("jelly-bounce-active");
-    const timer = setTimeout(() => {
-      document.body.classList.remove("jelly-bounce-active");
-    }, 700);
-    return () => {
-      clearTimeout(timer);
-      document.body.classList.remove("jelly-bounce-active");
-    };
-  }, [location.pathname, jellyBounceEnabled]);
-
   const isNavTop = navPosition === "top";
 
   return (
@@ -296,12 +262,13 @@ export function MainLayout({ children }: MainLayoutProps) {
         position="relative"
         zIndex={1}
         ml={isNavTop ? 0 : "96px"}
-        pt={isNavTop ? "120px" : "56px"}
+        pt={isNavTop ? "var(--framescope-top-navigation-bottom, 120px)" : "56px"}
         pb={8}
         transition="margin 0.4s cubic-bezier(0.4, 0, 0.2, 1), padding 0.4s cubic-bezier(0.4, 0, 0.2, 1)"
         px={8} 
         pr="40px" 
         overflowY="auto"
+        data-main-scroll=""
         overflowX="hidden"
         h="calc(100vh)"
         sx={{

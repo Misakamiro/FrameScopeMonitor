@@ -384,9 +384,11 @@ internal static partial class FrameScopeNativeMonitor
                 long aliasQuiescenceStartedMs = -1;
                 // The overlay's own snapshot stream: one hardware-samples.csv row
                 // per second so the report shows exactly what the user saw.
-                var hardwareRecorder = new FrameScopeHardwareSampleRecorder(paths.HardwareSamplesCsv);
-                liveFrameStats = new FrameScopeLiveFrameStats(paths.PresentMonCsv, true);
-                var backupStats = new FrameScopeLiveFrameStats(runtimeBackupCsv, true);
+                var hardwareRecorder = new FrameScopeHardwareSampleRecorder(paths.HardwareSamplesCsv, targetProc.Id,
+                    (targetProc.StartTime.ToUniversalTime()-new DateTime(1970,1,1)).Ticks/TimeSpan.TicksPerMillisecond);
+                long targetStartMs = (targetProc.StartTime.ToUniversalTime()-new DateTime(1970,1,1)).Ticks/TimeSpan.TicksPerMillisecond;
+                liveFrameStats = new FrameScopeLiveFrameStats(paths.PresentMonCsv, true, null, targetProc.Id, targetStartMs);
+                var backupStats = new FrameScopeLiveFrameStats(runtimeBackupCsv, true, null, targetProc.Id, targetStartMs);
                 int runtimeRetries = 0;
                 long runtimeLastStartMs = 0;
                 DateTime runtimeStartedAt = DateTime.Now;
@@ -539,11 +541,11 @@ internal static partial class FrameScopeNativeMonitor
                     var now = DateTime.Now;
                     // Read between publications too, so a bounded parser slice
                     // can catch up without waiting another full second.
-                    liveFrameStats.ReadAvailable();
+                    liveFrameStats.Poll(false);
                     if ((now - lastLiveStats).TotalMilliseconds >= FrameScopeFrameStatistics.UpdateMs) {
                         selectCapture(false);
                         liveFrameStats.Publish(paths.RunDir, Process.GetCurrentProcess().Id,
-                            presentMonExitedEarly || File.Exists(paths.PresentMonCsv + ".capture-error.txt") ? "unavailable" : "capturing", false);
+                            presentMonExitedEarly || File.Exists(paths.PresentMonCsv + ".capture-error.txt") ? "unavailable" : "capturing", false, false);
                         lastLiveStats = now;
                     }
                     if ((now - lastStatusWrite).TotalSeconds >= 10)

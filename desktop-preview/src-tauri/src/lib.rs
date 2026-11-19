@@ -1,6 +1,10 @@
+#[cfg(windows)]
+mod monitor_job;
 mod backend;
 #[path = "../../../src/core/frame_statistics.rs"]
 mod frame_statistics;
+#[path = "../../../src/core/overlay_sensors.rs"]
+mod overlay_sensors;
 mod bounded_process;
 mod host_shutdown;
 mod hardware_service;
@@ -12,6 +16,8 @@ mod window_activity;
 mod startup_diagnostics;
 mod delta_password;
 mod overlay_panel;
+mod overlay_items;
+mod custom_overlay;
 mod overlay_lifecycle;
 mod overlay_runtime;
 mod overlay_diagnostics;
@@ -20,11 +26,17 @@ mod overlay_position;
 mod overlay_display;
 #[cfg(windows)]
 mod vertical_overlay_position;
+#[cfg(windows)]
+mod vertical_overlay_input;
 mod pawnio;
 #[cfg(windows)]
 mod window_icons;
 use serde_json::{json, Value};
 use std::sync::Mutex;
+mod report_data;
+mod report_cache;
+mod report_inspection;
+mod report_window;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 static SHUTDOWN_COMPLETE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -105,33 +117,52 @@ fn install_webview_failure_handler(app:&tauri::AppHandle) {
     });
 }
 
+static EXIT_REQUEST_PENDING:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 fn request_shutdown(app: &tauri::AppHandle) {
-    if !backend::begin_shutdown() { return; }
-    hardware_service::prevent_new_connections();
-    let app = app.clone();
-    std::thread::spawn(move || {
-        let result = backend::shutdown_owned_monitor()
-            .map_err(|error| format!("停止监控和报告收尾失败：{error}"))
-            .and_then(|_| overlay_runtime::request_blocking(app.clone(),overlay_runtime::Action::Stop,overlay_lifecycle::START_BUDGET).map(|_|()).map_err(|error| format!("保存悬浮窗设置或关闭悬浮窗失败：{error}")))
-            .and_then(|_| hardware_service::stop_connected_service().map_err(|error| format!("停止硬件服务失败：{error}")));
-        match result {
-            Ok(_) => {
-                SHUTDOWN_COMPLETE.store(true, std::sync::atomic::Ordering::SeqCst);
-                app.exit(0);
-            }
-            Err(error) => {
-                backend::cancel_shutdown();
-                hardware_service::cancel_shutdown();
-                log::warn!("退出已取消: {error}");
-                let _ = app.emit("app-exit-failed", &error);
-                if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
-                use tauri_plugin_dialog::DialogExt;
-                app.dialog().message(error).title("FrameScope 退出已取消").show(|_| {});
+    use std::sync::atomic::Ordering;
+    if EXIT_REQUEST_PENDING.swap(true,Ordering::SeqCst){return;}
+    let app=app.clone();
+    std::thread::spawn(move||{
+        use tauri_plugin_dialog::{DialogExt,MessageDialogButtons};
+        let active=backend::monitor_status().map(|v|v["running"]==true||v["phase"]=="generating").unwrap_or(true);
+        if active&&!app.dialog().message("软件正在监测或生成游戏报告。退出将先停止记录，保存报告后自动关闭。是否继续？")
+            .title("结束监测并退出").buttons(MessageDialogButtons::OkCancelCustom("停止记录并生成报告".into(),"继续监测".into())).blocking_show(){
+            EXIT_REQUEST_PENDING.store(false,Ordering::SeqCst);return;
+        }
+        if !backend::begin_shutdown(){EXIT_REQUEST_PENDING.store(false,Ordering::SeqCst);return;}
+        if let Some(window)=app.get_webview_window("main"){let _=window.show();}
+        hardware_service::prevent_new_connections();
+        let mut preserve=false;let mut retry=false;
+        let mut last=serde_json::Value::Null;
+        loop {
+            let _=app.emit("app-exit-progress",serde_json::json!({"phase":"stopping","message":"正在停止记录并保存报告…"}));
+            let progress=std::sync::Mutex::new(&mut last);
+            let result=backend::shutdown_monitor_with_progress(preserve,retry,&|value|{
+                    let mut last=progress.lock().unwrap_or_else(|p|p.into_inner());
+                    if **last!=value{**last=value.clone();let _=app.emit("app-exit-progress",value);}
+                })
+                .and_then(|_|overlay_runtime::request_blocking(app.clone(),overlay_runtime::Action::Stop,overlay_lifecycle::START_BUDGET).map(|_|()))
+                .and_then(|_|hardware_service::stop_connected_service().map(|_|()));
+            match result{
+                Ok(())=>{
+                    SHUTDOWN_COMPLETE.store(true,Ordering::SeqCst);
+                    app.exit(0);return;
+                }
+                Err(error)=>{
+                    log::warn!("退出等待处理：{error}");
+                    let _=app.emit("app-exit-progress",serde_json::json!({"phase":"failed","message":error}));
+                    retry=app.dialog().message(format!("{error}\n\n原始监测记录已保留。重试会继续停止监测并生成报告；保留原始数据并退出后，可在下次启动时重新生成报告。"))
+                        .title("报告尚未完成").buttons(MessageDialogButtons::OkCancelCustom("重试".into(),"保留原始数据并退出".into())).blocking_show();
+                    preserve=!retry;
+                }
             }
         }
     });
 }
+
 const COMMANDS: &[&str] = &[
+    
+    "custom_overlay_get", "custom_overlay_save", "custom_overlay_apply", "custom_overlay_copy", "custom_overlay_rename", "custom_overlay_delete", "custom_overlay_displays", "custom_overlay_runtime", "custom_overlay_ready",
     "build_info", "update_status", "update_ready", "update_preferences", "update_check", "update_download", "update_cancel", "update_install", "update_restore",
     "preview_set_hardware", "open_sensor_monitor", "start_overlay_panel", "stop_overlay_panel",
     "toggle_overlay_panel", "get_overlay_panel_status", "update_overlay_settings", "get_overlay_current_settings",
@@ -145,9 +176,39 @@ const COMMANDS: &[&str] = &[
     "clear_hardware_data", "get_system_locale", "get_system_username",
     // Real capture pipeline (FrameScopeMonitor.exe chain, same file contracts
     // as the C# WebView2 bridge).
-    "targets_get", "targets_save", "processes_refresh", "config_save", "config_read", "autostart_get", "autostart_set",
+    "targets_get", "targets_save", "target_select_exe", "processes_refresh", "config_save", "config_read", "autostart_get", "autostart_set",
     "monitor_start", "monitor_stop", "monitor_status",
-    "reports_list", "report_open", "report_open_directory", "report_regenerate", "report_delete",
+    "reports_list", "reports_catalog", "report_open", "report_open_directory", "report_regenerate", "report_delete",
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    "report_data", "report_overview", "report_section", "report_inspection", "report_ready", "report_progress", "report_export_html", "report_save_png", "report_material", "report_appearance_set", 
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     // PawnIO driver detection / install / uninstall.
     "check_pawnio_status", "install_pawnio_driver", "uninstall_pawnio_driver",
     "restart_monitor_process",
@@ -234,6 +295,8 @@ fn create_vertical(app: &tauri::AppHandle, generation:u64, deadline:std::time::I
     let built = builder.build();
     log::info!("UIAccess acceptance: original vertical build {:?}", built.as_ref().map(|window| window.label()));
     let window = built.map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    vertical_overlay_input::register(&window);
     window.on_window_event(move|event|{
         if matches!(event,tauri::WindowEvent::Destroyed)&&overlay_runtime::STATE.closed(generation){VERTICAL_ACTIVE.store(false,std::sync::atomic::Ordering::SeqCst);}
     });
@@ -316,14 +379,17 @@ fn overlay_set_hit_test_transparent(window: &tauri::WebviewWindow, transparent: 
     let (send,receive)=std::sync::mpsc::sync_channel(1);
     let owned=window.clone();
     let deadline=std::time::Instant::now()+overlay_lifecycle::START_BUDGET;
-    window.run_on_main_thread(move||{
+    let generation=vertical_overlay_input::generation();
+    window.with_webview(move|platform|{
         let result=(||{
+            if generation!=vertical_overlay_input::generation(){return Err("竖排鼠标穿透请求已过期".into());}
             if std::time::Instant::now()>=deadline{return Err("竖排鼠标穿透设置已超时".into());}
             // Keep Tao's flags authoritative: show/hide and other state changes
             // regenerate GWL_EXSTYLE and would erase direct SetWindowLong writes.
             owned.set_ignore_cursor_events(transparent).map_err(|e|e.to_string())?;
             owned.set_focusable(!transparent).map_err(|e|e.to_string())?;
             let hwnd=owned.hwnd().map_err(|e|e.to_string())?;
+            vertical_overlay_input::set(&platform.controller(),hwnd.0 as _,transparent)?;
             unsafe {
             if transparent {
                 if SetLayeredWindowAttributes(hwnd.0 as _,0,255,LWA_ALPHA)==0{
@@ -365,11 +431,12 @@ fn stop_windows(app: &tauri::AppHandle) -> Result<(), String> {
         let _ = window.hide();
         window.destroy().map_err(|e| e.to_string())
     }else{Ok(())};
-    saved?;gdi?;vertical?;
+    let custom=custom_overlay::stop(app);
+    saved?;gdi?;vertical?;custom?;
     Ok(())
 }
 fn active(app: &tauri::AppHandle) -> bool {
-    overlay_panel::is_overlay_active() || (VERTICAL_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
+    (custom_overlay::ACTIVE.load(std::sync::atomic::Ordering::SeqCst)&&app.get_webview_window("custom-overlay").is_some()) || overlay_panel::is_overlay_active() || (VERTICAL_ACTIVE.load(std::sync::atomic::Ordering::SeqCst)
         && app.get_webview_window("vertical-overlay").map(|window| window.is_visible().unwrap_or(false)).unwrap_or(false))
 }
 fn save_native_settings(app: &tauri::AppHandle) -> Result<(), String> {
@@ -382,6 +449,7 @@ fn save_native_settings(app: &tauri::AppHandle) -> Result<(), String> {
 
 fn settings_with_native_positions(mut settings: overlay_panel::OverlaySettings,
     current: &overlay_panel::OverlaySettings) -> overlay_panel::OverlaySettings {
+    settings.preserve_outline_styles(current);
     settings.vertical_position_x = current.vertical_position_x;
     settings.vertical_position_y = current.vertical_position_y;
     settings.position_x = current.position_x;
@@ -391,7 +459,20 @@ fn settings_with_native_positions(mut settings: overlay_panel::OverlaySettings,
     settings
 }
 fn validate_overlay_settings(settings:&overlay_panel::OverlaySettings)->Result<(),String>{
-    if settings.font_size<8||settings.font_size>72||settings.item_width<30||settings.item_width>1000{return Err("Overlay size outside preview limits".into());}Ok(())
+    if settings.display_items.len()+settings.custom_items.len()>128{return Err("显示项最多 128 个".into());}
+    let mut ids=std::collections::HashSet::new();
+    for item in &settings.display_items {
+        if item.label.chars().count()>80||!ids.insert(&item.id){return Err("显示项名称过长或 ID 重复".into());}
+        overlay_items::validate(&item.options,&item.id,false)?;
+    }
+    for item in &settings.custom_items {
+        if item.text.chars().count()>160||!ids.insert(&item.id){return Err("自定义内容过长或 ID 重复".into());}
+        overlay_items::validate(&item.options,item.options.metric.as_deref().unwrap_or(""),true)?;
+    }
+    if settings.font_size<8||settings.font_size>72||settings.item_width<30||settings.item_width>1000{return Err("Overlay size outside preview limits".into());}
+    if !settings.text_outline_width.is_finite()||!(0.5..=3.0).contains(&settings.text_outline_width){return Err("Text outline width must be between 0.5 and 3 pixels".into());}
+    let color=settings.text_outline_color.as_bytes();
+    if color.len()!=7||color[0]!=b'#'||!color[1..].iter().all(u8::is_ascii_hexdigit){return Err("Text outline color must use #RRGGBB".into());}Ok(())
 }
 
 fn record_vertical_position(position: tauri::PhysicalPosition<i32>, reference: overlay_position::PositionReference) {
@@ -511,6 +592,17 @@ where FRegister: FnMut(&str) -> Result<(), String>, FUnregister: FnMut(&str) -> 
 // instead of freezing the window's message pump.
 #[tauri::command]
 async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, command: String, args: Value) -> Result<Value, String> {
+    if window.label()=="custom-overlay"&&!matches!(command.as_str(),"custom_overlay_runtime"|"custom_overlay_ready") {
+        return Err("自定义悬浮窗仅允许读取运行布局和报告就绪".into());
+    }
+    if window.label().starts_with("report-") {
+        if !matches!(command.as_str(),"report_data"|"report_overview"|"report_section"|"report_inspection"|"report_ready"|"report_progress"|"report_export_html"|"report_save_png"|"report_regenerate"|"report_open_directory"|"report_material"|"report_appearance_set"|) {
+            return Err("报告窗口不允许此操作".into());
+        }
+        if args["id"].as_str().map(|id|format!("report-{id}"))!=Some(window.label().to_owned()) {
+            return Err("报告窗口与记录不匹配".into());
+        }
+    }
     #[cfg(feature = "uiaccess-acceptance")]
     if command == "uiaccess_acceptance_gdi" { return Ok(overlay_panel::render_diagnostics()); }
     if command == "uiaccess_acceptance_window" && cfg!(feature = "uiaccess-acceptance") {
@@ -567,6 +659,12 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
     if command == "build_info" || command.starts_with("update_") && command != "update_overlay_settings" {
         return updater::command(app,command,args).await;
     }
+    if matches!(command.as_str(),"report_data"|"report_overview"|"report_section"|"report_inspection"|"report_ready"|"report_progress"|"report_export_html"|"report_save_png"|"report_material"|"report_appearance_set") {
+        return report_window::command(app,window,command,args).await;
+    }
+    if window.label().starts_with("report-") && !matches!(command.as_str(),"report_regenerate"|"report_open_directory") {
+        return Err("报告窗口不允许此操作".into());
+    }
     // Creating a webview window from inside the command handler deadlocks the main
     // thread (WebView2 controller init needs the message pump that is currently
     // blocked in this handler). All window-creating flows therefore run on a worker
@@ -576,6 +674,22 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
         std::thread::spawn(move || job(&app));
     }
     match command.as_str() {
+        "custom_overlay_ready"=>{
+            if window.label()!="custom-overlay"{return Err("就绪消息必须来自自定义悬浮窗".into());}
+            let id=args["generation"].as_u64().ok_or("缺少窗口操作代号")?;
+            overlay_runtime::STATE.layout(id)?;
+            overlay_runtime::STATE.ready(id,args["error"].as_str().map(str::to_owned))?;return Ok(Value::Null);
+        },
+        "custom_overlay_runtime"=>{
+            if window.label()!="custom-overlay"{return Err("运行布局仅供自定义悬浮窗读取".into());}
+            let id=args["generation"].as_u64().ok_or("缺少窗口操作代号")?;
+            if !overlay_runtime::STATE.live(id){return Err("自定义悬浮窗操作已失效".into());}
+            return tauri::async_runtime::spawn_blocking(move||custom_overlay::runtime(&app)).await.map_err(|e|e.to_string())?;
+        },
+        command_name if command_name.starts_with("custom_overlay_")=>{
+            if window.label()!="main"{return Err("编辑布局仅允许主窗口调用".into());}
+            return tauri::async_runtime::spawn_blocking(move||custom_overlay::command(&app,&command,&args)).await.map_err(|e|e.to_string())?;
+        },
         // ---- Real hardware data (FrameScopeHardwareService named pipe) ----
         "get_hardware" | "get_hardware_info" => {
             let response = hardware_service::call("get_static_hardware", json!({}))?;
@@ -600,7 +714,7 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
                 "pawnIo": response["pawnIo"],
             }));
         }
-        "get_overlay_hardware_data" => return hardware_service::call("get_overlay_data", json!({})).map(backend::apply_report_lows),
+        "get_overlay_hardware_data" => return Ok(overlay_runtime::latest_raw()),
         "get_memory_status" => return hardware_service::call("get_memory_status", json!({})),
         "get_disk_status" => return hardware_service::call("get_disk_status", json!({})),
         "is_nvidia_gpu" => {
@@ -619,6 +733,13 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
         "get_system_username" => return Ok(json!(std::env::var("USERNAME").unwrap_or_default())),
         // ---- Real capture pipeline ----
         "targets_get" => return backend::targets_payload("loaded"),
+        "target_select_exe" => {
+            backend::ensure_target_edit_allowed()?;
+            use tauri_plugin_dialog::DialogExt;
+            let Some(file)=app.dialog().file().add_filter("游戏程序", &["exe"]).blocking_pick_file() else {return Ok(json!({"cancelled":true}));};
+            backend::ensure_target_edit_allowed()?;
+            return game_presets::inspect_executable(&file.into_path().map_err(|e|e.to_string())?);
+        }
         "targets_save" => {
             let targets = args["targets"].as_array().ok_or("targets array required")?;
             return backend::targets_save(targets);
@@ -632,14 +753,20 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
         }
         "monitor_stop" => return backend::monitor_stop(),
         "monitor_status" => return backend::monitor_status(),
-        "reports_list" => return backend::reports_list(),
+        "reports_list" => return backend::reports_list_query(&args),
+        "reports_catalog" => return backend::reports_catalog(),
         "report_delete" => {
             let id = args["id"].as_str().ok_or("id required")?.to_string();
-            return std::thread::spawn(move || backend::report_delete(&id)).join().map_err(|_| "report delete worker failed".to_string())?;
+            let removed=id.clone();
+            let result=tauri::async_runtime::spawn_blocking(move || backend::report_delete(&id)).await.map_err(|e|e.to_string())??;
+            report_window::invalidate(&removed);
+            let _=app.emit("report-changed",json!({"id":removed,"kind":"deleted"}));
+            return Ok(result);
         }
         "report_open" => {
             let id = args["id"].as_str().ok_or("id required")?;
-            return backend::report_open(id);
+            let id=id.to_owned();
+            return tauri::async_runtime::spawn_blocking(move||report_window::open(&app,&id,None)).await.map_err(|e|e.to_string())?;
         }
         "report_open_directory" => {
             let id = args["id"].as_str().ok_or("id required")?;
@@ -650,11 +777,11 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
             // Long-running (generator can take a while); run on a worker
             // thread so the webview IPC is not stalled.
             let id = id.to_string();
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = sender.send(backend::report_regenerate(&id));
-            });
-            return receiver.recv().map_err(|_| "report generation worker died".to_string())?;
+            let changed=id.clone();
+            let result=tauri::async_runtime::spawn_blocking(move||backend::report_regenerate(&id)).await.map_err(|e|e.to_string())??;
+            report_window::invalidate(&changed);
+            let _=app.emit("report-changed",json!({"id":changed,"kind":"regenerated"}));
+            return Ok(result);
         }
         // ---- PawnIO driver ----
         "check_pawnio_status" => return Ok(pawnio::status()),
@@ -696,18 +823,9 @@ async fn preview_native(window: tauri::WebviewWindow, app: tauri::AppHandle, com
         "open_sensor_monitor" => spawn_job(&app, |app| {
             if let Err(e) = open_sensor(app) { eprintln!("open_sensor_monitor: {e}"); }
         }),
-        "open_report_sample" => spawn_job(&app, |app| {
-            if let Some(window) = app.get_webview_window("report-sample") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            } else if let Err(e) = WebviewWindowBuilder::new(app, "report-sample", WebviewUrl::App("samples/charts/framescope-interactive-report.html".into()))
-                .title("FrameScope - 模拟报告样例").inner_size(1200.0, 780.0)
-                
-                .build()
-            {
-                eprintln!("open_report_sample: {e}");
-            }
-        }),
+        "open_report_sample" => {
+            return tauri::async_runtime::spawn_blocking(move||report_window::open(&app,"sample",None)).await.map_err(|e|e.to_string())?;
+        },
         "open_vertical_overlay" => {
             let mut settings=overlay_panel::get_or_init_settings();settings.style="vertical_panel".into();
             return overlay_runtime::request(app.clone(),overlay_runtime::Action::Start(Some(settings)),overlay_lifecycle::START_BUDGET).await;
@@ -859,7 +977,8 @@ pub fn run() {
     // the main interface during logon. StartMinimized is a legacy config key.
     let startup = backend::startup_preferences();
     let after_update=std::env::args().any(|a|a=="--framescope-after-update");
-    let tray_start = !after_update && (std::env::args().any(|a| a == "--autostart")
+    let report_start=std::env::args().any(|a|a=="--open-report");
+    let tray_start = report_start || !after_update && (std::env::args().any(|a| a == "--autostart")
         || startup.as_ref().map(|(_, tray)| *tray).unwrap_or(false));
     if tray_start {
         for window in &mut context.config_mut().app.windows {
@@ -879,6 +998,7 @@ pub fn run() {
                 }
                 return;
             }
+            if report_window::dispatch(app,&args) {return;}
             if args.iter().any(|a| a == "--autostart") { return; }
             if let Some(window) = app.get_webview_window("main") {
                 show_main_window(&window);
@@ -903,6 +1023,7 @@ pub fn run() {
         })
         .setup(move |app| {
             record_startup(app.handle(),"native-start");
+            report_window::dispatch(app.handle(),&std::env::args().collect::<Vec<_>>());
             #[cfg(windows)] install_webview_failure_handler(app.handle());
             app.manage(std::sync::Arc::new(updater::Service::new(app.path().app_data_dir()?.join("updates"))
                 .map_err(std::io::Error::other)?));
@@ -933,6 +1054,9 @@ pub fn run() {
                 })?;
             }
             app.manage(std::sync::Mutex::new(persisted_hotkey));
+            if overlay_panel::OUTLINE_MIGRATED.swap(false,std::sync::atomic::Ordering::SeqCst) {
+                save_native_settings(app.handle()).map_err(std::io::Error::other)?;
+            }
             let show = MenuItem::with_id(app, "show", "打开 FrameScope", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出 FrameScope", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -1026,7 +1150,7 @@ pub fn run() {
                     }
                     match hardware_service::call("get_overlay_data", json!({})) {
                         Ok(data) => {
-                            let data = backend::apply_report_lows(data);
+                            let data = overlay_items::enrich(backend::apply_report_lows(data));
                             overlay_runtime::publish_raw(data.clone());
                             error_streak = 0;
                             // The GDI panel stores some counters as integers; feed
@@ -1047,9 +1171,9 @@ pub fn run() {
                             // host-side cousin of the stale-cache failure).
                             // Broadcast an all-null snapshot so they show
                             // "--" while down.
-                            if error_streak == 3 {
-                                let empty = hardware_service::empty_overlay_value();
-                                overlay_runtime::publish_raw(empty.clone());
+                            {
+                                let empty = if error_streak<3{overlay_runtime::latest_raw()}else{overlay_items::enrich(hardware_service::empty_overlay_value())};
+                                if error_streak>=3{overlay_runtime::publish_raw(empty.clone());}
                                 match decode_fixture(hardware_service::sanitize_for_gdi(empty.clone())) {
                                     Ok(parsed) => overlay_panel::publish_hardware_data(parsed),
                                     Err(e2) => eprintln!("hardware poller: decode failed: {e2}"),
@@ -1066,8 +1190,13 @@ pub fn run() {
             let topmost_handle = app.handle().clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
+                if custom_overlay::ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
+                    if let Err(error)=custom_overlay::runtime(&topmost_handle){log::warn!("自定义悬浮窗显示器同步失败: {error}");}
+                }
                 if let Some(window) = topmost_handle.get_webview_window("vertical-overlay") {
                     if window.is_visible().unwrap_or(false) {
+                        #[cfg(windows)]
+                        vertical_overlay_input::refresh(&window);
                         #[cfg(windows)]
                         {
                             let owned=window.clone();
@@ -1089,6 +1218,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label().starts_with("report-") && matches!(event,tauri::WindowEvent::CloseRequested{..}){report_window::persist(window);}
+            if window.label().starts_with("report-") && matches!(event,tauri::WindowEvent::Resized(_)){report_window::resized(window);}
+            if window.label().starts_with("report-") && matches!(event,tauri::WindowEvent::Destroyed){report_window::closed(window.label());}
             if window.label() == "main" {
                 if matches!(event,tauri::WindowEvent::Focused(_)|tauri::WindowEvent::Resized(_)) {
                     if let Some(main)=window.app_handle().get_webview_window("main") {publish_main_activity(&main);}

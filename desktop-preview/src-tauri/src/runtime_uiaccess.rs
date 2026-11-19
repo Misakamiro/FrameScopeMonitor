@@ -1,6 +1,7 @@
 //! One-shot UIAccess startup before windows or application ownership exist.
 
 pub(crate) const RELAY_MARKER: &str = "--framescope-uiaccess-relay";
+pub(crate) const UAC_MARKER: &str = "--framescope-uac-relay";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TokenState {
@@ -18,6 +19,7 @@ pub(crate) enum Action {
 
 pub(crate) trait Runtime {
     fn current(&mut self) -> Result<TokenState, String>;
+    fn elevate(&mut self) -> Result<(), String>;
     fn prepare(&mut self) -> Result<TokenState, String>;
     fn relaunch(&mut self) -> Result<(), String>;
 }
@@ -28,7 +30,11 @@ pub(crate) fn bootstrap(runtime: &mut dyn Runtime, args: &[String]) -> Result<Ac
     }
     let current = runtime.current()?;
     if !current.elevated {
-        return Err("Normal UAC administrator approval is required".into());
+        if args.iter().any(|arg| arg == UAC_MARKER || arg == RELAY_MARKER) {
+            return Err("管理员权限未取得，已停止启动；不会重复请求 UAC".into());
+        }
+        runtime.elevate()?;
+        return Ok(Action::Relaunched);
     }
     if current.uiaccess {
         return Ok(Action::Continue);
@@ -47,6 +53,20 @@ pub(crate) fn bootstrap(runtime: &mut dyn Runtime, args: &[String]) -> Result<Ac
     }
     runtime.relaunch()?;
     Ok(Action::Relaunched)
+}
+
+fn quote_argument(value: &[u16]) -> Vec<u16> {
+    let mut result = vec![b'"' as u16];
+    let mut slashes = 0;
+    for &ch in value {
+        if ch == b'\\' as u16 { slashes += 1; continue; }
+        result.extend(std::iter::repeat(b'\\' as u16).take(if ch == b'"' as u16 { slashes * 2 + 1 } else { slashes }));
+        slashes = 0;
+        result.push(ch);
+    }
+    result.extend(std::iter::repeat(b'\\' as u16).take(slashes * 2));
+    result.push(b'"' as u16);
+    result
 }
 
 #[cfg(windows)]
@@ -68,6 +88,7 @@ pub(crate) mod windows {
             Diagnostics::ToolHelp::*, Environment::GetCommandLineW,
             SystemInformation::GetSystemDirectoryW, Threading::*,
         },
+        UI::{Shell::{ShellExecuteExW, SHELLEXECUTEINFOW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NOASYNC, SEE_MASK_FLAG_NO_UI}, WindowsAndMessaging::SW_SHOWNORMAL},
     };
 
     struct Handle(HANDLE);
@@ -368,6 +389,31 @@ pub(crate) mod windows {
         fn current(&mut self) -> Result<TokenState, String> {
             current_state()
         }
+        fn elevate(&mut self) -> Result<(), String> {
+            let exe = wide(std::env::current_exe().map_err(|e| e.to_string())?.as_os_str());
+            let cwd = wide(std::env::current_dir().map_err(|e| e.to_string())?.as_os_str());
+            let verb = wide(std::ffi::OsStr::new("runas"));
+            let mut parameters = Vec::new();
+            for arg in std::env::args_os().skip(1).chain(std::iter::once(UAC_MARKER.into())) {
+                if !parameters.is_empty() { parameters.push(b' ' as u16); }
+                parameters.extend(quote_argument(&arg.encode_wide().collect::<Vec<_>>()));
+            }
+            parameters.push(0);
+            if parameters.len() + exe.len() > 32766 { return Err("UAC command line exceeds Windows limit".into()); }
+            let mut info: SHELLEXECUTEINFOW = unsafe { zeroed() };
+            info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+            info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+            info.lpVerb = verb.as_ptr(); info.lpFile = exe.as_ptr();
+            info.lpParameters = parameters.as_ptr(); info.lpDirectory = cwd.as_ptr();
+            info.nShow = SW_SHOWNORMAL;
+            if unsafe { ShellExecuteExW(&mut info) } == 0 {
+                let code = unsafe { GetLastError() };
+                return Err(if code == 1223 { "已取消管理员授权，FrameScope 已停止启动".into() }
+                    else { format!("请求管理员权限失败（Windows {code}），FrameScope 已停止启动") });
+            }
+            let _child = Handle::new(info.hProcess, "UAC child process")?;
+            Ok(())
+        }
         fn prepare(&mut self) -> Result<TokenState, String> {
             let original = token(
                 unsafe { GetCurrentProcess() },
@@ -441,7 +487,12 @@ pub(crate) mod windows {
             if command.len() >= 32768 {
                 return Err("Process command line exceeds Windows limit".into());
             }
-            command.extend(format!(" {RELAY_MARKER}").encode_utf16());
+            // libtest accepts an additional test filter, but not application flags.
+            #[cfg(test)]
+            let marker=if std::env::var_os("FRAMESCOPE_INPUT_EVIDENCE").is_some(){"composition_input_probe"}else{RELAY_MARKER};
+            #[cfg(not(test))]
+            let marker=RELAY_MARKER;
+            command.extend(format!(" {marker}").encode_utf16());
             command.push(0);
             if command.len() > 32768 {
                 return Err("UIAccess relaunch command line exceeds Windows limit".into());
@@ -525,6 +576,10 @@ mod tests {
             self.calls.push("current");
             Ok(self.current.clone())
         }
+        fn elevate(&mut self) -> Result<(), String> {
+            self.calls.push("elevate");
+            self.launch.clone()
+        }
         fn prepare(&mut self) -> Result<TokenState, String> {
             self.calls.push("prepare");
             self.prepared.clone()
@@ -563,10 +618,43 @@ mod tests {
     fn normal_uac_is_required_before_preparation() {
         let mut runtime = fixture();
         runtime.current.elevated = false;
-        assert!(bootstrap(&mut runtime, &[])
-            .unwrap_err()
-            .contains("administrator"));
-        assert_eq!(runtime.calls, ["current"]);
+        assert_eq!(bootstrap(&mut runtime, &[]).unwrap(), Action::Relaunched);
+        assert_eq!(runtime.calls, ["current", "elevate"]);
+    }
+    #[test]
+    fn uac_cancellation_failure_and_loop_stop_before_uiaccess() {
+        for reason in ["cancelled", "access denied"] {
+            let mut runtime = fixture(); runtime.current.elevated = false;
+            runtime.launch = Err(reason.into());
+            assert_eq!(bootstrap(&mut runtime, &[]).unwrap_err(), reason);
+            assert_eq!(runtime.calls, ["current", "elevate"]);
+        }
+        for marker in [UAC_MARKER, RELAY_MARKER] {
+            let mut runtime = fixture(); runtime.current.elevated = false;
+            assert!(bootstrap(&mut runtime, &[marker.into()]).is_err());
+            assert_eq!(runtime.calls, ["current"]);
+        }
+        let mut runtime = fixture();
+        assert_eq!(bootstrap(&mut runtime, &[UAC_MARKER.into()]).unwrap(), Action::Relaunched);
+        assert_eq!(runtime.calls, ["current", "prepare", "relaunch"]);
+    }
+    #[test]
+    #[cfg(windows)]
+    fn elevation_arguments_round_trip_windows_parser() {
+        use windows_sys::Win32::{UI::Shell::CommandLineToArgvW, Foundation::LocalFree};
+        let args = ["C:\\Program Files\\FrameScope.exe", "", "中文路径", "two words", "a\"b", "C:\\end\\", "\\\\\"", "--config", UAC_MARKER];
+        let mut command = Vec::new();
+        for arg in args { if !command.is_empty() { command.push(32); } command.extend(quote_argument(&arg.encode_utf16().collect::<Vec<_>>())); }
+        command.push(0);
+        let mut count = 0;
+        let parsed = unsafe { CommandLineToArgvW(command.as_ptr(), &mut count) };
+        assert!(!parsed.is_null());
+        let actual: Vec<String> = (0..count as usize).map(|i| unsafe {
+            let ptr = *parsed.add(i); let mut len = 0; while *ptr.add(len) != 0 { len += 1; }
+            String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+        }).collect();
+        unsafe { LocalFree(parsed.cast()); }
+        assert_eq!(actual, args);
     }
     #[test]
     fn unsuccessful_child_cannot_relaunch_recursively() {

@@ -96,6 +96,9 @@ export function AppStartupProvider({ children }: { children: ReactNode }) {
     }) : () => {};
     if (mainWindow) refresh(); else setReady(true);
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+      void invoke<OverlaySettings>("get_overlay_current_settings")
+        .then(value => { if (active && !overlaySavePending.current) setSettings(value); })
+        .catch(error => console.error("overlay settings initialization failed", error));
       void invoke<string>("preview_native", { command: "get_overlay_hotkey", args: {} })
         .then(value => { if (active && value) setHotkey(value); })
         .catch(() => { /* The persisted preview default remains visible until native startup is ready. */ });

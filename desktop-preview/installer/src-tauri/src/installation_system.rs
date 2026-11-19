@@ -2,12 +2,9 @@
 //! value kinds/bytes and shortcut bytes, and are persisted by the core before apply.
 use super::install_transaction::{self as transaction, Result, Runtime};
 use serde::{Deserialize, Serialize};
-use std::os::windows::process::CommandExt;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant},
 };
 use winreg::{enums::*, RegKey, RegValue};
 
@@ -41,9 +38,12 @@ struct Snapshot {
     links: Vec<Link>,
     #[serde(default)]
     logon_task: Option<framescope_update::autostart::State>,
+    #[serde(default)]
+    amd_logon_task: Option<framescope_update::autostart::State>,
 }
 
 pub struct WindowsRuntime {
+    pub prepare_update_components:bool,
     pub startup_build:Option<framescope_update::BuildInfo>,
     pub keep_previous:bool,
     pub preserve_settings:bool,
@@ -177,7 +177,7 @@ fn validate_tree(key: &Key) -> Result<()> {
     Ok(())
 }
 fn validate_snapshot(snapshot: &Snapshot, target: &Path, links: &[PathBuf]) -> Result<()> {
-    if snapshot.logon_task.as_ref().is_some_and(|task| task.enabled && !task.exists) {
+    if snapshot.logon_task.as_ref().is_some_and(|task| task.enabled && !task.exists) || snapshot.amd_logon_task.as_ref().is_some_and(|task|task.enabled&&!task.exists) {
         return Err("Invalid logon task recovery state".into());
     }
     let mut keys = std::collections::BTreeSet::new();
@@ -257,6 +257,20 @@ fn validate_snapshot(snapshot: &Snapshot, target: &Path, links: &[PathBuf]) -> R
 mod tests {
     use super::*;
     #[test]
+    fn abort_startup_removes_handshake_after_candidate_has_stopped() {
+        let root=std::env::temp_dir().join(format!("framescope-abort-handshake-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("FrameScopeUpdatePending.json"),b"ticket").unwrap();
+        fs::write(root.join("FrameScopeUpdateReady.json"),b"ack").unwrap();
+        fs::write(root.join("framescope-config.json"),b"preserved configuration").unwrap();
+        let mut runtime=WindowsRuntime::new(&root,false,false,false).unwrap();
+        runtime.startup_build=Some(framescope_update::BuildInfo::new("2.1.3-beta.13",&"a".repeat(40)));
+        runtime.abort_startup().unwrap();
+        assert!(!root.join("FrameScopeUpdatePending.json").exists());
+        assert!(!root.join("FrameScopeUpdateReady.json").exists());
+        assert_eq!(fs::read(root.join("framescope-config.json")).unwrap(),b"preserved configuration");
+    }
+    #[test]
     fn first_1x_upgrade_preserves_existing_startup_and_shortcut_policy() {
         let root=std::env::temp_dir().join(format!("framescope-startup-migration-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir(&root).unwrap();
@@ -282,6 +296,7 @@ mod tests {
             run_exists: true,
             links: vec![],
             logon_task: None,
+            amd_logon_task: None,
         }
     }
     #[test]
@@ -378,6 +393,7 @@ impl WindowsRuntime {
             })
             .collect();
         Ok(Self {
+            prepare_update_components:false,
             startup_build:None,keep_previous:false,
             preserve_settings:!uninstall && target.join("FrameScope.exe").is_file(),started_new:false,
             target: target.into(),
@@ -392,67 +408,18 @@ impl WindowsRuntime {
 }
 
 /// Child execution never falls back to Kill, including a helper timeout.
-fn helper(helper: &Path, args: &[&std::ffi::OsStr], seconds: u64) -> Result<String> {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_nanos();
-    let output = helper
-        .parent()
-        .ok_or("Missing helper parent")?
-        .join(format!("shutdown-output-{nonce}.log"));
-    let file = io(fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&output))?;
-    let error_output = output.with_extension("stderr.log");
-    let error_file = io(fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&error_output))?;
-    let mut child = Command::new(helper)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(file))
-        .stderr(Stdio::from(error_file))
-        .creation_flags(0x08000000)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    loop {
-        if let Some(status) = io(child.try_wait())? {
-            if io(fs::metadata(&output))?.len() > 1024 * 1024
-                || io(fs::metadata(&error_output))?.len() > 1024 * 1024
-            {
-                return Err("Shutdown helper output exceeded limit".into());
-            }
-            let text = io(fs::read_to_string(&output))?;
-            if !status.success() {
-                return Err(format!(
-                    "Normal shutdown rejected ({}): {text}; {}",
-                    status,
-                    io(fs::read_to_string(&error_output))?
-                ));
-            }
-            return Ok(text);
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "Normal shutdown helper timed out; target preserved; output {}",
-                output.display()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 impl Runtime for WindowsRuntime {
+    fn prepare_components(&mut self, stage:&Path)->Result<()> {
+        if self.prepare_update_components {crate::prerequisites::prepare_with_staged(&self.target,stage,&|_|{})?;}
+        Ok(())
+    }
     fn retain_previous(&self)->bool {self.keep_previous}
     fn confirm_startup(&mut self)->Result<()> {
         if let Some(build)=self.startup_build.clone(){crate::update_install::confirm_startup(self,build)}else{Ok(())}
     }
     fn abort_startup(&mut self)->Result<()> {
-        if self.started_new {let target=self.target.clone();self.stop(&target,&target.join("FrameScopeUninstaller.exe"))?;self.started_new=false;}Ok(())
+        if self.started_new {let target=self.target.clone();self.stop(&target,&target.join("FrameScopeUninstaller.exe"))?;self.started_new=false;}
+        if self.startup_build.is_some(){crate::update_install::clear_handshake(&self.target)?;}Ok(())
     }
     fn allowed_data_roots(&self) -> Vec<PathBuf> {
         let mut roots: Vec<_> = [dirs::data_dir(), dirs::config_dir(), dirs::cache_dir()]
@@ -468,53 +435,8 @@ impl Runtime for WindowsRuntime {
     fn space(&mut self, path: &Path) -> Result<u64> {
         crate::installer::available_space(path)
     }
-    fn stop(&mut self, target: &Path, executable: &Path) -> Result<()> {
-        if !target.exists() {
-            return Ok(());
-        }
-        if !executable.is_file() {
-            return Err("Payload lacks verified normal-stop helper".into());
-        }
-        let capability = helper(
-            executable,
-            &[std::ffi::OsStr::new("--shutdown-capability")],
-            10,
-        )?;
-        if capability.trim() != "framescope-installation-shutdown-v1" {
-            return Err("Unknown normal-stop helper capability; target untouched".into());
-        }
-        let plan = helper(
-            executable,
-            &[std::ffi::OsStr::new("--shutdown-plan"), target.as_os_str()],
-            10,
-        )?;
-        let plan: serde_json::Value =
-            serde_json::from_str(plan.trim()).map_err(|e| e.to_string())?;
-        if plan["capability"] != "framescope-installation-shutdown-v1" {
-            return Err("Shutdown plan capability mismatch".into());
-        }
-        let budget = plan["maximumBudgetMs"]
-            .as_u64()
-            .filter(|n| *n > 0 && *n <= 86_400_000)
-            .ok_or("Shutdown plan has invalid/excessive budget")?;
-        let output = helper(
-            executable,
-            &[
-                std::ffi::OsStr::new("--stop-installation"),
-                target.as_os_str(),
-            ],
-            budget.div_ceil(1000),
-        )?;
-        let result: serde_json::Value =
-            serde_json::from_str(output.trim()).map_err(|e| e.to_string())?;
-        if !matches!(
-            result["status"].as_str(),
-            Some("stopped" | "stopped-with-warning")
-        ) {
-            return Err("Shutdown helper did not confirm completion".into());
-        }
-        eprintln!("{output}");
-        Ok(())
+    fn stop(&mut self, target: &Path, _executable: &Path) -> Result<()> {
+        crate::native_stop::stop(target)
     }
     fn snapshot(&mut self) -> Result<serde_json::Value> {
         let root = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -559,6 +481,7 @@ impl Runtime for WindowsRuntime {
             run_exists,
             links,
             logon_task: Some(framescope_update::autostart::state(&self.target.join("FrameScope.exe"))?),
+            amd_logon_task: Some(framescope_update::autostart::amd_state(&self.target.join("tools/FrameScopeAmdWorker.exe"))?),
         })
         .map_err(|e| e.to_string())
     }
@@ -614,6 +537,7 @@ impl Runtime for WindowsRuntime {
         }
         let user = RegKey::predef(HKEY_CURRENT_USER);
         framescope_update::autostart::set(&self.target.join("FrameScope.exe"), !self.uninstall && self.autostart)?;
+        if self.uninstall{framescope_update::autostart::amd_set(&self.target.join("tools/FrameScopeAmdWorker.exe"),false)?;}
         {
             match user.open_subkey_with_flags(RUN, KEY_SET_VALUE) {
                 Ok(key) => match key.delete_value("FrameScope") {
@@ -634,6 +558,7 @@ impl Runtime for WindowsRuntime {
         if let Some(task) = &snapshot.logon_task {
             framescope_update::autostart::restore(&self.target.join("FrameScope.exe"), task)?;
         }
+        if let Some(task)=&snapshot.amd_logon_task{framescope_update::autostart::amd_restore(&self.target.join("tools/FrameScopeAmdWorker.exe"),task)?;}
         let root = RegKey::predef(HKEY_LOCAL_MACHINE);
         // Restore only the exact product key and legacy keys captured for this target.
         for key in &snapshot.keys {

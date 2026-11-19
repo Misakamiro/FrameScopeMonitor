@@ -145,9 +145,18 @@ impl ResidentProvider {
         self.exchange(command)
     }
 
+    /// Diagnostic callers share one collection deadline across all reads.
+    pub(crate) fn send_raw_until(&mut self, command: &str, deadline: Instant) -> Result<Value, String> {
+        self.exchange_until(command, Some(deadline))
+    }
+
     fn exchange(&mut self, command: &str) -> Result<Value, String> {
+        self.exchange_until(command, None)
+    }
+
+    fn exchange_until(&mut self, command: &str, deadline: Option<Instant>) -> Result<Value, String> {
         let initializing = self.proc.is_none() || self.awaiting_first_response;
-        let result = self.perform(command);
+        let result = self.perform(command, deadline);
         match result {
             Ok(value) => {
                 self.consecutive_failures = 0;
@@ -182,7 +191,8 @@ impl ResidentProvider {
         }
     }
 
-    fn perform(&mut self, command: &str) -> Result<Value, String> {
+    fn perform(&mut self, command: &str, deadline: Option<Instant>) -> Result<Value, String> {
+        if deadline.is_some_and(|end|Instant::now()>=end){return Err("diagnostic collection deadline reached".into());}
         let Some(path) = self
             .helper_path
             .as_deref()
@@ -215,6 +225,7 @@ impl ResidentProvider {
             .and_then(|_| proc.stdin.flush())
             .map_err(|error| format!("provider write failed: {error}"))?;
         let timeout = response_timeout(self.awaiting_first_response);
+        let timeout = deadline.map_or(timeout, |end|timeout.min(end.saturating_duration_since(Instant::now())));
         let line = match proc.lines.recv_timeout(timeout) {
             Ok(line) => line,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

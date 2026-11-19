@@ -17,6 +17,7 @@ export const defaultOverlay: OverlaySettings = {
   ].map(([id, label]) => ({ id, label, enabled: ["fps", "cpu_usage", "gpu_usage", "gpu_temp", "memory_usage", "game_ping"].includes(id) })),
   custom_items: [], opacity: 200, style: "default", font: "Microsoft YaHei", font_size: 13,
   item_width: 130, font_color: "#ffffff",
+  font_bold: false, text_outline_enabled: true, text_outline_width: 1, text_outline_color: "#000000",
 };
 function initial(): PreviewState {
   return {
@@ -130,7 +131,8 @@ function mapBackendReport(raw: any): PreviewReport {
     averageFps: raw?.averageFps ?? null, low1Fps: raw?.low1Fps ?? null,
     low01Fps: raw?.low01Fps ?? null, frameTimeMs: raw?.frameTimeMs ?? null,
     samples: [], simulated: false, runDir: raw?.runDir,
-    artifactStatus: String(raw?.artifactStatus ?? "incomplete"),
+    artifactStatus: raw?.artifactStatus ?? undefined,
+    inspectionStatus: raw?.inspectionStatus ?? "checked",
     artifactError: String(raw?.artifactError ?? ""),
     canOpenReport: raw?.canOpenReport === true,
     canRegenerate: raw?.canRegenerate === true,
@@ -233,16 +235,46 @@ async function syncDesktopMonitor(): Promise<void> {
   finally { desktopSyncBusy = false; }
 }
 
+import {reportCatalogPage} from './report-search';
 let reportsRequestGeneration = 0;
-export async function refreshDesktopReports(): Promise<void> {
-  if (!isDesktop()) return;
+let reportsQuery = {page: 1, search: "", kind: "all"};
+export async function refreshDesktopReports(query?: Partial<typeof reportsQuery>, signal?: AbortSignal, retryInspection = false): Promise<false | 'pending' | 'error'> {
+  if (!isDesktop()) return false;
+  if (query) reportsQuery = {...reportsQuery, ...query};
   const generation = ++reportsRequestGeneration;
+  const requested={...reportsQuery};
   try {
-    const payload = await backendInvoke<{ reports: any[] }>("reports_list");
-    if (generation !== reportsRequestGeneration) return;
+    let payload:{reports:any[];total:number;filteredTotal:number;page:number;pages:number;pageSize:number};
+    if(!requested.search.trim())payload=await backendInvoke("reports_list",{...requested,retryInspection});
+    else {
+      const catalog=await backendInvoke<{reports:any[]}>("reports_catalog");
+      if (generation !== reportsRequestGeneration || signal?.aborted) return false;
+      const page=reportCatalogPage(catalog.reports,requested);
+      const details=await backendInvoke<{reports:any[]}>("reports_list",{ids:page.reports.map(row=>row.id),retryInspection});
+      payload={...page,reports:details.reports};
+    }
+    if (generation !== reportsRequestGeneration || signal?.aborted) return false;
     const mapped = (payload.reports ?? []).map(mapBackendReport).filter(report => report.id);
-    mutatePreview(next => { next.reports = mapped; });
-  } catch (error) { console.error("reports_list failed", error); }
+    reportsQuery.page = payload.page;
+    mutatePreview(next => {
+      const previous = new Map(next.reports.map(report => [report.id, report]));
+      next.reports = mapped.map(report => {
+        const old = previous.get(report.id);
+        if (!old || report.inspectionStatus === 'checked') return report;
+        return {...report, createdAt: report.createdAt || old.createdAt,
+          durationSeconds: report.durationSeconds ?? old.durationSeconds,
+          averageFps: report.averageFps ?? old.averageFps, low1Fps: report.low1Fps ?? old.low1Fps,
+          low01Fps: report.low01Fps ?? old.low01Fps, frameTimeMs: report.frameTimeMs ?? old.frameTimeMs};
+      });
+      next.reportListError = '';
+      next.reportPage = {total:payload.total, filteredTotal:payload.filteredTotal, page:payload.page, pages:payload.pages, pageSize:payload.pageSize};
+    });
+    return mapped.some(report => report.inspectionStatus === 'pending' || report.inspectionStatus === 'checking') ? 'pending' : false;
+  } catch (error) {
+    if (generation !== reportsRequestGeneration || signal?.aborted) return false;
+    if (generation === reportsRequestGeneration) mutatePreview(next => { next.reportListError = String(error); });
+    console.error("reports_list failed", error); return 'error';
+  }
 }
 
 let configSynced = false;

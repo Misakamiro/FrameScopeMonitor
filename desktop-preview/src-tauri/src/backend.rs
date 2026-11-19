@@ -64,6 +64,8 @@ fn acquire_config_file_mutex_with_timeout(path: &Path, timeout_ms: u32) -> Resul
     { let _ = path; Ok(ConfigFileMutex {}) }
 }
 static REGENERATING_RUN: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+static REGEN_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static REGEN_FAILURE: std::sync::Mutex<Option<(PathBuf,String)>> = std::sync::Mutex::new(None);
 static OWNED_WATCHER: std::sync::Mutex<Option<OwnedWatcher>> = std::sync::Mutex::new(None);
 static HOST_CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static UPDATE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -111,6 +113,8 @@ fn reserve_update_after(
 }
 
 struct OwnedWatcher {
+    #[cfg(windows)]
+    job: Option<crate::monitor_job::Job>,
     child: std::process::Child,
     root: PathBuf,
     identity: WatcherOwner,
@@ -247,6 +251,7 @@ fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
 /// Read-modify-write that only replaces the Targets array; every other config
 /// field keeps its current value (PascalCase contract preserved verbatim).
 pub fn targets_save(targets: &[Value]) -> Result<Value, String> {
+    ensure_target_edit_allowed()?;
     let _guard = CONFIG_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
     let lock_path = config_path()?;
     let _file_guard = acquire_config_file_mutex(&lock_path)?;
@@ -270,9 +275,10 @@ pub fn targets_save(targets: &[Value]) -> Result<Value, String> {
                 .map(str::to_string)
                 .unwrap_or_else(|| executable.trim_end_matches(".exe").to_string());
             let enabled = target.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            let original=target.get("id").and_then(Value::as_str).unwrap_or(&executable);
             let mut row = config.get("Targets").and_then(Value::as_array)
                 .and_then(|existing| existing.iter().find(|row| row.is_object() && row.get("ProcessName")
-                    .and_then(Value::as_str).is_some_and(|process| normalize_process_name(process).eq_ignore_ascii_case(&executable))))
+                    .and_then(Value::as_str).is_some_and(|process| normalize_process_name(process).eq_ignore_ascii_case(original))))
                 .cloned().unwrap_or_else(|| json!({
                 "SampleIntervalMs": 1000, "ProcessSamplingMode": "normal",
                 "ProcessSampleIntervalMs": 1000, "SlowSampleIntervalMs": 1000,
@@ -284,6 +290,15 @@ pub fn targets_save(targets: &[Value]) -> Result<Value, String> {
             Some(row)
         })
         .collect();
+    let mut names=std::collections::HashSet::new();
+    for row in &normalized {for process in row["ProcessName"].as_str().unwrap_or("").split(';') {
+        if process.contains(['/', '\\', '*', '?', ':']) || !names.insert(process.to_ascii_lowercase()) {return Err("目标进程重复或名称无效".into());}
+    }}
+    let mut deleted=config["DeletedGamePresets"].as_array().cloned().unwrap_or_default();
+    for row in config["Targets"].as_array().into_iter().flatten() {
+        if let Some(id)=row["PresetId"].as_str() {if !normalized.iter().any(|item|item["PresetId"]==id)&&!deleted.iter().any(|item|item==id){deleted.push(json!(id));}}
+    }
+    config["DeletedGamePresets"]=json!(deleted);
     config["Targets"] = Value::Array(normalized);
     write_json_atomic(&path, &config)?;
     targets_payload("saved")
@@ -404,7 +419,10 @@ fn normalize_process_name(value: &str) -> String {
 /// Frontend-facing target list (camelCase PreviewTarget contract; the
 /// process name doubles as the stable id, same role ProcessName plays in C#).
 pub fn targets_payload(status: &str) -> Result<Value, String> {
-    let (path, config) = load_config()?;
+    let path=config_path()?;
+    let _file_guard=acquire_config_file_mutex(&path)?;
+    let (path, mut config) = load_config()?;
+    if ensure_target_edit_allowed().is_ok() && crate::game_presets::migrate(&mut config) {write_json_atomic(&path,&config)?;}
     let targets: Vec<Value> = config
         .get("Targets")
         .and_then(Value::as_array)
@@ -416,6 +434,8 @@ pub fn targets_payload(status: &str) -> Result<Value, String> {
                         "id": process,
                         "name": target.get("Name").and_then(Value::as_str).unwrap_or(""),
                         "executable": process,
+                        "presetId": target.get("PresetId"),
+                        "category": target.get("Category").and_then(Value::as_str).unwrap_or("自定义"),
                         "enabled": target.get("Enabled").and_then(Value::as_bool).unwrap_or(false)
                     })
                 })
@@ -428,6 +448,12 @@ pub fn targets_payload(status: &str) -> Result<Value, String> {
         "dataRoot": config.get("DataRoot").cloned().unwrap_or(Value::Null),
         "targets": targets, "targetCount": targets.len(), "enabledTargetCount": enabled
     }))
+}
+
+pub fn ensure_target_edit_allowed() -> Result<(),String> {
+    let status=monitor_status()?;
+    if matches!(status["phase"].as_str(),Some("capturing"|"generating"|"stopping")) {return Err("采集或生成报告期间，请先停止监控再修改目标".into());}
+    Ok(())
 }
 
 // ---------------------------------------------------------------- data root
@@ -489,19 +515,44 @@ pub fn processes_refresh(query: &str) -> Result<Value, String> {
             } else {
                 format!("{title} ({name})")
             };
-            json!({"processName": name, "processId": pid, "windowTitle": title, "displayText": display})
+            let executable=system.process(sysinfo::Pid::from_u32(pid)).and_then(|process|process.exe())
+                .map(|path|path.to_string_lossy().trim_start_matches("\\\\?\\").to_owned());
+            json!({"processName": name, "processId": pid, "windowTitle": title, "displayText": display,"executable":executable})
         })
         .collect();
-    // Windows-bearing entries first, then by display text (v1.2.2 ordering).
+    sort_process_rows(&mut items);
+    Ok(json!({"status": "completed", "query": query, "count": items.len(), "processes": items}))
+}
+
+fn sort_process_rows(items: &mut Vec<Value>) {
+    // Apply the limit after putting visible windows first.
     items.sort_by_key(|item| {
         let title = item["windowTitle"].as_str().unwrap_or("");
         (
-            !title.is_empty(),
+            title.is_empty(),
             item["displayText"].as_str().unwrap_or("").to_string(),
         )
     });
     items.truncate(250);
-    Ok(json!({"status": "completed", "query": query, "count": items.len(), "processes": items}))
+}
+
+#[cfg(test)]
+mod process_list_tests {
+    use super::*;
+
+    #[test]
+    fn visible_windows_survive_process_limit() {
+        let mut rows: Vec<Value> = (0..260)
+            .map(|id| json!({"processId": id, "windowTitle": "", "displayText": format!("background-{id:03}")}))
+            .collect();
+        rows.push(json!({"processId": 1001, "windowTitle": "Z renderer", "displayText": "Z renderer"}));
+        rows.push(json!({"processId": 1000, "windowTitle": "A renderer", "displayText": "A renderer"}));
+        sort_process_rows(&mut rows);
+        assert_eq!(rows.len(), 250);
+        assert_eq!(rows[0]["processId"], 1000);
+        assert_eq!(rows[1]["processId"], 1001);
+        assert!(rows[2..].iter().all(|row| row["windowTitle"] == ""));
+    }
 }
 
 #[cfg(windows)]
@@ -575,14 +626,15 @@ pub fn monitor_start() -> Result<Value, String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let child = command
-        .spawn()
-        .map_err(|error| format!("watcher spawn failed: {error}"))?;
+    #[cfg(windows)]
+    let (child, job) = crate::monitor_job::spawn(&mut command)?;
+    #[cfg(not(windows))]
+    let child = command.spawn().map_err(|error| format!("watcher spawn failed: {error}"))?;
     let pid = child.id();
     let identity = WatcherOwner { pid, exe: root.join("FrameScopeMonitor.exe"),
         start_time: child_start_time(&child),
         args: vec!["--watcher".into(), "--config".into(), config_path.to_string_lossy().into_owned()] };
-    *owned = Some(OwnedWatcher { child, root, identity, token: None });
+    *owned = Some(OwnedWatcher { child, root, identity, token: None, #[cfg(windows)] job: Some(job) });
     if let Some(watcher) = owned.as_mut() { let _ = owned_state(watcher); }
     *AUTO_START_ERROR.lock().unwrap_or_else(|p| p.into_inner()) = None;
     Ok(json!({"status": "started", "alreadyRunning": false, "watcherPid": pid}))
@@ -614,9 +666,51 @@ pub fn auto_start_monitor() -> Result<(), String> {
 mod report_live_lows_tests {
     use super::*;
     #[test]
+    fn transient_reads_preserve_only_the_original_unexpired_window() {
+        let start=std::time::Instant::now();
+        let mut cache=Some((start,json!({"statistics_version":3,"source_age_ms":400,"fps":100})));
+        update_live_frame_cache(&mut cache,Err("sharing-violation"),start+std::time::Duration::from_millis(1599));
+        assert_eq!(cache.as_ref().unwrap().0,start);
+        update_live_frame_cache(&mut cache,Err("reader-backlog"),start+std::time::Duration::from_millis(1600));
+        assert!(cache.is_none());
+        update_live_frame_cache(&mut cache,Ok(Some(json!({"statistics_version":3,"source_age_ms":0}))),start);
+        update_live_frame_cache(&mut cache,Ok(None),start);
+        assert!(cache.is_none(),"capture stop clears immediately");
+    }
+    #[test]
+    fn repeated_delivery_of_the_same_window_preserves_monotonic_age() {
+        let start=std::time::Instant::now();
+        let value=json!({"statistics_version":3,"source_age_ms":500,"target_pid":42,"target_start_ms":100,
+            "target_generation":2,"source":"presentmon","worker_pid":99,"frame_count":60,
+            "window_start_ms":1000,"window_end_ms":2000});
+        let mut cache=Some((start,value.clone()));
+        update_live_frame_cache(&mut cache,Ok(Some(value)),start+std::time::Duration::from_millis(1400));
+        let (at,window)=cache.as_ref().unwrap();
+        assert!(live_lows_source_fresh(window,(start+std::time::Duration::from_millis(1499)).duration_since(*at).as_millis() as u64));
+        assert!(!live_lows_source_fresh(window,(start+std::time::Duration::from_millis(1500)).duration_since(*at).as_millis() as u64));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn dead_target_with_a_retained_handle_is_not_a_live_identity() {
+        use std::os::windows::process::CommandExt;
+        let mut child=std::process::Command::new("cmd.exe").args(["/d","/c","exit 0"])
+            .creation_flags(0x08000000).spawn().unwrap();
+        child.wait().unwrap();
+        assert_eq!(live_target_start_ms(child.id()),None);
+    }
+    #[test]
+    fn source_selection_never_fills_missing_lows_from_another_window() {
+        let resident=json!({"target_pid":99,"fps":120,"fps_1low":100,"fps_01low":90});
+        let worker=json!({"statistics_version":3,"target_pid":99,"fps":144,"fps_1low":null,"fps_01low":60});
+        let selected=apply_frame_snapshot(resident,99,Some(&worker));
+        assert_eq!(selected["fps"],144.0);
+        assert!(selected["fps_1low"].is_null());
+        assert_eq!(selected["fps_01low"],60.0);
+    }
+    #[test]
     fn fresh_frame_fps_fills_missing_resident_fps_for_the_verified_target_only() {
         let data = json!({"target_pid":0,"fps":null,"fps_1low":null,"fps_01low":null});
-        let frames = json!({"target_pid":99,"fps":144.5,"fps_1low":100.0,"fps_01low":90.0});
+        let frames = json!({"statistics_version":3,"target_pid":99,"fps":144.5,"fps_1low":100.0,"fps_01low":90.0});
         let filled = apply_frame_snapshot(data.clone(), 99, Some(&frames));
         assert_eq!(filled["fps"], 144.5);
         assert_eq!(filled["target_pid"], 99);
@@ -624,7 +718,7 @@ mod report_live_lows_tests {
         assert!(apply_frame_snapshot(data.clone(), 100, Some(&frames))["fps"].is_null());
         assert!(apply_frame_snapshot(data, 99, None)["fps"].is_null());
         let resident = json!({"target_pid":99,"fps":120.0});
-        assert_eq!(apply_frame_snapshot(resident, 99, Some(&frames))["fps"], 120.0);
+        assert_eq!(apply_frame_snapshot(resident, 99, Some(&frames))["fps"], 144.5);
     }
     #[test]
     fn cached_lows_expire_using_source_age_and_monotonic_cache_age() {
@@ -644,14 +738,14 @@ mod report_live_lows_tests {
         assert!(live_lows_refresh_due(Some(&fresh),100));
     }
     #[test]
-    fn statistics_v2_keeps_one_source_and_preserves_measured_zero() {
+    fn unusable_presentmon_window_falls_back_as_a_group() {
         let resident=json!({"target_pid":99,"fps":120,"fps_1low":100,"fps_01low":90});
         let frames=json!({"statistics_version":2,"target_pid":99,"fps":0,"fps_1low":0,"fps_01low":0});
         let selected=apply_frame_snapshot(resident,99,Some(&frames));
-        for field in ["fps","fps_1low","fps_01low"]{assert_eq!(selected[field].as_f64(),Some(0.0), "{field} uses the selected v2 frame stream");}
+        assert_eq!(selected["fps"],120.0);assert_eq!(selected["fps_1low"],100.0);assert_eq!(selected["fps_01low"],90.0);
         let hardware=json!({"target_pid":99,"fps":0,"fps_1low":0,"fps_01low":0});
         let selected=apply_frame_snapshot(hardware,99,None);
-        for field in ["fps","fps_1low","fps_01low"]{assert_eq!(selected[field].as_f64(),Some(0.0), "{field} retains a valid resident snapshot");}
+        for field in ["fps","fps_1low","fps_01low"]{assert!(selected[field].is_null(), "{field} excludes a no-frame snapshot");}
         let wrong_target=json!({"target_pid":88,"fps":120,"fps_1low":100,"fps_01low":90});
         let selected=apply_frame_snapshot(wrong_target,99,None);
         for field in ["fps","fps_1low","fps_01low"]{assert!(selected[field].is_null(), "{field} cannot cross target identity");}
@@ -671,6 +765,7 @@ mod report_live_lows_tests {
         let root = std::env::temp_dir().join(format!("framescope-low-validation-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let good = json!({"source":"presentmon","phase":"capturing","caught_up":true,"error":null,
+            "statistics_version":3,"valid":true,"target_start_ms":1000,"target_generation":1,"window_start_ms":9000,"window_end_ms":10000,
             "frame_count":1,"worker_pid":42,"target_pid":99,"timestamp_ms":10000,"source_age_ms":0,"run_dir":root});
         assert!(validate_live_lows(&good, &root, 42, 99, 10001));
         let mut no_new_frames = good.clone(); no_new_frames["source_age_ms"] = json!(2999);
@@ -691,92 +786,209 @@ mod report_live_lows_tests {
 }
 
 fn validate_live_lows(value: &Value, run: &Path, worker_pid: u32, target_pid: u32, now: u64) -> bool {
+    live_lows_rejection(value, run, worker_pid, target_pid, now).is_none()
+}
+
+fn live_lows_rejection(value: &Value, run: &Path, worker_pid: u32, target_pid: u32, now: u64) -> Option<&'static str> {
     let timestamp = value["timestamp_ms"].as_u64().unwrap_or(0);
-    value["source"] == "presentmon" && value["phase"] == "capturing" && value["caught_up"] == true
-        && value["error"].is_null() && value["frame_count"].as_u64().unwrap_or(0) > 0
-        && value["worker_pid"].as_u64() == Some(worker_pid as u64)
-        && value["target_pid"].as_u64() == Some(target_pid as u64)
-        && timestamp > 0 && timestamp <= now && now - timestamp <= 5000
-        && live_lows_source_fresh(value, now.saturating_sub(timestamp))
-        && same_existing_path(Path::new(value["run_dir"].as_str().unwrap_or("")), run)
+    let start=value["window_start_ms"].as_u64().unwrap_or(0);
+    let end=value["window_end_ms"].as_u64().unwrap_or(0);
+    if value["phase"] != "capturing" { return Some("capture-not-running"); }
+    if value["reader_caught_up"] == false && value["valid"] != true { return Some("reader-backlog"); }
+    if value["source_age_ms"].as_u64().is_some_and(|age| age >= 2000) { return Some("frame-window-not-fresh"); }
+    if value["source"] != "presentmon" || value["statistics_version"] != 3 || value["caught_up"] != true
+        || value["valid"] != true || !value["error"].is_null() || value["frame_count"].as_u64().unwrap_or(0)==0 {
+        return Some("frame-data-incomplete");
+    }
+    if value["worker_pid"].as_u64()!=Some(worker_pid as u64) || value["target_pid"].as_u64()!=Some(target_pid as u64)
+        || !value["target_start_ms"].as_u64().is_some_and(|v|v>0) || !value["target_generation"].as_u64().is_some_and(|v|v>0)
+        || !same_existing_path(Path::new(value["run_dir"].as_str().unwrap_or("")), run) { return Some("target-or-worker-mismatch"); }
+    if start==0 || end<=start || end-start>1000 || end>now || now-end>=2000
+        || timestamp==0 || timestamp>now || now-timestamp>5000
+        || !live_lows_source_fresh(value,now.saturating_sub(timestamp)) { return Some("frame-window-not-fresh"); }
+    None
+}
+
+fn record_live_rejection(run:&Path, target_pid:u32, reason:&str) {
+    use std::io::Write;
+    static LAST:std::sync::Mutex<Option<std::time::Instant>>=std::sync::Mutex::new(None);
+    let mut last=LAST.lock().unwrap_or_else(|p|p.into_inner());
+    if last.is_some_and(|at|at.elapsed()<std::time::Duration::from_secs(10)){return;}
+    *last=Some(std::time::Instant::now());
+    let path=run.join("live-frame-rejections.jsonl");
+    if path.metadata().is_ok_and(|m|m.len()>256*1024){return;}
+    if let Ok(mut file)=std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _=writeln!(file,"{}",json!({"time":chrono::Utc::now().to_rfc3339(),"target_pid":target_pid,"reason":reason}));
+    }
 }
 
 fn live_lows_source_fresh(value: &Value, elapsed_ms: u64) -> bool {
-    let window=if value["statistics_version"]==2 {1000}else{3000};
+    let window=match value["statistics_version"].as_u64(){Some(3)=>2000,Some(2)=>1000,_=>3000};
     value["source_age_ms"].as_u64().and_then(|age| age.checked_add(elapsed_ms))
         .map(|age| age < window).unwrap_or(false)
 }
 
 fn live_lows_refresh_due(value: Option<&Value>, elapsed_ms: u64) -> bool {
-    elapsed_ms >= if value.is_some_and(|v|v["statistics_version"]!=2) { 1000 } else { 100 }
+    elapsed_ms >= if value.is_some_and(|v|!matches!(v["statistics_version"].as_u64(),Some(2|3))) { 1000 } else { 100 }
         || value.is_some_and(|value| !live_lows_source_fresh(value, elapsed_ms))
 }
 
-fn read_report_lows(target_pid: u32) -> Option<Value> {
-    let state: Value = serde_json::from_str(&std::fs::read_to_string(watcher_state_path().ok()?).ok()?).ok()?;
-    if !watcher_running() || state["StopRequested"] == true { return None; }
-    let root = backend_root().ok()?;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
-    for monitor in state["ActiveMonitors"].as_array()? {
+fn read_report_lows(target_pid: u32, previous:Option<&Value>) -> Result<Option<Value>, &'static str> {
+    if !watcher_running() { return Ok(None); }
+    let state_path = watcher_state_path().map_err(|_| "watcher-state-unavailable")?;
+    let state: Value = std::fs::read_to_string(state_path).ok()
+        .and_then(|text| serde_json::from_str(&text).ok()).ok_or("watcher-state-unavailable")?;
+    if state["StopRequested"] == true { return Ok(None); }
+    let root = backend_root().map_err(|_| "backend-unavailable")?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "clock-unavailable")?.as_millis() as u64;
+    let mut transient = None;
+    let monitors=state["ActiveMonitors"].as_array().ok_or("watcher-state-unavailable")?;
+    let previous_active=previous.is_none_or(|old|monitors.iter().any(|monitor|
+        monitor["MonitorPid"]==old["worker_pid"] && monitor["RunDir"].as_str().zip(old["run_dir"].as_str())
+            .is_some_and(|(a,b)|same_existing_path(Path::new(a),Path::new(b)))));
+    for monitor in monitors {
         let Some(worker_pid) = monitor["MonitorPid"].as_u64().and_then(|pid| u32::try_from(pid).ok()) else { continue };
         let Some(run) = monitor["RunDir"].as_str().map(Path::new) else { continue };
         let path = run.join("live-frame-stats.json");
-        if path.metadata().ok().map(|metadata| metadata.len() > 65536).unwrap_or(true) { continue; }
-        let Some(mut value) = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) else { continue };
-        if !validate_live_lows(&value, run, worker_pid, target_pid, now) { continue; }
+        if path.metadata().is_ok_and(|metadata| metadata.len() > 65536) { continue; }
+        let Some(mut value) = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<Value>(&text).ok()) else {
+            record_live_rejection(run,target_pid,"snapshot-read-unavailable");
+            transient = Some("snapshot-read-unavailable"); continue;
+        };
+        if let Some(reason)=live_lows_rejection(&value,run,worker_pid,target_pid,now) {
+            record_live_rejection(run,target_pid,reason);
+            if reason=="reader-backlog" && value["target_pid"].as_u64()==Some(target_pid as u64) { transient=Some(reason); }
+            continue;
+        }
+        if value["target_start_ms"].as_u64()!=live_target_start_ms(target_pid) {record_live_rejection(run,target_pid,"target-start-mismatch");continue;}
         let processes = watcher_process_snapshot(worker_pid);
         let Some(worker) = processes.process(sysinfo::Pid::from_u32(worker_pid)) else { continue };
         if value["worker_start_time_unix"].as_u64() != Some(worker.start_time())
             || !worker.exe().map(|exe| same_existing_path(exe, &root.join("FrameScopeMonitor.exe"))).unwrap_or(false)
-            || !worker.cmd().iter().any(|arg| arg == "--monitor-session") { continue; }
-        value["source_age_ms"] = json!(value["source_age_ms"].as_u64()?.saturating_add(
-            now.saturating_sub(value["timestamp_ms"].as_u64()?)));
-        return Some(value);
+            || !worker.cmd().iter().any(|arg| arg == "--monitor-session") { record_live_rejection(run,target_pid,"worker-identity-mismatch");continue; }
+        value["source_age_ms"] = json!(value["source_age_ms"].as_u64().unwrap_or(1000).saturating_add(
+            now.saturating_sub(value["timestamp_ms"].as_u64().unwrap_or(0))));
+        return Ok(Some(value));
     }
-    None
+    if previous_active {transient.map_or(Ok(None), Err)}else{Ok(None)}
+}
+
+fn update_live_frame_cache(cache: &mut Option<(std::time::Instant, Value)>,
+    read: Result<Option<Value>, &'static str>, now: std::time::Instant) {
+    match read {
+        Ok(Some(mut value)) => {
+            if let Some((at, previous))=cache.as_ref() {
+                let same_window=["target_pid","target_start_ms","target_generation","source","worker_pid",
+                    "worker_start_time_unix","run_dir","window_start_ms","window_end_ms","frame_count"]
+                    .iter().all(|field|previous[*field]==value[*field]);
+                if same_window {
+                    let age=previous["source_age_ms"].as_u64().unwrap_or(2000).saturating_add(
+                        now.saturating_duration_since(*at).as_millis().min(u64::MAX as u128) as u64);
+                    value["source_age_ms"]=json!(age.max(value["source_age_ms"].as_u64().unwrap_or(2000)));
+                }
+            }
+            *cache=live_lows_source_fresh(&value,0).then_some((now,value));
+        },
+        Ok(None) => *cache=None,
+        Err(_) => {
+            // A failed read cannot renew the original source or cache timestamp.
+            if !cache.as_ref().is_some_and(|(at,value)| live_lows_source_fresh(value,
+                now.saturating_duration_since(*at).as_millis().min(u64::MAX as u128) as u64)) { *cache=None; }
+        }
+    }
 }
 
 pub fn apply_report_lows(data: Value) -> Value {
     use std::sync::Mutex;
     use std::time::Instant;
-    static CACHE: Mutex<Option<(Instant, u32, Option<Value>)>> = Mutex::new(None);
-    let mut pid = data["target_pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).unwrap_or(0);
-    // A missing resident FPS target must not hide a valid worker stream.
-    // Use the foreground PID; read_report_lows still verifies run, worker,
-    // process path/start time, target identity and actual frame freshness.
-    #[cfg(windows)]
-    if pid == 0 {
-        unsafe {
-            let window = windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
-            if !window.is_null() {
-                windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(window, &mut pid);
-            }
-        }
-    }
+    struct Cache { identity: (u32, Option<u64>, u64), checked: Instant, frames: Option<(Instant,Value)> }
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+    let pid = data["target_pid"].as_u64().and_then(|pid| u32::try_from(pid).ok()).unwrap_or(0);
+    // The service owns target selection independently of frame freshness.
+    // A transient empty frame must not retarget the worker to another window.
     let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if cache.as_ref().map(|(at, cached_pid, value)| *cached_pid != pid ||
-        live_lows_refresh_due(value.as_ref(), at.elapsed().as_millis().min(u64::MAX as u128) as u64)).unwrap_or(true) {
-        *cache = Some((Instant::now(), pid, if pid > 0 { read_report_lows(pid) } else { None }));
+    let target_start=live_target_start_ms(pid);
+    let identity=(pid,target_start,data["target_generation"].as_u64().unwrap_or(0));
+    if cache.as_ref().is_none_or(|cached|cached.identity!=identity) {
+        *cache=Some(Cache {identity,checked:Instant::now(),frames:None});
     }
-    let value = cache.as_ref().and_then(|(at, _, value)| value.as_ref()
-        .filter(|value| live_lows_source_fresh(value, at.elapsed().as_millis().min(u64::MAX as u128) as u64)));
-    apply_frame_snapshot(data, pid, value)
+    let cached=cache.as_mut().unwrap();
+    if cached.frames.is_none() || live_lows_refresh_due(cached.frames.as_ref().map(|(_,v)|v),cached.checked.elapsed().as_millis() as u64) {
+        let read=if pid>0 && target_start.is_some() && data["target_start_ms"].as_u64()==target_start {read_report_lows(pid,cached.frames.as_ref().map(|(_,v)|v))}else{Ok(None)};
+        cached.checked=Instant::now();
+        update_live_frame_cache(&mut cached.frames,read,cached.checked);
+    }
+    let value=cached.frames.as_ref().filter(|(at,value)|live_lows_source_fresh(value,at.elapsed().as_millis() as u64)).map(|(at,value)|{
+        let mut value=value.clone();value["source_age_ms"]=json!(value["source_age_ms"].as_u64().unwrap_or(2000).saturating_add(at.elapsed().as_millis() as u64));value
+    });
+    let verified_pid=if target_start.is_some() && data["target_start_ms"].as_u64()==target_start {pid}else{0};
+    let selected=apply_frame_snapshot(data,verified_pid,value.as_ref());
+    static SOURCE:Mutex<Option<(u32,String,Instant)>>=Mutex::new(None);
+    let source=selected["fps_source"].as_str().unwrap_or("unavailable");
+    let mut previous=SOURCE.lock().unwrap_or_else(|p|p.into_inner());
+    if previous.as_ref().is_none_or(|(old_pid,old,at)|(*old_pid!=pid || old!=source) && at.elapsed().as_secs()>=5) {
+        log::info!("OSD frame source: pid={pid} source={source}");
+        *previous=Some((pid,source.into(),Instant::now()));
+    }
+    selected
 }
 
 fn apply_frame_snapshot(mut data: Value, pid: u32, value: Option<&Value>) -> Value {
     let value = value.filter(|value| pid > 0 && value["target_pid"].as_u64() == Some(pid as u64));
-    let resident_matches=pid>0&&data["target_pid"].as_u64()==Some(pid as u64);
-    let worker_v2=value.is_some_and(|value|value["statistics_version"]==2);
+    let resident_matches=pid>0&&data["target_pid"].as_u64()==Some(pid as u64)
+        && data["fps"].as_f64().is_some_and(|v|v.is_finite()&&v>0.0);
+    let worker_v2=value.is_some_and(|value|matches!(value["statistics_version"].as_u64(),Some(2|3))
+        && value["fps"].as_f64().is_some_and(|v|v.is_finite()&&v>0.0));
     for field in ["fps", "fps_1low", "fps_01low"] {
-        let worker=value.and_then(|value|value[field].as_f64()).filter(|v|v.is_finite()&&*v>=0.0);
-        let resident=resident_matches.then(||data[field].as_f64()).flatten().filter(|v|v.is_finite()&&*v>=0.0);
-        // A v2 worker supplies one complete frame stream. Legacy workers keep
-        // their FPS fallback behavior; the fresh resident stream is also usable.
-        let selected=if worker_v2 {worker}else if field=="fps" {resident.or(worker)}else{worker.or(resident)};
+        let worker=value.and_then(|value|value[field].as_f64()).filter(|v|v.is_finite()&&*v>0.0);
+        let resident=resident_matches.then(||data[field].as_f64()).flatten().filter(|v|v.is_finite()&&*v>0.0);
+        // Select the entire window, retaining missing ETW lows as missing.
+        let selected=if worker_v2 {worker}else{resident};
         data[field]=selected.map(|v|json!(v)).unwrap_or(Value::Null);
     }
-    if value.is_some(){data["target_pid"]=json!(pid);}
+    if worker_v2 {data["target_pid"]=json!(pid);data["target_start_ms"]=value.unwrap()["target_start_ms"].clone();data["fps_source"]=json!("presentmon");data["frame_snapshot"]=value.cloned().unwrap_or(Value::Null);}
+    else {data["fps_source"]=data["frame_snapshot"]["source"].clone();}
+    if pid==0 {data["target_pid"]=json!(0);data["target_start_ms"]=json!(0);}
+    if data["fps"].is_null(){
+        data["frame_snapshot"]=Value::Null;data["fps_source"]=json!("unavailable");
+        data["frame_unavailable_reason"]=json!(if pid==0{"waiting-target"}else{"waiting-frames"});
+    }else{
+        data["frame_unavailable_reason"]=Value::Null;
+        if let Some(end)=data["frame_snapshot"]["window_end_ms"].as_u64(){data["frame_snapshot"]["valid_until_ms"]=json!(end.saturating_add(2000));}
+    }
     data
+}
+
+pub(crate) fn validate_cached_overlay(mut data:Value,elapsed_ms:u64)->Value {
+    let pid=data["target_pid"].as_u64().and_then(|v|u32::try_from(v).ok()).unwrap_or(0);
+    let alive=pid>0 && data["target_start_ms"].as_u64().filter(|v|*v>0).is_some_and(|start|live_target_start_ms(pid)==Some(start));
+    let frame=&data["frame_snapshot"];
+    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|v|v.as_millis() as u64).unwrap_or(u64::MAX);
+    let fresh=frame["valid"]!=false && frame["window_end_ms"].as_u64().is_some_and(|end|end<=now && now-end<2000)
+        && frame["source_age_ms"].as_u64().is_some_and(|age|age.saturating_add(elapsed_ms)<2000);
+    if !alive || !fresh {
+        for field in ["fps","fps_1low","fps_01low","frame_snapshot"] {data[field]=Value::Null;}
+        data["fps_source"]=json!("unavailable");
+        data["frame_unavailable_reason"]=json!(if alive{"waiting-frames"}else{"waiting-target"});
+        if !alive{data["target_pid"]=json!(0);data["target_start_ms"]=json!(0);}
+    }
+    crate::overlay_items::enrich(data)
+}
+
+fn live_target_start_ms(pid:u32)->Option<u64> {
+    if pid==0{return None;}
+    #[cfg(windows)] unsafe {
+        use windows_sys::Win32::{Foundation::{CloseHandle,FILETIME,WAIT_TIMEOUT},System::Threading::*};
+        let process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE,0,pid);if process.is_null(){return None;}
+        if WaitForSingleObject(process,0)!=WAIT_TIMEOUT {CloseHandle(process);return None;}
+        let mut times:[FILETIME;4]=std::mem::zeroed();
+        let ok=GetProcessTimes(process,&mut times[0],&mut times[1],&mut times[2],&mut times[3]);
+        CloseHandle(process);
+        if ok==0{return None;}
+        (((times[0].dwHighDateTime as u64)<<32)|times[0].dwLowDateTime as u64).checked_div(10_000)?.checked_sub(11_644_473_600_000)
+    }
+    #[cfg(not(windows))] {None}
 }
 
 pub fn monitor_stop() -> Result<Value, String> {
@@ -801,17 +1013,13 @@ fn owned_state(owned: &mut OwnedWatcher) -> Result<Value, String> {
         owned.identity.start_time == 0 || !owned.identity.args.iter().any(|arg|arg.eq_ignore_ascii_case("--watcher")) {
         return Err("保留的监控启动身份不匹配，已取消退出".into());
     }
-    // An exited retained Child is authoritative. sysinfo can still return an
-    // exited process shell without exe metadata while its handle is retained.
-    if owned.child.try_wait().map_err(|e|e.to_string())?.is_none() {
-        let snapshot = watcher_process_snapshot(owned.identity.pid);
-        if let Some(process) = snapshot.process(sysinfo::Pid::from_u32(owned.identity.pid)) {
-            if process.start_time() != owned.identity.start_time ||
-                !process.exe().map(|p|same_existing_path(p, &owned.identity.exe)).unwrap_or(false) {
-                return Err("监控进程身份已改变，已取消退出".into());
-            }
-        }
-    }
+    verify_retained_watcher_process(&mut owned.child, &owned.identity, |identity| {
+        let snapshot = watcher_process_snapshot(identity.pid);
+        snapshot.process(sysinfo::Pid::from_u32(identity.pid)).map(|process|
+            process.start_time() == identity.start_time &&
+            process.exe().map(|p|same_existing_path(p, &identity.exe)).unwrap_or(false)
+        ).unwrap_or(true)
+    })?;
     if watcher_pid(&state)? != owned.identity.pid ||
         state["WatcherStartTimeUnix"].as_u64() != Some(owned.identity.start_time) {
         return Err("监控所有权尚未确认，已取消退出，请稍后重试".into());
@@ -825,45 +1033,102 @@ fn owned_state(owned: &mut OwnedWatcher) -> Result<Value, String> {
     Ok(state)
 }
 
+fn verify_retained_watcher_process(child: &mut std::process::Child, identity: &WatcherOwner,
+    probe: impl FnOnce(&WatcherOwner) -> bool) -> Result<(), String> {
+    // An exited retained Child is authoritative. sysinfo can still return an
+    // exited process shell without exe metadata while its handle is retained.
+    // Recheck after a mismatch: the child may have exited during the probe.
+    if child.try_wait().map_err(|e|e.to_string())?.is_none() && !probe(identity) &&
+        child.try_wait().map_err(|e|e.to_string())?.is_none() {
+        return Err("监控进程身份已改变，已取消退出".into());
+    }
+    Ok(())
+}
+
+static EXIT_RUNS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 pub fn shutdown_owned_monitor() -> Result<(), String> {
-    let mut slot = OWNED_WATCHER.lock().unwrap_or_else(|p|p.into_inner());
-    if let Some(owned) = slot.as_mut() {
-        let started = std::time::Instant::now();
-        let mut requested = false;
-        let mut budget = std::time::Duration::from_secs(45);
+    shutdown_monitor_with_progress(false,false,&|_|{})
+}
+
+pub fn shutdown_monitor_with_progress(preserve:bool,retry:bool,progress:&dyn Fn(Value)) -> Result<(), String> {
+    let mut slot=OWNED_WATCHER.lock().unwrap_or_else(|p|p.into_inner());
+    if let Some(owned)=slot.as_mut() {
+        if preserve {
+            #[cfg(windows)]
+            {owned.job.as_ref().ok_or("无法确认监测进程所有权")?.terminate()?;let _=owned.child.wait();}
+            #[cfg(not(windows))]
+            return Err("此平台无法安全终止受管监测".into());
+            for run in EXIT_RUNS.lock().unwrap_or_else(|p|p.into_inner()).iter() {
+                write_json_atomic(&run.join("exit-interrupted.json"),&json!({"reason":"user-preserved-raw-data","at":chrono::Utc::now().to_rfc3339(),"canRegenerate":true}))?;
+            }
+        } else {
+        let started=std::time::Instant::now();
+        let mut deadline=crate::host_shutdown::ProgressDeadline::new(started);
+        let mut requested=false;
         loop {
-            let exited = owned.child.try_wait().map_err(|e|e.to_string())?.is_some();
-            match owned_state(owned) {
-                Ok(state) => {
-                    if !requested && !exited {
-                        let reports = state["ActiveMonitors"].as_array().map(|v|v.len()).unwrap_or(0)
-                            + usize::from(state["GeneratingRunDir"].as_str().map(|s|!s.is_empty()).unwrap_or(false));
-                        budget = crate::host_shutdown::budget(reports);
-                        request_watcher_stop(&owned.root, &state, &owned.identity)?;
-                        requested = true;
-                    }
-                    if crate::host_shutdown::completed(exited, &state, owned.token.as_deref())? { break; }
+            let exited=owned.child.try_wait().map_err(|e|e.to_string())?.is_some();
+            let state=match owned_state(owned) {
+                Ok(state)=>state,
+                Err(_) if started.elapsed()<std::time::Duration::from_secs(15)&&!exited=>{
+                    std::thread::sleep(std::time::Duration::from_millis(100));continue;
                 }
-                Err(error) if started.elapsed() < std::time::Duration::from_secs(15) && !exited => {
-                    log::debug!("等待监控所有权发布: {error}");
+                Err(error)=>return Err(error),
+            };
+            let mut runs=EXIT_RUNS.lock().unwrap_or_else(|p|p.into_inner());
+            for raw in state["ActiveMonitors"].as_array().into_iter().flatten().filter_map(|m|m["RunDir"].as_str())
+                .chain(state["GeneratingRunDir"].as_str().filter(|s|!s.is_empty())) {
+                let run=checked_report_run(&resolved_data_root()?,Path::new(raw))?;
+                if !runs.contains(&run){runs.push(run);}
+            }
+            let details:Vec<_>=runs.iter().filter_map(|run|read_active_report_progress(run).map(|(percent,_,phase)|json!({"run":run.file_name(),"percent":percent,"phase":phase}))).collect();
+            let activity=json!({"phase":state["Phase"],"completed":state["CompletedRuns"],"active":state["ActiveMonitors"].as_array().map(Vec::len).unwrap_or(0),"reports":details});
+            progress(activity.clone());
+            deadline.observe(&activity,std::time::Instant::now());
+            if !requested&&!exited {request_watcher_stop(&owned.root,&state,&owned.identity)?;requested=true;}
+            if exited&&state["Phase"]=="stopped"&&state["StopErrorCode"]=="report-finalization-failed" {
+                if !retry{return Err("报告生成失败，原始记录已保留。可重试生成，或保留原始数据并退出。".into());}
+                if runs.is_empty(){return Err("没有可重试的报告记录，原始数据保持不变".into());}
+                for run in runs.iter(){
+                    progress(json!({"phase":"retrying-report","report":run.file_name()}));
+                    report_regeneration_scope(||regenerate_report_with_root(&owned.root,run,std::time::Duration::from_secs(600)))?;
                 }
-                Err(error) => return Err(error),
+                break;
             }
-            if started.elapsed() >= budget {
-                return Err("监控或报告收尾超时，已取消此次退出；程序和数据已保留，请稍后重试".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(runs);
+            if crate::host_shutdown::completed(exited,&state,owned.token.as_deref())?{break;}
+            if deadline.expired(std::time::Instant::now()){return Err("监测或报告连续十分钟没有进展，原始数据已保留。".into());}
+            std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        *slot = None;
+        }
+        *slot=None;
     }
     drop(slot);
-    let started = std::time::Instant::now();
-    while REGENERATING_RUN.lock().unwrap_or_else(|p|p.into_inner()).is_some() {
-        if started.elapsed() >= crate::host_shutdown::budget(1) {
-            return Err("手动报告生成尚未完成，已取消此次退出，请稍后重试".into());
+    let mut deadline=crate::host_shutdown::ProgressDeadline::new(std::time::Instant::now());
+    let mut waited_run=None;
+    loop {
+        let run=REGENERATING_RUN.lock().unwrap_or_else(|p|p.into_inner()).clone();
+        let Some(run)=run else{break};waited_run=Some(run.clone());
+        if preserve {
+            REGEN_CANCEL.store(true,std::sync::atomic::Ordering::SeqCst);
+            write_json_atomic(&run.join("exit-interrupted.json"),&json!({"reason":"user-preserved-raw-data","at":chrono::Utc::now().to_rfc3339(),"canRegenerate":true}))?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let state=read_active_report_progress(&run).map(|(percent,_,phase)|json!({"phase":phase,"percent":percent})).unwrap_or(json!({"phase":"generating"}));
+        progress(state.clone());deadline.observe(&state,std::time::Instant::now());
+        if deadline.expired(std::time::Instant::now()){return Err("报告生成长时间没有进展，原始数据已保留".into());}
+        std::thread::sleep(std::time::Duration::from_millis(150));
     }
+    if !preserve {
+        let failure=REGEN_FAILURE.lock().unwrap_or_else(|p|p.into_inner()).clone();
+        if let Some((run,error))=failure {
+            if waited_run.as_ref()==Some(&run) || retry {
+                if !retry {return Err(format!("报告生成失败，原始数据已保留：{error}"));}
+                progress(json!({"phase":"retrying-report","report":run.file_name()}));
+                report_regeneration_scope(||regenerate_report_with_root(&backend_root()?,&run,std::time::Duration::from_secs(600)))?;
+            }
+        }
+    }
+    EXIT_RUNS.lock().unwrap_or_else(|p|p.into_inner()).clear();
     Ok(())
 }
 
@@ -1223,38 +1488,43 @@ fn frame_stats_cache() -> std::sync::MutexGuard<'static, std::collections::HashM
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new())).lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn frame_stats(data_js: &Path) -> Option<Value> {
-    let mtime = std::fs::metadata(data_js).ok()?.modified().ok()?;
+enum ReportMetadataError { Read(String), Invalid(String) }
+
+fn frame_stats(data_js: &Path) -> Result<Option<Value>, ReportMetadataError> {
+    let metadata = match std::fs::metadata(data_js) {
+        Ok(value) => value,
+        Err(error) if error.kind()==std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ReportMetadataError::Read(error.to_string())),
+    };
+    let mtime=metadata.modified().map_err(|e|ReportMetadataError::Read(e.to_string()))?;
     {
-        let mut cache = frame_stats_cache();
+        let cache = frame_stats_cache();
         if let Some((cached_mtime, cached_value)) = cache.get(data_js) {
             if *cached_mtime == mtime {
-                return Some(cached_value.clone());
+                return Ok(Some(cached_value.clone()));
             }
         }
     }
     let parsed = frame_stats_uncached(data_js)?;
-    frame_stats_cache().insert(data_js.to_path_buf(), (mtime, parsed.clone()));
-    Some(parsed)
+    let mut cache=frame_stats_cache();
+    if cache.len()>=256 { cache.clear(); }
+    cache.insert(data_js.to_path_buf(), (mtime, parsed.clone()));
+    Ok(Some(parsed))
 }
 
-fn frame_stats_uncached(data_js: &Path) -> Option<Value> {
-    let text = std::fs::read_to_string(data_js).ok()?;
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    let value: Value = serde_json::from_str(&text[start..=end]).ok()?;
-    let stats = value.get("frameStats")?;
+fn frame_stats_uncached(data_js: &Path) -> Result<Value, ReportMetadataError> {
+    let text = std::fs::read_to_string(data_js).map_err(|e|ReportMetadataError::Read(e.to_string()))?;
+    let value=crate::report_data::parse(&text).map_err(ReportMetadataError::Invalid)?;
+    let stats = &value["frameStats"];
     let number = |key: &str| stats.get(key).and_then(Value::as_f64);
-    let average = number("average")?;
-    Some(json!({
-        "averageFps": (average * 10.0).round() / 10.0,
+    let average = number("average");
+    Ok(json!({
+        "createdAt": value["run"]["startLabel"],
+        "durationSeconds": value["run"]["durationSeconds"],
+        "averageFps": average.map(|v|(v * 10.0).round() / 10.0),
         "low1Fps": number("low1").map(|v| (v * 10.0).round() / 10.0),
         "low01Fps": number("low01").map(|v| (v * 10.0).round() / 10.0),
-        "frameTimeMs": if average > 0.0 {
-            Some((1000.0 / average * 100.0).round() / 100.0)
-        } else {
-            None
-        }
+        "frameTimeMs": average.filter(|v|*v>0.0).map(|v|(1000.0 / v * 100.0).round() / 100.0)
     }))
 }
 
@@ -1267,15 +1537,102 @@ fn read_status_json(run_dir: &Path) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-/// Report list: history.jsonl first (newest first), then a bounded scan of
-/// the data root as fallback (v1.2.2 semantics; expected layout
-/// <dataRoot>/<Target>/<run>/charts/framescope-interactive-report.html).
+/// Discover the complete history and data-root catalog; inspect at most one
+/// 50-item page. Report operations resolve IDs independently of pagination.
 pub fn reports_list() -> Result<Value, String> {
+    reports_list_query(&json!({}))
+}
+
+pub fn reports_catalog() -> Result<Value, String> {
+    let reports=discover_reports(&resolved_data_root()?, &history_path()?)?;
+    Ok(json!({"reports":reports.iter().map(|r|json!({
+        "id":r["id"],"targetName":r["targetName"],"createdAt":r["createdAt"],"kind":r["kind"]
+    })).collect::<Vec<_>>()}))
+}
+
+fn selected_report_page(reports: Vec<Value>, ids: &Value) -> Result<Value,String> {
+    let ids=ids.as_array().ok_or("报告标识列表无效")?;
+    if ids.len()>50 {return Err("每页最多50份报告".into());}
+    let mut selected=Vec::new();
+    let mut seen=std::collections::HashSet::new();
+    for id in ids {
+        let id=id.as_str().ok_or("报告标识无效")?;
+        if !seen.insert(id) {return Err("报告标识重复".into());}
+        selected.push(reports.iter().find(|r|r["id"]==id).ok_or("报告目录已变化，请刷新")?.clone());
+    }
+    Ok(json!({"status":"loaded","reports":selected}))
+}
+
+pub fn reports_list_query(query: &Value) -> Result<Value, String> {
     let data_root = resolved_data_root()?;
+    let reports = discover_reports(&data_root, &history_path()?)?;
+    let mut result = if let Some(ids)=query.get("ids") {selected_report_page(reports,ids)?} else {report_page(reports, query)};
+    let page = result["reports"].as_array_mut().unwrap();
+    for report in page.iter_mut() {
+        let run = PathBuf::from(report["runDir"].as_str().unwrap_or(""));
+        if let Err(error) = checked_report_run(&data_root, &run) {
+            report["artifactError"] = json!(error);
+            report["inspectionStatus"] = json!("unavailable");
+            continue;
+        }
+        if let Err(error) = validate_report_snapshot_paths(report) {
+            report["inspectionStatus"] = json!("checked");
+            report["artifactStatus"] = json!("incomplete"); report["artifactError"] = json!(error);
+            continue;
+        }
+        report["canOpen"] = json!(true); report["canOpenReport"] = json!(true);
+        if let Some(stats) = crate::report_cache::index(&run) {
+            for (key,value) in stats.as_object().unwrap() { report[key] = value.clone(); }
+        }
+    }
+    if let Err(error) = crate::report_inspection::apply(page, &backend_root()?, query["retryInspection"] == true) {
+        for report in page { if report["inspectionStatus"] != "checked" {
+            report["inspectionStatus"] = json!("unavailable"); report["artifactError"] = json!(error);
+        } }
+    }
+    result["dataRoot"] = json!(data_root.to_string_lossy());
+    Ok(result)
+}
+
+fn report_page(mut reports: Vec<Value>, query: &Value) -> Value {
+    let total = reports.len();
+    let search = query["search"].as_str().unwrap_or("").trim().to_lowercase();
+    let kind = query["kind"].as_str().unwrap_or("all");
+    reports.retain(|r| (kind == "all" || r["kind"] == kind)
+        && (search.is_empty() || format!("{} {} {}", r["targetName"].as_str().unwrap_or(""),
+            r["createdAt"].as_str().unwrap_or(""), r["id"].as_str().unwrap_or("")).to_lowercase().contains(&search)));
+    reports.sort_by(|a,b| report_created_ms(b).cmp(&report_created_ms(a))
+        .then_with(|| a["id"].as_str().cmp(&b["id"].as_str())));
+    let filtered = reports.len();
+    let pages = filtered.div_ceil(50).max(1);
+    let page = query["page"].as_u64().unwrap_or(1).max(1).min(pages as u64) as usize;
+    let reports: Vec<_> = reports.into_iter().skip((page-1)*50).take(50).collect();
+    json!({"status":"loaded", "count":reports.len(), "total":total, "filteredTotal":filtered,
+        "page":page, "pageSize":50, "pages":pages, "reports":reports})
+}
+
+fn report_created_ms(report: &Value) -> i64 {
+    let text = report["createdAt"].as_str().unwrap_or("");
+    if let Ok(time) = chrono::DateTime::parse_from_rfc3339(text) { return time.timestamp_millis(); }
+    use chrono::TimeZone;
+    for format in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%.f"] {
+        if let Ok(time) = chrono::NaiveDateTime::parse_from_str(text, format) {
+            if let Some(time) = chrono::Local.from_local_datetime(&time).earliest() { return time.timestamp_millis(); }
+        }
+    }
+    0
+}
+
+fn discover_reports(data_root: &Path, history_path: &Path) -> Result<Vec<Value>, String> {
     let mut seen: Vec<String> = Vec::new();
     let mut reports: Vec<Value> = Vec::new();
 
-    let history = std::fs::read_to_string(history_path()?).unwrap_or_default();
+    let history = match std::fs::read_to_string(history_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            && !history_path.parent().is_some_and(Path::is_file) => String::new(),
+        Err(error) => return Err(format!("无法读取报告历史：{error}")),
+    };
     for line in history.lines().rev() {
         let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
         let run_dir = entry.get("RunDir").and_then(Value::as_str).unwrap_or("");
@@ -1302,28 +1659,13 @@ pub fn reports_list() -> Result<Value, String> {
             }
             reports.push(report);
         }
-        if reports.len() >= 50 {
-            break;
-        }
     }
 
-    if reports.len() < 50 && data_root.is_dir() {
-        let mut targets: Vec<PathBuf> = std::fs::read_dir(&data_root)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.is_dir())
-            .collect();
+    if data_root.try_exists().map_err(|e|format!("无法检查报告目录：{e}"))? {
+        let mut targets = report_directories(data_root)?;
         targets.sort();
         for target_dir in targets {
-            let mut runs: Vec<PathBuf> = std::fs::read_dir(&target_dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .collect();
+            let mut runs = report_directories(&target_dir)?;
             runs.sort_by_key(|path| {
                 std::cmp::Reverse(path.metadata().and_then(|m| m.modified()).ok())
             });
@@ -1338,38 +1680,27 @@ pub fn reports_list() -> Result<Value, String> {
                 ) {
                     reports.push(report);
                 }
-                if reports.len() >= 50 {
-                    break;
-                }
-            }
-            if reports.len() >= 50 {
-                break;
             }
         }
     }
 
-    for report in &mut reports {
-        if let Some(run) = report["runDir"].as_str() {
-            if let Err(error) = checked_report_run(&data_root, Path::new(run)) {
-                report["artifactError"] = json!(error);
-            }
-        }
+    Ok(reports)
+}
+
+fn report_directories(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(directory).map_err(|e|format!("无法扫描报告目录 {}：{e}", directory.display()))? {
+        let entry = entry.map_err(|e|format!("无法读取报告目录项：{e}"))?;
+        if entry.file_type().map_err(|e|format!("无法检查报告目录项：{e}"))?.is_dir() { paths.push(entry.path()); }
     }
-    if let Err(error) = inspect_report_entries(&mut reports) {
-        for report in &mut reports { report["artifactError"] = json!(error); }
-    }
-    Ok(json!({
-        "status": "loaded",
-        "dataRoot": data_root.to_string_lossy(),
-        "count": reports.len(),
-        "reports": reports
-    }))
+    Ok(paths)
 }
 
 fn build_report_entry(run_dir: &str, html: &str, seen: &mut Vec<String>) -> Option<Value> {
     let run_path = Path::new(run_dir);
-    if !run_path.is_dir() { return None; }
-    let id = report_id(run_dir);
+    let normalized = std::fs::canonicalize(run_path).unwrap_or_else(|_| run_path.to_path_buf());
+    let identity = normalized.to_string_lossy().trim_start_matches("\\\\?\\").replace('/', "\\");
+    let id = report_id(&identity);
     if seen.iter().any(|existing| existing.eq_ignore_ascii_case(&id)) {
         return None;
     }
@@ -1389,8 +1720,14 @@ fn build_report_entry(run_dir: &str, html: &str, seen: &mut Vec<String>) -> Opti
     // The generator's manifest reflects what was actually built: a regenerate
     // can upgrade a worker-preclassified diagnostic stub into a full report
     // (anti-cheat fallback series from ETW FPS samples). Prefer it.
+    let mut duration = Value::Null;
+    let mut manifest_start = None;
+    let mut manifest_stats = Value::Null;
     if let Ok(manifest_text) = std::fs::read_to_string(run_path.join("charts").join("framescope-interactive-manifest.json")) {
         if let Ok(manifest) = serde_json::from_str::<Value>(&manifest_text) {
+            manifest_stats = manifest["frameStats"].clone();
+            duration = manifest["durationSeconds"].as_f64().filter(|v|v.is_finite() && *v >= 0.0).map(|v|json!(v)).unwrap_or(Value::Null);
+            manifest_start = manifest["startedAt"].as_str().or(manifest["startTime"].as_str()).map(str::to_string);
             if let Some(manifest_kind) = manifest.get("reportKind").and_then(Value::as_str) {
                 let manifest_kind = manifest_kind.to_ascii_lowercase();
                 if matches!(manifest_kind.as_str(), "full" | "partial" | "diagnostic" | "error") {
@@ -1399,12 +1736,9 @@ fn build_report_entry(run_dir: &str, html: &str, seen: &mut Vec<String>) -> Opti
             }
         }
     }
-    let stats = frame_stats(&run_path.join("charts").join("framescope-interactive-data.js"))
-        .unwrap_or_else(|| {
-            json!({"averageFps": null, "low1Fps": null, "low01Fps": null, "frameTimeMs": null})
-        });
+    let stats = crate::report_cache::summary(&json!({"frameStats":manifest_stats}));
     let run_start = run_timestamp_unix(run_path);
-    let created = run_start.map(format_unix_local).unwrap_or_default();
+    let created = manifest_start.unwrap_or_else(||run_start.map(format_unix_local).unwrap_or_default());
     let target_name = run_path
         .parent()
         .and_then(|parent| parent.file_name())
@@ -1416,14 +1750,14 @@ fn build_report_entry(run_dir: &str, html: &str, seen: &mut Vec<String>) -> Opti
         "targetName": target_name,
         "processName": "",
         "createdAt": created,
-        "durationSeconds": null,
+        "durationSeconds": duration,
         "kind": kind,
         "runDir": run_dir,
         "reportHtml": html,
         "averageFps": stats["averageFps"], "low1Fps": stats["low1Fps"],
         "low01Fps": stats["low01Fps"], "frameTimeMs": stats["frameTimeMs"],
         "frameCount": status.as_ref().and_then(|value| value.get("ReportFrameCount")).cloned().unwrap_or(Value::Null),
-        "artifactStatus": "incomplete",
+        "artifactStatus": null, "inspectionStatus": "pending",
         "canOpen": false, "canOpenReport": false,
         "canRegenerate": false
     }))
@@ -1445,30 +1779,33 @@ fn require_report_inspection_protocol(generator: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_report_inspections(reports: &mut [Value], response: &Value) -> Result<(), String> {
+pub(crate) fn apply_report_inspections(reports: &mut [Value], response: &Value) -> Result<(), String> {
     if response["protocol"] != REPORT_INSPECTION_PROTOCOL || response["status"] != "inspected" {
         return Err("invalid report inspection protocol".into());
     }
     let items = response["reports"].as_array().ok_or("report inspection array missing")?;
     if items.len() > 50 { return Err("report inspection exceeds list limit".into()); }
     for report in reports {
-        if report.get("artifactError").is_some() { continue; }
+        if report["artifactError"].as_str().is_some_and(|e| !e.is_empty()) { continue; }
         let run = Path::new(report["runDir"].as_str().ok_or("report run missing")?);
         let matches: Vec<_> = items.iter().filter(|item| item["runDir"].as_str()
             .map(|item| same_existing_path(Path::new(item), run)).unwrap_or(false)).collect();
-        if matches.len() != 1 { report["artifactError"] = json!("report inspection result missing or ambiguous"); continue; }
+        if matches.len() != 1 { report["inspectionStatus"] = json!("unavailable"); report["artifactError"] = json!("report inspection result missing or ambiguous"); continue; }
         let item = matches[0];
+        if item["inspectionStatus"] == "unavailable" { report["inspectionStatus"] = json!("unavailable"); report["artifactError"] = item["error"].clone(); continue; }
         let status = item["artifactStatus"].as_str().unwrap_or("");
         let kind = item["reportKind"].as_str().unwrap_or("");
-        if !matches!(status, "complete" | "legacy-readable" | "incomplete" | "inputs-changed")
+        if !matches!(status, "complete" | "legacy-readable" | "raw-unavailable-readable" | "incomplete" | "inputs-changed")
             || !matches!(kind, "full" | "partial" | "diagnostic" | "error")
             || !item["canOpen"].is_boolean() || !item["canRegenerate"].is_boolean() {
-            report["artifactError"] = json!("report inspection fields invalid"); continue;
+            report["inspectionStatus"] = json!("unavailable"); report["artifactError"] = json!("report inspection fields invalid"); continue;
         }
         report["artifactStatus"] = json!(status);
+        report["inspectionStatus"] = json!("checked");
         report["kind"] = json!(kind);
-        report["durationSeconds"] = item["durationSeconds"].as_f64().filter(|v| v.is_finite() && *v >= 0.0).map(|v| json!(v)).unwrap_or(Value::Null);
-        let can_open = matches!(status, "complete" | "legacy-readable") && item["canOpen"] == true;
+        if let Some(duration) = item["durationSeconds"].as_f64().filter(|v| v.is_finite() && *v >= 0.0) { report["durationSeconds"] = json!(duration); }
+        let can_open = (matches!(status, "complete" | "legacy-readable" | "raw-unavailable-readable") && item["canOpen"] == true)
+            || (status == "inputs-changed" && report["canOpenReport"] == true);
         report["canOpen"] = json!(can_open); report["canOpenReport"] = json!(can_open);
         report["canRegenerate"] = item["canRegenerate"].clone();
         report["artifactError"] = item["error"].clone();
@@ -1483,6 +1820,69 @@ fn inspect_report_entries(reports: &mut [Value]) -> Result<(), String> {
     inspect_report_entries_with_root(reports, &backend_root()?)
 }
 
+pub(crate) fn report_inspection_stamp(run: &Path, root: &Path) -> Option<String> {
+    let mut stamp = root.to_string_lossy().into_owned();
+    for path in ["status.json", "summary.json", "presentmon.csv", "process-samples.csv", "system-samples.csv",
+        "hardware-samples.csv", "cpu-core-samples.csv", "cpu-voltage-samples.csv", "cpu-vid-samples.csv",
+        "charts/framescope-interactive-manifest.json", "charts/framescope-interactive-data.js", "charts/framescope-interactive-report.html"]
+        .iter().map(|name|run.join(name)).chain(std::iter::once(root.join("FrameScopeReportGenerator.exe"))) {
+        match path.metadata() {
+            Ok(meta) => stamp.push_str(&format!("|{}:{:?}:{:?}",meta.len(),meta.modified().ok()?,meta.created().ok())),
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound => stamp.push_str("|missing"),
+            Err(_) => return None,
+        }
+    }
+    Some(stamp)
+}
+
+fn inspect_report_page(reports: &mut [Value]) -> Result<(), String> {
+    inspect_report_page_with_root(reports, &backend_root()?, std::time::Duration::from_secs(30))
+}
+
+fn inspect_report_page_with_root(reports: &mut [Value], root: &Path, budget: std::time::Duration) -> Result<(), String> {
+    use std::{collections::HashMap, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf,(String,Instant,Value)>>> = OnceLock::new();
+    let cache=CACHE.get_or_init(||Mutex::new(HashMap::new()));
+    let mut pending=Vec::new();
+    for (index,report) in reports.iter_mut().enumerate() {
+        if report["artifactError"].as_str().is_some_and(|e| !e.is_empty()) { continue; }
+        let run=PathBuf::from(report["runDir"].as_str().ok_or("report run missing")?);
+        let stamp=report_inspection_stamp(&run,root);
+        let cached=cache.lock().unwrap_or_else(|p|p.into_inner()).get(&run).cloned();
+        if let Some((_,_,value))=cached.filter(|(key,at,_)|Some(key)==stamp.as_ref() && at.elapsed()<Duration::from_secs(30)) {
+            for key in ["artifactStatus","inspectionStatus","artifactError","canOpen","canOpenReport","canRegenerate","kind"] {
+                if let Some(value)=value.get(key) { report[key]=value.clone(); }
+            }
+        } else { pending.push((index,run,stamp)); }
+    }
+    let deadline=Instant::now()+budget;
+    for batch in pending.chunks(10) {
+        let paths:Vec<_>=batch.iter().map(|(_,run,_)|run.to_string_lossy().into_owned()).collect();
+        let refs:Vec<_>=paths.iter().map(String::as_str).collect();
+        let result=match deadline.checked_duration_since(Instant::now()) {
+            Some(remaining)=>inspect_report_runs(root,&refs,remaining),
+            None=>Err("报告检查超时，请稍后重试".into()),
+        };
+        for (index,run,before) in batch {
+            let report=&mut reports[*index];
+            let applied=match &result {
+                Ok(response)=>apply_report_inspections(std::slice::from_mut(report),response),
+                Err(error)=>Err(error.clone()),
+            };
+            if let Err(error)=applied { report["inspectionStatus"]=json!("unavailable");report["artifactError"]=json!(error); }
+            if before.is_some() && *before==report_inspection_stamp(run,root) && report["inspectionStatus"]=="checked" {
+                let mut stored=cache.lock().unwrap_or_else(|p|p.into_inner());
+                if stored.len()>=256 { stored.retain(|_,(_,at,_)|at.elapsed()<Duration::from_secs(30));if stored.len()>=256 {stored.clear();} }
+                stored.insert(run.clone(),(before.clone().unwrap(),Instant::now(),report.clone()));
+            } else if report["inspectionStatus"]=="checked" {
+                report["inspectionStatus"]=json!("unavailable");report["artifactError"]=json!("报告正在更新，请稍后重试");
+                report["canOpen"]=json!(false);report["canOpenReport"]=json!(false);report["canRegenerate"]=json!(false);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn inspect_report_entries_with_root(reports: &mut [Value], root: &Path) -> Result<(), String> {
     let runs: Vec<_> = reports.iter().filter(|report| report.get("artifactError").is_none())
         .filter_map(|report| report["runDir"].as_str()).collect();
@@ -1491,7 +1891,7 @@ fn inspect_report_entries_with_root(reports: &mut [Value], root: &Path) -> Resul
     apply_report_inspections(reports, &response)
 }
 
-fn inspect_report_runs(root: &Path, runs: &[&str], timeout: std::time::Duration) -> Result<Value, String> {
+pub(crate) fn inspect_report_runs(root: &Path, runs: &[&str], timeout: std::time::Duration) -> Result<Value, String> {
     use std::io::Write;
     if runs.len() > 50 { return Err("report list exceeds inspection limit".into()); }
     let generator = root.join("FrameScopeReportGenerator.exe");
@@ -1528,22 +1928,17 @@ fn format_unix_local(seconds: u64) -> String {
 }
 
 fn find_report(id: &str) -> Result<Value, String> {
-    let list = reports_list()?;
-    list.get("reports")
-        .and_then(Value::as_array)
-        .and_then(|reports| {
-            reports
-                .iter()
-                .find(|report| {
-                    report
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(|value| value.eq_ignore_ascii_case(id))
-                        .unwrap_or(false)
-                })
-                .cloned()
-        })
-        .ok_or_else(|| format!("report not found: {id}"))
+    let data_root = resolved_data_root()?;
+    let mut report = discover_reports(&data_root, &history_path()?)?.into_iter()
+        .find(|report| report["id"].as_str().is_some_and(|value| value.eq_ignore_ascii_case(id)))
+        .ok_or_else(|| format!("report not found: {id}"))?;
+    let run = PathBuf::from(report["runDir"].as_str().ok_or("report run missing")?);
+    checked_report_run(&data_root, &run)?;
+    if let Ok(Some(stats)) = frame_stats(&run.join("charts/framescope-interactive-data.js")) {
+        for key in ["averageFps", "low1Fps", "low01Fps", "frameTimeMs"] { report[key] = stats[key].clone(); }
+    }
+    if let Err(error) = inspect_report_entries(std::slice::from_mut(&mut report)) { report["artifactError"] = json!(error); }
+    Ok(report)
 }
 
 fn shell_open(path: &str) -> Result<(), String> {
@@ -1578,24 +1973,180 @@ fn run_report_generator(command: std::process::Command, timeout: std::time::Dura
     crate::bounded_process::run(command, timeout)
 }
 
-pub fn report_open(id: &str) -> Result<Value, String> {
-    let report = find_report(id)?;
-    if report["canOpenReport"] != true { return Err("报告不完整或输入已变化，请重新生成".into()); }
-    let run = Path::new(report["runDir"].as_str().ok_or("report run missing")?);
-    checked_report_run(&resolved_data_root()?, run)?;
-    let html = report
-        .get("reportHtml")
-        .and_then(Value::as_str)
-        .ok_or("report path missing")?;
-    if !same_existing_path(Path::new(html), &run.join("charts").join("framescope-interactive-report.html")) {
+fn locate_report(id: &str) -> Result<Value, String> {
+    let root = resolved_data_root()?;
+    let report = discover_reports(&root, &history_path()?)?.into_iter()
+        .find(|r| r["id"].as_str().is_some_and(|value|value.eq_ignore_ascii_case(id)))
+        .ok_or("报告不存在")?;
+    checked_report_run(&root, Path::new(report["runDir"].as_str().ok_or("报告目录不存在")?))?;
+    Ok(report)
+}
+
+fn validate_report_snapshot_paths(report: &Value) -> Result<(), String> {
+    let run = Path::new(report["runDir"].as_str().ok_or("报告目录不存在")?);
+    let charts = run.join("charts");
+    let expected_html = charts.join("framescope-interactive-report.html");
+    let expected_data = charts.join("framescope-interactive-data.js");
+    let manifest:Value = serde_json::from_slice(&std::fs::read(charts.join("framescope-interactive-manifest.json")).map_err(|e|e.to_string())?)
+        .map_err(|_|"报告清单损坏，请重新生成")?;
+    for (key,expected) in [("report",&expected_html),("data",&expected_data)] {
+        let raw = Path::new(manifest[key].as_str().ok_or("报告清单缺少路径")?);
+        let path = if raw.is_absolute() {raw.to_path_buf()} else {run.join(raw)};
+        if !same_existing_path(&path,expected) { return Err("报告清单路径不属于当前记录".into()); }
+        let canonical = std::fs::canonicalize(expected).map_err(|e|e.to_string())?;
+        if !canonical.starts_with(std::fs::canonicalize(run).map_err(|e|e.to_string())?) {
+            return Err("报告产物路径不属于当前记录".into());
+        }
+    }
+    if !same_existing_path(Path::new(report["reportHtml"].as_str().ok_or("报告路径不存在")?), &expected_html) {
         return Err("报告路径不属于当前记录".into());
     }
-    shell_open(html)?;
-    Ok(json!({"status": "opened", "reportHtml": html}))
+    Ok(())
+}
+
+pub(crate) fn load_report_snapshot(report:&Value) -> Result<std::sync::Arc<Value>, crate::report_cache::ReadError> {
+    let run = Path::new(report["runDir"].as_str().ok_or_else(||"报告目录不存在".to_string())?);
+    checked_report_run(&resolved_data_root()?, run)?;
+    validate_report_snapshot_paths(report)?;
+    crate::report_cache::load(run, || {
+        let guard = lock_report_for_delete(run)?;
+        validate_report_snapshot_paths(report)?;
+        Ok(guard)
+    })
+}
+
+fn report_snapshot(id:&str) -> Result<std::sync::Arc<Value>,String> {
+    if id == "sample" { return Ok(std::sync::Arc::new(crate::report_data::parse(include_str!("../../public/samples/charts/framescope-interactive-data.js"))?)); }
+    load_report_snapshot(&locate_report(id)?).map_err(|e|e.to_string())
+}
+
+pub fn report_data(id: &str) -> Result<Value, String> {
+    report_payload(id, false)
+}
+
+pub fn report_overview(id: &str) -> Result<Value, String> {
+    report_payload(id, true)
+}
+
+pub fn report_ai_context(id:&str)->Result<Value,String> {
+    let report=locate_report(id)?;
+    let data=match load_report_snapshot(&report) {
+        Ok(data)=>data,
+        Err(crate::report_cache::ReadError::Unavailable(_))=>load_report_snapshot(&report).map_err(|e|e.to_string())?,
+        Err(error)=>return Err(error.to_string()),
+    };
+    let mut overview=crate::report_cache::overview(&data);
+    let times=data["fps"]["t"].as_array().cloned().unwrap_or_default();
+    let mut low_windows:Vec<_>=data["fps"]["low1"].as_array().into_iter().flatten().enumerate()
+        .filter_map(|(i,value)|Some((times.get(i)?.as_f64()?,value.as_f64()?)))
+        .filter(|(time,value)|time.is_finite()&&value.is_finite()&&*value>0.).collect();
+    low_windows.sort_by(|a,b|a.1.total_cmp(&b.1));
+    let span=data["fps"]["bucketMs"].as_f64().unwrap_or(1000.)/1000.;
+    overview["lowFpsWindows"]=json!(low_windows.into_iter().take(12).map(|(time,value)|json!({"startSeconds":time,"endSeconds":time+span,"low1Fps":value,"note":"按报告采样区间 Low 排序，须结合其他指标分析原因"})).collect::<Vec<_>>());
+    // Hash the exact envelope consumed by the worker, including its overview.
+    // Regeneration cannot change the contents of this conversation's snapshot.
+    let snapshot=serde_json::to_vec(&json!({"data":&*data,"overview":overview})).map_err(|e|e.to_string())?;
+    let hash=sha256_bytes(&snapshot).iter().map(|v|format!("{v:02x}")).collect::<String>();
+    let directory=PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("无法定位本地报告快照目录")?)
+        .join("FrameScopeMonitor/report-ai-snapshots");
+    std::fs::create_dir_all(&directory).map_err(|e|e.to_string())?;
+    let path=directory.join(format!("{hash}.json"));
+    if !path.exists() {
+        let temporary=directory.join(format!("{hash}-{}.tmp",format!("{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos())));
+        std::fs::write(&temporary,&snapshot).map_err(|e|e.to_string())?;
+        if let Err(error)=std::fs::rename(&temporary,&path) {
+            let _=std::fs::remove_file(&temporary);
+            if !path.exists(){return Err(error.to_string());}
+        }
+    }
+    Ok(json!({"reportId":id,"dataPath":path,"snapshotSha256":hash}))
+}
+
+fn report_payload(id:&str, overview:bool) -> Result<Value,String> {
+    let data = report_snapshot(id)?;
+    let title=format!("{} · {} — FrameScope 报告",data["target"]["displayName"].as_str().or(data["target"]["processName"].as_str()).unwrap_or("未知进程"),data["run"]["startLabel"].as_str().unwrap_or(""));
+    let warning = report_statistics_outdated(&data).then_some("正在显示原统计版本；需要更新时请重新生成报告。");
+    Ok(json!({"title":title,"data":if overview {crate::report_cache::overview(&data)} else {(*data).clone()},"upgradeWarning":warning}))
+}
+
+pub fn report_section(id:&str, section:&str) -> Result<Value,String> {
+    let data = report_snapshot(id)?;
+    crate::report_cache::section(&data, section)
+}
+
+pub fn report_inspection(id:&str, retry:bool) -> Result<Value,String> {
+    if id=="sample" {return Ok(json!({"inspectionStatus":"checked","artifactStatus":"sample"}));}
+    let mut report=locate_report(id)?;
+    validate_report_snapshot_paths(&report)?;
+    report["canOpen"]=json!(true);report["canOpenReport"]=json!(true);
+    crate::report_inspection::apply(std::slice::from_mut(&mut report),&backend_root()?,retry)?;
+    Ok(report)
+}
+
+fn upgrade_report_statistics(run:&Path,report:&Value)->Result<(),String>{
+    upgrade_report_statistics_with_root(&backend_root()?,run,report,std::time::Duration::from_secs(120))
+}
+
+fn report_statistics_outdated(data:&Value)->bool {
+    data["statisticsVersion"].as_u64().unwrap_or(0)<3 || data["statisticsRevision"].as_u64().unwrap_or(0)<1
+}
+
+fn upgrade_report_statistics_with_root(root:&Path,run:&Path,report:&Value,budget:std::time::Duration)->Result<(),String>{
+    let _operation=REPORT_OPERATION.try_lock().map_err(|_|"报告升级正在处理，请稍后重试")?;
+    ensure_not_closing()?;
+    if report["canRegenerate"]!=true{return Err("原始数据不足，无法升级统计。".into());}
+    // Another reader may have completed the upgrade while this request was queued.
+    let source=std::fs::read_to_string(run.join("charts/framescope-interactive-data.js")).map_err(|e|e.to_string())?;
+    if !report_statistics_outdated(&crate::report_data::parse(&source)?){return Ok(());}
+    let inspected=inspect_report_runs(root,&[run.to_str().ok_or("invalid run path")?],budget.min(std::time::Duration::from_secs(30)))?;
+    let current=&inspected["reports"][0];
+    let fingerprint=current["currentInputFingerprint"].as_str().filter(|s|!s.is_empty()).ok_or("原始数据指纹不可用")?;
+    if current["currentInputFingerprintStable"]!=true||current["canRegenerate"]!=true{return Err("原始数据尚未稳定，稍后再升级。".into());}
+    let failure_path=run.join("statistics-upgrade-failure.json");
+    if let Ok(text)=std::fs::read_to_string(&failure_path) {
+        if let Ok(previous)=serde_json::from_str::<Value>(&text) {
+            if previous["version"]==3&&previous["revision"]==1&&previous["fingerprint"]==fingerprint {
+                return Err(format!("此前升级未完成：{}。可点击重新生成手动重试。",previous["error"].as_str().unwrap_or("未知原因")));
+            }
+        }
+    }
+    // Existing generator owns the cross-process operation lock and transactional publish.
+    let result=regenerate_report_with_root(root,run,budget).and_then(|_|{
+        let source=std::fs::read_to_string(run.join("charts/framescope-interactive-data.js")).map_err(|e|e.to_string())?;
+        if report_statistics_outdated(&crate::report_data::parse(&source)?) {
+            return Err("报告生成器未提供当前统计版本，请更新程序后重试".into());
+        }
+        Ok(())
+    });
+    match result {
+        Ok(_)=>Ok(()),
+        Err(error)=>{
+            write_json_atomic(&failure_path,&json!({"version":3,"revision":1,"fingerprint":fingerprint,"error":error}))?;
+            Err(error)
+        }
+    }
+}
+
+pub fn report_progress(id:&str)->Value {
+    let run=REGENERATING_RUN.lock().unwrap_or_else(|p|p.into_inner()).clone();
+    let Some(run)=run.filter(|path|report_id(&path.to_string_lossy())==id) else{return json!({"active":false});};
+    let progress=read_active_report_progress(&run);
+    json!({"active":true,"percent":progress.as_ref().map(|p|p.0),"phase":progress.as_ref().map(|p|&p.2)})
+}
+
+pub fn report_acknowledge(id:&str,token:&str)->Result<(),String>{
+    if token.len()!=32||!token.bytes().all(|b|b.is_ascii_hexdigit()){return Err("无效请求".into());}
+    let report=locate_report(id)?;
+    let run=checked_report_run(&resolved_data_root()?,Path::new(report["runDir"].as_str().ok_or("记录不存在")?))?;
+    let request=run.join("report-open-request.json");
+    let current:Value=serde_json::from_slice(&std::fs::read(&request).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    if current["token"]!=token||current["id"]!=id{return Err("报告打开请求已失效".into());}
+    write_json_atomic(&run.join("report-open-ack.json"),&json!({"id":id,"token":token,"ready":true}))?;
+    std::fs::write(run.join("report-opened.flag"),chrono::Local::now().to_rfc3339()).map_err(|e|e.to_string())
 }
 
 pub fn report_open_directory(id: &str) -> Result<Value, String> {
-    let report = find_report(id)?;
+    let report = locate_report(id)?;
     let run_dir = report
         .get("runDir")
         .and_then(Value::as_str)
@@ -1747,13 +2298,17 @@ fn report_regeneration_scope<T>(operation: impl FnOnce() -> Result<T, String>) -
 }
 
 fn regenerate_report_with_root(root: &Path, run_path: &Path, budget: std::time::Duration) -> Result<Value, String> {
+    REGEN_CANCEL.store(false,std::sync::atomic::Ordering::SeqCst);
+    *REGEN_FAILURE.lock().unwrap_or_else(|p|p.into_inner())=None;
     *REGENERATING_RUN.lock().unwrap_or_else(|p|p.into_inner()) = Some(run_path.to_path_buf());
     let _regeneration = ReportRegeneration;
-    let started = std::time::Instant::now();
-    // Reserve terminal publication time inside the same business budget.
-    let process_budget = budget.saturating_sub(std::time::Duration::from_millis(250).min(budget / 4));
-    let remaining = || process_budget.checked_sub(started.elapsed()).filter(|d| !d.is_zero())
-        .ok_or_else(|| "报告生成超时（总期限包含检查与状态发布）".to_string());
+    // The generator renews its idle deadline only when actual report progress changes.
+    // Inspection remains bounded independently; total report duration is not a failure.
+    let remaining = || -> Result<std::time::Duration,String> {
+        if REGEN_CANCEL.load(std::sync::atomic::Ordering::SeqCst) { return Err("已取消报告生成，原始数据已保留".into()); }
+        if budget.is_zero() { return Err("报告启动期限已过，请重试".into()); }
+        Ok(std::time::Duration::from_secs(600))
+    };
     let inspect = || -> Result<Value, String> {
         let response = inspect_report_runs(root, &[run_path.to_str().ok_or("run directory is not UTF-8")?],
             remaining()?.min(std::time::Duration::from_secs(30)))?;
@@ -1776,7 +2331,17 @@ fn regenerate_report_with_root(root: &Path, run_path: &Path, budget: std::time::
         let mut command = std::process::Command::new(root.join("FrameScopeReportGenerator.exe"));
         command.arg(report_tool_path(run_path)?).arg("--progress").arg(report_tool_path(&run_path.join("report-progress.json"))?)
             .arg("--input-fingerprint").arg(before["currentInputFingerprint"].as_str().unwrap()).current_dir(root);
-        let (status, _, stderr) = run_report_generator(command, remaining()?)?;
+        let (status, _, stderr) = if HOST_CLOSING.load(std::sync::atomic::Ordering::SeqCst) {
+            crate::bounded_process::run_controlled(command,std::time::Duration::from_secs(600),Some(&|| {
+                if REGEN_CANCEL.load(std::sync::atomic::Ordering::SeqCst) { return Err("已取消报告生成，原始数据已保留".into()); }
+                Ok(read_active_report_progress(run_path).map(|(percent,_,phase)|json!({"percent":percent,"phase":phase})).unwrap_or(Value::Null))
+            }))?
+        } else {
+            crate::bounded_process::run_controlled(command,remaining()?,Some(&|| {
+                if REGEN_CANCEL.load(std::sync::atomic::Ordering::SeqCst) { return Err("已取消报告生成，原始数据已保留".into()); }
+                Ok(read_active_report_progress(run_path).map(|(percent,_,phase)|json!({"percent":percent,"phase":phase})).unwrap_or(Value::Null))
+            }))?
+        };
         if !status.success() { return Err(format!("report generation failed with status {status}: {}",
             String::from_utf8_lossy(&stderr).chars().take(4096).collect::<String>())); }
         let after = inspect()?;
@@ -1793,6 +2358,7 @@ fn regenerate_report_with_root(root: &Path, run_path: &Path, budget: std::time::
             "frameCount":status["ReportFrameCount"],"hasFrameData":status["ReportHasFrameData"],"canRetry":false}))
     })();
     if let Err(error) = &result {
+        *REGEN_FAILURE.lock().unwrap_or_else(|p|p.into_inner())=Some((run_path.to_path_buf(),error.clone()));
         let phase = if error.contains("超时") { "timeout" } else { "failed" };
         if let Err(publication) = publish_regeneration_state(run_path,phase,Some(error)) {
             return Err(format!("{error}; failure evidence publication failed: {publication}"));
@@ -1860,7 +2426,6 @@ mod graceful_stop_tests {
         }
     }
 
-
     #[test]
     fn watcher_owner_snapshot_loads_real_child_identity_before_stop_validation() {
         use std::io::{BufRead, BufReader};
@@ -1918,51 +2483,6 @@ fn main() {
         let result = request_watcher_stop(&root, &state, &owner);
         assert!(result.is_ok(), "real matching child identity rejected: {result:?}");
         assert!(watcher_stop_path(&root, &state).unwrap().is_file());
-    }
-
-    #[test]
-    fn exited_owned_child_with_wrong_config_cannot_complete_shutdown() {
-        let (root, mut state, identity) = fixture();
-        use std::io::{BufRead, BufReader};
-        use std::process::{Command, Stdio};
-        let source = root.join("watcher_fixture.rs");
-        std::fs::write(&source, r#"use std::io::{BufRead, Write};
-fn main() {
-    println!("ready");
-    std::io::stdout().flush().unwrap();
-    let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line).unwrap();
-}"#).unwrap();
-        assert!(Command::new("rustc").arg(source).arg("-o").arg(&identity.exe).status().unwrap().success());
-        let mut child = Command::new(&identity.exe).args(&identity.args[1..])
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
-        let mut ready = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
-        assert_eq!(ready.trim(), "ready");
-        let start_time = child_start_time(&child);
-        let pid = child.id();
-        drop(child.stdin.take());
-        child.wait().unwrap();
-        state["WatcherPid"] = json!(pid);
-        state["WatcherStartTimeUnix"] = json!(start_time);
-        state["Phase"] = json!("stopped");
-        state["ActiveMonitors"] = json!([]);
-        let wrong_config = root.join("wrong-config.json");
-        std::fs::write(&wrong_config, "{}").unwrap();
-        state["ConfigPath"] = json!(wrong_config);
-        std::fs::write(root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
-        let mut owned = OwnedWatcher { child, root, identity: WatcherOwner {pid, start_time, ..identity},
-            token: state["WatcherInstanceId"].as_str().map(str::to_string) };
-        assert!(owned.child.try_wait().unwrap().is_some());
-        assert!(crate::host_shutdown::completed(true, &state, owned.token.as_deref()).unwrap());
-        let error = owned_state(&mut owned).expect_err("terminal state must still match retained startup config");
-        assert!(error.contains("配置"), "wrong config must be rejected specifically, got: {error}");
-        state["ConfigPath"] = json!(owned.root.join("framescope-config.json"));
-        std::fs::write(owned.root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
-        assert!(owned_state(&mut owned).is_ok(), "matching config terminal state must work after child exit");
-        let wrong_startup_config = owned.root.join("wrong-config.json").to_string_lossy().into_owned();
-        *owned.identity.args.last_mut().unwrap() = wrong_startup_config;
-        assert!(owned_state(&mut owned).unwrap_err().contains("配置"));
     }
 
     fn fixture() -> (PathBuf, Value, WatcherOwner) {
@@ -2037,6 +2557,87 @@ fn main() {
         request_watcher_stop(&root, &state, &owner).unwrap();
         state["WatcherInstanceId"] = json!("abcdef0123456789abcdef0123456789");
         assert!(!watcher_stop_pending(&root, &state));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn retained_watcher_exit_during_identity_probe_is_not_identity_change() {
+        use std::io::{BufRead, BufReader};
+        use std::os::windows::io::AsRawHandle;
+        use std::process::{Command, Stdio};
+        let (root, _state, identity) = fixture();
+        let source = root.join("watcher_fixture.rs");
+        std::fs::write(&source, r#"use std::io::{BufRead, Write};
+fn main() {
+    println!("ready");
+    std::io::stdout().flush().unwrap();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).unwrap();
+}"#).unwrap();
+        assert!(Command::new("rustc").arg(source).arg("-o").arg(&identity.exe).status().unwrap().success());
+        let mut child = Command::new(&identity.exe).args(&identity.args[1..])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let identity = WatcherOwner {pid: child.id(), start_time: child_start_time(&child), ..identity};
+        assert!(verify_retained_watcher_process(&mut child, &identity, |_| false).is_err(),
+            "a live mismatched process must still be rejected");
+        let input = child.stdin.take();
+        let handle = child.as_raw_handle();
+        let result = verify_retained_watcher_process(&mut child, &identity, |_| {
+            // The real child exits after the first liveness check, before the
+            // identity snapshot reports missing or changed process metadata.
+            drop(input);
+            assert_eq!(unsafe {windows_sys::Win32::System::Threading::WaitForSingleObject(handle, 5000)}, 0);
+            false
+        });
+        assert!(child.try_wait().unwrap().is_some());
+        assert!(result.is_ok(), "normal exit during the probe must be accepted: {result:?}");
+    }
+
+    #[test]
+    fn exited_owned_child_with_wrong_config_cannot_complete_shutdown() {
+        let (root, mut state, identity) = fixture();
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let source = root.join("watcher_fixture.rs");
+        std::fs::write(&source, r#"use std::io::{BufRead, Write};
+fn main() {
+    println!("ready");
+    std::io::stdout().flush().unwrap();
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line).unwrap();
+}"#).unwrap();
+        assert!(Command::new("rustc").arg(source).arg("-o").arg(&identity.exe).status().unwrap().success());
+        let mut child = Command::new(&identity.exe).args(&identity.args[1..])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let mut ready = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let start_time = child_start_time(&child);
+        let pid = child.id();
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        state["WatcherPid"] = json!(pid);
+        state["WatcherStartTimeUnix"] = json!(start_time);
+        state["Phase"] = json!("stopped");
+        state["ActiveMonitors"] = json!([]);
+        let wrong_config = root.join("wrong-config.json");
+        std::fs::write(&wrong_config, "{}").unwrap();
+        state["ConfigPath"] = json!(wrong_config);
+        std::fs::write(root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
+        let mut owned = OwnedWatcher { #[cfg(windows)] job: None, child, root, identity: WatcherOwner {pid, start_time, ..identity},
+            token: state["WatcherInstanceId"].as_str().map(str::to_string) };
+        assert!(owned.child.try_wait().unwrap().is_some());
+        assert!(crate::host_shutdown::completed(true, &state, owned.token.as_deref()).unwrap());
+        let error = owned_state(&mut owned).expect_err("terminal state must still match retained startup config");
+        assert!(error.contains("配置"), "wrong config must be rejected specifically, got: {error}");
+        state["ConfigPath"] = json!(owned.root.join("framescope-config.json"));
+        std::fs::write(owned.root.join("framescope-watcher-state.json"), state.to_string()).unwrap();
+        assert!(owned_state(&mut owned).is_ok(), "matching config terminal state must work after child exit");
+        let wrong_startup_config = owned.root.join("wrong-config.json").to_string_lossy().into_owned();
+        *owned.identity.args.last_mut().unwrap() = wrong_startup_config;
+        assert!(owned_state(&mut owned).unwrap_err().contains("配置"));
     }
 
     #[test]
@@ -2138,7 +2739,7 @@ mod host_shutdown_binding_tests {
         let source = include_str!("backend.rs");
         let start = source.split("pub fn monitor_start(").nth(1).unwrap().split("pub fn auto_start_monitor").next().unwrap();
         assert!(start.contains("OWNED_WATCHER.lock()"));
-        assert!(start.contains("Some(OwnedWatcher { child, root, identity, token: None })"));
+        assert!(start.contains("Some(OwnedWatcher { child, root, identity, token: None, #[cfg(windows)] job: Some(job) })"));
         let shutdown = source.split("pub fn shutdown_owned_monitor()").nth(1).unwrap().split("struct WatcherOwner").next().unwrap();
         assert!(shutdown.contains("owned.child.try_wait()"));
     }

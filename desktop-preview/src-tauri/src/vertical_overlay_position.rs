@@ -21,8 +21,9 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
     id: usize,
-    _: usize,
+    generation: usize,
 ) -> LRESULT {
+    if generation!=crate::vertical_overlay_input::generation(){return DefSubclassProc(hwnd,message,wparam,lparam);}
     match message {
         WM_ENTERSIZEMOVE => {
             MOVING.store(true, Ordering::SeqCst);
@@ -44,8 +45,13 @@ unsafe extern "system" fn window_proc(
                 DIRTY.store(true, Ordering::SeqCst);
             }
             MOVING.store(false, Ordering::SeqCst);
+            crate::vertical_overlay_input::restore(hwnd);
         }
+        WM_CANCELMODE | WM_KILLFOCUS => { crate::vertical_overlay_input::restore(hwnd); }
+        WM_ACTIVATEAPP if wparam==0 => { crate::vertical_overlay_input::restore(hwnd); }
+        WM_CAPTURECHANGED if !MOVING.load(Ordering::SeqCst) => { crate::vertical_overlay_input::restore(hwnd); }
         WM_NCDESTROY => {
+            crate::vertical_overlay_input::forget(hwnd);
             RemoveWindowSubclass(hwnd, Some(window_proc), id);
             MOVING.store(false, Ordering::SeqCst);
             LAYOUT_READY.store(false, Ordering::SeqCst);
@@ -64,7 +70,7 @@ pub fn install(window: &tauri::WebviewWindow, remaining:std::time::Duration) -> 
                 .hwnd()
                 .map_err(|e| e.to_string())
                 .and_then(|hwnd| unsafe {
-                    if SetWindowSubclass(hwnd.0 as _, Some(window_proc), SUBCLASS_ID, 0) == 0 {
+                    if SetWindowSubclass(hwnd.0 as _, Some(window_proc), SUBCLASS_ID, crate::vertical_overlay_input::generation()) == 0 {
                         Err(format!("无法监听竖排悬浮窗拖动：{}",std::io::Error::last_os_error()))
                     } else {
                         Ok(())
@@ -163,7 +169,7 @@ mod tests {
             );
             assert!(!hwnd.is_null());
             assert_ne!(
-                SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, 0),
+                SetWindowSubclass(hwnd, Some(window_proc), SUBCLASS_ID, crate::vertical_overlay_input::generation()),
                 0
             );
             let before = overlay_panel::CURRENT_SETTINGS.lock().unwrap().clone();

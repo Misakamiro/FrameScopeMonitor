@@ -4,7 +4,7 @@ using System.Collections.Generic;
 // Independent statistics-v2 implementation. Source frames are never edited.
 public static class FrameScopeFrameStatistics
 {
-    public const int Version = 2;
+    public const int Version = 3;
     public const double WindowMs = 1000;
     public const double UpdateMs = 100;
     public const double SampleMs = 1000;
@@ -32,12 +32,15 @@ public static class FrameScopeFrameStatistics
         if(!Finite(value))throw new ArgumentException("Non-finite frame statistic");
         return Math.Floor(value+.5);
     }
+    // Preserve a real sub-one FPS/Low instead of turning a long frame into no data.
+    public static double RoundedFps(double value) { return value>0 && value<0.5 ? value : Rounded(value); }
+    public static bool Valid(Sample sample) { return sample.Count>0 && sample.Average.HasValue && Finite(sample.Average.Value) && sample.Average.Value>0; }
     public static double? LowFromSorted(IList<double> sorted, double fraction) {
         if(sorted.Count==0)return null;
         int count=Math.Max(1,(int)Math.Floor(sorted.Count*fraction));
         double sum=0;
         for(int i=sorted.Count-1,taken=0;taken<count;i--,taken++)sum+=sorted[i];
-        return Rounded(1000.0/(sum/count));
+        return RoundedFps(1000.0/(sum/count));
     }
     public static Sample Snapshot(IList<double> values) {
         var result=new Sample { Count=values.Count };
@@ -48,14 +51,15 @@ public static class FrameScopeFrameStatistics
             sum+=value;sorted.Add(value);
         }
         sorted.Sort();
-        result.Average=Rounded(1000.0*values.Count/sum);
+        result.Average=RoundedFps(1000.0*values.Count/sum);
         result.Low1=LowFromSorted(sorted,.01);result.Low01=LowFromSorted(sorted,.001);
         return result;
     }
     public static double? MeanInteger(IList<double> values) {
         if(values.Count==0)return null;
         double sum=0;foreach(double value in values)sum+=value;
-        return Rounded(Math.Truncate(sum/values.Count*100.0)/100.0);
+        double average=sum/values.Count;
+        return average>0 && average<1 ? average : Rounded(Math.Truncate(average*100.0)/100.0);
     }
     private static double Segment(List<double> sorted,double start,double end) {
         int a=(int)Rounded(sorted.Count*start),b=(int)Rounded(sorted.Count*end);
@@ -88,18 +92,19 @@ public static class FrameScopeFrameStatistics
         for(int i=0;i<samples.Count;i++) {
             if(filtered&&!included[i])continue;
             Sample sample=samples[i];
+            if(!Valid(sample))continue;
             if(sample.Average.HasValue)average.Add(sample.Average.Value);
-            if(sample.Low1.HasValue)low1.Add(sample.Low1.Value);
-            if(sample.Low01.HasValue)low01.Add(sample.Low01.Value);
+            if(sample.Low1.HasValue && Finite(sample.Low1.Value) && sample.Low1.Value>0)low1.Add(sample.Low1.Value);
+            if(sample.Low01.HasValue && Finite(sample.Low01.Value) && sample.Low01.Value>0)low01.Add(sample.Low01.Value);
         }
         return new Values { Average=MeanInteger(average),Low1=MeanInteger(low1),Low01=MeanInteger(low01) };
     }
     public static Result Summarize(List<Sample> samples) {
         var result=new Result { Samples=samples };var fps=new List<double>();
-        foreach(Sample sample in samples)if(sample.Average.HasValue)fps.Add(sample.Average.Value);
+        foreach(Sample sample in samples)if(Valid(sample))fps.Add(sample.Average.Value);
         var bounds=Bounds(fps);result.MinimumFps=bounds[0];result.MaximumFps=bounds[1];
         foreach(Sample sample in samples) {
-            bool keep=sample.Average.HasValue&&sample.Average>=bounds[0]&&sample.Average<=bounds[1];
+            bool keep=Valid(sample)&&sample.Average>=bounds[0]&&sample.Average<=bounds[1];
             result.Included.Add(keep);if(keep)result.RetainedSamples++;
         }
         result.ValidSamples=fps.Count;result.MissingSamples=samples.Count-fps.Count;

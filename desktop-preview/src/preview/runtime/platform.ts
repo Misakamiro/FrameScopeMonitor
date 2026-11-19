@@ -9,7 +9,7 @@ export function isMainWindow(): boolean {
   if (typeof window === "undefined") return true;
   const metadata = (window as unknown as { __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } } }).__TAURI_INTERNALS__?.metadata;
   if (metadata?.currentWindow?.label) return metadata.currentWindow.label === "main";
-  return !/sensor-monitor|vertical-overlay|tray-menu/.test(window.location.pathname + window.location.hash + window.location.search);
+  return !/sensor-monitor|vertical-overlay|tray-menu|report-analysis/.test(window.location.pathname + window.location.hash + window.location.search);
 }
 export async function nativeOperation<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (!isDesktop()) throw new Error(`Native window operation requires desktop: ${command}`);
@@ -20,8 +20,8 @@ export async function nativeOperation<T>(command: string, args: Record<string, u
 // Commands that only exist on the real capture backend; browser previews must
 // never send them (they have local equivalents in the preview switch).
 const backendOnlyCommands = new Set([
-  "targets_save", "processes_refresh", "monitor_start", "monitor_stop",
-  "reports_list", "report_open", "report_open_directory", "report_regenerate", "report_delete",
+  "targets_save", "target_select_exe", "processes_refresh", "monitor_start", "monitor_stop",
+  "reports_list", "reports_catalog", "report_open", "report_open_directory", "report_regenerate", "report_delete",
   "config_save", "config_read",
 ]);
 

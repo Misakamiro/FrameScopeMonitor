@@ -1,0 +1,3247 @@
+{
+  "schema": 1,
+  "purpose": "public-source",
+  "publicBoundary": "five-functions-20261119",
+  "edition": "offline",
+  "sourceHead": "76c636ff1b7a519f106d4f3966d3dc4a8aa7a027",
+  "sourceDirty": true,
+  "sourceSnapshotSha256": "1E1C5AA4FFCA34C0E5F991DA4837E855F35CB6A2C91D01652E9470F0678C50FF",
+  "sourceSnapshotFormat": "sha256-length-path-v1",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "025BE3C71698D77DD506B50308891F4F36809DD2553FA4C066BF4893190B33DB",
+      "length": 185
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "2C293AF7067EE95CF5F255C3DBBEC873CB16E39454074AA98FFC2F5EF25DFB7D",
+      "length": 1900
+    },
+    {
+      "path": "EDITION",
+      "sha256": "C826EDF35C08656AEC51D506A1230B2952165170AA1EAAC4AA0FF9B71425FDFF",
+      "length": 8
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "BA5AF678EACD1131955E35DE6D816438CED5415FD6CA2E616C791FCEFDE68CAA",
+      "length": 30912
+    },
+    {
+      "path": "PRIVACY.md",
+      "sha256": "161F1E4C9AB8B93AC43429516DD66BB7E2BCBC417298103755F613F1542F06A0",
+      "length": 9548
+    },
+    {
+      "path": "README.md",
+      "sha256": "B7DCC6AB7A2F41600A4809980917C059197BA0C63224AB3D6B3FB0AB7E5CBD59",
+      "length": 15177
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.md",
+      "sha256": "9C599F59DBE3CA1AB5F3FAA05EE21B6D3E4F37BCD8B51873B263CCA9598E827F",
+      "length": 42507
+    },
+    {
+      "path": "VERSION",
+      "sha256": "EB01A4E8E8922406F15A22CADC3FAE28D4F513AFE11B4734788EB2EA73CF034E",
+      "length": 6
+    },
+    {
+      "path": "assets/icon/framescope-icon.ico",
+      "sha256": "3E1C4B249F7B66C9B1AFCE571A9494AA405ECA96AFEB8CCF11E73DE302443603",
+      "length": 29649
+    },
+    {
+      "path": "assets/icon/framescope-icon.png",
+      "sha256": "63BE6537F96C4E20A9CEF7B1C34934CD76DAAD402FBB1EA505B34AAF6A29AACB",
+      "length": 13801
+    },
+    {
+      "path": "build-dependencies.lock.json",
+      "sha256": "268B061FEBB58388A698403C8EBA6D77049CD2FB767DDB33858FE1B717C01B24",
+      "length": 631
+    },
+    {
+      "path": "build.ps1",
+      "sha256": "4654472F25AE0B8A90623D24DA96CD8E909C1C3904174BDF87298E9F1CA1E81F",
+      "length": 33845
+    },
+    {
+      "path": "dependencies.lock.json",
+      "sha256": "57854A88E7DE6F763DEC150DC18BF83CAC5C70C06607AC7A8EDA6514EA6B4E44",
+      "length": 3181
+    },
+    {
+      "path": "desktop-preview/LICENSE",
+      "sha256": "BA5AF678EACD1131955E35DE6D816438CED5415FD6CA2E616C791FCEFDE68CAA",
+      "length": 30912
+    },
+    {
+      "path": "desktop-preview/LICENSE.EXTRA",
+      "sha256": "35F9DE834131574AF2F16EBBDED639201B14BEE69112C1D541A9A3AFD454AC33",
+      "length": 30914
+    },
+    {
+      "path": "desktop-preview/eslint.config.mjs",
+      "sha256": "9E75B18B270F657283CEABA07C32C790B6BF07F3D6E9CED0C327619C0D6A916C",
+      "length": 1508
+    },
+    {
+      "path": "desktop-preview/index.html",
+      "sha256": "DEE0D3BB68A4D82E5E06A5B834F39475295862FB62C86EDA994D9141E8D17B38",
+      "length": 2286
+    },
+    {
+      "path": "desktop-preview/installer/.gitignore",
+      "sha256": "6713BF0766334C767CB22816075C33573C3C89606CD921DC5C6901F22D8F0ACD",
+      "length": 75
+    },
+    {
+      "path": "desktop-preview/installer/build-installer.ps1",
+      "sha256": "3E1DFBBD2BD8C02D9F29BC6C2CECE5C0FA36AB1EE78492841B4DA2AFFC66A64E",
+      "length": 6426
+    },
+    {
+      "path": "desktop-preview/installer/index.html",
+      "sha256": "56140A68C22942EA01AC3D8FD0391D4D8C12948DF27E45B2B3AC7D83434768C5",
+      "length": 738
+    },
+    {
+      "path": "desktop-preview/installer/pack-payload.ps1",
+      "sha256": "F8F67452561EC5B5FC168A93254B37844F1C12D91191968C336DF3F4236B8222",
+      "length": 27766
+    },
+    {
+      "path": "desktop-preview/installer/package-lock.json",
+      "sha256": "8913E50EA06936E7F41591D848E56DF6507E2A82F8779D2B60998A7B9AAFCC6E",
+      "length": 70940
+    },
+    {
+      "path": "desktop-preview/installer/package.json",
+      "sha256": "C137896FDA5D0E8149835BD6A3C0713CFF200FDECF3BD27169229E6B6F9B9A51",
+      "length": 585
+    },
+    {
+      "path": "desktop-preview/installer/public/backgrounds/preset1.jpg",
+      "sha256": "66E286253CB435D7A02C56AE82A33A601717E8E7FFB5646C37DF6A85C632C719",
+      "length": 1482068
+    },
+    {
+      "path": "desktop-preview/installer/public/backgrounds/preset2.jpg",
+      "sha256": "6F1B0A16CB1B5031238FB715A80C056DEA4D5E6F0E164735CE435330E783403E",
+      "length": 1645006
+    },
+    {
+      "path": "desktop-preview/installer/public/fonts/MiSansVF.ttf",
+      "sha256": "0DDEF90648998900175CFDCA9A6F087A2544C182F130B0AD4F7E94A03A115E79",
+      "length": 20093424
+    },
+    {
+      "path": "desktop-preview/installer/public/icon.png",
+      "sha256": "85231D46BFE4233AC4BE55C47CA96698A5BEBE750A0F6B144A4360E99AC1DAF7",
+      "length": 13853
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/Cargo.lock",
+      "sha256": "CD33D01E8E14F554185B5EE378EB52C357CA24EFEE2F3CAA31AEED48D4EFA06B",
+      "length": 56391
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/Cargo.toml",
+      "sha256": "28474389C76BD2C0009B750F68E820E5625BEACE1AAC865C8393AF24022CA881",
+      "length": 1247
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/build.rs",
+      "sha256": "ED8C94E85F35A177BB6E8400C4DB546FB67F1B3B6D34DADD60B5A846927713DA",
+      "length": 1572
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/capabilities/default.json",
+      "sha256": "838F430D0D5EA6ECDB128244A2C2D621A18939EA1B08FA092B051BC75B892DD2",
+      "length": 304
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/icons/icon.ico",
+      "sha256": "3E1C4B249F7B66C9B1AFCE571A9494AA405ECA96AFEB8CCF11E73DE302443603",
+      "length": 29649
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/icons/icon.png",
+      "sha256": "85231D46BFE4233AC4BE55C47CA96698A5BEBE750A0F6B144A4360E99AC1DAF7",
+      "length": 13853
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/component_install.rs",
+      "sha256": "F51C8BD72F68B4737F5655FBECE9B5A7C63802F802A157729B7663A0ED7C1334",
+      "length": 4129
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/install_transaction.rs",
+      "sha256": "9F14A715FC21488C63A395BF897BB2CBA2004E019DCBFC7A6315EF3820E435A4",
+      "length": 47037
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/installation_system.rs",
+      "sha256": "28062B2C6C79BFE44909E2538079BA3AB20AC6FD0F30B16CDA0089123D6A85C2",
+      "length": 23535
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/installer.rs",
+      "sha256": "09DD82E6D852B590220C583E622A98F934BA1B071EF6F42CCC3FE9BA811CD577",
+      "length": 63653
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/lib.rs",
+      "sha256": "37E4EE57F28527701F3DA24A8AE6822F3F6211F76C8D053AD7E5E220FBC045C5",
+      "length": 6925
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/main.rs",
+      "sha256": "7AF2A41272E7C39826E364C130B2D8BE19A981ED2D1729B79124E2B54280A95E",
+      "length": 1033
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/native_stop.rs",
+      "sha256": "5D1872C4AEF83B6B97B41D3CAE776D61BCA62FD38A4F1B4B5BB146B00142527D",
+      "length": 7329
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/native_ui.rs",
+      "sha256": "62850328825738B0E4ACD2186E594760846501E0E375B2166F074DF9E5B9706E",
+      "length": 20122
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/native_ui_view.rs",
+      "sha256": "54ED55E8B99B306B97BD908CF1D0057E2C969D1DB87C33E2B96445098B054D98",
+      "length": 9135
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/prerequisites.rs",
+      "sha256": "5624BD0C3F75EFB9203D9C7A79C673B344DD17EDE0A0090E7CC03C3950DFB379",
+      "length": 24409
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/self_relaunch.rs",
+      "sha256": "82C2265FCCB75411131D6279FFCC4E472F329A1580D366153056C3CB1C991E5D",
+      "length": 12117
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/src/update_install.rs",
+      "sha256": "86E120EB0723BBFE1BF8B64A09C520B66A4FD2F7024E8393D6F7373672E29916",
+      "length": 11867
+    },
+    {
+      "path": "desktop-preview/installer/src-tauri/tauri.conf.json",
+      "sha256": "D78332738FAD29502BBB060AD8D1FCC0E8436896B0810FB224F0463C7D86ADB5",
+      "length": 584
+    },
+    {
+      "path": "desktop-preview/installer/src/App.tsx",
+      "sha256": "FEC489FF6D1A7C09604F3102E40A596B0821BCE135DBF6903E4CEB3AA68C959D",
+      "length": 21834
+    },
+    {
+      "path": "desktop-preview/installer/src/main.tsx",
+      "sha256": "B14F4140B9945A20E6F6534599646E1594E03571E3FF55BA0063E4968CE6BA47",
+      "length": 214
+    },
+    {
+      "path": "desktop-preview/installer/tsconfig.json",
+      "sha256": "D47B694E379E18B9BB3C25403AA08A9CE50A5E8AB60CBCCA5BBBA848400EEBEE",
+      "length": 508
+    },
+    {
+      "path": "desktop-preview/installer/vite.config.ts",
+      "sha256": "8ADC47116D7AECCBAA2CDD2C0FDE24452EBDDE219D4E4CC56E77419317689878",
+      "length": 356
+    },
+    {
+      "path": "desktop-preview/package-lock.json",
+      "sha256": "EDA84CCE1BC0E32A3BC4A0ECFAB791629B62C7DACBB654A19799E5D26276869A",
+      "length": 271265
+    },
+    {
+      "path": "desktop-preview/package.json",
+      "sha256": "832CD8F5AAAC8FA8DFC7A9FECD04AED1AA063ECC4EE9D477968045FB5A7D5763",
+      "length": 2110
+    },
+    {
+      "path": "desktop-preview/public/backgrounds/preset1.jpg",
+      "sha256": "66E286253CB435D7A02C56AE82A33A601717E8E7FFB5646C37DF6A85C632C719",
+      "length": 1482068
+    },
+    {
+      "path": "desktop-preview/public/backgrounds/preset2.jpg",
+      "sha256": "6F1B0A16CB1B5031238FB715A80C056DEA4D5E6F0E164735CE435330E783403E",
+      "length": 1645006
+    },
+    {
+      "path": "desktop-preview/public/backgrounds/preset3.png",
+      "sha256": "CDB164B817E09A51CE5E51373552F2F23A24738AB1F6372DEDEE1980B6D24308",
+      "length": 1750516
+    },
+    {
+      "path": "desktop-preview/public/backgrounds/preset4.png",
+      "sha256": "1CE459C7F48EEBF10CE14C69D71051F1C12147469792055C2583D126FCF0052C",
+      "length": 1861072
+    },
+    {
+      "path": "desktop-preview/public/fonts/AiDianFengYaHei.ttf",
+      "sha256": "49E2F611FB334E0E67020E43BC4088B5DB85812E1E34DF598381BD56BC196DF0",
+      "length": 4127128
+    },
+    {
+      "path": "desktop-preview/public/fonts/Cubic.ttf",
+      "sha256": "D138058E92A23B184D39DA097F9270365AF762A5CC47713265D7067309A5C8C0",
+      "length": 2759792
+    },
+    {
+      "path": "desktop-preview/public/fonts/MiSansVF.ttf",
+      "sha256": "0DDEF90648998900175CFDCA9A6F087A2544C182F130B0AD4F7E94A03A115E79",
+      "length": 20093424
+    },
+    {
+      "path": "desktop-preview/public/fonts/Sinter-Regular.otf",
+      "sha256": "083780E474E1CFA43F6341270ACF5F8736A21E98AB49D2F34FF015032AFD6BE2",
+      "length": 8257340
+    },
+    {
+      "path": "desktop-preview/public/logo/CNBB.png",
+      "sha256": "6A8826BC956A515FF5DD88A16B3475845808AC4C154E962E42F578BFBF8E1B21",
+      "length": 218294
+    },
+    {
+      "path": "desktop-preview/public/logo/CNBW.png",
+      "sha256": "A962817060F6A389047D7B0E0935CB4150F088A866F9495DB400DEBC29667C57",
+      "length": 321376
+    },
+    {
+      "path": "desktop-preview/public/logo/Chinesew.png",
+      "sha256": "A962817060F6A389047D7B0E0935CB4150F088A866F9495DB400DEBC29667C57",
+      "length": 321376
+    },
+    {
+      "path": "desktop-preview/public/logo/MR.png",
+      "sha256": "4D26F81C86C3D5096D078DCD8A23F42033D01B3408F8A0AB223AB8A60628769D",
+      "length": 75803
+    },
+    {
+      "path": "desktop-preview/public/logo/NBB.png",
+      "sha256": "B2C515392DF47431F7B79228A94CDA38AD6E9981B6326B59B4E873365FE78CB5",
+      "length": 169649
+    },
+    {
+      "path": "desktop-preview/public/logo/NBW.png",
+      "sha256": "1A3360BEC3E247A91B3E376B7781E353C71C3FF95B46A5859E9EFAF4281CC229",
+      "length": 277063
+    },
+    {
+      "path": "desktop-preview/public/logo/NexBoxB.png",
+      "sha256": "458D633E2F027AE5F42DADC1AD8557FA654F23364E5074791F2B26F9051FD47C",
+      "length": 963207
+    },
+    {
+      "path": "desktop-preview/public/logo/NexBoxW.png",
+      "sha256": "6E9F9E8472C1D38D0ECF52DD0391FF3F78372DB5E47E74EA88BFE30420F5C9BB",
+      "length": 799963
+    },
+    {
+      "path": "desktop-preview/public/logo/framescope.png",
+      "sha256": "63BE6537F96C4E20A9CEF7B1C34934CD76DAAD402FBB1EA505B34AAF6A29AACB",
+      "length": 13801
+    },
+    {
+      "path": "desktop-preview/public/logo/logo/NexBoxB.png",
+      "sha256": "458D633E2F027AE5F42DADC1AD8557FA654F23364E5074791F2B26F9051FD47C",
+      "length": 963207
+    },
+    {
+      "path": "desktop-preview/public/logo/logo/NexBoxW.png",
+      "sha256": "6E9F9E8472C1D38D0ECF52DD0391FF3F78372DB5E47E74EA88BFE30420F5C9BB",
+      "length": 799963
+    },
+    {
+      "path": "desktop-preview/public/samples/charts/framescope-interactive-data.js",
+      "sha256": "70F1B67BCB5217788A13A4244E283A96508B3536C85A37146547C261430F15F9",
+      "length": 23692
+    },
+    {
+      "path": "desktop-preview/public/samples/charts/framescope-interactive-manifest.json",
+      "sha256": "D364D5C3A4D6655C2D4D1ED12F936D3CFE93652303A5922DEB8A5ABFABB6C4AD",
+      "length": 6003
+    },
+    {
+      "path": "desktop-preview/public/samples/charts/framescope-interactive-report.html",
+      "sha256": "1BA0EAB08039AD404F0268DD840C674BF59C139292CDF744405AF9F51F35BF7C",
+      "length": 60756
+    },
+    {
+      "path": "desktop-preview/scripts/build-report.mjs",
+      "sha256": "57DE9CA367156265EA4CEC2F2B8188B45EB3C7636BFD23C75B2BC913FD971FF4",
+      "length": 1431
+    },
+    {
+      "path": "desktop-preview/src-tauri/Cargo.lock",
+      "sha256": "3B0802E1388360E2ACBC5CBDBD894C9B7681D2ACD9AC9F712406495ECA6747BB",
+      "length": 151165
+    },
+    {
+      "path": "desktop-preview/src-tauri/Cargo.toml",
+      "sha256": "7517E7BD151BA5F5982EC401FF86F66353DFE167F22C7ECFC2EDFDAB9495D93A",
+      "length": 2293
+    },
+    {
+      "path": "desktop-preview/src-tauri/build.rs",
+      "sha256": "AF7148828D128F98518FE0E1F4E463D7CC13BE27CBBAAEA64FD956A94E4D6913",
+      "length": 1690
+    },
+    {
+      "path": "desktop-preview/src-tauri/capabilities/preview.json",
+      "sha256": "2569458318C3F59065A1F63832FDD759F896B7F5A3DE7896CE51F748BCFB59AA",
+      "length": 1010
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/128x128.png",
+      "sha256": "E18D28619378E5FFCB729DC47269254DE6B648EA8DF52DBEC31F0106788FF66D",
+      "length": 12159
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/128x128@2x.png",
+      "sha256": "85231D46BFE4233AC4BE55C47CA96698A5BEBE750A0F6B144A4360E99AC1DAF7",
+      "length": 13853
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/32x32.png",
+      "sha256": "5F1D14280769FE2B23A2B68A1E125C1F3A220A896EC6FC460C35241EFF97F1EE",
+      "length": 2694
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/icon.ico",
+      "sha256": "2A850E1E3266FC24B50C6B4B1A10801B8C5B38E571CCD663FFA9BC5EAFE9FB0C",
+      "length": 34465
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/icon.png",
+      "sha256": "85231D46BFE4233AC4BE55C47CA96698A5BEBE750A0F6B144A4360E99AC1DAF7",
+      "length": 13853
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/tray-16.png",
+      "sha256": "064B76E64719A580D3EA0BFA785DB83EE474788D44E835D9F22560A2595BAA41",
+      "length": 968
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/tray-20.png",
+      "sha256": "1099F5AA55A206B22A8EDCEEA3D38E271888A71E5D21EB5707EC05F8B8B1DF15",
+      "length": 1319
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/tray-24.png",
+      "sha256": "232526FBC47FA4CC3989A25F40F9E32BE063B006ACCDE0D32FD0347504DF1146",
+      "length": 1799
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/tray-32.png",
+      "sha256": "BC9E782AD1034748E2771ABC24C3D16763CB5DC6E3251A3A0B330BA7E3E251E7",
+      "length": 2688
+    },
+    {
+      "path": "desktop-preview/src-tauri/icons/tray-48.png",
+      "sha256": "FDECA5F421D5CEB71DC0B3F66A4274CD3D52787A9EAA4FAA632322E89DFC7D15",
+      "length": 4449
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/finish-120.bmp",
+      "sha256": "CFE4F410665F86BBFB178C5AAB9A0E5793119E43D3E49BE64371E0A7AEB8259F",
+      "length": 772966
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/finish-144.bmp",
+      "sha256": "25C4C9E2942751E486A06B64C99832258F42BBBE4876CE4C4117DCA53D4DD7C9",
+      "length": 1114794
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/finish-192.bmp",
+      "sha256": "4CF0267A775051D332A99C3DC5B06D1BFEB40F121D338CC984EFE01F686E4C88",
+      "length": 1980054
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/finish-96.bmp",
+      "sha256": "8F2F30A5F22A0BB07520C1260120F874CD333B0E904D66E72E26CE729919D467",
+      "length": 495054
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/finish-full.bmp",
+      "sha256": "3FA54B7356759EFCFAFFEEE709948DB697D43376C4F072ED587A49DE76A71643",
+      "length": 495054
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/header.bmp",
+      "sha256": "3DEA7A43D61B165DC2CA2B2385A8E84745804DA5F122AB24A4DAB2D6194E62F2",
+      "length": 25818
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/installer-branded.nsi",
+      "sha256": "366BA80B1627A365D0B7A04E8BD0CFFBD7D6C88D3A84484182952B221DCFBE15",
+      "length": 35757
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/installer-default.nsi",
+      "sha256": "1114A136876D667CA7BA77218D4E966A625D1078DCBA18484CAAE8F7BFFB8626",
+      "length": 32984
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/license.txt",
+      "sha256": "D0405411FC305144BF0788011FDB7A450D812EA926ACFF75F87A021D85A1EBE5",
+      "length": 822
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/sidebar.bmp",
+      "sha256": "7191CC88A90C19FE6045B1BC34A019CAC8A1DFC0158F945C3C181FC73B08B47C",
+      "length": 154542
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/welcome-120.bmp",
+      "sha256": "C17C4D9186D106F8B118475DB0E27DCE76E6B3359F18618BAAA77B0B122562E9",
+      "length": 772966
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/welcome-144.bmp",
+      "sha256": "C8D4258CD7E2E9C3525F12B805D962B24547320FEAA7AA713EDC444BF5B3E1BD",
+      "length": 1114794
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/welcome-192.bmp",
+      "sha256": "8B5F2DEC676A205E8E6DBBD577E4B2C0CBE96A6D02AB6B7E67A797638638F4FE",
+      "length": 1980054
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/welcome-96.bmp",
+      "sha256": "0D070354CCE5252F00041C42F5380C0ECA308E0F6107896795BCDB2CBC81049A",
+      "length": 495054
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/welcome-check.png",
+      "sha256": "54A7965E046226E582A961690A8B3CE9B8188996C25482726A2F697A961F4394",
+      "length": 54530
+    },
+    {
+      "path": "desktop-preview/src-tauri/installer/welcome-full.bmp",
+      "sha256": "13AA9876F2A284BCDD9EC908041C6DA111D0D264F639FE64B5445FE6D7F3B8B6",
+      "length": 495054
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/backend.rs",
+      "sha256": "1876537245EFDAC704A57C95BB5502D1CEF3D536C3E397A8868E6A03E12CA148",
+      "length": 143868
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/bounded_process.rs",
+      "sha256": "E84B881DBA56A611EDE823B1DDC78342F89AE4C4943B8C2F2A6B087FDB5812B9",
+      "length": 8813
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/custom_overlay.rs",
+      "sha256": "018043A8AF1F738B86E7C36C3216BA789B51691E7C749FC57295B42B8FE67727",
+      "length": 16602
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/delta_password.rs",
+      "sha256": "21DA501A9DF2A5BA276E1275D0A4C0CC446E681702C655A1E96628E7B832A973",
+      "length": 4177
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/hardware_service.rs",
+      "sha256": "B8A841FF25FD9EB4145A8B75B3EDA344383C1A46D27ABD0C19D6C0C74084EF1D",
+      "length": 29800
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/host_shutdown.rs",
+      "sha256": "FE5970594762BD67648F93B44A96ABE28842DAD189A94C9BFBB20F090CAA53D7",
+      "length": 7271
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/lib.rs",
+      "sha256": "D8B833FFAA4A1257D1296D6DBD633EEDD82DF04FCFB2B1A51ACE1372C70CFAA2",
+      "length": 72913
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/main.rs",
+      "sha256": "445C7B5D490126EC74A521C8E3BC411B123BCAE037504FB52AE6C33F15CEC3B7",
+      "length": 116
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/monitor_job.rs",
+      "sha256": "75B8EEB2C5021F88FB42092C0DC3AB65CE4264EE4316D5894A7883D77636354A",
+      "length": 3130
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_diagnostics.rs",
+      "sha256": "BEAF5B8A025013588A113E4B374139304AB528EB668A20EE1D3C4ECC8F9A9229",
+      "length": 4659
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_display.rs",
+      "sha256": "03A8E5BBDAAB6DDE12CAA793E38B9854ED0C283E1454DD7132479EF6029439DD",
+      "length": 2986
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_items.rs",
+      "sha256": "C228B0078910EE243831DB9CA1BE7217CAAE023A2C1F3BE9A66D0B069DEC9A5E",
+      "length": 13162
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_lifecycle.rs",
+      "sha256": "B87500C214188F6CEF8ADD56F725E8549519854886EC8C70C4A471F4EDC53F5C",
+      "length": 6967
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_panel.rs",
+      "sha256": "30B6347D3FE4EAA99CB3332A86ABAE3FE0E8E4CAC26C5D297995E0E71D03A678",
+      "length": 76340
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_position.rs",
+      "sha256": "64AFDB5C7A4CCB9FDDC005D102BEDEA52BC97EAB62FB8350180972D10E5DEB6F",
+      "length": 5027
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/overlay_runtime.rs",
+      "sha256": "5A36B25C5C3C3BA1BE3B780240CD86CD79462149BDB335D362F6E72FABEDE8B2",
+      "length": 12628
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/pawnio.rs",
+      "sha256": "EA8D371B908F9742CB566701F84046DA8443026C8DFED6B0B8C84788090B5947",
+      "length": 6248
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/report_cache.rs",
+      "sha256": "2229DA13B44078B1D36C48ED816356743D733835B3CA0F6C5601C152CD6969E1",
+      "length": 9606
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/report_data.rs",
+      "sha256": "3F1D96CF42F25DAAD128226B45BF78122851DFD54203FFE65B1BEDC646D12030",
+      "length": 2373
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/report_inspection.rs",
+      "sha256": "57D7AF517A5EA8B9145473B9FA6E323433308938D5553A9BBB7FF2BB411C7C4A",
+      "length": 4403
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/report_material.rs",
+      "sha256": "6397A8C904E6A51164D9D3B9C5D001864D86E2FA0346E3E3976C7B54DA2341ED",
+      "length": 5528
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/report_tool_path.rs",
+      "sha256": "51E9E1EFB2A298DC780B2CF65E0C586855EA29A6BB16F3EEAACC96A875FE3E38",
+      "length": 1739
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/report_window.rs",
+      "sha256": "7C2589C44E2190F70D6A7DF33718777943DBCF321A03C897DF43276D5665C2C0",
+      "length": 12105
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/runtime_uiaccess.rs",
+      "sha256": "0792B7F6B4DF10B8E9759BA24D0339B3BAB520D13BF70D0D783D19EE9464F8C9",
+      "length": 28367
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/startup_diagnostics.rs",
+      "sha256": "AD845B898FFF709FD81DE374800B692C2CAAF952D74C74662A8554C777581E99",
+      "length": 2242
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/updater.rs",
+      "sha256": "6AE2DDE21F3B4ECFE3CEF7EB528713C8252E4B878EF887C147CA612972E8625E",
+      "length": 18723
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/vertical_overlay_input.rs",
+      "sha256": "E191E2D0E03CD63E5F74882D279ADBA260C00A921541176AEA5E653AD13385C0",
+      "length": 9009
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/vertical_overlay_position.rs",
+      "sha256": "7A3F9E9B6EFE46D152F3A6431998EAE33155E3F34A4A0E7A308325903D77DAA1",
+      "length": 9238
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/window_activity.rs",
+      "sha256": "CE612F57ABAA3CE7680DE993C108E2D7025621FE6A0C1ED6758AD2EF9BBBEDA0",
+      "length": 930
+    },
+    {
+      "path": "desktop-preview/src-tauri/src/window_icons.rs",
+      "sha256": "70C3B54D38721936E289CE1670FFD16D593CF52FAC9C86022AFB5F8F26A4A41E",
+      "length": 1360
+    },
+    {
+      "path": "desktop-preview/src-tauri/tauri.conf.json",
+      "sha256": "5F4DD7D6296C8C8EF247F962F5850CFF681B746E8525B4A215F94947B365BAA6",
+      "length": 2428
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/.cargo-ok",
+      "sha256": "AFBF9D0F3560B0FD7795E81C42A0A79EE6B6FC67E064F77826AEE642CAD28D91",
+      "length": 7
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/.cargo_vcs_info.json",
+      "sha256": "AFBBB8046A363BB3DD4E38CEF6675907603AB05B1BFB0F426D451F68595CD960",
+      "length": 113
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/Cargo.lock",
+      "sha256": "52221BFC870A4EE696916DABD3EA87C5182180E491378FF672F046B4B8177275",
+      "length": 84961
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/Cargo.toml",
+      "sha256": "FF71F61B705389D7F5E9C8CC7E19AA344E0EBD64AE3E0A60192CD5031CC7926C",
+      "length": 8970
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/Cargo.toml.orig",
+      "sha256": "5AA251F3C13178A20CF805ECFCA84D5E62B112ADCC51D20F26796957399B3BDA",
+      "length": 4336
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/LICENSE",
+      "sha256": "6DC0E068DCF3A5BC8E054205B85B7720E1D49265BBC64BF515D2CF79197DF69A",
+      "length": 11323
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/LICENSE.spdx",
+      "sha256": "02B6448337B757772D90E5F31CAAA0F9E6AFAAD2221C01771D0A3DEAA4D4196C",
+      "length": 793
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/control_flow.rs",
+      "sha256": "53C1CD3E063FFA386475097A3B8C0E14A3392250C896567987F896B9FBCA5A79",
+      "length": 3528
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/cursor.rs",
+      "sha256": "71AA0256191D6D8A7B1CF8E8E9DE4DE4DFE4A3E19E6B300A51DF4439F1703182",
+      "length": 2137
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/cursor_grab.rs",
+      "sha256": "A42B58E7C02AEB4DD7F3D67EBD2C221FBEEAFFC04495F140C2248088446297FC",
+      "length": 2134
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/custom_events.rs",
+      "sha256": "F30B1245E8EF838280462CD90D76E7C0CEDEFFDF22CF9AD014AAFA07B72E4ACC",
+      "length": 1393
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/decorations.rs",
+      "sha256": "1E1B55BE6664797E1CD26093B5F5735D4329464B6E9B047C81AA3D0DECCA506B",
+      "length": 1346
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/drag_window.rs",
+      "sha256": "E0213C177E8412DD2945DE23EDC840516216B368CCCD896805F6F974B7CEF81F",
+      "length": 2275
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/fullscreen.rs",
+      "sha256": "301B43054FAED677D1532618686A542EC486604ADA059F43F60F56A83D77A5FB",
+      "length": 3789
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/handling_close.rs",
+      "sha256": "1B28873ECC56136E807CAC19F2D67C62E5B8DF8235D2FFAA911127F833DF334B",
+      "length": 3118
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/min_max_size.rs",
+      "sha256": "F01BD4497688E168AFC5857E191D06EDBB7B32DDEE2FA06DF2AC191405B90228",
+      "length": 2528
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/minimize.rs",
+      "sha256": "58A4CEAE8A5DBEFC8B3234DF344A7731DF269DDBFA3142E25E37C21CC6E33A51",
+      "length": 1280
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/monitor_list.rs",
+      "sha256": "7491F21D3D033E0D1A7E87C64160A0F9C00C2B508C63AA2DD35EF703B7CAFAE9",
+      "length": 444
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/mouse_wheel.rs",
+      "sha256": "1920B96A74D2B995FF47109AF154330A44E7E11974F2BC920E3C173115A21225",
+      "length": 1686
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/multithreaded.rs",
+      "sha256": "38124C3EC67BAFC38C1E799C3F604B989888D5A449FEDC8953BD646F710CFC07",
+      "length": 7198
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/multiwindow.rs",
+      "sha256": "044D05DD2BABB1BF8B4897AE9C34422CB5580B0E74BFB6CE10E350CE24A00AB4",
+      "length": 1370
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/overlay.rs",
+      "sha256": "3FA3359E19868C67539CBBB1E64E1EDB64A65CCE38FF145F984FBD63C9DF07C4",
+      "length": 3459
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/parentwindow.rs",
+      "sha256": "8F09EF706B688C5AFF7B0C02312470037BFB0A608FEA9D6C11C13AFFAF47809A",
+      "length": 2417
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/progress_bar.rs",
+      "sha256": "D1B3B927B3394346C868E1D8D52456A02B1F183A2F223808DA6D28505D8C3CAC",
+      "length": 2725
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/reopen_event.rs",
+      "sha256": "BE071C4CFB5A1A1137C9C488FD490A7B0154323A91C3916A193E14B7C0FC6ACE",
+      "length": 1079
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/request_redraw.rs",
+      "sha256": "028F97F519150C8941D3A883E7C8E6F090BFD347CFB64393DF61234CAB40118E",
+      "length": 1048
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/request_redraw_threaded.rs",
+      "sha256": "F850E57A8A9AF9896DC8C51146721386E0E4FC9785D9837D5F4090FA55B7593D",
+      "length": 1064
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/resizable.rs",
+      "sha256": "EF07F975BF2472A7F37DBDB6B08C16F6873BC5089C13E1AE3310365522FAADC4",
+      "length": 1330
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/set_ime_position.rs",
+      "sha256": "573EBC222209CFC2B2298FCDEF651E47C378652636CEE98B111D780E648E4530",
+      "length": 1436
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/theme.rs",
+      "sha256": "985F7890F4A745011412AC080FC321D210145206ADD3564F5C62DE88AFBA562D",
+      "length": 1460
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/timer.rs",
+      "sha256": "A1F13E358A7283A7B8062E8840C23E1E8ACE574712EA2D7F3099E2BD80577EC8",
+      "length": 1146
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/transparent.rs",
+      "sha256": "4089AC549DD7B7A9B86B0C523D098E0DF49D5A63C08739BF6D289C63C3CFA552",
+      "length": 1635
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/video_modes.rs",
+      "sha256": "4FCD9044F87A7CFFAD79C2164F5170150566FB8822739B7DBB8B8EB1A3676CC2",
+      "length": 577
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/window.rs",
+      "sha256": "0D96BB2F48B2BF65074E988C6CF8D43C5B95D88D651D7545A090BBB466EC3FB8",
+      "length": 1272
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/window_debug.rs",
+      "sha256": "7E3D6314FFD3E69967CC2B5A46E36AEB88E53AAE02E55F42CCDC3DD9E6429201",
+      "length": 5387
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/window_icon.rs",
+      "sha256": "19587BFE60A0589C09C30D694FFD439668FC1444C7370334B2788D6A4B731321",
+      "length": 2212
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/examples/window_run_return.rs",
+      "sha256": "6C2590AFAFBABF64DA2A2AF31E3E91E54DE53330B670A2421F738D7EDF839493",
+      "length": 1464
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/error.rs",
+      "sha256": "9B25813361ACABF8DB7244BB49A94C39C0CB8DD59162A82A3E490D4069BDEDB5",
+      "length": 2208
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/event.rs",
+      "sha256": "21B4B8CD41B28CEF6A9DD7DE65BD899464EE69C14B077185D64959381DA53BE5",
+      "length": 33316
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/event_loop.rs",
+      "sha256": "746E750A63F25DBE283441D3CF4571D4D0B22CDEB27CFDF3E072683448D12E7A",
+      "length": 14242
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/icon.rs",
+      "sha256": "6F5295F2172FA8FF65907A6AA64DA476848CA73D70C7737F6C45C4C0F9C54932",
+      "length": 5365
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/keyboard.rs",
+      "sha256": "46B12E1F666D46BE2D5B0CB4D0F931F089ADCD52DE5F1E1BD2AB40DBC6181AD4",
+      "length": 57929
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/lib.rs",
+      "sha256": "F2A0B9D671520164A5B5D0F1F4473EC5D651CCCD42CA6D9C2CD5D50AD8F9374F",
+      "length": 8061
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/monitor.rs",
+      "sha256": "FD1E62C8AD8B559836E585C9D1C715F79D645E3AD81960FA479C0579E2B1740F",
+      "length": 4763
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/android.rs",
+      "sha256": "5AEFB7AB80D5A8E66C89AAC44990FBB8CED82703146AF0B2813E6F512E115454",
+      "length": 2144
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/ios.rs",
+      "sha256": "B71729DB5E5414E9B48CB299B6B9E65B7704677B04CA3378468B8AA4B328C065",
+      "length": 13662
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/linux.rs",
+      "sha256": "B9568E3B09217B00E1F5D2A01318E6F0B0DA1A41D1C34AAC94ADBA7EF1A61E95",
+      "length": 185
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/macos.rs",
+      "sha256": "D1993F47FF4958FF98BA35A8560D7B0230E0EE527E8D01D54F28F3CB3B6C8C42",
+      "length": 16080
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/mod.rs",
+      "sha256": "95E29649DBD5CD6B78645380452E5521579C68B4BD51214DBFB0D09C754E617F",
+      "length": 705
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/run_return.rs",
+      "sha256": "295B76E76B34211442248D1D610BDCADECC08B7837DF4FD5927AFABA97293D91",
+      "length": 2021
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/unix.rs",
+      "sha256": "CB1987776D2FD4766C449CEDE8C1B8B212D040F6380BD908A3A2A1A80762CFDA",
+      "length": 10090
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform/windows.rs",
+      "sha256": "13447D0E84DFB76D472CBA917975C8C31C8D2BF24F08E3AB98AC27E8906D5F03",
+      "length": 15427
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/android/mod.rs",
+      "sha256": "C0512E8CE54421DD279B5FAD063BFB3B922E88437EDF485E002423F6AD60A81B",
+      "length": 46816
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/android/ndk_glue.rs",
+      "sha256": "3C3AAB50F158B2AF2F8824BC0269159761A94397D1056BF3B46F72BADB041AEA",
+      "length": 22469
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/app_state.rs",
+      "sha256": "A5924E36D51A3201B240240C0A18D50A5C706158EDC90725ED0EC64848FB4BE2",
+      "length": 34536
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/badge.rs",
+      "sha256": "958253E8DDCE825DD2FF8EDB7A69176818997E60437E23CED8F1ABB91B6095D3",
+      "length": 430
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/event_loop.rs",
+      "sha256": "9982AA205EC0CEB338E13885A2BBECF3D6A41618BE02AE469BD7BDE0374051E1",
+      "length": 11625
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/ffi.rs",
+      "sha256": "487CCC0DE6F0E0D24FD4E71B170FB4E9BBE54321ECA24884FBA5D70D20F78BD6",
+      "length": 12595
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/keycode.rs",
+      "sha256": "EA44358C77EC7CE425FD29F0568F564BB9D142AF75D562EBCED08C6A67DA19AF",
+      "length": 387
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/mod.rs",
+      "sha256": "73781426BBA602687C8A6B9312C431E8424BE87C021519F59073CA826563F3E3",
+      "length": 3252
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/monitor.rs",
+      "sha256": "CB15DDCA19B76861BF88627FFC24B44C05C19583BB84C8F297CF3C47BE288092",
+      "length": 7921
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/scene.rs",
+      "sha256": "C43C7D5631C5BFB9C7851CA1DA25798015A51953243F6C4116516698F39C0606",
+      "length": 5979
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/view.rs",
+      "sha256": "E4AFB24D37A1C3FEB061BE33AC70F11631245AE3CEE2EA57C31C2972ABCB8D7C",
+      "length": 26637
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/ios/window.rs",
+      "sha256": "6F5E70B1515A836EEAFE089C380AE225B515E7E51336C68D2DC043E2AE5416E5",
+      "length": 26669
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/device.rs",
+      "sha256": "28DCDA6B173C92EB3673BD64B6A2AAC38B78224C34CD7480A28A9258992A1097",
+      "length": 2769
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/event_loop.rs",
+      "sha256": "2143E1DDD7020697013A278F30DD0C5CA09ED2B84026D4FC75F9D7875DAE68BE",
+      "length": 48687
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/icon.rs",
+      "sha256": "543205AAE66B9321B2F375F4516C5F6996B5A1AB875549BBB667D24BE8EDA0C8",
+      "length": 1181
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/keyboard.rs",
+      "sha256": "A4C734AF0DD2B004B9FDF51A88ED723B9526C21388DAEFBFEE31BFB7A25F78D0",
+      "length": 9507
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/keycode.rs",
+      "sha256": "4DA52C38AC623AEF850D55A321A5890A7B3AE3211ABD22B4F15B6B5454653041",
+      "length": 11269
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/mod.rs",
+      "sha256": "D06DF5BD43BE7140374665808004667E36A2682906279CCF36F5D01468713468",
+      "length": 2311
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/monitor.rs",
+      "sha256": "E763BD0AA9E2168C2A3D93F2916FEAD57F2B6F4BDDF965E10FD109037E1C4CE8",
+      "length": 2395
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/portal.rs",
+      "sha256": "06D04BF56D22327874A8B10BD93D5B18FFDA1560F5605C153E542DF96F7D14CC",
+      "length": 2214
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/taskbar.rs",
+      "sha256": "26CE8560338B6EE13020CD7A130ACE367F7C3E1CF49CF27903C746012651C1A6",
+      "length": 4727
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/util.rs",
+      "sha256": "3DEB2F4F4883B4698415F553A3A90116D404739960D25C89DFCC56AE096164E8",
+      "length": 2578
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/wayland/header.rs",
+      "sha256": "B339C12A7E205A5C48DA9696B6331A038A9923B957B1BA62001FAC58A2FFBC7D",
+      "length": 1058
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/wayland/mod.rs",
+      "sha256": "4E3B9289B454EEF4094B7BEC01965888E4BA2097C8F6EFF1CA27CCB2071A2152",
+      "length": 172
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/window.rs",
+      "sha256": "49250445F2290C66364C1972E3FA516609872ECB71A2FBF8F5D9399F4DDA9FBA",
+      "length": 32280
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/x11/ffi.rs",
+      "sha256": "629A5AAF4973A8B7295623582B8C2C21EE1B13B8B5454F4E3C7A7DE1BE115F76",
+      "length": 290
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/x11/mod.rs",
+      "sha256": "8F576518FE12BB21C7AC3DB0E75B969BABC1035288BFD618CC85D354B362F964",
+      "length": 219
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/linux/x11/xdisplay.rs",
+      "sha256": "FB64D39A851557B5F6A6E3E54C510473D62D13D3AFD18C7BE4D6F592824E9591",
+      "length": 4419
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/app.rs",
+      "sha256": "102C21B90C4D09A8C1831D47B8B4418B2844E1C758C159DB11AE14D9921CFD43",
+      "length": 4123
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/app_delegate.rs",
+      "sha256": "A66447B76F880B559042133CA939305DF8A3DD71B1E5A30F530A2D0CB8D16DA4",
+      "length": 7153
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/app_state.rs",
+      "sha256": "493BE209EF786AF3E1D25D3631D18A3FAAF96BE210F83DA2980A14DADFD60A7F",
+      "length": 15062
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/badge.rs",
+      "sha256": "41943EE395E667104594D1E8C79515689E938A0B1DD0ABDB7C4A8FE0D2DFC9CE",
+      "length": 432
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/dock.rs",
+      "sha256": "FB1A30C5E891465ECCED4E1F78856E4E6B3B6A283032A48D378525242A4F5BEA",
+      "length": 2980
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/event.rs",
+      "sha256": "874E96604892FE63C1BEDA1627F2A12763573A3E5347FA6630C672B995FB56EB",
+      "length": 10853
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/event_loop.rs",
+      "sha256": "53A6A0B315527A233CF02160E2EDA94F1158F95481C1119367B159CFDDEA05D6",
+      "length": 10617
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/ffi.rs",
+      "sha256": "6E85ECE908839C2C9D58077EC32E2D7835F1CFFAD200969F871F05A0AACAAE9C",
+      "length": 9040
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/icon.rs",
+      "sha256": "8F5A7F00F96462683B4378702A61D78A30814D538A3111BAD24EF4C556F35627",
+      "length": 431
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/keycode.rs",
+      "sha256": "F4BA5A8948AB839EEC2515586C48C41C9ACC967F1A65D8ED7680EF231D0C1B63",
+      "length": 8352
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/mod.rs",
+      "sha256": "A60A9BCF84C7BD51F744450674702E6BB88B3E17FC744751B4C4A202544423F8",
+      "length": 2471
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/monitor.rs",
+      "sha256": "3EF62D6DC6902798FE31B8D57E07BFDFC0A530CDF9A321460E84E4DC62427963",
+      "length": 9619
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/observer.rs",
+      "sha256": "4D801F48B3BADC805770B9CFE63114D4B03B8803D3B1F35EAF1538564516E52A",
+      "length": 9561
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/progress_bar.rs",
+      "sha256": "BAA49C76CA0B0914A5EADFAB0B3B352F0F073D3DAA6B1C933FA1D02A57470ED1",
+      "length": 5355
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/util/async.rs",
+      "sha256": "C0DF3946B4DACA0C2E3BDDA7BFB8B6B38603D25A2C0EBFE6CE8F1EC93998FB57",
+      "length": 8922
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/util/cursor.rs",
+      "sha256": "481FE6A34E1547449D8EE7B1A8A1CD93C304F15C2B62F6A6A71ABA6D995B903D",
+      "length": 7442
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/util/mod.rs",
+      "sha256": "E8DF577333134DEBDC0731A5198F5876FFB41A70DF75B10F1F732874DAA8CC1A",
+      "length": 3816
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/view.rs",
+      "sha256": "16F2970EE510B863EB7521B7AE6964EFB902A99453399560B8E610FAE15993DB",
+      "length": 40421
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/window.rs",
+      "sha256": "D5535BC79DE595630D043502625AC8246AE8C84A749C1C46622A09A529C8880A",
+      "length": 59196
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/macos/window_delegate.rs",
+      "sha256": "3BE35019EB247D253A59692A6C7061338CB4DBF12726D64A295A99784E140A57",
+      "length": 23588
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/mod.rs",
+      "sha256": "50486214DC0ED94D7B3E9E9B13016AF8CDAE8E2069F081081B2926602A99A81E",
+      "length": 983
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/dark_mode.rs",
+      "sha256": "820F7708DD7C853036D20A6F7F9B6ABEB85EA8EB9837CCA88FC3025F02595527",
+      "length": 8291
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/dpi.rs",
+      "sha256": "F2BF3F33F9A5C184374A17945CE8B6B6FB1894630294E5EE66FA5954AEFC0AEA",
+      "length": 3786
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/drop_handler.rs",
+      "sha256": "B751798398859BADAACE1BDA5820AE40B946D60F9C93C51C67CEF525CB389395",
+      "length": 5480
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/event.rs",
+      "sha256": "5E658DBC39645A312C3939A2ECF649ED3ABCD9E222EA5BAD6BBBCAD38826E664",
+      "length": 16655
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/event_loop.rs",
+      "sha256": "33ECFBD4B54419A72BEFB914170873B1481ED60D9458D9914D6DD704569DE04E",
+      "length": 91885
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/event_loop/runner.rs",
+      "sha256": "03851663144985DD22B249FF3FCC58A6582AE19620DD665AC0B7325C979F8FFC",
+      "length": 14770
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/icon.rs",
+      "sha256": "F93EC355B0307A65EB7EB0D08C7D9DB68ABB4173F1934A450D15EB4E0B53B30B",
+      "length": 3830
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/keyboard.rs",
+      "sha256": "086D3DDDC33D003D9DEF0458CEAF46487399A3731B9CA281A7CE5CE14894F46A",
+      "length": 27638
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/keyboard_layout.rs",
+      "sha256": "CBDB07A28D4460F2FB8E8969B957657F06ADB89F84BDEEC7AE17F71479E96625",
+      "length": 38301
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/keycode.rs",
+      "sha256": "ADDF12A3ECC7F8075B18CADBF1F82823170D8567A4A71555AC9C6A5BC626C172",
+      "length": 11547
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/minimal_ime.rs",
+      "sha256": "C4C9A1E5C664C3C343BBD0AC830B58593FF8EA4C8E0E9CDFDA49BDE16B8D3C9F",
+      "length": 2308
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/mod.rs",
+      "sha256": "B6EEAE3953B2838136CCF98E73DF9AC5419F3EB81FD29E13B63ABF05522A1583",
+      "length": 3684
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/monitor.rs",
+      "sha256": "B96A3F8DB1C2AC6397BE535831C6C4CA9341505370176B4C90DC872930F65051",
+      "length": 7147
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/raw_input.rs",
+      "sha256": "3FBD6AC35B1F068D1DA2A30759A797D30AF10E61D1BA7D1236D7AFC75840466D",
+      "length": 5463
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/util.rs",
+      "sha256": "4B8279C836603A10837C4E106C78C695A1B4A295F285C95B40DD33ECD8B4040E",
+      "length": 15622
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/window.rs",
+      "sha256": "4CD454F75220BAD251F7679540DD0D6E445217BB3FEC5C3330715C021C8A8C03",
+      "length": 52869
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/platform_impl/windows/window_state.rs",
+      "sha256": "05305914CCB3001DB114467524728E01CA86E8FCE339718CEE825002932FE679",
+      "length": 14625
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/tao/src/window.rs",
+      "sha256": "1C3D9EA5812F08C1C0FC70A0F15E539E8F224B6CE05063F1233DA82B2E7C9EB4",
+      "length": 53043
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/.cargo-ok",
+      "sha256": "AFBF9D0F3560B0FD7795E81C42A0A79EE6B6FC67E064F77826AEE642CAD28D91",
+      "length": 7
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/.cargo/config.toml",
+      "sha256": "0C9559057A73238C99857C7BC3B58243306EBCFE3DCC4C90027DA2502186EB11",
+      "length": 132
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/.cargo_vcs_info.json",
+      "sha256": "A46E084159AFD6D8839B00057B687674250D5B5BCDE929D9713A90F18EEBAC48",
+      "length": 113
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/.gitignore",
+      "sha256": "DADF1C3DD73D49C9BCE82D54A2A141E2712AB11DF1D97B0D6AE99BB591FF440C",
+      "length": 198
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/.license_template",
+      "sha256": "9ACA48869404894538E54A881BCC2ECE2142A709B665CED1FD2D284AE7C44595",
+      "length": 151
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/Cargo.lock",
+      "sha256": "AF619C25400DE25D1A86A70186D1A850CD62012F06530EAB1DD5FECF06A33E1A",
+      "length": 109107
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/Cargo.toml",
+      "sha256": "E5C48722C518B3247D92A464274D8DDBED481ABCD7491CCAA23D172C016B4E44",
+      "length": 9591
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/Cargo.toml.orig",
+      "sha256": "606420FD1C8CD695CC820D309F97FF4C9F5F71C8591C478587C23AB6DB5DA310",
+      "length": 5463
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/LICENSE-APACHE",
+      "sha256": "A60EEA817514531668D7E00765731449FE14D059D3249E0BC93B36DE45F759F2",
+      "length": 10847
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/LICENSE-MIT",
+      "sha256": "EF88893533AF22FFBB68CEEF0724BA1389518DF26165A34F3C99AD30B884DF4F",
+      "length": 1121
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/LICENSE.spdx",
+      "sha256": "26235C41E314FB0DA35B33B2BB5BCBC4DD523839F8EECA52EFCD43586F441FB5",
+      "length": 833
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/build.rs",
+      "sha256": "3C3153DEAE92302ED707B06ECFAFFFBF256F0EF4157B813C3120887C8010D7DB",
+      "length": 4031
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/async_custom_protocol.rs",
+      "sha256": "679E6C09F54C8D284665F52C4A13B726DB58583EB27B96975F5FE543CEE1052D",
+      "length": 3168
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/cookies.rs",
+      "sha256": "EF2F4464F9FA5C536E17F3F9FF46F557E99AD6E3AA5E46E37D53AE96F50A412F",
+      "length": 1842
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/custom_protocol.rs",
+      "sha256": "A369505817B3DE906D210FF08E3A30BF393A625AC83AC32FD7B2CBBE87BB09C1",
+      "length": 3101
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/custom_protocol/index.html",
+      "sha256": "86A935667A25D8CC7D4CCBFF68B6067C702EFC6BC435DC62CE46A498A87678E7",
+      "length": 795
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/custom_protocol/script.js",
+      "sha256": "6E08B96E8E1E0A3ACB924A4EA63D45F45544ED82B253B8B9E33AACE1E323656E",
+      "length": 843
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/custom_protocol/subpage.html",
+      "sha256": "39A21E00664D114F7D6A0C841BE473DEB0C5E142712DECB711377E86C48AFD51",
+      "length": 501
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/custom_protocol/wasm.wasm",
+      "sha256": "2CB1A33779DE77D7CC016D934F91262B0984EC695E1F8DDA9BA3C33725F5EF1B",
+      "length": 92
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/custom_titlebar.rs",
+      "sha256": "40B62BE794D0E2FD2D5AE548A1DFDC94F48290260C8F6D4FDAB8920420614107",
+      "length": 9172
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/gtk_multiwebview.rs",
+      "sha256": "38F818480C5710420D3A0F83BA575D2C3AC9B71255AA8475337C04696AB4A813",
+      "length": 3931
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/gtk_opengl.rs",
+      "sha256": "50772B28BF657AFDDFBF56FB0B0F7A3B8A1A4A2A03B32531F6AE957BC4C3A372",
+      "length": 6648
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/multiwebview.rs",
+      "sha256": "435326C3FC182084F774BD0924D7EADFFE2EAD8FAD9C9C2656450EA7978710CA",
+      "length": 4808
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/multiwindow.rs",
+      "sha256": "86A8DBE10E1913C5B67B0667998CA005886323CCE13EDC3AC65261B5C5D87723",
+      "length": 3478
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/reparent.rs",
+      "sha256": "9AD2E4B46EEAB665BEE9CFB19F8407F5F5FD7CCE34CB010D56E043FF36C6A534",
+      "length": 2852
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/simple.rs",
+      "sha256": "DD060533DE836FAE76ADD7185A6C41A7577271AED7CB38E6E55D612512A75C09",
+      "length": 1833
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/streaming.rs",
+      "sha256": "14E006096B01E283E237B9362A8E81842B520710F280EB909D1B8E69D53C4AC5",
+      "length": 8551
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/streaming/index.html",
+      "sha256": "7EB6977535C62E269B91F85EA6FD5E2AC0DA4E8AFD33D925E6FFEEBE2F1B31D3",
+      "length": 1160
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/transparent.rs",
+      "sha256": "6E0B349C5B56F2A0312F32E738B1DC282C5CD11FE0FBCABE9B855D2C5CC47E4F",
+      "length": 2143
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/wgpu.rs",
+      "sha256": "90F6B825602370C90FF5781A1E82F6B7A9E2D09E62BE0249418F9A98935DBF88",
+      "length": 7878
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/window_border.rs",
+      "sha256": "FA859AC7BDF738EC5F620C15AA3E3CEC07409FCBC9D5EF72FA757635E83C1F53",
+      "length": 2838
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/examples/winit.rs",
+      "sha256": "FD1263474C2DD3057BEEAB2D3E582F6D35DF8B049C37655D86A4DDBA5C4B94CD",
+      "length": 2520
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/renovate.json",
+      "sha256": "32CF3C60BB8D28E5BB05D6564F413EDCF8440261DE9C6D9E2882F948A61A26A2",
+      "length": 177
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/rustfmt.toml",
+      "sha256": "355F303583E15D1518E0C89EEAF2A4034BCC7C2A292087DFC17D00DC8173A5FD",
+      "length": 377
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/binding.rs",
+      "sha256": "A51DC070BD7E00E1E7ED5E643D08BFB497223B2E50DBB8847A0E92F90C099A06",
+      "length": 14542
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/Ipc.kt",
+      "sha256": "80232AE2DF8264B7855EF21AAFFF772D8563AAE6B2374C49394421CB085C0B10",
+      "length": 711
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/Logger.kt",
+      "sha256": "6EF1209EA4A45EF236FD4E2B0D1C2B086BC99DDB31A4E1D9DA171F45C06A51FE",
+      "length": 1921
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/PermissionHelper.kt",
+      "sha256": "15FBD8AC2606C9F930CFD047A1074CEDEC286B7257E2A644E5CAA45FDCAB74E4",
+      "length": 4182
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/Rust.kt",
+      "sha256": "6BAF5E3945696CE07EBC740C4C28D927389BA292F0FCC6FA2E1C28D8399AA7CF",
+      "length": 1879
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/RustWebChromeClient.kt",
+      "sha256": "651701CBAEEE1D88032CD2B1A9CF47D36BF6C02509FF11541CEF80B21A536093",
+      "length": 16156
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/RustWebView.kt",
+      "sha256": "0C4E6E8BDE658F0E2AC7563A0CC2C164D0D39AF369998DDD7F5C8FD9745B4236",
+      "length": 2782
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/RustWebViewClient.kt",
+      "sha256": "DEEB93A0960D7C9F2268BEF4F43D220AA7BB0E981826372F0120EC9C514B2C2B",
+      "length": 3685
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/WryActivity.kt",
+      "sha256": "07067830F2356858527AD8CF93D467246875C3BD15EE578AF9CCACD534B83845",
+      "length": 5371
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/kotlin/proguard-wry.pro",
+      "sha256": "6B10700539FE7F2D20616387A79FC6C1EBFA729691031FEB2952F368ADE73F51",
+      "length": 841
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/main_pipe.rs",
+      "sha256": "65D757482028BA36FDCC8C8FE288E771988C7142549ABD29E004B0BDEBABD8EA",
+      "length": 18915
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/android/mod.rs",
+      "sha256": "EE15A76371A0A809B3B44282F6038BA9BBE7CF341C69B607C6D76F127233ECDA",
+      "length": 15263
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/custom_protocol_workaround.rs",
+      "sha256": "6910A753EA354938168B91B6D7985E9CC4A1DE76CE57B90F76D42FA695E96E25",
+      "length": 2079
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/error.rs",
+      "sha256": "D25CB6EE2AEB38FCE037E02B1AB410AACFE4CD087BA58849CD109AE4FB838BBA",
+      "length": 2875
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/inject_initialization_scripts.rs",
+      "sha256": "EFF563EEE5FF7B1F57FBF84268F8BC4A5853391AB64ED200A9AD60CA537B2F4B",
+      "length": 7009
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/lib.rs",
+      "sha256": "B62771E8FD3A0CB4AFC681A4C0812A2D883946995FC46570712375B22FE96972",
+      "length": 98205
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/proxy.rs",
+      "sha256": "C72606D68787704FA91088D81F6B495FC05CE92BA77845339819B4D0C004A8F0",
+      "length": 403
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/util.rs",
+      "sha256": "5F1B64EAB6C81DEA1C6CE7F955D2A7888B368EF9FCBE574BB1187E4046135E98",
+      "length": 237
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/web_context.rs",
+      "sha256": "DD9912D669F3A5DE10AEDA7B8E1361751A1137A602385D31964439F101773AAC",
+      "length": 3591
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webkitgtk/drag_drop.rs",
+      "sha256": "E3E52B6C32543C7E415244766A4A9DA1DECB028B50CCAAF3D981F8566ACC8ED8",
+      "length": 3602
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webkitgtk/mod.rs",
+      "sha256": "276F4449A1C5E7C7EE8CA67CBDE44F8A5605C75FD5529CC597F6AC2D3B41AFA5",
+      "length": 36948
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webkitgtk/synthetic_mouse_events.rs",
+      "sha256": "E534ED5D79D3B0E79A6341CEFA57BB20438EC34DB32983522BF6816BDBDAB2B0",
+      "length": 5046
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webkitgtk/web_context.rs",
+      "sha256": "EF43EDB59E19E60743C7858BE846CAC23CE8E7A188F77B12AC7E0A82A907628F",
+      "length": 13946
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webview2/drag_drop.rs",
+      "sha256": "EC03770D82DBBF47CBC3932A1B709BD8AED5A0914E20B6AFDCC6629FED99C7EE",
+      "length": 7261
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webview2/mod.rs",
+      "sha256": "8CA029FCF5DE8A40A3A3AB84B6F095D59B04AC106AEF6293BADE99209EF722E6",
+      "length": 65737
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/webview2/util.rs",
+      "sha256": "068EDFBCDA4060A789F9E1F6DEA83BA748E560A33C17179AA7839425F52ADE39",
+      "length": 3224
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/document_title_changed_observer.rs",
+      "sha256": "7E09F34F232F7838ECFA11C0D75D0361D32DF91AA9CE9E041915E316F0784AF8",
+      "length": 2400
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/mod.rs",
+      "sha256": "F20048D06E0098D25EEE0C549EB7FE26B20D041ADA2FE1DAF7771125FD44A7B8",
+      "length": 391
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/url_scheme_handler.rs",
+      "sha256": "1CC38A32613B6F281F94AA54E45AC1BE0BAB78B083990EF09112256E3D263E94",
+      "length": 12841
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/wry_download_delegate.rs",
+      "sha256": "D52460DF67678ECCB4C5D409C9D24A81D5C63FF04EEE6A76E5558C9CCD341756",
+      "length": 2354
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/wry_navigation_delegate.rs",
+      "sha256": "E858A92F23DDB5D67D117ED5C64C31782A49E3D6234A96C364E0C06AB5E16CB6",
+      "length": 5208
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/wry_web_view.rs",
+      "sha256": "692B4420ACE30FAFECE0707533D68B40B82C20EE7F5843EB17E04A7C6FCB4656",
+      "length": 4783
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/wry_web_view_delegate.rs",
+      "sha256": "97559A443B53682D98858EFFED722774B309B7D72AAC1AACC573F1D989FAE093",
+      "length": 3209
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/wry_web_view_parent.rs",
+      "sha256": "C405E3EA1D2E062A43847C6D7C91BE6DA36026F3230BF47F2661BDDC6852012A",
+      "length": 3644
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/class/wry_web_view_ui_delegate.rs",
+      "sha256": "F9BAB65E7FF279786B28935725321A1EE6FE8804C5CA3072D042198F6562C497",
+      "length": 9706
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/download.rs",
+      "sha256": "3B67113C3D13A2082992D284A1E995E07C06A9B892B3ED2DAE9B7370DAA0F6C0",
+      "length": 3987
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/drag_drop.rs",
+      "sha256": "10BF1524A41D586810CAE18D318629DA3768E69A1B0AB59AD04DFD69840D83C7",
+      "length": 3658
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/ios/WKWebView.rs",
+      "sha256": "4FF8588C4D8773C244C228E5AA1CCE3AF8D62E4DE1FB08CB80DFB31AE9A2DBB0",
+      "length": 20585
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/ios/mod.rs",
+      "sha256": "03823CE7C572F1ED345AE4EF6EC63E8CE4DF1F0A7D3AD0EFEBB36DD6A7C18DD1",
+      "length": 19
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/mod.rs",
+      "sha256": "686EF932C341C2A5A7317419F7BE36AF557C4FE262EE7DE2F819D01510299CAD",
+      "length": 51287
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/navigation.rs",
+      "sha256": "1898665E051EDF10124178AA596B02DD121B33E1CCF7BB48B54D859D46E73AAE",
+      "length": 3357
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/proxy.rs",
+      "sha256": "F7EE208069B3D4D045540C46B842C71F0FA2BBA905B20463E67679471F58AD20",
+      "length": 1474
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/synthetic_mouse_events.rs",
+      "sha256": "729487A4009431C29633C0ADA6D78C513A18AF148C118AEFA9B0279C322C7CB2",
+      "length": 3673
+    },
+    {
+      "path": "desktop-preview/src-tauri/vendor/wry/src/wkwebview/util.rs",
+      "sha256": "C7BE7B4421D3D4BA06A61D39F4EFC3ADA0EB3E2D691078AA842C3AE76F95E755",
+      "length": 435
+    },
+    {
+      "path": "desktop-preview/src/App.tsx",
+      "sha256": "9191A7A9D4E60E756F9303100C952FB1CC0E4487AC2416B13A5E9FE6D1860B3C",
+      "length": 2913
+    },
+    {
+      "path": "desktop-preview/src/bootstrap.ts",
+      "sha256": "38D3EB90EB232973F0495061F1438753937471D1CF54458C5F357CA44206CEBB",
+      "length": 1887
+    },
+    {
+      "path": "desktop-preview/src/build-info.d.ts",
+      "sha256": "A51FFF33D1F5B28BEE81E32E01CC2EF4B4DAE7CEB8E6B6854A45A2CD49D961B4",
+      "length": 45
+    },
+    {
+      "path": "desktop-preview/src/components/AppExitProgress.tsx",
+      "sha256": "96FB4051A0831CDCB81AAFC52C8781565D593AC8510C92FEA65F6B3D4086742B",
+      "length": 1827
+    },
+    {
+      "path": "desktop-preview/src/components/CloseConfirmDialog.tsx",
+      "sha256": "60E05BC2C57BFC3DC9B7FB1DC874B0AE603E8DE8EF74CFDE54D06F60BF93D9B5",
+      "length": 4468
+    },
+    {
+      "path": "desktop-preview/src/components/DraggableDisplayItems.tsx",
+      "sha256": "7361651C4B25CC4B46FC242967ECF8DF6F686775AC5432E3FF15523564273640",
+      "length": 7306
+    },
+    {
+      "path": "desktop-preview/src/components/HardwareDetailModal.tsx",
+      "sha256": "C698F77869B86D532A7AE1939CE208A4272CABF1C19DAA4E7904BAF4A74E7C14",
+      "length": 3634
+    },
+    {
+      "path": "desktop-preview/src/components/OverlayItemSettings.tsx",
+      "sha256": "F82A381E1B94CE4697D4006396447224AB2F167A31719A89F8E2F785040D1CB3",
+      "length": 6139
+    },
+    {
+      "path": "desktop-preview/src/components/PawnioInstallModal.tsx",
+      "sha256": "140550F2B99C780C90BFB5BCF0B9AFF4DF3FC011475A88A7B17BFD58F3B3C640",
+      "length": 4377
+    },
+    {
+      "path": "desktop-preview/src/components/RootErrorBoundary.tsx",
+      "sha256": "266647040E2AF09CB990DE2A405BE2FB81E62A0EFCCD3F4F66249AAC17C72831",
+      "length": 1200
+    },
+    {
+      "path": "desktop-preview/src/components/SplashScreen.tsx",
+      "sha256": "0EAA77B5021DBBB8924AA48FF9C8D182D082A51D97F35C676AA7F83110E98752",
+      "length": 2354
+    },
+    {
+      "path": "desktop-preview/src/components/UiSurfaceTokens.tsx",
+      "sha256": "A6A05E2FD6AD795F63D10839D215968AF24944DDBEAE704B56BEF7A6CD6704AD",
+      "length": 2381
+    },
+    {
+      "path": "desktop-preview/src/components/hotkey-recorder.tsx",
+      "sha256": "FB20577472F46AF3AB9D9217B0DCAEA48E5468F8BAF405F49EDB30EC088767AB",
+      "length": 5950
+    },
+    {
+      "path": "desktop-preview/src/components/special/custom-color-picker.tsx",
+      "sha256": "7338D8ED5BD4088074FAE5D69E873409A04FCCCD3660F4FE71C253BFF6BF280E",
+      "length": 9553
+    },
+    {
+      "path": "desktop-preview/src/components/special/custom-select.tsx",
+      "sha256": "901441D9C7947DAB24695BB34F1A281D0047BB140034E24313BEF5B3360D4C49",
+      "length": 7686
+    },
+    {
+      "path": "desktop-preview/src/components/special/liquid-glass-button.tsx",
+      "sha256": "BA4E3DC1CC4368DF934E3DA1DA45D8D8150BA420310615697E49FC9E74B91561",
+      "length": 2158
+    },
+    {
+      "path": "desktop-preview/src/components/special/liquid-glass-card.tsx",
+      "sha256": "625A45A07DDAD25319E4C55542278677220A081A25B9F37AAB8658924FAD1AE0",
+      "length": 6838
+    },
+    {
+      "path": "desktop-preview/src/components/special/liquid-glass-menu-item.tsx",
+      "sha256": "0F0479D85B8B7F033EA1804600287A8F81FD13F7FFC4DC1D67DF476552F999A1",
+      "length": 5639
+    },
+    {
+      "path": "desktop-preview/src/components/special/liquid-glass-svg-filter.tsx",
+      "sha256": "37B133CD6DDD34A1CB57912BE03A1A1B0FCCE5151618B61ECE15D64C2BC5EDC3",
+      "length": 6467
+    },
+    {
+      "path": "desktop-preview/src/components/special/theme-switch.tsx",
+      "sha256": "79D3EE00297C39633F302804C61411E2BEEB63227268384B0A1F669FDC4E3DB2",
+      "length": 1081
+    },
+    {
+      "path": "desktop-preview/src/components/ui/MRBackground.tsx",
+      "sha256": "EBB3E3B507C54E8DDC32DD2903D49DD2058BB06C750BF5AEB584797337B75A74",
+      "length": 12986
+    },
+    {
+      "path": "desktop-preview/src/components/ui/animated-page.tsx",
+      "sha256": "1EBE9EB013FC530AA660BBE514324743BF322087330F79A41DEB04D28BDF47D4",
+      "length": 2562
+    },
+    {
+      "path": "desktop-preview/src/components/ui/dynamic-island.tsx",
+      "sha256": "FF51A94FA35146CF13D0B3AE3AB413DEF750EBB7A970F4AA42E93E4B84CF18D3",
+      "length": 39430
+    },
+    {
+      "path": "desktop-preview/src/components/ui/global-search.tsx",
+      "sha256": "34047643D78D9270105A015A6E81650CDD0B28FA032D39CA1961E5BAD2F2C495",
+      "length": 13972
+    },
+    {
+      "path": "desktop-preview/src/components/ui/main-layout.tsx",
+      "sha256": "60C6D1605B8C427C7FC5CAD8C232173FD5B0CAF31CE198CE99F0B721EA641879",
+      "length": 10334
+    },
+    {
+      "path": "desktop-preview/src/components/ui/motion-components.tsx",
+      "sha256": "F65D2BDC3C2CC53749B810C0ABF99AF636A0645EB569A39C7D8AD474BA6E9C91",
+      "length": 3621
+    },
+    {
+      "path": "desktop-preview/src/components/ui/overlay-workbench.tsx",
+      "sha256": "FB7F1940C64F988C15F8BA13454341E601B6E48B29D6547A2483DAE3FF7C086D",
+      "length": 1036
+    },
+    {
+      "path": "desktop-preview/src/components/ui/search-target-focus.tsx",
+      "sha256": "5AC1B49D673543233210D05C90DF753A11042FBB590DA3FB5A2BF2B4493431E6",
+      "length": 3313
+    },
+    {
+      "path": "desktop-preview/src/components/ui/sidebar.tsx",
+      "sha256": "9FD7103C15E21F6FBCB05665A6784B1DE8E390DEBB12FDC4F4B23E4F6A62BC4E",
+      "length": 29455
+    },
+    {
+      "path": "desktop-preview/src/components/ui/surface-motion.ts",
+      "sha256": "FA6889F7FF49D090B97519500A8567CCF0805689B13B731A1675B1B22208F4E1",
+      "length": 995
+    },
+    {
+      "path": "desktop-preview/src/components/ui/title-bar.tsx",
+      "sha256": "D3C698D52BBCC6A6F58E113E0ADEF0C6EED52E42E3F5FE3D3E1515E61B2523E9",
+      "length": 11120
+    },
+    {
+      "path": "desktop-preview/src/components/ui/use-page-location.ts",
+      "sha256": "DC2292ADBBA17FA5431EA3BFBA692EF56D5292F124DCC5DD1539314E816F5475",
+      "length": 4196
+    },
+    {
+      "path": "desktop-preview/src/config/search-index.ts",
+      "sha256": "36C31ACDD301777DAAD6C04CFE4861523C4B7C842AEBB8A4E6C923E54BEA4CEC",
+      "length": 17390
+    },
+    {
+      "path": "desktop-preview/src/contexts/app-startup-context.tsx",
+      "sha256": "158699D93C02955EB6C031868A80AFC565D765682B85475DC9464BD1E364AC14",
+      "length": 6905
+    },
+    {
+      "path": "desktop-preview/src/contexts/background-context.tsx",
+      "sha256": "49423050D828F4F6661F420154EECFA9847ED5518A915C155ECEF59625DD760A",
+      "length": 20525
+    },
+    {
+      "path": "desktop-preview/src/contexts/font-context.tsx",
+      "sha256": "1239A6143013216ADD95D3811AB624862CAF58C7FA34982E0B00D0DDBC473279",
+      "length": 7828
+    },
+    {
+      "path": "desktop-preview/src/contexts/theme-color-context.tsx",
+      "sha256": "9F22A02FA0D3E27FB17CBBDF61671678CECFFCF100E77484A93BC331C4418E1A",
+      "length": 7925
+    },
+    {
+      "path": "desktop-preview/src/contexts/theme-mode-context.tsx",
+      "sha256": "CC6C850E23F8E260D7CFD5A604AFACEC672BC2869D2ED80A89BA77FE04055544",
+      "length": 2529
+    },
+    {
+      "path": "desktop-preview/src/contexts/update-context.tsx",
+      "sha256": "0CFF82FFD7500935EBDBAB769D263B2A8FB164A2ABFAB4577A1BFCEC5355748E",
+      "length": 2869
+    },
+    {
+      "path": "desktop-preview/src/custom-overlay/Editor.tsx",
+      "sha256": "D418797AC8FFA988B4A2C6898106A79A4D5BDA27EAF336C12AACC1C6B1B1E47B",
+      "length": 24271
+    },
+    {
+      "path": "desktop-preview/src/custom-overlay/Library.tsx",
+      "sha256": "05C91995228EA35C20031A51ED5F7BE37DCD3C616D75157F1A348EDE94D441F3",
+      "length": 4002
+    },
+    {
+      "path": "desktop-preview/src/custom-overlay/Renderer.tsx",
+      "sha256": "F03B98F14F7595B15B8E12B082CDEE77109A679D537736698E132AB43784FB43",
+      "length": 4212
+    },
+    {
+      "path": "desktop-preview/src/custom-overlay/Runtime.tsx",
+      "sha256": "03C1F80DA517280EF0C61B645C61E6768545BE693C4B2D4639AF3037E27DE8DE",
+      "length": 1816
+    },
+    {
+      "path": "desktop-preview/src/custom-overlay/model.ts",
+      "sha256": "B266B69D317AFDAE39DA3327421A67702044B67EFB6C234E69A1103BD3248311",
+      "length": 9094
+    },
+    {
+      "path": "desktop-preview/src/hooks/use-adaptive-text-color.ts",
+      "sha256": "DBB55E70D1C3FD656D333DC4C899EF5C8711F27BD3DF98BEE9B5ED5BEAC96432",
+      "length": 1585
+    },
+    {
+      "path": "desktop-preview/src/hooks/use-esc-back.ts",
+      "sha256": "81F19CFA905B19C7C2DAC45D92A83D1B6098C451992520CDA33A5C007E36AD4C",
+      "length": 3673
+    },
+    {
+      "path": "desktop-preview/src/hooks/use-floating-button-style.ts",
+      "sha256": "61330DAF651FFC5FC1C80423A183F7746E381762684AD015E00C0BB51BA74D9B",
+      "length": 620
+    },
+    {
+      "path": "desktop-preview/src/hooks/use-glow-effect.ts",
+      "sha256": "BB150486133F80B1CDB492386CA09B16992127D9A8CB4B4C30BD32BDC89BFCA1",
+      "length": 1654
+    },
+    {
+      "path": "desktop-preview/src/index.css",
+      "sha256": "C8DFA2BF4B7C6C8AD643797005F8DB96028542AA05185FF960A513DB3F491987",
+      "length": 14122
+    },
+    {
+      "path": "desktop-preview/src/lib/background-reference.ts",
+      "sha256": "6820FA51E45E78051C8BE8DB1C432E2877D65ACF8F2A57DFC971BDE0C19A58D0",
+      "length": 648
+    },
+    {
+      "path": "desktop-preview/src/lib/close-behavior.ts",
+      "sha256": "A4872B8C6865F78175CCE0E16EE4C758DD0E1D9526EC560F864206761C81728B",
+      "length": 2269
+    },
+    {
+      "path": "desktop-preview/src/lib/color-utils.ts",
+      "sha256": "2796D76EED60B6C97092D606F25C80AE8B84511CCD356ADC74AC8DA6CBD2A283",
+      "length": 5194
+    },
+    {
+      "path": "desktop-preview/src/lib/fonts.ts",
+      "sha256": "3C9CCB9B67338EAE7C9AF68CA81ACFD0DE8FCF1D00B9999B3DD514C22DB8F28C",
+      "length": 2309
+    },
+    {
+      "path": "desktop-preview/src/lib/glass-background.ts",
+      "sha256": "C7A4EF8918DC8FE9FF5602BD681E3FE8D274906D057D76A9532AEF626FA730BA",
+      "length": 7681
+    },
+    {
+      "path": "desktop-preview/src/lib/glass-material.ts",
+      "sha256": "A975E8C9856B3AE4308825091195C67185D7CF6395E1098FA79F934A2C91EF11",
+      "length": 1916
+    },
+    {
+      "path": "desktop-preview/src/lib/hardware.ts",
+      "sha256": "BD341B812A8F8B521C08E004E7B02AAE95B46BFA810AF20FDAED4EFA92D4D4A2",
+      "length": 4164
+    },
+    {
+      "path": "desktop-preview/src/lib/i18n.ts",
+      "sha256": "6524B6462D9E2CA3A4ED53CF07CCB4D816FC09FB47D30CF2FE0C643ADC9D1717",
+      "length": 1577
+    },
+    {
+      "path": "desktop-preview/src/lib/live-hardware.ts",
+      "sha256": "474F4001C843226CDD0C29CA592D16DF8FC7ABE35ADE7EBFF40B51B109D2B629",
+      "length": 3075
+    },
+    {
+      "path": "desktop-preview/src/lib/motion-preferences.ts",
+      "sha256": "68820493B84A7E782A6A782CC2DD01218D3C8FFB8318D7DFB81704DB3E1A9996",
+      "length": 9249
+    },
+    {
+      "path": "desktop-preview/src/lib/motion-store.ts",
+      "sha256": "AACD85F79F45B23D3F364014A3277DE3B5BE2232CC69122E199B846031F8806C",
+      "length": 843
+    },
+    {
+      "path": "desktop-preview/src/lib/overlay-items.ts",
+      "sha256": "EA67F353A57B5A46F685D9D7452D03FD46C9EC93A08D57C764A4FA463D8FB465",
+      "length": 1629
+    },
+    {
+      "path": "desktop-preview/src/lib/search-dictionary.json",
+      "sha256": "8E3712D1797B3B0A7DB48C6D75CAF296B583AFCB62497DEB1DB82BDABE98ECCE",
+      "length": 452
+    },
+    {
+      "path": "desktop-preview/src/lib/sensors.ts",
+      "sha256": "08164D884BFC3D25ED1654F0D9ACD17B8DF1348B8A7CA1715EDD046F54F59DB9",
+      "length": 856
+    },
+    {
+      "path": "desktop-preview/src/lib/startup-trace.ts",
+      "sha256": "707D42DE70E67CE7A209C06614A47555FB6880B2585B8859EA6824049DB340B8",
+      "length": 898
+    },
+    {
+      "path": "desktop-preview/src/lib/store.ts",
+      "sha256": "71A20D48A72E3A1DB98E00301B4B28F70FC9BD3B991CFE639EDAB6F91F0B4662",
+      "length": 168
+    },
+    {
+      "path": "desktop-preview/src/lib/theme.ts",
+      "sha256": "CDEFF859BCE2CA5F951AF25D618B4C04670F746CA9EBC698F99197DB00C5EDE0",
+      "length": 7296
+    },
+    {
+      "path": "desktop-preview/src/lib/ui-activity.ts",
+      "sha256": "3758DD4AC8067585C145711FCB02BAC3923170098BAD0803B8CF97B1EA1242F7",
+      "length": 1389
+    },
+    {
+      "path": "desktop-preview/src/lib/ui-effects.ts",
+      "sha256": "21D7157BE3B6029590EDA83543F67A3E7D055BFD4994A7C3874422D1EBEA83D2",
+      "length": 1253
+    },
+    {
+      "path": "desktop-preview/src/lib/ui-startup.ts",
+      "sha256": "CB4484C144EDDA319BD5CB70C56AEEB2C26D6B1B58DBFCAD7FC482618FEAE34C",
+      "length": 2157
+    },
+    {
+      "path": "desktop-preview/src/lib/unified-search.ts",
+      "sha256": "CFDF367791FF3444C3FF0EFE2E98885D869C7F6300FDFC5BAD249E12183EF71A",
+      "length": 3871
+    },
+    {
+      "path": "desktop-preview/src/lib/update-api.ts",
+      "sha256": "6C794B4A8DCFCDFD71EA1A40A852AB4CE7BA5012792855D16C856FBF311C2DD2",
+      "length": 1844
+    },
+    {
+      "path": "desktop-preview/src/lib/window-activity.ts",
+      "sha256": "3B710012E8A80F18E5A6BB56CB4085F5523A019E9F4141D6C7C7C5D723D48BED",
+      "length": 1066
+    },
+    {
+      "path": "desktop-preview/src/locales/de.json",
+      "sha256": "1AE02912E96635FEAFF9BC1BCEB34D1260DA18418FAEAC2217D65411C80C94F1",
+      "length": 29479
+    },
+    {
+      "path": "desktop-preview/src/locales/en.json",
+      "sha256": "73CD56149AE5C4C83D15A84813E9857F329062A0ED9CAF589FCA558C374D9554",
+      "length": 38725
+    },
+    {
+      "path": "desktop-preview/src/locales/fr.json",
+      "sha256": "B65B59DEA1BEAE6ABD40D5F83B12E4E8C8BE56E6B80A0F2E6CDCF67456A0D8B0",
+      "length": 30513
+    },
+    {
+      "path": "desktop-preview/src/locales/ja.json",
+      "sha256": "30E2FD7EB4438406E6D810FC13CA6FA8EB0EAF8F8FD8DFEE16E57B21973AC906",
+      "length": 34528
+    },
+    {
+      "path": "desktop-preview/src/locales/zh-TW.json",
+      "sha256": "EC73C23B965F9C94A88E0B7B404E15FC0EAAB88B46BCBEF3BBE3353534D9A1A6",
+      "length": 25639
+    },
+    {
+      "path": "desktop-preview/src/locales/zh.json",
+      "sha256": "2A17F6326C35C15808ED3341D1789686C200555C11F2DEA8E20B984A84AA8FDA",
+      "length": 37394
+    },
+    {
+      "path": "desktop-preview/src/main.tsx",
+      "sha256": "29766D2CE00712949E177AD6808496CB591DE2141957922A689862EA53F92FBD",
+      "length": 3953
+    },
+    {
+      "path": "desktop-preview/src/pages/HardwarePage.tsx",
+      "sha256": "C7BC487D82B7161D2399E72DDC75DEAC6001425EAC51CE9C8D775FA72AE45B8F",
+      "length": 38169
+    },
+    {
+      "path": "desktop-preview/src/pages/HomePage.tsx",
+      "sha256": "4697D2F40431973D0FD9137D384E5C5785205543D71123D3337BA4D733D71CD9",
+      "length": 13694
+    },
+    {
+      "path": "desktop-preview/src/pages/OverlayPanelPage.tsx",
+      "sha256": "321D314FE3F86FF3401C6123C0FE22E5091C519A8D30220292E3BACE3BF7A57E",
+      "length": 38572
+    },
+    {
+      "path": "desktop-preview/src/pages/SensorMonitorPage.tsx",
+      "sha256": "A5FDF7156E42C078CF72D0F24F06A1ACD5E74295FF5A472FBB181F352C0A1223",
+      "length": 25890
+    },
+    {
+      "path": "desktop-preview/src/pages/SettingsPage.tsx",
+      "sha256": "1FEDF09B662D33517FECE71243DE38F30D79F1361396E00425C9B508E32CD511",
+      "length": 67012
+    },
+    {
+      "path": "desktop-preview/src/pages/VerticalOverlayPage.tsx",
+      "sha256": "40AA6A09D2E788F1632A9D86486DE62768E1FA689D4742018DD03F4760CE3FC7",
+      "length": 28927
+    },
+    {
+      "path": "desktop-preview/src/preview/browser.ts",
+      "sha256": "766F6C72BB60C2E4B54C30C291D69A99AA1295597549E2499D77190C7D4503BE",
+      "length": 742
+    },
+    {
+      "path": "desktop-preview/src/preview/pages/ReportsPage.tsx",
+      "sha256": "2CF7A66990A9623D0EFB7FA52E4CA318F32AB1F42631AD255207B13165439DB8",
+      "length": 12028
+    },
+    {
+      "path": "desktop-preview/src/preview/pages/TargetsPage.tsx",
+      "sha256": "7748019D1E28312EC7AA66476678F78CA6C03E633FD0D1E2E1A107B060DB3460",
+      "length": 9714
+    },
+    {
+      "path": "desktop-preview/src/preview/pages/shared.tsx",
+      "sha256": "398A98724290CE614BD2495FB73B115A8012F04F1B920F8190A0094538FD5819",
+      "length": 4441
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/core.ts",
+      "sha256": "A7BE3075EA0EB428860A628C4703937112905707DEE0A96070BDC34C4FBB2FCA",
+      "length": 9068
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/fixtures.ts",
+      "sha256": "FE538375E3D4E844BF47BC9488374CF0FB39DA9AE8EA0B9CCC68AD80C7456CC6",
+      "length": 7811
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/index.ts",
+      "sha256": "B2AD6EE0166842552EF1D46524E4F1211A6D703FA04673EFC3863E6106B5B1FB",
+      "length": 132
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/platform.ts",
+      "sha256": "CE6A2347CC58644645CDDB7495FC5B3719A9ADF0529591D565547E291D6E3E19",
+      "length": 4381
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/report-search.ts",
+      "sha256": "BCC47FA4EF0F4210255FED9EC8DF25AFF414F736F81BC44A1EE536DF8CB44D8C",
+      "length": 750
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/state.ts",
+      "sha256": "C469E426681063DF99C24DD5D42E7600D83531C24F9974280D13AE0AA06C48B3",
+      "length": 32706
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/store.ts",
+      "sha256": "D1CE180919CE4A8A98079748BC834ADFF9D3B896EF7FDBB428DE51817FAD5A51",
+      "length": 2450
+    },
+    {
+      "path": "desktop-preview/src/preview/runtime/types.ts",
+      "sha256": "D56C74B796E6068E5233982C48AD789594D55511925C754E7526C252F6454574",
+      "length": 5564
+    },
+    {
+      "path": "desktop-preview/src/preview/settings/FrameScopeSettings.tsx",
+      "sha256": "4AE3CBE356C4C1DFA07B1CD21653913DD217CC8DBFF866E6F8BE5599662F50D3",
+      "length": 7869
+    },
+    {
+      "path": "desktop-preview/src/preview/settings/UpdateSettings.tsx",
+      "sha256": "596161FCD207FAEA384A4EFC46A9353DDF5C297830193836F37555AD41DA6864",
+      "length": 5421
+    },
+    {
+      "path": "desktop-preview/src/preview/settings/navigation.ts",
+      "sha256": "3AEB197B10AD857C7E0818E05C9595D6AD9A5D5C99CD53BA8EFED6DE14E97C49",
+      "length": 658
+    },
+    {
+      "path": "desktop-preview/src/report/ReportSelect.tsx",
+      "sha256": "A94A402E241F3924576FB3D56874F52382DB503DD4093EBC71444C47989B2317",
+      "length": 6178
+    },
+    {
+      "path": "desktop-preview/src/report/ReportView.tsx",
+      "sha256": "1FCCA9BB1303BB758B6BD6DEDC5F204F57E5FCA06560DE24DB774D7DB7496650",
+      "length": 30325
+    },
+    {
+      "path": "desktop-preview/src/report/ReportWindow.tsx",
+      "sha256": "9710B4D1C1FFE994291C8DC27FA27A343A5178E4D2B9E26EB07825B535FC92D1",
+      "length": 11641
+    },
+    {
+      "path": "desktop-preview/src/report/engine.js",
+      "sha256": "94AEEEB34DDF9E1716A9752FE94B33E1420660EB838F04CBDC028803758CA8E2",
+      "length": 92686
+    },
+    {
+      "path": "desktop-preview/src/report/offline.tsx",
+      "sha256": "FB5D0ADBCC1895F253D5DC1D34D455A392AF1E88D6BB223D202AF055F279319C",
+      "length": 991
+    },
+    {
+      "path": "desktop-preview/src/report/report-motion.ts",
+      "sha256": "F84D7D52130AB11F175B1C6D72734DF7EAFFBB2399FBD101CB017B4F480D0AFD",
+      "length": 1067
+    },
+    {
+      "path": "desktop-preview/src/report/report.css",
+      "sha256": "2359CA6F7F2157A7A298761854A5EBE99466BD6E6ACE1AB5C593258887AF7E80",
+      "length": 22596
+    },
+    {
+      "path": "desktop-preview/src/vite-env.d.ts",
+      "sha256": "51A13F7DB9C2FFA7E20EC4600DE726509064D0FC0BF7E295A645D24A5656FF21",
+      "length": 433
+    },
+    {
+      "path": "desktop-preview/tsconfig.json",
+      "sha256": "C401E8DEFCF7202E73C3E2EFE8E0360DF7B57C2BB7DCA17343A76F9BA4232C1D",
+      "length": 891
+    },
+    {
+      "path": "desktop-preview/tsconfig.node.json",
+      "sha256": "6EC602B8AA146888C76F0B41CA3515F91F95919F6E6417A4670DECABA8FCB982",
+      "length": 223
+    },
+    {
+      "path": "desktop-preview/vite.config.ts",
+      "sha256": "09764915EF565998CD25061E269405E3EA0D045F427D4DAEEECC9AE1E0EF915C",
+      "length": 1070
+    },
+    {
+      "path": "docs/readme/hardware.webp",
+      "sha256": "1879625C40B3A7EA0F2F930E1BE3BE5445DE0ED1121D239923EAE53BAF40F0BD",
+      "length": 113550
+    },
+    {
+      "path": "docs/readme/home-light.webp",
+      "sha256": "F71AC19FFDB37830F7432FABC422146024342A83293D52BD2AE2C69E6C6D40E1",
+      "length": 55544
+    },
+    {
+      "path": "docs/readme/home-mr.webp",
+      "sha256": "01DC97F19E862F60C24CBE064FFB7F8763F71198AC7E3AE74F65D7E6266B7654",
+      "length": 111214
+    },
+    {
+      "path": "docs/readme/leaderboard-full.webp",
+      "sha256": "D738F099620CE2890E804DC9FC15C8B92C5A12FF459BA13E88F12D88404C7739",
+      "length": 111198
+    },
+    {
+      "path": "docs/readme/osd-vertical.webp",
+      "sha256": "F6A9E6B349479581163E20A8205034C866D8464E5D5B27E8D3297853CE9BCEDC",
+      "length": 12180
+    },
+    {
+      "path": "docs/readme/report.webp",
+      "sha256": "ED3BA05DE58CD1E9BD58DFFF221913547FB9BF0B9ABF9897E6C146F7D0375E80",
+      "length": 170924
+    },
+    {
+      "path": "framescope-config.example.json",
+      "sha256": "64F3DE02C908508285252CB649BD367C8FB0E08C266915911F84E789CE72CD05",
+      "length": 2953
+    },
+    {
+      "path": "native-packages.lock.json",
+      "sha256": "0DE3D145CBC1172EEAAF4045C1F3BEB6916926D1F9E58E3C295D45ED35E278D1",
+      "length": 6562
+    },
+    {
+      "path": "packaging/FrameScopeFullInstaller.Core.cs",
+      "sha256": "DE3CB7687F43190CD389D189B0D8695AE57B2087CA2A6931B6454AE178B49EDD",
+      "length": 3146
+    },
+    {
+      "path": "packaging/FrameScopeFullInstaller.cs",
+      "sha256": "60DB3252674179BCAD3517DEA30A9DC48ACEB93AF7D99BF532D9B5D077F8D87E",
+      "length": 4706
+    },
+    {
+      "path": "packaging/FrameScopeFullInstaller.manifest",
+      "sha256": "15D99AFB37746D08891BC1DEB1719F6FC62F85E9F84A34B14AF7158148FE84D7",
+      "length": 366
+    },
+    {
+      "path": "packaging/FrameScopeInstallationShutdown.cs",
+      "sha256": "4D946CABD6C0013D70E497B3CD5339CD147AED585E7C0C70262BF5ECFE206250",
+      "length": 21405
+    },
+    {
+      "path": "packaging/FrameScopeLegacyCleanup.cs",
+      "sha256": "DD2BC07C17C0E81916CFD6BC17839063867DD08488022F43D7510287BA33083C",
+      "length": 37533
+    },
+    {
+      "path": "packaging/FrameScopeSetupNative.cs",
+      "sha256": "16F93E86FA4518D8C70F412AF5B3CC12EF5A6CFB8F8D0AEC0AE5D8174B5A0610",
+      "length": 37251
+    },
+    {
+      "path": "packaging/FrameScopeUninstaller.cs",
+      "sha256": "AD0D845A921DB0D3647115C203C2AB650A0A232E0F9B70068F3F7E8BD43D99DE",
+      "length": 3195
+    },
+    {
+      "path": "packaging/Install-FrameScopeMonitor.cmd",
+      "sha256": "6221964BA842E38399CEBA07CAEA93E59F8641F431E749772CD6F36B4CBC6B9F",
+      "length": 343
+    },
+    {
+      "path": "packaging/Install-FrameScopeMonitor.ps1",
+      "sha256": "04A61E9016073708223458AF2D49AC888C600B9DF6B311763E4A496455B1BED2",
+      "length": 7701
+    },
+    {
+      "path": "packaging/README-FrameScopeMonitor.txt",
+      "sha256": "34AFFA29EC38505DB0FA55F74F7A51EE959E860B34883A51421BD7EB9626A805",
+      "length": 5965
+    },
+    {
+      "path": "packaging/Restore-FrameScope.cmd",
+      "sha256": "0AF3B8838A2D09DF0AAEC1E9A278E9946AA1D646E5C937C8F7C666D3E22C51E3",
+      "length": 269
+    },
+    {
+      "path": "packaging/Uninstall-FrameScopeMonitor.cmd",
+      "sha256": "B90DE3A9891C2F852C68895FB2AFC2CF255EF08114C0571D152831B144B625C9",
+      "length": 265
+    },
+    {
+      "path": "src/app/FrameScopeAppIcon.cs",
+      "sha256": "907117DC5A90173DB6E15384162B5439ECC42333008B15702736923BF9D04A0F",
+      "length": 2398
+    },
+    {
+      "path": "src/app/FrameScopeHardwareProvider.cs",
+      "sha256": "C0E5B0397C17B9EFBD4D7D1DACA7529C5748BB33429359092FF97D09DD55682C",
+      "length": 61872
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.ChildProcesses.cs",
+      "sha256": "5F8EB4319EA9322E0CD392CA2BAE58029D5BAF76464FAB836C4A28E24CC578A9",
+      "length": 22933
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.Models.cs",
+      "sha256": "0DA2433BED284F6185713E3EF14AB282CC0B82F048F0BB7605F0565751DD2D83",
+      "length": 1700
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.Paths.cs",
+      "sha256": "A41275E6282AB8D2F4C41E78154372D3BA4B636C808990B1268977508224697D",
+      "length": 11810
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.PresentMon.cs",
+      "sha256": "398C1A0C2BE187CF6752D5AC7A591B0A4019A02759238A2B49E5B45135677468",
+      "length": 11616
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.Status.cs",
+      "sha256": "0E3E00AFE77D666EDCB4DD01D8DE8ECFF072D2EBB02952B1AB54E6B88BF965B4",
+      "length": 7876
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.Targets.cs",
+      "sha256": "D7755B07B89515BB69F7181E6CC142D60F34921B932CA45DE3627D41602C2CB7",
+      "length": 6970
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.Tools.cs",
+      "sha256": "812FD1294F5BA56E93F573D92AC6E3BED6FD3388C8893C9E81A3320593973BE0",
+      "length": 3242
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.MonitorSession.cs",
+      "sha256": "BE7326C07BA6A767A2ED20E989C17F7B3C01CB9B790F47129222152B2B0F22D8",
+      "length": 57468
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ProcessCleanup.cs",
+      "sha256": "ED9E1A4373CB9837EDE3E6E147B872B6BAF733CF16921CE0AF00F477516453C1",
+      "length": 15767
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportOpen.Browser.cs",
+      "sha256": "ADA399F089C228837D95530B4E2A223426829BB0833B2A69648650A88AD5F0AF",
+      "length": 7745
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportOpen.Status.cs",
+      "sha256": "A50893B2CB3622B0A8D823149A5486750E3890002E50647C881097C1F359E723",
+      "length": 980
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportOpen.cs",
+      "sha256": "4F69B8FD65DF8F1A64DCAE4F5A2A659CDB74B3C4C14C96A8CE6C523E616D8B49",
+      "length": 4910
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportOrchestration.Models.cs",
+      "sha256": "A83C020A977684E59ABD8DF21B6D0C44FD4A855290A595E9F96D70218D590B21",
+      "length": 5018
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportOrchestration.cs",
+      "sha256": "0060F2CA2DF167B729B88F1F5553D51833697AAA3AA98F5CFAD2456681DDC77C",
+      "length": 15067
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportProcess.cs",
+      "sha256": "11B581AC848DEBD740BF4C829C4C4D558F8B3850796329B5C3C7E86E6C4CC593",
+      "length": 10293
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.ReportStatus.cs",
+      "sha256": "F95E3DF33CD16409087A7CE06DF87D1612B5DA11A427372E000047D15400D23F",
+      "length": 17883
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.Retention.cs",
+      "sha256": "CDBDDAD63A4192555A828E2E0CA5E1E72342BC7EF0BA3FD0FC2A3047C79BBDDA",
+      "length": 1006
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.SingleInstance.cs",
+      "sha256": "075FE66A5C017E201143455F9EEDB2FCA6B85FC0FF702D07FD3E140988E27DA6",
+      "length": 4553
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.Watcher.cs",
+      "sha256": "6E20452E194E42D209A93FA71A03A59DF5D7C1A3E7D15E4E702A6FF194DD378D",
+      "length": 28383
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.WebHost.cs",
+      "sha256": "4BBB41F9AE8E266A7C5AB16813A6A23ADFDB310DEB4FDC33B5070751BF24222A",
+      "length": 125265
+    },
+    {
+      "path": "src/app/FrameScopeNativeMonitor.cs",
+      "sha256": "03B8EB1F5E4C3DA9AF08625312B29AD1D9A5F7C51B31D7F2E5E1203281B2AE04",
+      "length": 9575
+    },
+    {
+      "path": "src/app/FrameScopeStartupElevation.cs",
+      "sha256": "A91F86B9E757758F1311EBF45E33FB101837903091AEB19712343F630027EA71",
+      "length": 2756
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Config.cs",
+      "sha256": "4385F4F69E55FA6E43EF511E0E776DC20436DB51868DD342674B401074C5A091",
+      "length": 3917
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Contracts.cs",
+      "sha256": "01AC7FA06073B8916261B1323EC27321246846F33DBE010110180FE3F1AE9D89",
+      "length": 3978
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Diagnostics.cs",
+      "sha256": "74B18B893B709F8A034D9C8FC1FB5AC276E4993C46E872909997ACDD5E517F28",
+      "length": 1882
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Monitoring.cs",
+      "sha256": "DF5EFEEB5A0549078B0FEA36CDBC7B7CD66A1A9DB00350CC5C19AC3392C79998",
+      "length": 8363
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Processes.cs",
+      "sha256": "34959530FACDCCE066DA369C192E8102A267D0175C679575460E87C120435308",
+      "length": 3564
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Reports.cs",
+      "sha256": "210C4F1A346C526EE396B3BCCB59A304228BC60EA146B2DAC884DE642573D39B",
+      "length": 21944
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.State.cs",
+      "sha256": "248562737D395BFEC25E57495D5BC10FA6925D935F0AAB26A3DE09BCEAABF448",
+      "length": 5142
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.Targets.cs",
+      "sha256": "7FE831FD76A671EF93D865206AD02E2826876731780B5ECFB9874DAE50126E56",
+      "length": 3717
+    },
+    {
+      "path": "src/app/FrameScopeWebBridge.cs",
+      "sha256": "A790AF2D7D2F187145E6D03B847B8A6A8967B65EABDB4ECEB4B72342B9924966",
+      "length": 9799
+    },
+    {
+      "path": "src/app/FrameScopeWebHostLifecycle.cs",
+      "sha256": "3D87A9506C0CF5A1C5546B0FAE72E4724812BFF50DB05D351885D6B949E0B0A6",
+      "length": 1010
+    },
+    {
+      "path": "src/app/FrameScopeWebView2Runtime.cs",
+      "sha256": "11F6DBBA2654931616F02AE9DBF67D9742AD7AE36B5B85B568CDEAD5755D40F5",
+      "length": 6308
+    },
+    {
+      "path": "src/core/FrameScopeBoundedProcessRunner.cs",
+      "sha256": "35267B23D1FBAB0CF14A685C78AA5839E7ED9C9A2E238F2254611B33E6D295D3",
+      "length": 7502
+    },
+    {
+      "path": "src/core/FrameScopeCapturePlanner.cs",
+      "sha256": "F398DC41DC316F67924FEF4172B8DE8647503971746669FEC246C6D956C7CE4B",
+      "length": 6634
+    },
+    {
+      "path": "src/core/FrameScopeConfigStore.cs",
+      "sha256": "79E469E10EA49490830A8E66A417110DCA4EDF9DA2CE9925E4B16D3369E6147D",
+      "length": 23166
+    },
+    {
+      "path": "src/core/FrameScopeFrameStatistics.cs",
+      "sha256": "3894B46142E5C360CF9E0B90491A5D92721A392807307A2FCB73C4B1D62500C5",
+      "length": 7380
+    },
+    {
+      "path": "src/core/FrameScopeHistoryFile.cs",
+      "sha256": "C737EF58892CF8EE192245C01DF11C9C960118D4A8BA2A6F3BF080A61D82E30B",
+      "length": 1902
+    },
+    {
+      "path": "src/core/FrameScopeJsonFile.cs",
+      "sha256": "93F598CAA87F99BB91AC7753B36D10610350E26313BED5BD10A6C33B89F993C7",
+      "length": 2912
+    },
+    {
+      "path": "src/core/FrameScopeLiveFrameStats.cs",
+      "sha256": "CBA66668FFCE6FE4963529DF2DBF574D9D70B4F1ED104855AFCBF06E1A7D041A",
+      "length": 22555
+    },
+    {
+      "path": "src/core/FrameScopeLoggingPolicy.cs",
+      "sha256": "BC590D256EFBBD7E02F02C659822EBCD5B02FFE4F6F52B76B34E11F12B9A44EB",
+      "length": 4591
+    },
+    {
+      "path": "src/core/FrameScopePresentMonDiagnostics.cs",
+      "sha256": "046686D019A4E563DB6FF6790C5C26379635A5AD45A25BAAAD44953FECC6261C",
+      "length": 17024
+    },
+    {
+      "path": "src/core/FrameScopePresentMonSessionPolicy.cs",
+      "sha256": "A2C5F85EABE31C8D9A74E99653835AE43D19401C2EB986A643CF24F27A81458E",
+      "length": 7184
+    },
+    {
+      "path": "src/core/FrameScopeProcessPicker.cs",
+      "sha256": "A9F925B8E0E59829094E1AD8037C3EF0C09239067255BF8841897E166AB80323",
+      "length": 5697
+    },
+    {
+      "path": "src/core/FrameScopeReportArtifacts.cs",
+      "sha256": "B7908F301256A729D6E32FCE31B1AF1F9D3174FB0723A1E11B963737328384E7",
+      "length": 23035
+    },
+    {
+      "path": "src/core/FrameScopeReportProgress.cs",
+      "sha256": "4DCC841D431B56F294526363F511F618FBF8AA74591C705EFBE2E37F8A0EAAC8",
+      "length": 18491
+    },
+    {
+      "path": "src/core/FrameScopeReportPublisher.cs",
+      "sha256": "62309E788CE7EAD0E74585E5D5DFDB822598D506628303355912B7E78B7EF41E",
+      "length": 4256
+    },
+    {
+      "path": "src/core/FrameScopeReportRecoveryPolicy.cs",
+      "sha256": "90C71D9242DEC4FF5E8419A3D9191796536DF94E20675F2CAABD71342A7C5081",
+      "length": 6578
+    },
+    {
+      "path": "src/core/FrameScopeRunContract.cs",
+      "sha256": "E551E3A3C6E339FB1C9FF497962CD5C3B0AF978F167130ACD553D50352800E30",
+      "length": 14113
+    },
+    {
+      "path": "src/core/FrameScopeRunRetention.cs",
+      "sha256": "C9646A35F24A7C004D08EE97DD1CE958BA68AE59897CD9114113EBA9674E9DA5",
+      "length": 391
+    },
+    {
+      "path": "src/core/FrameScopeTargetEditRules.cs",
+      "sha256": "3DD3E5C3BF4CFBE9166C96C2B29824DB8C859A53B024C3BB214E7CD1D20CB9E7",
+      "length": 1766
+    },
+    {
+      "path": "src/core/FrameScopeTargetLifecycle.cs",
+      "sha256": "FA65633EE18F54F90CD8235D5459869CEF402A540E94A2CDD8A7C5CE45FB88C6",
+      "length": 9447
+    },
+    {
+      "path": "src/core/FrameScopeWatcherShutdown.cs",
+      "sha256": "44FDABAE04AE4FDAFB4EAF16E509F08F3B9F9633C1B38364C915B054D88AF7AA",
+      "length": 8399
+    },
+    {
+      "path": "src/core/frame_statistics.rs",
+      "sha256": "3946EC89E96996A44A7F7FA684D8DD83F4B96493FECD9F788807B68FB4972D02",
+      "length": 14018
+    },
+    {
+      "path": "src/core/overlay_sensors.rs",
+      "sha256": "CAE93859EE608E7B81E6111F2D53599E087E4FD7C95E184DB9A3A72457B0603F",
+      "length": 2369
+    },
+    {
+      "path": "src/core/windows_shutdown.rs",
+      "sha256": "56560F55B32AF4605E9F6276DCC3E9AC9F25F2023B38F39CAD4D1D2538D1A810",
+      "length": 767
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.IO.cs",
+      "sha256": "37AFDCBF1F80146813BDD2539330202939BA954CE0500AFBFAAFE146E4E3E100",
+      "length": 5988
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.Markdown.cs",
+      "sha256": "B8CE27246091652B7B2397E45497255BFF3E3A8EE40C4DFCE15E3908B7B347A1",
+      "length": 1741
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.Models.cs",
+      "sha256": "5431099878EBA3E5E38BE06FE984AED093E174F64E4ACF26E0ACADE39262C34F",
+      "length": 736
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.Redaction.cs",
+      "sha256": "C16B535850CECFE56A51B68341B726896CBC83CD3C8D69F2BF0AE8F57AC71D53",
+      "length": 3684
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.Retention.cs",
+      "sha256": "3245DB3983F9CF1C2D23DD8761792EDA90BECA6B17DE0F59FF44DC28374A55E4",
+      "length": 3753
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.Sections.cs",
+      "sha256": "80A2AFB3E4DBB274263A4E247C38F13DAF9872D4556C9E76C7A2B927A69D70FB",
+      "length": 14044
+    },
+    {
+      "path": "src/diagnostics/FrameScopeDiagnostics.cs",
+      "sha256": "6264DDE93278FBE80FA89DA81A0CFB03A18F89975096E7DBD0904CCCC6C68E88",
+      "length": 7804
+    },
+    {
+      "path": "src/frontend/.npmrc",
+      "sha256": "7CD80AF2E968119AFD7B1803B6AC51B51EA010B8DA57C3606EA1EF8071A86068",
+      "length": 48
+    },
+    {
+      "path": "src/frontend/index.html",
+      "sha256": "E7F601618211761A0980A20F732C1C59CEEA98B3C276A554040CF864139138A1",
+      "length": 446
+    },
+    {
+      "path": "src/frontend/package-lock.json",
+      "sha256": "39BF1DA0EAB7DFA8DDF4C15FAB137FCDAC4315BA77F510783DE8E46E608CEBF7",
+      "length": 63951
+    },
+    {
+      "path": "src/frontend/package.json",
+      "sha256": "69A8BBED31931A52CE1C50ED1529A1186B38D990828B85BC9B9225441C810E06",
+      "length": 631
+    },
+    {
+      "path": "src/frontend/src/App.tsx",
+      "sha256": "7C3511D2FD75805B70B401E1EB0F7C1535288756D94BCC7349D893707CD383B6",
+      "length": 1864
+    },
+    {
+      "path": "src/frontend/src/bridge/contract.ts",
+      "sha256": "F6F36B7763383E710A67F19C7CBDF9AF4EC59948E081959EE47652C2001B8D8A",
+      "length": 7604
+    },
+    {
+      "path": "src/frontend/src/bridge/webviewBridge.ts",
+      "sha256": "A954E300645FC0F5E765A57366D3480787715C6D4A0DBDD4113935CD97758290",
+      "length": 6927
+    },
+    {
+      "path": "src/frontend/src/components/Button.tsx",
+      "sha256": "814D9625CD6C42288E4E5D92E9F92277134B8F8E31D24E523EBAEADBA80A3021",
+      "length": 855
+    },
+    {
+      "path": "src/frontend/src/components/ChartShell.tsx",
+      "sha256": "6F9A310C4BC45038C3621BF2C39671B2B29FE8B0ECB7BCCAEFD7EAA6AFF8ED04",
+      "length": 2667
+    },
+    {
+      "path": "src/frontend/src/components/EmptyState.tsx",
+      "sha256": "C6EA8CE3C1EB285CDF9E0D1D79201A0529533BEA5A1231BB9C778117E9DA3CC0",
+      "length": 878
+    },
+    {
+      "path": "src/frontend/src/components/GlassCard.tsx",
+      "sha256": "269CB780DFA26A0DBF0AC80835D88C7194AEC484D0D79F8B08783ACEDBC2A79E",
+      "length": 578
+    },
+    {
+      "path": "src/frontend/src/components/InlineStatus.tsx",
+      "sha256": "3B05BEF898C87F818904140F25CCD6F35EBBBB4BA27D616D93E564A3F0542EC5",
+      "length": 769
+    },
+    {
+      "path": "src/frontend/src/components/StatusPill.tsx",
+      "sha256": "8F6068A8AC70FEAAC22A2FC4309E1218B33961F1DE45DE723980360CE86D21CB",
+      "length": 458
+    },
+    {
+      "path": "src/frontend/src/components/ToolbarButton.tsx",
+      "sha256": "D3B2334036C5F9D5C4A19CEABF7BA521908E339771A7ED11A4C22535FA8A9964",
+      "length": 668
+    },
+    {
+      "path": "src/frontend/src/components/components.css",
+      "sha256": "A0A3ADE3C8BD9325FB329303ED9BC18A48FCA3045AB8870BCC40CEF25F002850",
+      "length": 7882
+    },
+    {
+      "path": "src/frontend/src/components/tone.ts",
+      "sha256": "E4FC6124A1EF093CE1ACBAE9B62AD05335863ECC6274CDD132D3A2613BAA5402",
+      "length": 113
+    },
+    {
+      "path": "src/frontend/src/data/mockPreview.ts",
+      "sha256": "DC1DE4AC6A478809CCADC677E49251A1A41D9A91121F1D57C1EB9B95CA7C7C96",
+      "length": 26753
+    },
+    {
+      "path": "src/frontend/src/layout/AppShell.tsx",
+      "sha256": "4696C511A12645F0DC593639E3369B89301D34AE42F54019531696BB1D9D2144",
+      "length": 1613
+    },
+    {
+      "path": "src/frontend/src/layout/PageTransition.tsx",
+      "sha256": "DAA54AABD0A611E35133E42010DEB9F7E06ABEB1ABF808259D10A84F2D826806",
+      "length": 238
+    },
+    {
+      "path": "src/frontend/src/layout/SidebarNav.tsx",
+      "sha256": "9A7C6A8DA311579E8ABDF14229A6CA396FD051CDAFC4335C5143B53A02316BAB",
+      "length": 2219
+    },
+    {
+      "path": "src/frontend/src/layout/TopStatusBar.tsx",
+      "sha256": "DB2316DEB98F296E332A9BE6BB6EF1054BD6ACF49420462151F7747BC0F53484",
+      "length": 1654
+    },
+    {
+      "path": "src/frontend/src/layout/layout.css",
+      "sha256": "BA8824094571792865BFE2CEA3655BC056A1AA8AA82AED73280EC3F260117817",
+      "length": 8774
+    },
+    {
+      "path": "src/frontend/src/main.tsx",
+      "sha256": "F03F4B11193A6C4CC69338D4CB42CEAE09D2D0F02AE74DAA71FBECC46E4E6458",
+      "length": 299
+    },
+    {
+      "path": "src/frontend/src/pages/AboutPage.tsx",
+      "sha256": "1ACE383DE62828FC7C73DCB8865643CEB24867CE99041479D4DF7FA5EABE5646",
+      "length": 4938
+    },
+    {
+      "path": "src/frontend/src/pages/OverviewPage.tsx",
+      "sha256": "0DF5F89B62A05DC5C7D29194674035904888A0452DABB347B6FAA3C146242ACF",
+      "length": 14562
+    },
+    {
+      "path": "src/frontend/src/pages/ReportsPage.tsx",
+      "sha256": "FB24E45D8E09AE2DF4C38C0C5EBB4CC79FE78422B22E39AC0184153BD11B2565",
+      "length": 23485
+    },
+    {
+      "path": "src/frontend/src/pages/SettingsPage.tsx",
+      "sha256": "CC8892E0F27E79BFA78CB85788659E5B8C52F66990C094A0E6832517E3E92CDD",
+      "length": 21637
+    },
+    {
+      "path": "src/frontend/src/pages/TargetsPage.tsx",
+      "sha256": "0E4B212C9CE203BAEAC0E27FFA7D4EFDAF5C3E24C8593591429BC0E6EC222C4A",
+      "length": 30714
+    },
+    {
+      "path": "src/frontend/src/pages/pages.css",
+      "sha256": "82B26119E6DC78DBAE6AF7483A09F82D3F48E82E10091C0448544A01F0BF84CB",
+      "length": 29584
+    },
+    {
+      "path": "src/frontend/src/productVersion.ts",
+      "sha256": "5584A2FF6DBF6724AAF70DFC85B590D75EF13114991A9D60CF6BA320D90EA12F",
+      "length": 183
+    },
+    {
+      "path": "src/frontend/src/state/useFrameScopeBridgeState.ts",
+      "sha256": "00261B7E17B062EC8B0C9467814D5F683986297B2339FA4784E9BC10382C2E6E",
+      "length": 40965
+    },
+    {
+      "path": "src/frontend/src/styles/global.css",
+      "sha256": "B4C63BBC61798131DB611A276C8D1713D173A36B7892CC068A4EC9B57B806369",
+      "length": 1359
+    },
+    {
+      "path": "src/frontend/src/theme/motion.ts",
+      "sha256": "DDF10CBE28F42697AE19B44C9E410E2FC049D6D5774E2D0CD9A4EC35C50E3185",
+      "length": 1017
+    },
+    {
+      "path": "src/frontend/src/theme/tokens.css",
+      "sha256": "DF50B997FA25D7E82DC03C269E5E29BF42852A2B55D51CD6BC08B4121B03D3DE",
+      "length": 9930
+    },
+    {
+      "path": "src/frontend/src/theme/useFrameScopeTheme.ts",
+      "sha256": "3931374E4F21B2941C67E568E4A9CFE4B0A032515FD180311815C10D155FB7CF",
+      "length": 1823
+    },
+    {
+      "path": "src/frontend/src/types.ts",
+      "sha256": "F9968A646704E572023FCC5CD921106B0CBD0E77118401C1EBB51918CFF96972",
+      "length": 1220
+    },
+    {
+      "path": "src/frontend/src/utils/virtualListWindow.ts",
+      "sha256": "5A01D667E7F6DF01EF962E5886E4848D435607A0F85526A550FF0FF2D1D12A13",
+      "length": 1492
+    },
+    {
+      "path": "src/frontend/src/vite-env.d.ts",
+      "sha256": "E6D4E7B2DD99F513360AB094084AFE29C77120208F565B1E3B24C0753B900C72",
+      "length": 289
+    },
+    {
+      "path": "src/frontend/tsconfig.json",
+      "sha256": "279DA2200487E40F6A23C8B4C3D1BD76C1A063EADF1D24810E4069D29A2622F1",
+      "length": 548
+    },
+    {
+      "path": "src/frontend/vite.config.ts",
+      "sha256": "4A6E3D875A72D7DEEAAD0AB35CAE313130100C13FFB5C8FC8CD8890D33152EC9",
+      "length": 397
+    },
+    {
+      "path": "src/hardware-service/Cargo.lock",
+      "sha256": "24890C031DFFCD282B51A02F31086068845B89C3CAA92504868D13A03FD7701A",
+      "length": 10832
+    },
+    {
+      "path": "src/hardware-service/Cargo.toml",
+      "sha256": "EBAB575C43B763A4CEC372B0B10EA2499326DDE287658E373A3B93FDA2764A00",
+      "length": 938
+    },
+    {
+      "path": "src/hardware-service/resources/licenses/ZenStates-Core-GPL3",
+      "sha256": "3972DC9744F6499F0F9B2DBF76696F2AE7AD8AF9B23DDE66D6AF86C9DFB36986",
+      "length": 35149
+    },
+    {
+      "path": "src/hardware-service/resources/licenses/cpuzeez-MIT",
+      "sha256": "62090422DDF300401095E190D1A830B801B4811A0DF4A9AE53AE4B8FF46224CA",
+      "length": 1092
+    },
+    {
+      "path": "src/hardware-service/resources/pawnio/AMDFamily17.bin",
+      "sha256": "DAE74615761B78BDF064DFB3E136252DDCC6FC727D88F14738D0E5800D427A91",
+      "length": 10652
+    },
+    {
+      "path": "src/hardware-service/resources/pawnio/COPYING",
+      "sha256": "1E7E6BAE5A5BDE32F1AE5A7C37A082D1AB03CF89354F7F936AC40BE9E39A6531",
+      "length": 27032
+    },
+    {
+      "path": "src/hardware-service/resources/pawnio/IntelMCHBAR.bin",
+      "sha256": "3F82B832D99B4AAC37D2A20FDB7C9BAA2A3BC0488612C9019C9484EB0E8A6EAE",
+      "length": 13332
+    },
+    {
+      "path": "src/hardware-service/resources/pawnio/provenance.json",
+      "sha256": "BBC751D572FAAAF62C9501CE5DA0F54084BDBAC48A8D6254B157D6C5F3C48EDB",
+      "length": 597
+    },
+    {
+      "path": "src/hardware-service/src/cpu_diagnostic.rs",
+      "sha256": "6C17EB10733EA02C41AF7FAA7E514344A979A0DFEF75A82E38B04276C54130BA",
+      "length": 14725
+    },
+    {
+      "path": "src/hardware-service/src/cpu_frequency.rs",
+      "sha256": "859F6FABE110577E9823631BFCBFC8483A39E0B516891C3FE692BD951C856143",
+      "length": 17869
+    },
+    {
+      "path": "src/hardware-service/src/game_fps.rs",
+      "sha256": "B6205B54A950D22F68E43566D1A6B4382531E926EDEF590870D17327C0B09769",
+      "length": 116131
+    },
+    {
+      "path": "src/hardware-service/src/gpu_engine.rs",
+      "sha256": "D7259728F9A83FEE1F041D125C75D63B5B918E3C779755D362D2AEB862E9971F",
+      "length": 11397
+    },
+    {
+      "path": "src/hardware-service/src/lib.rs",
+      "sha256": "22DFF733B03ED6AAF760B497881F1FA59F50DADB60C97D175E8F7015FAF3081B",
+      "length": 64247
+    },
+    {
+      "path": "src/hardware-service/src/main.rs",
+      "sha256": "ABC9E5501248525B5A6AB87CE45EBD556ED7215AE99897F16EC828D4846F3E27",
+      "length": 17975
+    },
+    {
+      "path": "src/hardware-service/src/memory/intel.rs",
+      "sha256": "E84B934AD4FC7D2F87B1EAC3BCEA40B6B2CB1474BCE18D6462D5C8ABEC48658A",
+      "length": 16023
+    },
+    {
+      "path": "src/hardware-service/src/memory/mod.rs",
+      "sha256": "904B92467728EDE28FC317E59E5CF27B9DDC588965D43366D343059A854BF03D",
+      "length": 12714
+    },
+    {
+      "path": "src/hardware-service/src/memory/pawnio.rs",
+      "sha256": "5A78773ACB431285C54740AC58D9CF5E8BACAE82B2E9166CBD619080049BD2BF",
+      "length": 4659
+    },
+    {
+      "path": "src/hardware-service/src/optimization.rs",
+      "sha256": "B4C9F0069A585D6D68F74108CC1FAA3E4723BFBD59DEAD768F6C77C374EEB92C",
+      "length": 516
+    },
+    {
+      "path": "src/hardware-service/src/overlay.rs",
+      "sha256": "FB3421879F7DB6305D47AFFFB3108C303E25777E6CCB5720077008D282BA5ED6",
+      "length": 46447
+    },
+    {
+      "path": "src/hardware-service/src/ping.rs",
+      "sha256": "832081A036B8CB865480D60AD839152640B724F28FCDC993DA992DFA4EFF220F",
+      "length": 4930
+    },
+    {
+      "path": "src/hardware-service/src/provider.rs",
+      "sha256": "D5626DCDE3D01224C80D0160B6C4F4EFCA102FB814457946579F096CDA5230A1",
+      "length": 18511
+    },
+    {
+      "path": "src/monitoring/FrameScopeHardwareServiceClient.cs",
+      "sha256": "1A898CBDE2FA3517CB601536ADB7382AAE7E0D163AFEDD258710387CE40B40EA",
+      "length": 25999
+    },
+    {
+      "path": "src/monitoring/FrameScopeProcessSampler.IO.cs",
+      "sha256": "C7E6E23E0BC67EE1DE71EDA687AA91C3A81CDD0CC23BB7313C089184DD07738C",
+      "length": 3697
+    },
+    {
+      "path": "src/monitoring/FrameScopeProcessSampler.Models.cs",
+      "sha256": "A68CEC7A480C0E588A0B7410EC64A86C4B53DDFC56B978C66DAF623B7DDB7DD0",
+      "length": 1198
+    },
+    {
+      "path": "src/monitoring/FrameScopeProcessSampler.Selection.cs",
+      "sha256": "C38D6E86A48E33E7956AF57458D61A851E5927ECE97BC6D9F6357AA9BD8EA465",
+      "length": 2500
+    },
+    {
+      "path": "src/monitoring/FrameScopeProcessSampler.cs",
+      "sha256": "7D55AA8C56A29C7D602011104A78607EC052A41BF675BD634C036245BCBDB898",
+      "length": 11519
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.CpuCoreTelemetry.cs",
+      "sha256": "206E04D98265C0EC78FC7DD0A1682A5C24B3C48600BA3EC25D98FFFA8497EBAC",
+      "length": 47870
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.Gpu.cs",
+      "sha256": "99B9F5C77F7F35D8FAF5178854C34472BD52C567E68738C4683F632D96AF76CF",
+      "length": 2784
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.IO.cs",
+      "sha256": "C634EB886E924FBC93112DC8D238B8D5409C920296351FCCFCBC39E96B4BD5C0",
+      "length": 4094
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.Models.cs",
+      "sha256": "CD8DB4027D36842269AAEE450174AB1829660EBD8CC066FB1A30A5FC731223D6",
+      "length": 5059
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.PerfCounters.cs",
+      "sha256": "C102E92C8B73E8846E8596DA90C7A0F0F3CA89D5AA7172F0B38A991C911C088F",
+      "length": 38479
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.Processes.cs",
+      "sha256": "776EDFF02403B05D063039478C0F2034EDF0104DD8745BD5B7C6D337BAB4DED4",
+      "length": 2655
+    },
+    {
+      "path": "src/monitoring/FrameScopeSystemSampler.cs",
+      "sha256": "0EE383E1B1450CD7A0DE13358769DBF005D0ABB5D1E421004B0B188332266CA0",
+      "length": 10039
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Analysis.cs",
+      "sha256": "FCE59CEB7F7C154003744CEBF32536FCC14B45155932CFB12BE5B9D6F2C40F07",
+      "length": 20697
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Cli.cs",
+      "sha256": "F22C03F4EAFE8EF5A7F7926CC2591ABD8233A6979E1B5484CF4D1DDAD0EC927F",
+      "length": 2337
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Csv.cs",
+      "sha256": "0AD6FB2FEF5F4DD3D0EB18B1C34CADB82E8A4C5A293BC653F1003A74F9A368D4",
+      "length": 4622
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Diagnostics.cs",
+      "sha256": "B6BF622F998AE9C4E771504A8C46CA1F97C57CC43EA4069E7E16A7998428FECC",
+      "length": 255
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Html.Layout.cs",
+      "sha256": "3FF2BFC5770497BAF5C64D1CC9BCB46B3900B6FA6D1D49395EE2A3EF529AD7A1",
+      "length": 561
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Html.Scripts.cs",
+      "sha256": "D0095E56326C9C37D67EBE0F71B1BAC97BF389BB732711724D30857F2052A1D5",
+      "length": 54961
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Html.Sections.cs",
+      "sha256": "78179E73B7BB041374156B026B65CDB24BE7DBF7579D45A2458032CEF83B6A62",
+      "length": 5228
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Html.Styles.cs",
+      "sha256": "75638EF4FE6ED2BA2312BDAFAB69F651ECC0A932ED60399958F18F95464C4FDB",
+      "length": 10300
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Html.cs",
+      "sha256": "7674FA83DCE067150DB19747B583AA06F69A944919F6423EFCE9726095A32B4A",
+      "length": 561
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Metadata.cs",
+      "sha256": "D005549D78375D596D31704DCA5F172D86878F74769B773F29BE856174B1F8DA",
+      "length": 39809
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Models.cs",
+      "sha256": "80ECB1CFDEC4E77984E5E285A971E2847A9AF418A03FB61390FB5826E84A7DFB",
+      "length": 7811
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.PresentMon.cs",
+      "sha256": "B7A863DE1FDD30F3165C8467FA7FDDB0B714D8B6E95380D2F94244498520FC6A",
+      "length": 8400
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.ProcessData.cs",
+      "sha256": "9A18E1DCC237791115910C920B198FD105C80AB2EA176530A3E14C6155CB5D07",
+      "length": 5774
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.Progress.cs",
+      "sha256": "3F3E3167D9697E10FAE781D46BEBFC1D67F59532821C47C24A701EEA30F14E8F",
+      "length": 443
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.SystemData.cs",
+      "sha256": "28030FF26E87C21EA9D06D0CCEB535850D7988924054DBA5ED3B618176271E1B",
+      "length": 56743
+    },
+    {
+      "path": "src/reporting/FrameScopeReportGenerator.cs",
+      "sha256": "281701E1F9AA909DDDD761636C707B9BDA4F4D0A0EE6E41809918B30894F631C",
+      "length": 36069
+    },
+    {
+      "path": "src/updater/Cargo.lock",
+      "sha256": "7D6AA059997F956A4576DA2792E0FE29C287B12987401597C9F8CAE1428FA8F7",
+      "length": 44358
+    },
+    {
+      "path": "src/updater/Cargo.toml",
+      "sha256": "2B95DD3232A459682B0295F0E428E2158B6D419D4833B55F4C9C7FA290CF327E",
+      "length": 736
+    },
+    {
+      "path": "src/updater/examples/autostart_lifecycle.rs",
+      "sha256": "CC64F28BB30C4BBB11F8A7A22EF4943A053EFBC88F7AF67195A9D2D75296AFB9",
+      "length": 1852
+    },
+    {
+      "path": "src/updater/examples/download_diagnostic.rs",
+      "sha256": "76B6E8B803AF232049A51FC611DD8BF6D884E3397964FEB336BEDE5C865D2EBC",
+      "length": 1707
+    },
+    {
+      "path": "src/updater/release.pub",
+      "sha256": "782B07684CD8ADBE07899C6ACF1EAFAFA0665C840A0FD798FC39930A3F78578C",
+      "length": 115
+    },
+    {
+      "path": "src/updater/src/asset_download.rs",
+      "sha256": "FBE390A63CC476234DFCDFAAB474C5E4F67E2C7C72175BD5B4ACC56D94A2A3AD",
+      "length": 14455
+    },
+    {
+      "path": "src/updater/src/autostart.rs",
+      "sha256": "418835D9081B2C9958A757E6DA24773A2482A37C30DC5EB065D5580E4CE57E5B",
+      "length": 11669
+    },
+    {
+      "path": "src/updater/src/components.rs",
+      "sha256": "D282B09D55794867EF2523E403DF6C4FF91BC0491A57FDE378510BDBABA103C9",
+      "length": 10048
+    },
+    {
+      "path": "src/updater/src/cumulative.rs",
+      "sha256": "8ABBD9DF948946F93FE8737B35FCC70E59C643FAF3E2CE320AEB9042849CDC26",
+      "length": 6769
+    },
+    {
+      "path": "src/updater/src/download.rs",
+      "sha256": "DC7B318B5687004C61070F54D6D307C80F2CFE23B29E5CD77F7820DFFCDFD92A",
+      "length": 4141
+    },
+    {
+      "path": "src/updater/src/lib.rs",
+      "sha256": "4855FC8312F42173C0BDC7B6EE2E721396A66F2E51AE5DF6499842164A11DFEC",
+      "length": 21083
+    },
+    {
+      "path": "tools/Build-IsolatedInstaller.ps1",
+      "sha256": "9249D376B9D4541910FE45A87EA1DCCB1081C0D2BC1FFE76F13B10E1D49DA197",
+      "length": 20519
+    },
+    {
+      "path": "tools/Export-FrameScopeDefaultConfig.ps1",
+      "sha256": "78B9907C89C3E4066C5E04247599E16939C7AC0030482582254DB80BB707BEFC",
+      "length": 988
+    },
+    {
+      "path": "tools/FrameScopeConfigExporter.cs",
+      "sha256": "3D296438AD98B5AB091252CF6E198CDC4D5D9BB10B2DAACF910E75ED7B536427",
+      "length": 385
+    },
+    {
+      "path": "tools/Generate-FrameScopeIcon.ps1",
+      "sha256": "316E18A46695486178EDC7710881BC41F04FB09591690CC5E71637270D74D6FD",
+      "length": 7485
+    },
+    {
+      "path": "tools/New-InstallerBitmaps.ps1",
+      "sha256": "FBACBE864E4D36F93D5466834BB53BDEB0AE5A89C72CDA4342B345AA0825B818",
+      "length": 9319
+    },
+    {
+      "path": "tools/Package-Installer.ps1",
+      "sha256": "0C6E8D2539D3B3D9DFDA6EB5BB7BB4AE4A5034EAA8FAC0C78524BC09FDB236D4",
+      "length": 11834
+    },
+    {
+      "path": "tools/Restore-BuildDependencies.ps1",
+      "sha256": "809FFB86051AC511ECE13284936256BD64FC933FE71A5361FDE1FA2A2B249D2D",
+      "length": 2930
+    },
+    {
+      "path": "tools/Restore-OfflineDependencies.py",
+      "sha256": "575CE081F4A9814EE68F0E036C45648D1A72518ECB7D74ABC60E55B88031FC5A",
+      "length": 7045
+    },
+    {
+      "path": "tools/Run-Frontend.ps1",
+      "sha256": "32E98CFC9B54DD22DD3E7A3511B77905FD6F72A3EEA9A5E7B9EB7F8B481377DF",
+      "length": 6278
+    },
+    {
+      "path": "tools/Sync-FrameScopeVersion.ps1",
+      "sha256": "FCF41B2FC29D4297770947A2488B1740934BEB0C43858C7F6CDEBDCDF1176389",
+      "length": 1387
+    },
+    {
+      "path": "tools/Test-ReleasePayload.ps1",
+      "sha256": "4CB0CEDF2D10EE4A71CC32B0CF8FA77047B06E82650DBDF6A7C12675B91CCA2C",
+      "length": 6648
+    },
+    {
+      "path": "tools/Validate-PackagePayload.ps1",
+      "sha256": "B36900EC265130FB4D09ABFAF0EA4F0BF823B6F1B6BAA59B4D458F585AA9A9E6",
+      "length": 12539
+    },
+    {
+      "path": "tools/Verify-IsolatedBuildStage.ps1",
+      "sha256": "80A233FC824B0985D50510002662D97E36D904BF8E4F64F7FBBE38677DC2F882",
+      "length": 655
+    },
+    {
+      "path": "tools/Write-FrameScopeBuildMetadata.ps1",
+      "sha256": "D87C3252ECC2B8B4C7D245EB3836DECA13446932A12DE758605C0937A0FA0ED9",
+      "length": 1327
+    },
+    {
+      "path": "tools/build_version.rs",
+      "sha256": "19157E1FD69D64CFC7C10D07DE0EC91FD00CF8E8593D387B18AD316DA94744C3",
+      "length": 1741
+    },
+    {
+      "path": "tools/diagnostics/diagnose-pubg-capture.ps1",
+      "sha256": "CBA14EAB9D16AA8E4C1F42C42E95E3DB4FB188A6128E8EDA38FA4F0649E74863",
+      "length": 9137
+    },
+    {
+      "path": "tools/offline-npm-cache.cjs",
+      "sha256": "005454B7134E633C072C89D04FE02140D85B786A2A131A2507206C5E4DFC16D9",
+      "length": 1436
+    },
+    {
+      "path": "tools/prepare-update-components.py",
+      "sha256": "2D9D76F326A2F37D6AD83451C5E8D527985CDF774A0F6E7D270A1EF32732EF62",
+      "length": 14657
+    }
+  ]
+}

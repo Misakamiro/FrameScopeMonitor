@@ -29,7 +29,23 @@ const APP_PROCESS_NAMES: &[&str] = &[
 
 /// Embedded app payload (app exe + backend chain + DLLs + PresentMon + fonts),
 /// packed by pack-payload.ps1 before this crate is built.
-pub const PAYLOAD_ZIP: &[u8] = include_bytes!("../payload.zip");
+pub fn payload_zip() -> &'static [u8] {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, FindResourceW, LoadResource, LockResource, SizeofResource};
+    unsafe {
+        let module=GetModuleHandleW(std::ptr::null());
+        if module.is_null() { return &[]; }
+        let resource=FindResourceW(module,202usize as *const u16,10usize as *const u16);
+        if resource.is_null() { return &[]; }
+        let size=SizeofResource(module,resource) as usize;
+        let loaded=LoadResource(module,resource);
+        if loaded.is_null() || size==0 { return &[]; }
+        let data=LockResource(loaded);
+        if data.is_null() { return &[]; }
+        // The executable's resource mapping remains valid for the process lifetime.
+        // Missing/corrupt resources fail the existing ZIP/manifest validation.
+        std::slice::from_raw_parts(data.cast(),size)
+    }
+}
 
 #[derive(Serialize)]
 pub struct InstallState {
@@ -114,7 +130,6 @@ fn find_existing_install() -> Option<(String, String, bool)> {
     None
 }
 
-#[tauri::command]
 pub fn get_state() -> InstallState {
     if let Some(root)=crate::self_relaunch::original_root(){return InstallState{installed:root.is_dir(),version:String::new(),install_path:root.to_string_lossy().to_string(),legacy_nsis:false};}
     match find_existing_install() {
@@ -133,7 +148,6 @@ pub fn get_state() -> InstallState {
     }
 }
 
-#[tauri::command]
 pub fn get_default_install_path() -> String {
     if let Some(root)=crate::self_relaunch::original_root(){return root.to_string_lossy().to_string();}
     if let Some((path, _, _)) = find_existing_install() {
@@ -146,7 +160,6 @@ pub fn get_default_install_path() -> String {
         .to_string()
 }
 
-#[tauri::command]
 pub fn get_app_version() -> String {
     env!("FRAMESCOPE_APP_VERSION").to_string()
 }
@@ -154,7 +167,6 @@ pub fn get_app_version() -> String {
 /// "install" or "uninstall" — the same exe serves both skins; the UI picks
 /// its layout from this (the uninstall skin only needs the delete-data
 /// choice, no path/shortcut options).
-#[tauri::command]
 pub fn get_launch_mode() -> String {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--uninstall") {
@@ -164,7 +176,6 @@ pub fn get_launch_mode() -> String {
     }
 }
 
-#[tauri::command]
 pub fn launch_app(install_dir: String) -> Result<(), String> {
     let exe = Path::new(&install_dir).join("FrameScope.exe");
     if !exe.exists() {
@@ -176,40 +187,21 @@ pub fn launch_app(install_dir: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
 pub fn check_disk_space(path: String) -> Result<u64, String> {
     available_space(Path::new(&path))
 }
 
-/// WebView2 runtime presence (same key chain the NSIS template checks).
-#[tauri::command]
+/// Registry version and the installed executable must both be present.
 pub fn check_webview2() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let keys = [
-            r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
-            r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
-            r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}0000",
-        ];
-        for k in keys {
-            if let Ok(hklm) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(k, KEY_READ) {
-                // The NSIS template treats pv >= "0.0.0.1" as installed.
-                if let Ok(pv) = hklm.get_value::<String, _>("pv") {
-                    if pv.as_str() >= "0.0.0.1" {
-                        return true;
-                    }
-                }
-            }
-        }
-        // Per-user install location.
-        if let Ok(hkcu) = RegKey::predef(HKEY_CURRENT_USER)
-            .open_subkey_with_flags(r"Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", KEY_READ)
-        {
-            if let Ok(pv) = hkcu.get_value::<String, _>("pv") {
-                if pv.as_str() >= "0.0.0.1" {
-                    return true;
-                }
-            }
+    let key=r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+    for hive in [HKEY_LOCAL_MACHINE,HKEY_CURRENT_USER] {
+        for view in [KEY_WOW64_32KEY,KEY_WOW64_64KEY] {
+            let Ok(client)=RegKey::predef(hive).open_subkey_with_flags(key,KEY_READ|view) else {continue;};
+            let Ok(version)=client.get_value::<String,_>("pv") else {continue;};
+            if !crate::prerequisites::parse_version(&version).is_some_and(|parts|parts>[0,0,0,0]){continue;}
+            let Ok(location)=client.get_value::<String,_>("location") else {continue;};
+            let executable=Path::new(&location).join(&version).join("msedgewebview2.exe");
+            if crate::prerequisites::verify_webview_runtime(&executable).is_ok(){return true;}
         }
     }
     false
@@ -217,6 +209,7 @@ pub fn check_webview2() -> bool {
 
 // === Process handling ===
 
+#[cfg(test)]
 fn scoped_process_script(target: &Path, stop: bool) -> String {
     let names = APP_PROCESS_NAMES.iter()
         .map(|name| format!("'{}'", name.trim_end_matches(".exe"))).collect::<Vec<_>>().join(",");
@@ -255,38 +248,22 @@ exit 0
 }
 
 fn is_app_running() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let Some((target, _, _)) = find_existing_install() else { return false };
-        let output = Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &scoped_process_script(Path::new(&target), false)])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-        if let Ok(out) = output {
-            return out.status.success() && String::from_utf8_lossy(&out.stdout).contains("RUNNING");
-        }
-    }
-    false
+    find_existing_install().is_some_and(|(root,_,_)|crate::native_stop::has_processes(Path::new(&root)).unwrap_or(true))
 }
 
-#[tauri::command]
 pub fn is_app_running_cmd() -> bool {
     is_app_running()
 }
 
 // === Install ===
 
-#[tauri::command]
-pub fn install(app: tauri::AppHandle, target_dir: String, create_desktop_shortcut: bool, autostart: bool) -> Result<(), String> {
-    let total = payload_file_count()?;
-    install_shared(&target_dir, create_desktop_shortcut, autostart, &move |index, name| {
-        use tauri::Emitter;
-        let _ = app.emit("install-progress", ProgressEvent { index, total, name: name.to_string() });
-    })
-}
-
 pub fn install_headless(target_dir: String, desktop_shortcut: bool, autostart: bool) -> Result<(), String> {
-    install_shared(&target_dir, desktop_shortcut, autostart, &|_, _| {})
+    crate::native_ui::preflight()?;
+    let target=crate::native_ui::destination(&target_dir)?;
+    validate_install_destination(&target)?;
+    crate::prerequisites::prepare(&target,None,&|_|{})?;
+    install_shared(&target.to_string_lossy(), desktop_shortcut, autostart, &|_, _| {})?;
+    crate::prerequisites::record_pawnio(&target)
 }
 
 pub(crate) fn required_payload_files() -> Result<Vec<String>, String> {
@@ -302,7 +279,24 @@ pub(crate) fn required_payload_files() -> Result<Vec<String>, String> {
     files.extend(runtimes.keys().cloned());
     let presentmon = lock["presentMon"]["file"].as_str().ok_or("Missing PresentMon contract")?.rsplit(['/', '\\']).next().ok_or("Invalid PresentMon path")?;
     files.push(format!("tools/{presentmon}"));
+    if cumulative_payload()? {files.retain(|name|!name.starts_with("dependencies/"));}
     Ok(files)
+}
+
+pub(crate) fn cumulative_payload() -> Result<bool,String> {
+    let mut zip=zip::ZipArchive::new(std::io::Cursor::new(payload_zip())).map_err(|e|e.to_string())?;
+    let entry=zip.by_name("FrameScopePackage.json");
+    match entry {
+        Ok(mut entry)=>{
+            use std::io::Read;
+            let mut bytes=Vec::new();entry.read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+            let value:serde_json::Value=serde_json::from_slice(&bytes).map_err(|e|e.to_string())?;
+            if value["schema"]!=1 || !matches!(value["kind"].as_str(),Some("full"|"cumulative")){return Err("Invalid package kind".into());}
+            Ok(value["kind"]=="cumulative")
+        },
+        Err(zip::result::ZipError::FileNotFound)=>Ok(false),
+        Err(error)=>Err(error.to_string())
+    }
 }
 
 fn ensure_compatible_edition(target:&Path)->Result<(),String> {
@@ -335,7 +329,8 @@ fn edition_preflight_rejects_cross_edition_and_invalid_metadata_before_install()
     fs::remove_dir_all(directory).unwrap();
 }
 
-fn install_shared(target_dir: &str, desktop: bool, autostart: bool, progress: &dyn Fn(u32, &str)) -> Result<(), String> {
+pub(crate) fn install_shared(target_dir: &str, desktop: bool, autostart: bool, progress: &dyn Fn(u32, &str)) -> Result<(), String> {
+    if cumulative_payload()? {return Err("这是累计更新包，请在已安装的 FrameScope 更新页点击安装；首次安装请下载全量安装包".into());}
     let target = PathBuf::from(target_dir);
     validate_install_destination(&target)?;
     ensure_compatible_edition(&target)?;
@@ -350,7 +345,7 @@ fn install_shared(target_dir: &str, desktop: bool, autostart: bool, progress: &d
     let mut deletions = legacy_injected_osd_paths(&target);
     if !runtime.legacy.is_empty() { deletions.push(target.join("uninstall.exe")); }
     crate::install_transaction::execute(crate::install_transaction::Request {
-        target: &target, payload: PAYLOAD_ZIP, self_exe: &self_exe, required: &required_payload_files()?,
+        target: &target, payload: payload_zip(), self_exe: &self_exe, required: &required_payload_files()?,
         uninstall: false, delete_data: false, deletions, data_roots: vec![], progress,
     }, &mut runtime)
 }
@@ -368,7 +363,6 @@ pub(crate) fn legacy_injected_osd_paths(target: &Path) -> Vec<PathBuf> {
 }
 // === Uninstall ===
 
-#[tauri::command]
 pub fn uninstall(delete_data: bool) -> Result<(), String> {
     perform_uninstall(&selected_uninstall_root()?, delete_data)
 }
@@ -402,7 +396,7 @@ fn perform_uninstall(install_dir: &Path, delete_data: bool) -> Result<(), String
 
     }
     crate::install_transaction::execute(crate::install_transaction::Request {
-        target: install_dir, payload: PAYLOAD_ZIP, self_exe: &self_exe, required: &required_payload_files()?,
+        target: install_dir, payload: payload_zip(), self_exe: &self_exe, required: &required_payload_files()?,
         uninstall: true, delete_data, deletions, data_roots, progress: &|_, _| {},
     }, &mut runtime)?;
     // Empty owned directories are optional housekeeping after a durable commit;
@@ -654,7 +648,7 @@ try {{
 // === Payload extraction ===
 
 fn payload_file_count() -> Result<u32, String> {
-    let cursor = std::io::Cursor::new(PAYLOAD_ZIP);
+    let cursor = std::io::Cursor::new(payload_zip());
     let archive = zip::ZipArchive::new(cursor).map_err(|e| format!("无法读取安装包: {e}"))?;
     Ok(archive.len() as u32)
 }
@@ -712,11 +706,14 @@ pub(crate) fn validate_install_target(target: &Path) -> Result<(), String> {
     let protected=[dirs::home_dir(),dirs::desktop_dir(),dirs::document_dir(),dirs::download_dir(),dirs::data_dir(),dirs::data_local_dir()]
         .into_iter().flatten().chain(["SystemRoot","ProgramFiles","ProgramFiles(x86)","ProgramData"].into_iter().filter_map(std::env::var_os).map(PathBuf::from));
     let actual=key(target);
+    if std::env::var_os("SystemRoot").is_some_and(|root| {
+        let root=key(Path::new(&root)); actual==root || actual.starts_with(&(root+"\\"))
+    }) { return Err("不能安装到 Windows 系统目录内。".into()); }
     if protected.into_iter().any(|path|key(&path)==actual){return Err("不能将磁盘、系统目录或用户共享目录作为安装/卸载目标，请选择专用的 FrameScope 文件夹。".into());}
     Ok(())
 }
 
-fn validate_owned_installation(target:&Path)->Result<(),String>{
+pub(crate) fn validate_owned_installation(target:&Path)->Result<(),String>{
     validate_install_target(target)?;
     for name in ["FrameScope.exe","FrameScopeMonitor.exe","FrameScopeHostCapabilities.json"]{
         let path=target.join(name);validate_install_target(&path)?;
@@ -732,7 +729,7 @@ fn validate_owned_installation(target:&Path)->Result<(),String>{
     }){return Err("安装归属信息与程序不一致，未修改任何文件。".into());}
     Ok(())
 }
-fn validate_install_destination(target:&Path)->Result<(),String>{
+pub(crate) fn validate_install_destination(target:&Path)->Result<(),String>{
     validate_install_target(target)?;
     if target.exists(){
         if !target.is_dir(){return Err("安装位置必须是专用文件夹。".into());}
@@ -1331,7 +1328,7 @@ mod uninstall_tests {
         let exe = fixture.file("FrameScope Installer.exe");
         let unknown = fixture.file("my-data.txt");
         fixture.assert_owned(&fixture.install);
-        remove_install_files(&fixture.install, &exe, PAYLOAD_ZIP, false).unwrap();
+        remove_install_files(&fixture.install, &exe, payload_zip(), false).unwrap();
         assert!(exe.exists() && unknown.exists());
     }
 

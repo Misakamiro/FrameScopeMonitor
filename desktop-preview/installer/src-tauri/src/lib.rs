@@ -1,5 +1,9 @@
 mod installer;
+mod native_ui;
+mod native_stop;
+mod prerequisites;
 mod install_transaction;
+mod component_install;
 mod installation_system;
 mod self_relaunch;
 mod update_install;
@@ -10,25 +14,7 @@ pub fn cleanup_relaunch_copy() -> Result<(), String> { self_relaunch::schedule_c
 
 use installer::*;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![
-            get_state,
-            get_default_install_path,
-            get_app_version,
-            get_launch_mode,
-            check_disk_space,
-            check_webview2,
-            is_app_running_cmd,
-            install,
-            uninstall,
-            launch_app,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
+pub fn run() { native_ui::run(); }
 
 /// Silent / headless entry points, dispatched from main() before any window
 /// is created. NSIS-compatible flags: `/S` silent, `/D=path` install dir.

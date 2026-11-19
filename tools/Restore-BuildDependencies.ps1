@@ -1,3 +1,4 @@
+param([string]$RuntimeArchive,[switch]$PreserveStaging)
 $ErrorActionPreference='Stop'
 $taskRoot=Split-Path -Parent $PSScriptRoot
 $taskManifest=Get-Content -LiteralPath (Join-Path $taskRoot 'build-dependencies.lock.json') -Raw -Encoding UTF8|ConvertFrom-Json
@@ -17,14 +18,16 @@ foreach($taskEntry in $taskManifest.files){
 }
 if(-not $taskMissing.Count){Write-Output 'Pinned build dependencies already verified';exit 0}
 $taskCache=Join-Path $taskRoot 'obj\build-dependencies-source.zip'
-New-Item -ItemType Directory -Path (Split-Path -Parent $taskCache) -Force|Out-Null
-if(-not(Test-Path -LiteralPath $taskCache)){
+if($RuntimeArchive){$taskCache=(Resolve-Path -LiteralPath $RuntimeArchive).Path}
+elseif(-not $taskManifest.archiveUrl){throw 'Missing pinned runtime files. Supply -RuntimeArchive with the runtime dependency archive; no private source archive is required.'}
+else{New-Item -ItemType Directory -Path (Split-Path -Parent $taskCache) -Force|Out-Null}
+if(-not $RuntimeArchive -and -not(Test-Path -LiteralPath $taskCache)){
     $taskPartial=$taskCache+'.partial'
     Invoke-WebRequest -Uri $taskManifest.archiveUrl -OutFile $taskPartial
     if((Get-DependencyHash $taskPartial) -ne $taskManifest.archiveSha256){throw 'Dependency source archive hash differs'}
     Move-Item -LiteralPath $taskPartial -Destination $taskCache
 }
-if((Get-DependencyHash $taskCache) -ne $taskManifest.archiveSha256){throw 'Cached dependency source archive hash differs'}
+if(-not $RuntimeArchive -and (Get-DependencyHash $taskCache) -ne $taskManifest.archiveSha256){throw 'Cached dependency source archive hash differs'}
 Add-Type -AssemblyName System.IO.Compression,System.IO.Compression.FileSystem
 $taskZip=[IO.Compression.ZipFile]::OpenRead($taskCache)
 try{

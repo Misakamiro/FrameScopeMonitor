@@ -24,6 +24,7 @@ export function UiSurfaceTokens() {
       '--framescope-control-border':dark?'rgba(255,255,255,.2)':'rgba(40,48,62,.18)',
       '--framescope-control-fg':dark?'#f0f2f6':'#202633',
       '--framescope-panel-bg':material.background,
+      '--framescope-popup-bg':dark?'#20242d':'#f8f9fc',
       '--framescope-surface-filter':material.filter,
       '--framescope-edge-filter':glass&&mode==='real'&&svgSupported?'url(#nexbox-liquid-glass-filter)':'none',
       '--framescope-primary':getActiveColor(),'--framescope-primary-hover':`color-mix(in srgb, ${getActiveColor()} 92%, black)`,'--framescope-primary-fg':getContrastTextColor(),

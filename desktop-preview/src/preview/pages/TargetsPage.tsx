@@ -1,9 +1,8 @@
+import {searchMatches} from '@/lib/unified-search';
 import { useEffect, useState } from "react";
-import {
-  Box, Heading, Text, HStack, VStack, Input, InputGroup, InputLeftElement,
-  Button, IconButton, Switch, FormControl, FormLabel, Badge, Tooltip,
-} from "@chakra-ui/react";
-import { Search, Plus, Pencil, Trash2 } from "lucide-react";
+import { Box, Heading, Text, HStack, VStack, Input, InputGroup, InputLeftElement, Button, IconButton, Switch, FormControl, FormLabel, Badge } from "@chakra-ui/react";
+import { Tooltip } from "@/components/ui/motion-components";
+import { Search, Plus, Pencil, Trash2, FolderOpen } from "lucide-react";
 import { LiquidGlassCard } from "@/components/special/liquid-glass-card";
 import { CustomSelect } from "@/components/special/custom-select";
 import { useAdaptiveTextColor } from "@/hooks/use-adaptive-text-color";
@@ -19,6 +18,9 @@ export default function TargetsPage() {
   const color = useAdaptiveTextColor();
   const { run, pending, error, clearError } = usePreviewAction();
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState('');
+  const [page, setPage] = useState(0);
+  const [fileError, setFileError] = useState('');
   const [editing, setEditing] = useState<Partial<PreviewTarget> | null>(null);
   const [removing, setRemoving] = useState<PreviewTarget | null>(null);
   // Desktop: real window-titled process enumeration (fallback examples only
@@ -43,10 +45,21 @@ export default function TargetsPage() {
   }, []);
   const busy = targetEditingBlocked();
   const field = useFloatingFieldStyle();
-  const targets = state.targets.filter(t => `${t.name} ${t.executable}`.toLowerCase().includes(query.toLowerCase()));
+  const targets = state.targets.filter(t => (!category || (t.category || '自定义') === category) && searchMatches(query,[t.name,t.executable]));
+  const categories = [...new Set(state.targets.map(t => t.category || '自定义'))].sort();
+  const pages = Math.max(1, Math.ceil(targets.length / 20));
+  const visiblePage = Math.min(page, pages - 1);
+  const visibleTargets = targets.slice(visiblePage * 20, (visiblePage + 1) * 20);
   const syncing = isDesktop() && !isTargetsSynced();
   const saveError = getTargetsSaveError();
-  const close = () => { setEditing(null); clearError(); };
+  const close = () => { setEditing(null); clearError(); setFileError(''); };
+  const chooseExe = async () => {
+    setFileError('');
+    try {
+      const result = await backendInvoke<{ cancelled: boolean; name: string; executable: string }>('target_select_exe');
+      if (!result.cancelled) setEditing(previous => previous ? ({ ...previous, name: previous.name || result.name, executable: result.executable }) : previous);
+    } catch (reason) { setFileError(String(reason)); }
+  };
   const save = async () => {
     if (!editing) return;
     const ok = editing.id
@@ -62,9 +75,12 @@ export default function TargetsPage() {
     </HStack>
     {busy && <Text fontSize="sm" mb={4}>采集或生成报告期间，请先停止监控再修改目标。</Text>}
     <InputGroup maxW="400px" mb={5}><InputLeftElement pointerEvents="none" color={field.iconColor}><Search size={16} /></InputLeftElement>
-      <Input aria-label="搜索目标" placeholder="搜索游戏或进程" value={query} onChange={e => setQuery(e.target.value)} sx={field.sx} /></InputGroup>
+      <Input aria-label="搜索目标" placeholder="搜索游戏或进程" value={query} onChange={e => { setQuery(e.target.value); setPage(0); }} sx={field.sx} /></InputGroup>
+    <HStack mb={4}><CustomSelect ariaLabel="游戏分类" width="260px" value={category} onChange={value => { setCategory(value); setPage(0); }}
+      options={[{ value: '', label: '全部分类' }, ...categories.map(value => ({ value, label: value }))]} />
+      <Text fontSize="sm">{targets.length} 个目标</Text></HStack>
     <VStack align="stretch" spacing={3}>
-      {targets.map(target => <LiquidGlassCard key={target.id} p={5} borderRadius="xl">
+      {visibleTargets.map(target => <LiquidGlassCard key={target.id} p={5} borderRadius="xl">
         <HStack spacing={4}>
           <Switch aria-label={`启用 ${target.name}`} isChecked={target.enabled} isDisabled={busy || syncing} colorScheme="teal"
             onChange={e => void run("target.update", { id: target.id, enabled: e.target.checked })} />
@@ -79,10 +95,14 @@ export default function TargetsPage() {
       {!targets.length && <Text py={12} textAlign="center" color={color.text}>{query ? "没有匹配的目标" : "暂无监控目标"}</Text>}
       {!editing && !removing && <ActionError message={error} />}
     </VStack>
+    {pages > 1 && <HStack justify="center" mt={5}><Button size="sm" isDisabled={visiblePage === 0} onClick={() => setPage(visiblePage - 1)}>上一页</Button>
+      <Text>{visiblePage + 1} / {pages}</Text><Button size="sm" isDisabled={visiblePage + 1 >= pages} onClick={() => setPage(visiblePage + 1)}>下一页</Button></HStack>}
     <PreviewDialog title={editing?.id ? "编辑目标" : "添加目标"} isOpen={editing !== null} onClose={close}>
       <VStack as="form" spacing={4} align="stretch" onSubmit={e => { e.preventDefault(); void save(); }}>
         <FormControl isRequired><FormLabel>游戏名称</FormLabel><Input autoFocus value={editing?.name ?? ""} onChange={e => setEditing({ ...editing, name: e.target.value })} /></FormControl>
         <FormControl isRequired><FormLabel>进程名</FormLabel><Input placeholder="game.exe" value={editing?.executable ?? ""} onChange={e => setEditing({ ...editing, executable: e.target.value })} /></FormControl>
+        <Button leftIcon={<FolderOpen size={16} />} isDisabled={busy || !isDesktop()} onClick={chooseExe}>选择游戏 EXE</Button>
+        <Text fontSize="xs" opacity={.7}>只读取文件信息，不启动游戏。请选择实际游戏程序。</Text>
         <FormControl><FormLabel>预览进程列表</FormLabel><CustomSelect width="100%" ariaLabel="选择进程"
           placeholder={processesUnavailable ? "进程列表不可用" : "选择进程"} disabled={processesUnavailable} value=""
           onChange={value => setEditing({ ...editing, executable: value })}
@@ -91,7 +111,7 @@ export default function TargetsPage() {
             label: process.windowTitle ? `${process.processName} — ${process.windowTitle}` : process.processName,
           }))} /></FormControl>
         <HStack justify="space-between"><Text>启用目标</Text><Switch aria-label="启用目标" colorScheme="teal" isChecked={editing?.enabled ?? true} onChange={e => setEditing({ ...editing, enabled: e.target.checked })} /></HStack>
-        <ActionError message={error || saveError} /><HStack justify="flex-end"><Button variant="ghost" onClick={close}>取消</Button><Button type="submit" colorScheme="teal" isLoading={pending || syncing}>保存</Button></HStack>
+        <ActionError message={fileError || error || saveError} /><HStack justify="flex-end"><Button variant="ghost" onClick={close}>取消</Button><Button type="submit" colorScheme="teal" isDisabled={busy} isLoading={pending || syncing}>保存</Button></HStack>
       </VStack>
     </PreviewDialog>
     <PreviewDialog title="删除目标" isOpen={!!removing} onClose={() => setRemoving(null)}>

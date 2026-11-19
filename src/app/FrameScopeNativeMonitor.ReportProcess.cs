@@ -6,7 +6,7 @@ using System.Text;
 
 internal static partial class FrameScopeNativeMonitor
 {
-    private const int ReportGenerationTimeoutMs = 120000;
+    private const int ReportGenerationTimeoutMs = 600000;
 
     private static ReportGenerationResult RunReportGeneration(string runDir, FrameScopeConfig config = null)
     {
@@ -56,7 +56,15 @@ internal static partial class FrameScopeNativeMonitor
                 Quote(runDir) + " --progress " + Quote(result.ProgressPath) + " --input-fingerprint " + Quote(result.InputFingerprint),
                 Root,
                 timeoutMs,
-                delegate { UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath); });
+                delegate { UpdateStatusFromReportProgress(runDir, result.ProgressPath, result.ReportHtml, result.LogPath); },
+                delegate {
+                    Dictionary<string, object> fields = FrameScopeReportProgress.Read(result.ProgressPath);
+                    if (fields == null) return null;
+                    object phase, percent;
+                    fields.TryGetValue("ReportProgressPhase", out phase);
+                    fields.TryGetValue("ReportProgressPercent", out percent);
+                    return Convert.ToString(phase) + ":" + Convert.ToString(percent);
+                });
 
             result.GenerationStartedAt = process.StartedAtUtc;
             result.GenerationEndedAt = process.EndedAtUtc;

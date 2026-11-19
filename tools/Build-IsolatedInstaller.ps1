@@ -2,16 +2,22 @@ param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [switch]$StageOnly,
+    [ValidateSet("Auto","Full","Cumulative","Both")][string]$PackageMode = "Auto",
+    [string]$PreviousComponents,
+    [string]$ComponentOutputDirectory,
     [switch]$PackageOnly,
     [switch]$SnapshotOnly,
+    [switch]$ReuseVerifiedSnapshot,
     [switch]$VerifyOnly,
     [switch]$FunctionsOnly,
     [string]$CandidateHostTransformScript,
+    [switch]$PreserveStaging,
     [string]$StorageRoot = (Join-Path ([IO.Path]::GetPathRoot($RepoRoot)) 'fs-build')
 )
 $ErrorActionPreference = 'Stop'
 
-function Assert-IsolatedBuildStorage([string]$Directory, [string]$StorageRoot, [long]$FreeBytes) {
+
+function Assert-IsolatedBuildStorage([string]$Directory, [string]$StorageRoot, [long]$FreeBytes, [switch]$ReuseVerifiedSnapshot) {
     $root = [IO.Path]::GetFullPath($StorageRoot).TrimEnd('\')
     $output = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
     if (-not $output.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -21,30 +27,49 @@ function Assert-IsolatedBuildStorage([string]$Directory, [string]$StorageRoot, [
         throw 'Each build must be a direct child of the managed build root'
     }
     Assert-PayloadPath -Path $output -Root $root
-    if ($FreeBytes -lt 30GB) { throw 'Build requires at least 30 GiB of free disk space; no output was created' }
+    if ($FreeBytes -lt 10GB) { throw 'Build requires at least 10 GiB of free disk space; no output was created' }
     # Count failed/incomplete directories too: repeated failures must not create
     # an unlimited collection just because their inventory was never written.
-    if ((Test-Path -LiteralPath $root) -and @(Get-ChildItem -LiteralPath $root -Directory -Force).Count -ge 2) {
+    $retained=if(Test-Path -LiteralPath $root){@(Get-ChildItem -LiteralPath $root -Directory -Force).Count}else{0}
+    $reusing=$ReuseVerifiedSnapshot -and (Test-Path -LiteralPath $output -PathType Container)
+    if ($retained -gt 2 -or ($retained -ge 2 -and -not $reusing)) {
         throw 'At most two retained build directories are allowed; inspect and remove obsolete outputs before retrying. Nothing was deleted automatically.'
+    }
+}
+
+function Assert-ReusableSourceSnapshot([string]$Root,[string]$Directory,[object[]]$Files) {
+    $snapshot=Join-Path $Directory 'source'
+    $inventoryPath=Join-Path $Directory 'snapshot-inputs.json'
+    Assert-PayloadPath -Path $inventoryPath -Root $Directory
+    $prior=Get-Content -Raw -LiteralPath $inventoryPath -Encoding UTF8 | ConvertFrom-Json
+    if($prior.schema -ne 1 -or
+       [IO.Path]::GetFullPath([string]$prior.sourceRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($Root).TrimEnd('\') -or
+       [IO.Path]::GetFullPath([string]$prior.snapshotRoot).TrimEnd('\') -ne [IO.Path]::GetFullPath($snapshot).TrimEnd('\')){
+        throw 'Existing snapshot ownership does not match the requested source'
+    }
+    $expected=@{};foreach($file in $Files){$expected[[string]$file.path]=[string]$file.sha256}
+    $actual=@{};foreach($file in @(Get-IsolatedSourceFiles -Root $snapshot)){$actual[[string]$file.path]=[string]$file.sha256}
+    foreach($name in @(($expected.Keys+$actual.Keys) | Sort-Object -Unique)){
+        if(-not $expected.ContainsKey($name) -or -not $actual.ContainsKey($name) -or
+           ($name -ne 'framescope-config.example.json' -and $expected[$name] -ne $actual[$name])){
+            throw "Existing snapshot differs from source; no files were overwritten: $name"
+        }
     }
 }
 
 function Get-IsolatedSourceFiles([string]$Root) {
     $exportManifest=Join-Path $Root 'SOURCE_MANIFEST.json'
     if((Test-Path -LiteralPath $exportManifest) -and -not (Test-Path -LiteralPath (Join-Path $Root '.git'))) {
-        $export=Get-Content -Raw -LiteralPath $exportManifest | ConvertFrom-Json
-        if($export.schema -ne 1 -or $export.sourceHead -notmatch '^[a-f0-9]{40}$'){throw 'Invalid source export identity'}
-        foreach($entry in $export.files){
-            $exportPath=Join-Path $Root $entry.path
-            Assert-PayloadPath -Path $exportPath -Root $Root
-            if((Get-FileHash -LiteralPath $exportPath).Hash -ne $entry.sha256){throw "Export changed: $($entry.path)"}
-        }
+        $export=Get-SourceExportManifest -Root $Root
         $names=@($export.files.path)+@('SOURCE_MANIFEST.json')
     } else {
         $gitOutput = Get-PayloadGitOutput ('-C "' + $Root + '" -c core.quotepath=false ls-files --cached --others --exclude-standard')
         $names = @($gitOutput -split "`r?`n" | Where-Object { $_ })
     }
     foreach ($name in ($names | Sort-Object -Unique)) {
+        if($name -match '^src/(game-filter|amd-tuning)/vendor/'){continue} # Pinned below, including generated upstream source inputs.
+        if($name -match '^src/(game-filter|amd-tuning|feature-worker)/(publish|publish-original|obj-native)/' -or $name -eq 'src/game-filter/sample.generated.cpp'){continue}
+        if ($name.StartsWith('packaging/toolbox/files/')) { continue } # Explicitly pinned below, including ignored binaries.
         # Neither historical evidence nor generated/installed/user content is a build input.
         if ($name -match '(^|/)(artifacts|backups|reference|node_modules|target|dist|bin|obj|coverage|\.playwright-cli|\.vite|\.cache|framescope-runs|cs2-monitor-runs|script-backups|install-backups|--run)(/|$)' -or
             $name -match '^desktop-preview/src-tauri/resources/' -or
@@ -56,22 +81,56 @@ function Get-IsolatedSourceFiles([string]$Root) {
         [ordered]@{ path = $name; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
     }
     $lock = Get-Content -LiteralPath (Join-Path $Root 'dependencies.lock.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    foreach ($entry in @($lock.presentMon, $lock.webView2StandaloneInstaller)) {
+    $fullEdition = (Get-Content -LiteralPath (Join-Path $Root 'EDITION') -Raw).Trim() -eq 'full'
+
+    $pinnedRuntime = @($lock.presentMon)
+    if ($stagingMode -ne "Cumulative") { $pinnedRuntime += @($lock.webView2StandaloneInstaller, $lock.dotNet48OfflineInstaller) }
+    foreach ($entry in $pinnedRuntime) {
         $path = Join-Path $Root $entry.file
         Assert-PayloadPath -Path $path -Root $Root
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
         if ($hash -ne $entry.sha256) { throw "Pinned dependency hash mismatch: $($entry.file)" }
         [ordered]@{ path = [string]$entry.file; sha256 = $hash }
     }
-    # PawnIO has no dependency-lock entry today. Bind this explicit ignored input
-    # to its observed bytes in the immutable snapshot inventory, never to a fallback at build time.
-    $pawn = 'packaging/PawnIO_setup.exe'
-    if (-not (Test-Path -LiteralPath (Join-Path $Root $pawn) -PathType Leaf)) {
-        $pawn = 'reference/nexbox/src-tauri/resources/binaries/PawnIO_setup.exe'
+    if ($stagingMode -ne "Cumulative") { Get-PinnedPawnIoInput -Root $Root }
+}
+
+function Get-IsolatedSourceIdentity([string]$Root) {
+    if(-not (Test-Path -LiteralPath (Join-Path $Root '.git'))){
+        $export=Get-SourceExportManifest -Root $Root
+        return [ordered]@{sourceHead=$export.sourceHead;sourceDirty=$export.sourceDirty;sourceSnapshotSha256=$export.sourceSnapshotSha256}
     }
-    $path = Join-Path $Root $pawn
-    Assert-PayloadPath -Path $path -Root $Root
-    [ordered]@{ path = $pawn; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+    $head=(& git -C $Root rev-parse HEAD)
+    if($LASTEXITCODE -ne 0){throw 'Cannot read source HEAD'}
+    $status=Get-PayloadGitOutput ('-C "'+$Root+'" status --porcelain=v1 --untracked-files=normal')
+    [ordered]@{sourceHead=$head;sourceDirty=[bool]$status}
+}
+
+function New-IsolatedSourceSnapshot([string]$Root,[string]$Snapshot,[object[]]$Files) {
+    if(Test-Path -LiteralPath $Snapshot){throw 'Snapshot already exists; existing source is preserved'}
+    if(-not $Files.Count){throw 'Cannot create an empty source snapshot'}
+    $hasGit=Test-Path -LiteralPath (Join-Path $Root '.git')
+    if($hasGit){
+        # Private objects and index; current working bytes are copied below.
+        & git clone --quiet --no-local --no-checkout -- $Root $Snapshot
+        if($LASTEXITCODE -ne 0){throw 'Cannot create private snapshot repository'}
+    } else {
+        $null=Get-SourceExportManifest -Root $Root
+        New-Item -ItemType Directory -Path $Snapshot | Out-Null
+    }
+    foreach($file in $Files){
+        $source=Join-Path $Root $file.path
+        $destination=Join-Path $Snapshot $file.path
+        Assert-PayloadPath -Path $source -Root $Root
+        Assert-PayloadPath -Path $destination -Root $Snapshot
+        New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $destination
+        if((Get-FileHash -LiteralPath $destination).Hash -ne $file.sha256){throw "Source changed during copy: $($file.path)"}
+    }
+    if($hasGit){
+        & git -C $Snapshot add --force -A -- .
+        if($LASTEXITCODE -ne 0){throw 'Cannot initialize private snapshot index'}
+    }
 }
 
 function Assert-IsolatedSourceUnchanged([string]$Directory) {
@@ -143,13 +202,16 @@ if ($FunctionsOnly) { return }
 $isolatedEnvironment = @{}
 foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR', 'FRAMESCOPE_BUILD_SHA')) {
     $isolatedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-    Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue
+    [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process')
 }
 try {
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $isolatedOutput = $OutputDirectory
-. (Join-Path $RepoRoot 'desktop-preview\installer\pack-payload.ps1') -RepoRoot $RepoRoot -FunctionsOnly
+$requestedPackageMode = $PackageMode
+. (Join-Path $RepoRoot 'desktop-preview\installer\pack-payload.ps1') -RepoRoot $RepoRoot -FunctionsOnly -PackageMode $(if($PackageMode -eq "Both"){"Full"}else{$PackageMode}) -PreserveStaging:$PreserveStaging
+$stagingMode = Resolve-FrameScopePackageMode -Root $RepoRoot -Mode $PackageMode
+$PackageMode = $requestedPackageMode
 $OutputDirectory = $isolatedOutput
 if ($VerifyOnly) {
     Assert-IsolatedSourceUnchanged -Directory $OutputDirectory
@@ -157,39 +219,41 @@ if ($VerifyOnly) {
     return
 }
 Assert-IsolatedBuildStorage -Directory $OutputDirectory -StorageRoot $StorageRoot `
-    -FreeBytes ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($OutputDirectory)).AvailableFreeSpace)
-if (Test-Path -LiteralPath $OutputDirectory) { throw 'OutputDirectory must be a new private directory; refusing reuse or overwrite' }
+    -FreeBytes ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($OutputDirectory)).AvailableFreeSpace) -ReuseVerifiedSnapshot:$ReuseVerifiedSnapshot
+if ($ReuseVerifiedSnapshot) {
+    if(-not (Test-Path -LiteralPath $OutputDirectory -PathType Container)){throw 'Snapshot reuse requires an existing private directory'}
+} elseif (Test-Path -LiteralPath $OutputDirectory) { throw 'OutputDirectory must be a new private directory; refusing reuse or overwrite' }
 $sourcePrefix = $RepoRoot.TrimEnd('\') + '\'
 if ($OutputDirectory.StartsWith($sourcePrefix, [StringComparison]::OrdinalIgnoreCase) -and
     -not $OutputDirectory.StartsWith((Join-Path $RepoRoot 'artifacts').TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'An output inside the original repository must be under its ignored artifacts directory'
 }
-$ancestor = $OutputDirectory
+$ancestor = Split-Path -Parent $OutputDirectory
 while (-not (Test-Path -LiteralPath $ancestor)) { $ancestor = Split-Path -Parent $ancestor }
 Assert-PayloadPath -Path $OutputDirectory -Root $ancestor
 $files = @(Get-IsolatedSourceFiles -Root $RepoRoot)
-$head = (& git -C $RepoRoot rev-parse HEAD)
-if ($LASTEXITCODE -ne 0) { throw 'Cannot read source HEAD' }
+$sourceIdentity=Get-IsolatedSourceIdentity -Root $RepoRoot
+$head=$sourceIdentity.sourceHead
 $env:FRAMESCOPE_BUILD_SHA = $head
-New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 $snapshot = Join-Path $OutputDirectory 'source'
-# --no-local avoids writable shared Git objects. No checkout touches dirty inputs;
-# the private index is populated only after the exact current bytes are copied.
-& git clone --quiet --no-local --no-checkout -- $RepoRoot $snapshot
-if ($LASTEXITCODE -ne 0) { throw 'Cannot create private snapshot repository' }
-foreach ($file in $files) {
-    $source = Join-Path $RepoRoot $file.path
-    $destination = Join-Path $snapshot $file.path
-    Assert-PayloadPath -Path $destination -Root $snapshot
-    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
-    Copy-Item -LiteralPath $source -Destination $destination
-    if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -ne $file.sha256) { throw "Source changed during copy: $($file.path)" }
+$runIdentity=[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ')+'-'+[guid]::NewGuid().ToString('N').Substring(0,8)
+if($ReuseVerifiedSnapshot){
+    Assert-ReusableSourceSnapshot -Root $RepoRoot -Directory $OutputDirectory -Files $files
+    foreach($name in @('snapshot-inputs','isolated-build-result')){
+        $previous=Join-Path $OutputDirectory ($name+'.json')
+        if(Test-Path -LiteralPath $previous -PathType Leaf){
+            $archive=Join-Path $OutputDirectory ($name+'.'+$runIdentity+'.json')
+            Assert-PayloadPath -Path $previous -Root $OutputDirectory
+            [IO.File]::Copy($previous,$archive,$false)
+            if((Get-FileHash -LiteralPath $archive).Hash -ne (Get-FileHash -LiteralPath $previous).Hash){throw 'Previous build evidence copy failed'}
+        }
+    }
+} else {
+    New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
+    New-IsolatedSourceSnapshot -Root $RepoRoot -Snapshot $snapshot -Files $files
 }
-# Only inventoried bytes were copied. Force keeps source already tracked by the
-# original repository even when a newer ignore rule also matches that source.
-& git -C $snapshot add --force -A -- .
-if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize private snapshot index' }
-[ordered]@{ schema = 1; sourceRoot = $RepoRoot; sourceHead = $head; snapshotRoot = $snapshot;
+[ordered]@{ schema = 1; runIdentity=$runIdentity; sourceRoot = $RepoRoot; sourceHead = $head; snapshotRoot = $snapshot;
+    sourceDirty=$sourceIdentity.sourceDirty;sourceSnapshotSha256=$sourceIdentity.sourceSnapshotSha256;
     generatedPaths = @('framescope-config.example.json', 'obj/FrameScopeBuildMetadata.g.cs'); files = $files } |
     ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'snapshot-inputs.json') -Encoding UTF8
 Assert-IsolatedSourceUnchanged -Directory $OutputDirectory
@@ -208,6 +272,11 @@ foreach ($configName in @('config', 'config.toml')) {
     }
 }
 # The C# entry packages this retained frontend and requires a current dist.
+if ($PreserveStaging) {
+    foreach ($relative in @('src/frontend/node_modules', 'src/frontend/dist', 'desktop-preview/node_modules')) {
+        Move-PreservedBuildStaging -Path (Join-Path $snapshot $relative) -Root $snapshot | Out-Null
+    }
+}
 Push-Location (Join-Path $snapshot 'src\frontend')
 try {
     & npm ci
@@ -221,9 +290,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Snapshot npm ci failed' }
 } finally { Pop-Location }
 if ($PackageOnly) {
-    & (Join-Path $snapshot 'tools\Package-Installer.ps1') -RepoRoot $snapshot -StageOnly:$StageOnly -CandidateHostTransformScript $CandidateHostTransformScript
+    & (Join-Path $snapshot 'tools\Package-Installer.ps1') -RepoRoot $snapshot -StageOnly:$StageOnly -PackageMode $stagingMode -PreviousComponents $PreviousComponents -ComponentOutputDirectory $ComponentOutputDirectory -CandidateHostTransformScript $CandidateHostTransformScript -PreserveStaging:$PreserveStaging
 } else {
-    & (Join-Path $snapshot 'desktop-preview\installer\build-installer.ps1') -RepoRoot $snapshot -CandidateHostTransformScript $CandidateHostTransformScript
+    & (Join-Path $snapshot 'desktop-preview\installer\build-installer.ps1') -RepoRoot $snapshot -PackageMode $PackageMode -PreviousComponents $PreviousComponents -ComponentOutputDirectory $ComponentOutputDirectory -CandidateHostTransformScript $CandidateHostTransformScript -PreserveStaging:$PreserveStaging
 }
 Assert-IsolatedSourceUnchanged -Directory $OutputDirectory
 $outputs = @(Get-ChildItem -LiteralPath $snapshot -Recurse -File | Where-Object {
@@ -239,11 +308,11 @@ $generatedOutputs = @(foreach ($path in @('framescope-config.example.json', 'obj
     [ordered]@{ path = $path; originalInputSha256 = $(if ($original.Count) { $original[0].sha256 } else { $null });
         outputSha256 = (Get-FileHash -LiteralPath (Join-Path $snapshot $path) -Algorithm SHA256).Hash }
 })
-[ordered]@{ schema = 1; sourceHead = $head; inputsVerified = $true; generatedOutputs = $generatedOutputs; outputs = $outputs } |
+[ordered]@{ schema = 1; runIdentity=$runIdentity; sourceHead = $head; inputsVerified = $true; generatedOutputs = $generatedOutputs; outputs = $outputs } |
     ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'isolated-build-result.json') -Encoding UTF8
 } finally {
     foreach ($name in $isolatedEnvironment.Keys) {
-        if ($null -eq $isolatedEnvironment[$name]) { Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue }
+        if ($null -eq $isolatedEnvironment[$name]) { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process') }
         else { Set-Item -LiteralPath ('Env:' + $name) -Value $isolatedEnvironment[$name] }
     }
 }

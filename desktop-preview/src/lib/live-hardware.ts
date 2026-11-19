@@ -1,6 +1,7 @@
 import {uiActivity,type UiActivity} from './ui-activity';
 
 export interface GpuLiveSensor {
+  usage_source?: string | null;
   name: string; hardware_type: string; temperature: number | null; usage: number | null;
   fan_speed: number | null; power: number | null; clock: number | null; memory_clock: number | null;
   vram_used: number | null; vram_total: number | null; voltage: number | null;

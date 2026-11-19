@@ -5,6 +5,7 @@ import { useColorMode } from "@chakra-ui/react";
 import { store } from "@/lib/store";
 import {uiActivity} from "@/lib/ui-activity";
 import { effectPercentage, realGlassBackground, jellyScales } from "@/lib/ui-effects";
+import { setMotionPreference } from '@/lib/motion-preferences';
 
 type BackgroundMode = "none" | "preset" | "image" | "dynamic" | "mr";
 
@@ -372,12 +373,14 @@ export function BackgroundProvider({ children }: { children: ReactNode }) {
 
   const setJellyBounceEnabledPersist = useCallback((enabled: boolean) => {
     setJellyBounceEnabled(enabled);
+    setMotionPreference('jelly-bounce-enabled', enabled);
     persist("jelly-bounce-enabled", enabled);
   }, [persist]);
 
   const setJellyBounceStrengthPersist = useCallback((value: number) => {
     const normalized=effectPercentage(value,200);
     setJellyBounceStrength(normalized);
+    setMotionPreference('jelly-bounce-strength', normalized);
     persist("jelly-bounce-strength",normalized);
   }, [persist]);
 

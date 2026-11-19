@@ -1,16 +1,6 @@
-import {
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
-  Button,
-  Text,
-  Alert,
-  AlertIcon,
-  Spinner,
-} from "@chakra-ui/react";
+import { Modal, ModalHeader, ModalBody, ModalFooter, Button, Text, Alert, AlertIcon, Spinner } from "@chakra-ui/react";
+import { ModalOverlay } from "@/components/ui/motion-components";
+import { ModalContent } from "@/components/ui/motion-components";
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 

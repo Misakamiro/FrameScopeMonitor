@@ -15,6 +15,9 @@ public sealed class FrameScopeLiveFrameStats
         public double? Low1;
         public double? Low01;
         public double? Fps;
+        public long WindowStartMs;
+        public long WindowEndMs;
+        internal long FrameObservedAt;
     }
     private sealed class TrackData {
         public string Key;
@@ -28,6 +31,9 @@ public sealed class FrameScopeLiveFrameStats
     }
     private string path;
     private readonly bool rolling;
+    private readonly int targetPid;
+    private readonly long targetStartMs;
+    private long targetGeneration = DateTime.UtcNow.Ticks;
     private readonly Dictionary<string, TrackData> tracks = new Dictionary<string, TrackData>();
     private readonly StringBuilder pending = new StringBuilder();
     private Decoder decoder = Encoding.UTF8.GetDecoder();
@@ -39,12 +45,30 @@ public sealed class FrameScopeLiveFrameStats
     private DateTimeOffset latestFrame;
     private readonly Func<long> monotonicClock;
     private long lastNewValidFrameAt;
+    private long lastNewValidFrameUnixMs;
+    private DateTimeOffset clockFrameAnchor, lastObservedFrame;
+    private long frameClockAnchor, publicationClockAnchor, publicationUnixAnchor;
     private bool hasNewValidFrameAt;
+    private Snapshot lastGoodSnapshot;
+    private Snapshot lastSnapshot;
+    private string lastReadError;
+    private DateTime fileCreatedUtc;
+    private string fileIdentity;
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct FileInformation {
+        public uint Attributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle handle, out FileInformation information);
     private const int MaxBuckets = 65536;
+    private const int DisplayLifetimeMs = 2000;
     public bool HasFrames { get { return tracks.Count > 0; } }
     public long? SourceAgeMilliseconds { get { return hasNewValidFrameAt && caughtUp ? (long?)ElapsedMilliseconds(lastNewValidFrameAt, monotonicClock()) : null; } }
-    public FrameScopeLiveFrameStats(string csvPath, bool rollingWindow = false, Func<long> clock = null) {
+    public FrameScopeLiveFrameStats(string csvPath, bool rollingWindow = false, Func<long> clock = null, int targetProcessId = 0, long targetProcessStartMs = 0) {
         path = csvPath; rolling = rollingWindow;
+        targetPid = targetProcessId; targetStartMs = targetProcessStartMs;
         monotonicClock = clock ?? (() => System.Diagnostics.Stopwatch.GetTimestamp());
         lastNewValidFrameAt = 0;
         hasNewValidFrameAt = false;
@@ -91,7 +115,7 @@ public sealed class FrameScopeLiveFrameStats
             for (long frame = 0; frame < take; frame++) sum += sorted[index].Key;
             remaining -= take;
         }
-        return sum > 0 ? (double?)FrameScopeFrameStatistics.Rounded(1000.0 / (sum / tail)) : null;
+        return sum > 0 ? (double?)FrameScopeFrameStatistics.RoundedFps(1000.0 / (sum / tail)) : null;
     }
     private void Add(SortedDictionary<double, long> values, double ms) {
         long count;
@@ -141,6 +165,8 @@ public sealed class FrameScopeLiveFrameStats
         if (!validDate || !double.TryParse(Field(row, "MsBetweenPresents"), NumberStyles.Float, CultureInfo.InvariantCulture, out ms)
             || double.IsNaN(ms) || double.IsInfinity(ms) || ms <= 0 || ms > FrameScopeFrameStatistics.MaxTimeMs) return;
         string key = Field(row, "ProcessID") + "|" + Field(row, "SwapChainAddress") + "|" + Field(row, "Application");
+        int rowPid;
+        if (targetPid > 0 && (!int.TryParse(Field(row, "ProcessID"), out rowPid) || rowPid != targetPid)) return;
         DateTimeOffset timestamp = dto;
         if (rolling) {
             if (!DateTimeOffset.TryParse(date, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out timestamp))
@@ -156,8 +182,7 @@ public sealed class FrameScopeLiveFrameStats
         bool hardware = Field(row, "PresentMode").StartsWith("Hardware:", StringComparison.OrdinalIgnoreCase);
         track.Instant.Enqueue(ms);
         while (track.Instant.Count > 60) track.Instant.Dequeue();
-        lastNewValidFrameAt = monotonicClock();
-        hasNewValidFrameAt = true;
+        ObserveFrame(timestamp);
         if (rolling) {
             if (timestamp > track.Latest) track.Latest = timestamp;
             track.Recent.Enqueue(Tuple.Create(timestamp, ms, hardware));
@@ -165,6 +190,31 @@ public sealed class FrameScopeLiveFrameStats
             track.Rows++; Add(track.All, ms);
             if (hardware) { track.HardwareRows++; Add(track.Hardware, ms); }
         }
+    }
+    private void ObserveFrame(DateTimeOffset timestamp) {
+        long now = monotonicClock();
+        if (!hasNewValidFrameAt) {
+            clockFrameAnchor = lastObservedFrame = timestamp;
+            frameClockAnchor = publicationClockAnchor = lastNewValidFrameAt = now;
+            publicationUnixAnchor = (DateTime.UtcNow - new DateTime(1970, 1, 1)).Ticks / TimeSpan.TicksPerMillisecond;
+            hasNewValidFrameAt = true;
+        } else if (!rolling) {
+            lastNewValidFrameAt = now;
+        } else if (timestamp > lastObservedFrame) {
+            // CSV calendar offsets are not reliable wall time. Anchor the stream
+            // once to our clock, then retain its intervals when delivery is late.
+            double frameAt = frameClockAnchor + (timestamp - clockFrameAnchor).TotalSeconds * System.Diagnostics.Stopwatch.Frequency;
+            if (frameAt > now) {
+                // An earlier delivery can improve the clock alignment; a late
+                // batch must never move the source forward to its arrival time.
+                clockFrameAnchor = timestamp;
+                frameClockAnchor = now;
+                frameAt = now;
+            }
+            lastNewValidFrameAt = (long)frameAt;
+            lastObservedFrame = timestamp;
+        }
+        lastNewValidFrameUnixMs = publicationUnixAnchor + ElapsedMilliseconds(publicationClockAnchor, lastNewValidFrameAt);
     }
     private void TrimRollingTracks() {
         if (latestFrame == DateTimeOffset.MinValue) return;
@@ -176,20 +226,41 @@ public sealed class FrameScopeLiveFrameStats
         foreach (string key in expired) tracks.Remove(key);
     }
     private void Reset() {
+        targetGeneration++;
         tracks.Clear(); pending.Length = 0; headers = null; offset = 0; buckets = 0; error = null;
         latestFrame = DateTimeOffset.MinValue;
         lastNewValidFrameAt = 0;
+        lastNewValidFrameUnixMs = 0;
         hasNewValidFrameAt = false;
         decoder = Encoding.UTF8.GetDecoder();
+        lastGoodSnapshot = null;
+        lastSnapshot = null;
     }
     public Snapshot Poll(bool final) {
-        ReadAvailable(final);
-        return Current();
+        lastReadError = null;
+        try { ReadAvailable(final); }
+        catch (IOException exception) { caughtUp = false; lastReadError = exception.Message; }
+        catch (UnauthorizedAccessException exception) { caughtUp = false; lastReadError = exception.Message; }
+        Snapshot snapshot = Current();
+        if (snapshot.CaughtUp && snapshot.Error == null && snapshot.Count > 0) lastGoodSnapshot = snapshot;
+        else if (rolling && !final && error == null && !caughtUp && lastGoodSnapshot != null
+            && ElapsedMilliseconds(lastGoodSnapshot.FrameObservedAt, monotonicClock()) < DisplayLifetimeMs)
+            snapshot = lastGoodSnapshot;
+        lastSnapshot = snapshot;
+        return snapshot;
     }
     public void ReadAvailable(bool final = false) {
         caughtUp = false;
         if (!File.Exists(path)) return;
         using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+            DateTime created = File.GetCreationTimeUtc(path);
+            FileInformation information;
+            string identity = GetFileInformationByHandle(file.SafeFileHandle, out information)
+                ? information.Volume + ":" + information.IndexHigh + ":" + information.IndexLow : null;
+            if ((fileIdentity != null && identity != null && fileIdentity != identity)
+                || (identity == null && fileCreatedUtc != default(DateTime) && created != fileCreatedUtc)) Reset();
+            fileIdentity = identity;
+            fileCreatedUtc = created;
             // Drain the frontier observed at entry. The writer may append again
             // after EOF; that is input for the next poll, not a failed current poll.
             long frontier = file.Length;
@@ -216,7 +287,7 @@ public sealed class FrameScopeLiveFrameStats
         }
     }
     private Snapshot Current() {
-        var result = new Snapshot { Error = error, CaughtUp = caughtUp };
+        var result = new Snapshot { Error = error ?? lastReadError, CaughtUp = caughtUp, FrameObservedAt = lastNewValidFrameAt };
         if (error != null || !caughtUp) return result;
         if (rolling) return RollingCurrent(result);
         TrackData selected = null;
@@ -238,7 +309,7 @@ public sealed class FrameScopeLiveFrameStats
         return result;
     }
     private Snapshot RollingCurrent(Snapshot result) {
-        if (!hasNewValidFrameAt || ElapsedMilliseconds(lastNewValidFrameAt, monotonicClock()) >= FrameScopeFrameStatistics.WindowMs) return result;
+        if (!hasNewValidFrameAt || ElapsedMilliseconds(lastNewValidFrameAt, monotonicClock()) >= DisplayLifetimeMs) return result;
         TrimRollingTracks();
         TrackData selected = null;
         List<double> selectedValues = null;
@@ -263,6 +334,13 @@ public sealed class FrameScopeLiveFrameStats
         result.Low1 = statistics.Low1;
         result.Low01 = statistics.Low01;
         result.Fps = statistics.Average;
+        // PresentMon's date_time strings have no timezone and can carry a
+        // different wall-clock offset. They order frames within the stream;
+        // freshness uses stream intervals anchored to our monotonic clock.
+        result.WindowEndMs = lastNewValidFrameUnixMs;
+        double duration = 0;
+        foreach (double ms in selectedValues) duration += ms;
+        result.WindowStartMs = result.WindowEndMs - Math.Max(1L, Math.Min((long)FrameScopeFrameStatistics.WindowMs, (long)Math.Ceiling(duration)));
         return result;
     }
     private static double? InstantFps(TrackData track) {
@@ -275,24 +353,33 @@ public sealed class FrameScopeLiveFrameStats
         double elapsed = (now - started) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         return elapsed >= long.MaxValue ? long.MaxValue : (long)elapsed;
     }
-    public void Publish(string runDir, int workerPid, string phase, bool final) {
+    public void Publish(string runDir, int workerPid, string phase, bool final, bool read = true) {
         Snapshot snapshot;
-        try { snapshot = Poll(final); }
+        try { snapshot = read ? Poll(final) : lastSnapshot ?? new Snapshot(); }
         catch (IOException exception) { snapshot = new Snapshot { Error = exception.Message }; }
         catch (UnauthorizedAccessException exception) { snapshot = new Snapshot { Error = exception.Message }; }
         bool available = snapshot.CaughtUp && snapshot.Error == null && snapshot.Count > 0 && snapshot.ProcessId > 0
-            && (phase == "capturing" || phase == "completed");
+            && targetPid == snapshot.ProcessId && targetStartMs > 0
+            && (!rolling || ElapsedMilliseconds(snapshot.FrameObservedAt, monotonicClock()) < DisplayLifetimeMs)
+            && phase == "capturing";
         var value = new Dictionary<string, object> {
             { "source", "presentmon" }, { "phase", phase }, { "run_dir", Path.GetFullPath(runDir) },
             { "statistics_scope", rolling ? "gamepp-rolling" : "cumulative-tail-mean" },
             { "statistics_version", rolling ? FrameScopeFrameStatistics.Version : 1 },
             { "window_ms", rolling ? FrameScopeFrameStatistics.WindowMs : 0 },
-            { "worker_pid", workerPid }, { "target_pid", snapshot.ProcessId },
+            { "worker_pid", workerPid }, { "target_pid", targetPid },
+            { "target_start_ms", targetStartMs }, { "target_generation", targetGeneration },
+            { "window_start_ms", snapshot.WindowStartMs }, { "window_end_ms", snapshot.WindowEndMs },
+            { "valid", available },
+            { "valid_until_ms", snapshot.WindowEndMs > 0 ? snapshot.WindowEndMs + DisplayLifetimeMs : 0 },
+            { "unavailable_reason", available ? null : phase != "capturing" ? "capture-stopped" : snapshot.Error != null ? "source-error" : "waiting-frames" },
             { "worker_start_time_unix", (long)(System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime() - new DateTime(1970, 1, 1)).TotalSeconds },
             { "timestamp_ms", (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalMilliseconds },
-            { "source_age_ms", SourceAgeMilliseconds },
+            { "source_age_ms", snapshot.Count > 0 ? (object)ElapsedMilliseconds(snapshot.FrameObservedAt, monotonicClock())
+                : hasNewValidFrameAt ? (object)ElapsedMilliseconds(lastNewValidFrameAt, monotonicClock()) : null },
             { "frame_count", snapshot.Count }, { "selected_track", snapshot.Track },
             { "error", snapshot.Error }, { "caught_up", snapshot.CaughtUp },
+            { "reader_caught_up", caughtUp }, { "read_error", lastReadError },
             { "fps_1low", available ? Rounded(snapshot.Low1) : null },
             { "fps", available ? Rounded(snapshot.Fps) : null },
             { "fps_01low", available ? Rounded(snapshot.Low01) : null }
@@ -301,7 +388,8 @@ public sealed class FrameScopeLiveFrameStats
         catch (IOException exception) { System.Diagnostics.Trace.WriteLine("Live frame statistics write failed: " + exception.Message); }
     }
     private static object Rounded(double? value) {
-        return value.HasValue && !double.IsInfinity(value.Value) && !double.IsNaN(value.Value)
-            ? (object)Math.Round(value.Value, 2, MidpointRounding.AwayFromZero) : null;
+        if (!value.HasValue || double.IsInfinity(value.Value) || double.IsNaN(value.Value) || value.Value <= 0) return null;
+        double rounded = Math.Round(value.Value, 2, MidpointRounding.AwayFromZero);
+        return rounded > 0 ? rounded : value.Value;
     }
 }

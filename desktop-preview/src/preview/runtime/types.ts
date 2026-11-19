@@ -1,6 +1,8 @@
 export type PreviewScenario = "normal" | "multi-gpu" | "missing-sensors" | "empty" | "failure";
 export type MonitorPhase = "idle" | "waiting" | "capturing" | "stopping" | "generating" | "completed" | "error";
 export interface PreviewTarget {
+  presetId?: string | null;
+  category?: string;
   id: string;
   name: string;
   executable: string;
@@ -25,6 +27,7 @@ export interface PreviewReport {
   /** Real backend reports carry the run directory (for open-directory etc.). */
   runDir?: string;
   artifactStatus?: string;
+  inspectionStatus?: "pending" | "checking" | "checked" | "unavailable";
   artifactError?: string;
   canOpenReport?: boolean;
   canRegenerate?: boolean;
@@ -50,6 +53,8 @@ export interface PreviewState {
   targets: PreviewTarget[];
   selectedTargetId: string | null;
   reports: PreviewReport[];
+  reportPage?: { total: number; filteredTotal: number; page: number; pages: number; pageSize: number };
+  reportListError?: string;
   config: PreviewConfig;
   monitor: {
     phase: MonitorPhase;
@@ -90,14 +95,21 @@ export interface PreviewActionPayloads {
 export type PreviewAction = keyof PreviewActionPayloads;
 export type PreviewListener = (state: PreviewState) => void;
 export interface OverlaySettings {
-  display_items: Array<{ id: string; label: string; enabled: boolean }>;
-  custom_items: Array<{ id: string; text: string; color: string; enabled: boolean }>;
+  display_items: Array<{ id: string; label: string; enabled: boolean } & import('@/lib/overlay-items').OverlayItemOptions>;
+  custom_items: Array<{ id: string; text: string; color: string; enabled: boolean } & import('@/lib/overlay-items').OverlayItemOptions>;
   opacity: number;
   style: string;
   font: string;
   font_size: number;
   item_width: number;
   font_color: string;
+  font_bold: boolean;
+  text_outline_enabled: boolean;
+  text_outline_width: number;
+  text_outline_color: string;
+  outline_migration_version?: number;
+  horizontal_outline?: { enabled: boolean; width: number; color: string };
+  vertical_outline?: { enabled: boolean; width: number; color: string };
   position_x?: number | null;
   position_y?: number | null;
   vertical_position_x?: number | null;

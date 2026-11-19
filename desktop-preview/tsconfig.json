@@ -19,7 +19,7 @@
       "@preview/native-core": ["./node_modules/@tauri-apps/api/core.d.ts"]
     }
   },
-  "include": ["src/main.tsx", "src/build-info.d.ts", "src/preview/**/*.ts", "src/preview/**/*.tsx"],
-  "exclude": ["src_old", "src/app", "src/components/components"],
+  "include": ["src/bootstrap.ts", "src/main.tsx", "src/report/**/*.tsx", "src/build-info.d.ts", "src/preview/**/*.ts", "src/preview/**/*.tsx"],
+  "exclude": ["src_old", "src/app", "src/components/components", "**/*.test.ts", "**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

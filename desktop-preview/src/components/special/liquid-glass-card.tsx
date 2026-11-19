@@ -8,6 +8,7 @@ import { useMemo } from "react";
 
 
 interface LiquidGlassCardProps extends BoxProps {
+  ref?: React.Ref<HTMLDivElement>;
   type?:'button'|'submit'|'reset';
   children: React.ReactNode;
   className?: string;

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -105,8 +105,9 @@ internal static partial class FrameScopeReportGenerator
         foreach (PresentTrack track in summaries)
         {
             List<double> scoring = PresentTrackFrameValues(track, track.HardwareRows > 0);
-            double? medianMs = PercentileHigh(scoring, 0.5);
-            double? p99 = PercentileHigh(scoring, 0.99);
+            scoring.Sort();
+            double? medianMs = PercentileHighSorted(scoring, 0.5);
+            double? p99 = PercentileHighSorted(scoring, 0.99);
             track.MedianFps = medianMs.HasValue && medianMs.Value > 0 ? 1000.0 / medianMs.Value : (double?)null;
             track.P99FrameMs = p99;
             track.Score = FrameScopeLiveFrameStats.TrackScore(track.HardwareRows, track.Rows, medianMs, p99);

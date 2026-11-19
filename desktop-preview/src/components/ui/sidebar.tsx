@@ -1,8 +1,9 @@
-import { Box as ChakraBox, Flex, IconButton, Text, useColorModeValue, Badge, Image, useColorMode } from "@chakra-ui/react";
-import { Home, Settings, Cpu, Crosshair, FileChartColumn, PanelsTopLeft } from "lucide-react";
+import { Box as ChakraBox, Flex, IconButton, Text, useColorModeValue, Badge, Image, useColorMode, Tooltip } from "@chakra-ui/react";
+import { Home, Settings, Cpu, Crosshair, FileChartColumn, PanelsTopLeft, UserRound, UsersRound, HeartHandshake, MessageSquare, Trophy, Wrench, Gauge, SlidersHorizontal, TrendingUp } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useBackground } from "@/contexts/background-context";
+import { navigationLabels, playSurface } from '@/lib/motion-preferences';
 import { LiquidGlassEdges } from "@/components/special/liquid-glass-card";
 import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
 import { useThemeColor } from "@/contexts/theme-color-context";
@@ -93,6 +94,8 @@ function NavButton({ item, isActive, isDropTarget, hoverBg, iconColor, activeIco
     <Link
       ref={registerRef}
       to={item.path}
+      title={item.ariaLabel}
+      aria-label={item.ariaLabel}
       className="jelly-bounce-nav-button"
       draggable={false}
       onDragStart={(e) => e.preventDefault()}
@@ -184,21 +187,19 @@ export function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode, jellyBounceActive } = useBackground();
-  const jellyAllowed=useRef(jellyBounceActive);
-  jellyAllowed.current=jellyBounceActive;
+  const { liquidGlassEnabled, liquidGlassBlur, liquidGlassMode } = useBackground();
   const { getActiveColor, getHoverColor, getContrastTextColor } = useThemeColor();
   const { svgSupported } = useLiquidGlassRefraction(liquidGlassEnabled && liquidGlassMode === "real");
-  const [showLabel, setShowLabel] = useState(false);
+  const [showLabel, setShowLabel] = useState(() => navigationLabels(localStorage.getItem('nexbox_sidebar_show_label')));
   const [navPosition, setNavPosition] = useState<"left" | "top">("left");
 
   useEffect(() => {
     (async () => {
       let v = await store.get<boolean>("nexbox_sidebar_show_label");
-      if (v !== null && v !== undefined) {
+      if (typeof v === 'boolean') {
         setShowLabel(v);
       } else {
-        setShowLabel(localStorage.getItem("nexbox_sidebar_show_label") === "true");
+        setShowLabel(navigationLabels(localStorage.getItem("nexbox_sidebar_show_label")));
       }
       let nv = await store.get<string>("nexbox_nav_position");
       if (nv === "top" || nv === "left") {
@@ -215,13 +216,9 @@ export function Sidebar() {
   const isFirstRender = useRef(true);
 
   const triggerJellyBounce = useCallback(() => {
-    if (!jellyAllowed.current) return;
-    // 只缩放外层；内容跟随父级，避免图标被两层动画重复栅格缩放。
     const containerEl = sidebarContainerRef.current;
     if (containerEl) {
-      containerEl.classList.remove("jelly-bouncing");
-      void containerEl.offsetWidth;
-      containerEl.classList.add("jelly-bouncing");
+      playSurface(containerEl, true, 'control');
     }
   }, []);
   
@@ -247,6 +244,13 @@ export function Sidebar() {
   }, []);
 
   const isTop = navPosition === "top";
+  useLayoutEffect(() => {
+    const element=sidebarContainerRef.current;
+    if(!isTop||!element)return;
+    const measure=()=>document.documentElement.style.setProperty('--framescope-top-navigation-bottom',`${element.offsetTop+element.offsetHeight+12}px`);
+    measure();const observer=new ResizeObserver(measure);observer.observe(element);
+    return()=>{observer.disconnect();document.documentElement.style.removeProperty('--framescope-top-navigation-bottom');};
+  },[isTop]);
   
   const hideableNavPaths = DEFAULT_NAV_ORDER.filter(path => path !== "/" && path !== "/settings");
   const getNavStorageKey = (path: string) => `nexbox_nav_visible_${path.replace(/\//g, "").replace(/-/g, "_")}`;
@@ -641,11 +645,9 @@ export function Sidebar() {
     zIndex: 40,
     borderRadius: "2xl",
     boxShadow: "2xl",
-    py: 6,
-    px: 2,
+    p: 0,
     maxWidth: "64px",
     maxHeight: "calc(100vh - 100px)",
-    overflowY: "auto" as const,
     transition: containerTransition,
     // backfaceVisibility: hidden 删除 —— 合成层圆角 AA 丢失的主开关（问题 1）
     sx: {},
@@ -660,11 +662,9 @@ export function Sidebar() {
     zIndex: 40,
     borderRadius: "2xl",
     boxShadow: "2xl",
-    py: 2,
-    px: 3,
+    p: 0,
     maxWidth: "calc(100vw - 48px)",
     maxHeight: "calc(100vh - 110px)",
-    overflowY: "auto" as const,
     width: "max-content",
     transition: containerTransition,
     sx: {},
@@ -714,7 +714,9 @@ export function Sidebar() {
           transition="opacity 0.45s cubic-bezier(0.4, 0, 0.2, 1)"
         />
       )}
-      <ChakraBox position="relative" zIndex={1}>
+      <ChakraBox position="relative" zIndex={1} overflowY="auto" overflowX="hidden"
+        maxHeight={isTop?"calc(100vh - 112px)":"calc(100vh - 102px)"}
+        py={isTop?2:6} px={isTop?3:2}>
         {sidebarContent}
       </ChakraBox>
     </ChakraBox>

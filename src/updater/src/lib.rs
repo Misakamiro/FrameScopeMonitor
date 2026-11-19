@@ -2,6 +2,9 @@
 use serde::{Deserialize, Serialize};
 mod download;
 mod asset_download;
+pub mod components;
+mod cumulative;
+pub use cumulative::verify_cumulative_receipt;
 #[cfg(windows)]
 pub mod autostart;
 use semver::Version;
@@ -101,10 +104,13 @@ pub struct Release {
 pub struct Asset { pub name: String, pub size: u64 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Candidate { pub id: u64, pub tag: String, pub notes: String, pub manifest: Manifest,
-    #[serde(default="default_manifest_name")] pub manifest_name:String }
+    #[serde(default="default_manifest_name")] pub manifest_name:String,
+    #[serde(default,skip_serializing_if="Option::is_none")] pub v2:Option<components::ManifestV2>,
+    #[serde(default,skip_serializing_if="Option::is_none")] pub component_plan:Option<components::ComponentPlan> }
 fn default_manifest_name()->String{MANIFEST.into()}
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Receipt { pub candidate: Candidate, pub manifest_text: String, pub signature: String }
+pub struct Receipt { pub candidate: Candidate, pub manifest_text: String, pub signature: String,
+    #[serde(default)] pub downloaded_components:Vec<String> }
 
 #[derive(Clone,Debug,Serialize)]
 pub struct DownloadTelemetry {
@@ -124,7 +130,7 @@ impl DownloadTelemetry {
 }
 
 /// Production constructor fixes the repository and proxy. Tests use loopback only.
-pub struct Source { client: reqwest::blocking::Client, api: String, downloads: String, proxy: Option<String>, key: String, origin_first: AtomicBool, edition:String }
+pub struct Source { client: reqwest::blocking::Client, api: String, downloads: String, proxy: Option<String>, key: String, origin_first: AtomicBool, edition:String, installation:Option<PathBuf> }
 fn system_proxy_enabled() -> bool {
     if ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
         .iter().any(|name| std::env::var(name).map(|v| !v.trim().is_empty()).unwrap_or(false)) { return true; }
@@ -144,6 +150,10 @@ fn request_error(error: reqwest::Error) -> String {
     message
 }
 impl Source {
+    pub fn with_installation(mut self,root:PathBuf)->Result<Self>{
+        if !root.is_absolute(){return Err("安装目录必须是绝对路径".into());}
+        self.installation=Some(root);Ok(self)
+    }
     pub fn with_edition(mut self,edition:&str)->Result<Self>{
         if !matches!(edition,"full"|"offline"){return Err("更新版型无效".into());}
         self.edition=edition.into();Ok(self)
@@ -162,7 +172,7 @@ impl Source {
         let client = reqwest::blocking::Client::builder().user_agent("FrameScope/2 updater")
             .connect_timeout(Duration::from_secs(4))
             .redirect(reqwest::redirect::Policy::limited(5)).build().map_err(|e| e.to_string())?;
-        Ok(Self {client, api, downloads, proxy, key, origin_first: AtomicBool::new(false),edition:"offline".into()})
+        Ok(Self {client, api, downloads, proxy, key, origin_first: AtomicBool::new(false),edition:"offline".into(),installation:None})
     }
     fn url(&self, original: &str, proxy: bool) -> String {
         if proxy { format!("{}{original}", self.proxy.as_deref().unwrap_or("")) } else { original.into() }
@@ -222,6 +232,15 @@ impl Source {
             let mut invalid = None;
             for release in releases {
                 let has=|name:&str|release.assets.iter().any(|a|a.name==name);
+                let v2_name=if self.edition=="offline"{"offline-update-manifest-v2.json"}else{components::MANIFEST_V2};
+                if self.installation.is_some() && has(v2_name) {
+                    match self.cumulative_candidate(&release,v2_name,cancel) {
+                        Ok(candidate)=>result.push(candidate),
+                        Err(error)=>{cancelled(cancel)?;invalid=Some(error);continue;}
+                    }
+                    if result.len()>=2&&result.iter().any(|r|r.manifest.channel=="stable"){break;}
+                    continue;
+                }
                 if self.edition=="offline" && has(COMMUNITY_MANIFEST) && !has(OFFLINE_MANIFEST){continue;}
                 let manifest_name=if self.edition=="full" && has(COMMUNITY_MANIFEST){COMMUNITY_MANIFEST}
                     else if self.edition=="offline" && has(OFFLINE_MANIFEST){OFFLINE_MANIFEST}else{MANIFEST};
@@ -234,7 +253,7 @@ impl Source {
                 };
                 if release.prerelease != (manifest.channel == "beta") || !release.assets.iter().any(|a|a.name == manifest.installer.name && a.size == manifest.installer.size) { continue; }
                 if !self.accepts(&manifest){continue;}
-                result.push(Candidate { id:release.id, tag:release.tag_name, notes:release.body.unwrap_or_default(), manifest,manifest_name:manifest_name.into() });
+                result.push(Candidate { id:release.id, tag:release.tag_name, notes:release.body.unwrap_or_default(), manifest,manifest_name:manifest_name.into(),v2:None,component_plan:None });
                 // Keep newest eligible + newest stable (explicit stable return).
                 if result.len() >= 2 && result.iter().any(|r|r.manifest.channel == "stable") { break; }
             }
@@ -245,6 +264,7 @@ impl Source {
         self.download_observed(candidate,cache,cancel,progress,|_|{})
     }
     pub fn download_observed(&self, candidate: &Candidate, cache: &Path, cancel: &AtomicBool, progress: impl Fn(u64,u64), observer:impl Fn(DownloadTelemetry)) -> Result<Receipt> {
+        if candidate.v2.is_some(){return self.download_cumulative(candidate,cache,cancel,progress,observer);}
         fs::create_dir_all(cache).map_err(|e|e.to_string())?;
         let path = cache.join(&candidate.manifest.installer.name);
         let partial = path.with_extension("part");
@@ -258,7 +278,7 @@ impl Source {
             cancelled(cancel)?;
             if path.exists() { fs::remove_file(&path).map_err(|e|e.to_string())?; }
             fs::rename(&partial,&path).map_err(|e|e.to_string())?;
-            let receipt = Receipt {candidate:candidate.clone(),manifest_text:text.clone(),signature:sig.clone()};
+            let receipt = Receipt {candidate:candidate.clone(),manifest_text:text.clone(),signature:sig.clone(),downloaded_components:vec![]};
             atomic_json(&cache.join("receipt.json"), &receipt)?;
             Ok(receipt)
         })();
@@ -270,6 +290,7 @@ impl Source {
         self.transfer_with_speed_check(url, path, expected, cancel, progress, true)
     }
     pub fn verified_cache(&self, cache: &Path, receipt: &Receipt) -> Result<PathBuf> {
+        if receipt.candidate.v2.is_some(){return self.verified_cumulative_cache(cache,receipt);}
         let manifest = verify_manifest(receipt.manifest_text.as_bytes(), &receipt.signature,&self.key,&receipt.candidate.tag)?;
         if !self.accepts(&manifest){return Err("缓存更新包版型与当前客户端不一致".into());}
         if serde_json::to_value(&manifest).unwrap() != serde_json::to_value(&receipt.candidate.manifest).unwrap() { return Err("缓存清单不一致".into()); }
@@ -299,9 +320,14 @@ pub fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     if path.exists() {
         use std::os::windows::ffi::OsStrExt;
         #[link(name="kernel32")] unsafe extern "system" { fn ReplaceFileW(old:*const u16,new:*const u16,backup:*const u16,flags:u32,a:*mut core::ffi::c_void,b:*mut core::ffi::c_void)->i32; }
+        // Canonical paths use the Windows extended-length syntax for deep install roots.
+        let target_path = fs::canonicalize(path).map_err(|e|e.to_string())?;
+        let temp_path = fs::canonicalize(&temp).map_err(|e|e.to_string())?;
         let wide = |p:&Path|p.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();
-        if unsafe {ReplaceFileW(wide(path).as_ptr(),wide(&temp).as_ptr(),std::ptr::null(),0,std::ptr::null_mut(),std::ptr::null_mut())} == 0 { return Err(std::io::Error::last_os_error().to_string()); }
+        if unsafe {ReplaceFileW(wide(&target_path).as_ptr(),wide(&temp_path).as_ptr(),std::ptr::null(),0,std::ptr::null_mut(),std::ptr::null_mut())} == 0 { return Err(std::io::Error::last_os_error().to_string()); }
         return Ok(());
     }
     fs::rename(temp,path).map_err(|e|e.to_string())
 }
+
+

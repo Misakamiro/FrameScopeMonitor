@@ -11,13 +11,16 @@ fn installed_build(target:&Path)->Result<BuildInfo>{
         || build.git_sha.len()!=40 || !build.git_sha.bytes().all(|b|b.is_ascii_hexdigit()) {return Err("更新与恢复仅支持已有 2.x 安装".into());}
     Ok(build)
 }
-fn verify_installed(target:&Path)->Result<()> {
+fn verify_installed(target:&Path,repair_components:bool)->Result<()> {
     let bytes=fs::read(target.join(transaction::MANIFEST)).map_err(|e|e.to_string())?;
     let bytes=bytes.strip_prefix(&[0xef,0xbb,0xbf]).unwrap_or(&bytes);
     let manifest:serde_json::Value=serde_json::from_slice(bytes).map_err(|e|e.to_string())?;
     for file in manifest["files"].as_array().ok_or("Missing installed payload manifest")? {
         let relative=Path::new(file["path"].as_str().ok_or("Invalid installed file")?);
         crate::installer::checked_relative(relative)?;
+        let name=relative.to_string_lossy().replace('\\',"/").to_ascii_lowercase();
+        if repair_components && (name.starts_with("toolbox/files/") || name.starts_with("dependencies/") ||
+            name==update::components::INSTALLED_COMPONENTS.to_ascii_lowercase()) {continue;}
         let path=target.join(relative);transaction::assert_path(&path)?;
         update::verify_file(&path,&update::Package{name:relative.to_string_lossy().into(),size:file["length"].as_u64().ok_or("Missing file length")?,sha256:file["sha256"].as_str().ok_or("Missing file hash")?.into()})?;
     }
@@ -27,27 +30,39 @@ fn verify_installed(target:&Path)->Result<()> {
 pub fn perform_update(target:&Path,receipt_path:&Path)->Result<()> {
     let target=transaction::normalize(target)?;
     let old=installed_build(&target)?;
-    verify_installed(&target)?;
     transaction::assert_path(receipt_path)?;
     let receipt:Receipt=serde_json::from_slice(&fs::read(receipt_path).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
-    let manifest=update::verify_manifest(receipt.manifest_text.as_bytes(),&receipt.signature,update::public_key(),&receipt.candidate.tag)?;
+    let components=if receipt.candidate.v2.is_some() {Some(update::verify_cumulative_receipt(&receipt,update::public_key())?)}else{None};
+    let manifest=if components.is_some() {receipt.candidate.manifest.clone()}else{
+        update::verify_manifest(receipt.manifest_text.as_bytes(),&receipt.signature,update::public_key(),&receipt.candidate.tag)?};
+    if crate::installer::cumulative_payload()?!=components.is_some(){return Err("安装包类型与签名清单不符".into());}
+    verify_installed(&target,components.is_some())?;
     // Strict legacy clients omit edition; bridge identities remain explicitly bounded.
     // Signature, exact installer hash, previous edition and embedded payload are still verified.
     let edition=signed_update_edition(&manifest,env!("FRAMESCOPE_EDITION"));
     if manifest.version!=env!("FRAMESCOPE_VERSION") || manifest.git_sha!=env!("FRAMESCOPE_GIT_SHA") || edition!=env!("FRAMESCOPE_EDITION") || !old.can_upgrade_to(edition){return Err("签名清单与安装器构建或版型身份不一致".into());}
     let self_exe=std::env::current_exe().map_err(|e|e.to_string())?;
     update::verify_file(&self_exe,&manifest.installer)?;
-    let mut zip=zip::ZipArchive::new(std::io::Cursor::new(crate::installer::PAYLOAD_ZIP)).map_err(|e|e.to_string())?;
+    let mut zip=zip::ZipArchive::new(std::io::Cursor::new(crate::installer::payload_zip())).map_err(|e|e.to_string())?;
     let mut metadata=String::new();zip.by_name("FrameScopeBuildInfo.json").map_err(|e|e.to_string())?.read_to_string(&mut metadata).map_err(|e|e.to_string())?;
     let payload_build:BuildInfo=serde_json::from_str(&metadata).map_err(|e|e.to_string())?;
     if payload_build.version!=manifest.version||payload_build.git_sha!=manifest.git_sha||payload_build.resolved_edition()!=edition{return Err("Payload build identity does not match signed release".into());}
+    crate::native_ui::preflight()?;
+    if components.is_none(){crate::prerequisites::prepare(&target,None,&|_|{})?;}
     let mut runtime=WindowsRuntime::new(&target,false,false,false)?;
     runtime.keep_previous=true;runtime.preserve_settings=true;
+    runtime.prepare_update_components=components.is_some();
     runtime.startup_build=Some(BuildInfo::new(&manifest.version,&manifest.git_sha).with_edition(edition));
-    let result=transaction::execute(transaction::Request{target:&target,payload:crate::installer::PAYLOAD_ZIP,self_exe:&self_exe,
-        required:&crate::installer::required_payload_files()?,uninstall:false,delete_data:false,
-        deletions:vec![],data_roots:vec![],progress:&|_,_|{}},&mut runtime);
-    if result.is_ok(){update::atomic_json(&target.join("FrameScopeInstalledRelease.json"),&receipt)?;}
+    let required=crate::installer::required_payload_files()?;
+    let request=transaction::Request{target:&target,payload:crate::installer::payload_zip(),self_exe:&self_exe,
+        required:&required,uninstall:false,delete_data:false,deletions:vec![],data_roots:vec![],progress:&|_,_|{}};
+    let result=if let Some(components)=&components {
+        transaction::execute_cumulative(request,components,receipt_path.parent().ok_or("缺少更新缓存目录")?,&mut runtime)
+    }else{transaction::execute(request,&mut runtime)};
+    if result.is_ok(){
+        update::atomic_json(&target.join("FrameScopeInstalledRelease.json"),&receipt)?;
+        crate::prerequisites::record_pawnio(&target)?;
+    }
     else if installed_build(&target).is_ok_and(|b|b.version==old.version) {
         let _=update::atomic_json(&target.join("FrameScopeRolledBack.json"),&serde_json::json!({"version":manifest.version}));
     }
@@ -81,6 +96,8 @@ mod bridge_tests {
 }
 pub fn restore_previous(target:&Path)->Result<()> {
     let target=transaction::normalize(target)?;
+    crate::native_ui::preflight()?;
+    crate::prerequisites::prepare(&target,None,&|_|{})?;
     let mut runtime=WindowsRuntime::new(&target,false,false,false)?;
     // An interrupted update has priority over a completed-version rollback.
     if let Some(helper)=transaction::interrupted_helper(&target,&runtime)? {
@@ -96,9 +113,9 @@ pub fn restore_previous(target:&Path)->Result<()> {
     let build:BuildInfo=serde_json::from_value(previous.build).map_err(|e|e.to_string())?;
     runtime.preserve_settings=true;runtime.startup_build=Some(build);
     update::atomic_json(&target.join("FrameScopeRolledBack.json"),&serde_json::json!({"version":current.version}))?;
-    let result=transaction::execute(transaction::Request{target:&target,payload:&previous.payload,self_exe:&previous.installer,
+    let result=transaction::execute_restored(transaction::Request{target:&target,payload:&previous.payload,self_exe:&previous.installer,
         required:&["FrameScope.exe".into(),"FrameScopeMonitor.exe".into(),"FrameScopeUninstaller.exe".into()],uninstall:false,delete_data:false,
-        deletions:previous.deletions,data_roots:vec![],progress:&|_,_|{}},&mut runtime);
+        deletions:previous.deletions,data_roots:vec![],progress:&|_,_|{}},previous.installed_manifest.as_deref(),&mut runtime);
     if result.is_ok(){
         transaction::discard_previous(&target,&runtime)?;
     }
@@ -115,7 +132,7 @@ fn finish(target:&Path,result:Result<()>,old:Option<BuildInfo>)->Result<()> {
     }else if result.is_ok(){clear_handshake(target)?;}
     result
 }
-fn clear_handshake(target:&Path)->Result<()> {
+pub(crate) fn clear_handshake(target:&Path)->Result<()> {
     for name in ["FrameScopeUpdatePending.json","FrameScopeUpdateReady.json"] {
         let path=target.join(name);transaction::assert_path(&path)?;
         if path.exists(){fs::remove_file(path).map_err(|e|e.to_string())?;}

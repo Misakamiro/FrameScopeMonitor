@@ -28,6 +28,7 @@ import {
 } from "@/config/search-index";
 import { invoke } from "@tauri-apps/api/core";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
+import { useSurfacePresence } from './surface-motion';
 
 interface GroupedResults {
   [key: string]: SearchItem[];
@@ -43,6 +44,7 @@ export function GlobalSearch() {
   const { getActiveColor, getContrastTextColor } = useThemeColor();
 
   const [isOpen, setIsOpen] = useState(false);
+  const presence=useSurfacePresence<HTMLDivElement>(isOpen);
   // keydown 监听 deps 为空，用 ref 读取最新的开关状态
   const isOpenRef = useRef(false);
   isOpenRef.current = isOpen;
@@ -235,14 +237,11 @@ export function GlobalSearch() {
         )}
       </InputGroup>
 
-      {isOpen && (
-        <Box
+      {presence.present && (
+        <Box position="absolute" top="calc(100% + 8px)" left={0} w="320px" zIndex={1000} inert={!isOpen} pointerEvents={isOpen?'auto':'none'}><Box ref={presence.ref} data-motion-owned=""
           id="global-search-results"
           role="listbox"
           data-search-query={debouncedQuery}
-          position="absolute"
-          top="calc(100% + 8px)"
-          left={0}
           w="320px"
           maxH="400px"
           overflowY="auto"
@@ -335,7 +334,7 @@ export function GlobalSearch() {
               })}
             </VStack>
           )}
-        </Box>
+        </Box></Box>
       )}
     </Box>
   );

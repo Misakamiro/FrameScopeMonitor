@@ -1,5 +1,15 @@
 # Third-Party Notices
 
+## 报告 AI 组件（2026-11-16）
+
+报告 AI 使用图吧工具箱的会话、事件及 Windows 密钥保护代码（GPL-3.0），固定 OpenCode 2.2.7（MIT）与 Microsoft Hybrid Computer Use 1.0.0（MIT）。具体提交、逐文件来源、修改说明及原始许可证见 [AI 来源记录](src/ai-worker/THIRD-PARTY.md) 和该目录的 `TUBA-SOURCE.json`、`LICENSE.*`；二进制 SHA256 见 `components.lock.json`。完整包内置以上组件与许可证，禁用其独立自动升级。
+
+## 统一搜索与预测依赖（2026-11-12）
+
+客户端统一搜索使用pinyin-pro 3.29.5（MIT），版本、完整性及许可声明见desktop-preview/package-lock.json。服务端使用pypinyin 0.55.0（MIT），来源mozillazg/python-pinyin，原始许可保留在锁定wheel的pypinyin-0.55.0.dist-info/licenses/LICENSE.txt。
+
+独立训练／推理镜像使用CatBoost 1.2.10（Apache License 2.0），版本见server/accounts/requirements-trainer.txt；它不安装进Web服务镜像，也不作为客户端可执行文件分发。以上按本地锁文件与对应wheel元数据核对；下方既有许可证全文和声明保持原文。
+
 ## LibreHardwareMonitorLib 0.9.6
 
 Used by `FrameScopeHardwareProvider.exe` (loaded via reflection at runtime) for
@@ -681,3 +691,96 @@ and DirectComposition visual tree for UIAccess band 2 windows, forward mouse inp
 and initialize an explicit background through controller options when supported.
 Ordinary desktop windows retain the upstream controller path. The modified source
 contains PATCH(framescope) markers.
+
+## Forum emoji and media compression
+
+The forum uses Microsoft Fluent Emoji (MIT) at revision
+`1ffb34c752ecf5d402f04cfb4b392c77f57c54bc` and Fluent Emoji Animated (MIT) at
+`daa0365c09795789ed2bc6e8b228c97736cb6669`. The animation conversion changes
+the display format to GIF; the artwork remains attributed to Microsoft.
+License texts are retained in `desktop-preview/public/licenses/fluent-emoji-license.txt`
+and `fluent-emoji-animated-license.txt`. Sources: https://github.com/microsoft/fluentui-emoji
+and https://github.com/microsoft/fluentui-emoji-animated.
+
+Emoji names, groups and Chinese annotations use Unicode Emoji 16.0 and Unicode
+CLDR data. Their Unicode License V3 is retained in
+`desktop-preview/public/licenses/unicode-license.txt`. Sources:
+https://www.unicode.org/Public/emoji/16.0/emoji-test.txt and
+https://github.com/unicode-org/cldr-json.
+
+`@ffmpeg/ffmpeg` 0.12.15 is used under the MIT license; the license is retained in
+`desktop-preview/public/licenses/ffmpeg-wasm-license.txt`. The optional
+`@ffmpeg/core` 0.12.10 WebAssembly component declares GPL-2.0-or-later and is
+downloaded on first compression use, rather than bundled into the installer.
+Its GPLv2 text is retained in `desktop-preview/public/licenses/ffmpeg-core-license.txt`.
+Component source and build configuration: https://github.com/ffmpegwasm/ffmpeg.wasm
+and https://github.com/ffmpegwasm/ffmpeg.wasm-core. The client checks fixed SHA256
+digests before loading the downloaded JavaScript and WebAssembly files.
+
+## Game filter and AMD tuning components
+
+The independently built filter kernel uses ReShade 5.4.2, commit
+`aad478a044ff22bf149ab33e32fdcfdc56284155`, under its BSD-3-Clause license.
+FrameScope modifies target/API selection and disables the separate ReShade UI,
+update checks and shortcuts. The control add-on and effect parameters are
+implemented in this repository. Upstream submodule identities, complete notices
+and file hashes are included under `packaging/feature-suite` and installed under
+`tools/feature-suite`. No GamePP binaries are included.
+
+The recovered SDK transport builds cpp-ipc at commit
+`0f8bd3415c0bbd4291948226adab7e06bd3f0be3` under the MIT license. FrameScope
+uses its own channel namespace, fixes three Windows logging compilation sites,
+and gives two shared-memory caches ownership so DLL unloading releases handles.
+This fixed source is not claimed to be the original SDK's exact revision.
+The MIT notice and the bundled Linux a0 component's Unlicense are retained in
+`packaging/feature-suite/licenses/game-filter/vendor/cpp-ipc` and installed under
+`tools/feature-suite/licenses/game-filter/vendor/cpp-ipc`; the Linux component is
+not built into the Windows runtime. Source identities and validation boundaries are recorded in
+`src/gamepp-original/shade-sdk-endpoint.origin.json`.
+
+The AMD helper builds recovered ZenStatesCore 1.2.6.1013 managed source;
+the historical ZenStates-Core snapshot at commit
+`869b7e82572337e5a673e92230edc92bddf0e44b` and its GPL-3.0 notices remain for
+provenance. The three embedded PawnIO.Modules inputs are release 0.2.9,
+LGPL-2.1-or-later, rebuilt with the included Pawn 4.1.7152 compiler source.
+Their bytecode must exactly match the original signed messages before their
+official signature headers are reused. The separately installed PawnIO driver
+retains its own license. `packaging/feature-suite/SOURCES.md` and the corresponding
+origin manifests describe the source hashes, adaptations and rebuild entry points.
+
+The recovered TextRender workload uses FreeType 2.10.4. FreeType's original
+source and FTL/GPL license texts are included under
+`src/gamepp-original/vendor/freetype-2.10.4`. A separate translation unit selects
+the scanline rasterizer branch verified in the original benchmark. The Windows
+SimSun font is read from the user's Windows installation and is not redistributed.
+
+## Offline toolbox
+
+The toolbox catalog is derived from the actual Tools tree of luolangaga/tubatools
+at commit 15dcb42c095c496e5dd68820faa6a0434475c411. That repository's license does
+not replace each third-party program's license. Only the portable entries in
+packaging/toolbox/catalog.json are bundled; web entries require the user's own
+acquisition and are not represented as installed software.
+
+Bundled programs: core-to-core-latency (Apache-2.0), Display Driver Uninstaller
+(MIT, Wagnardsoft), NVIDIA Profile Inspector (MIT, Orbmu2k), MouseTester (MIT,
+dobragab, including OxyPlot under MIT), Everything (voidtools MIT and included
+third-party notices), and NirSoft USBDeview, BatteryInfoView and BlueScreenView
+(freeware redistribution under their retained license terms). Original files,
+licenses, source URLs and SHA256 hashes are recorded in the catalog. Each tool's
+license text accompanies its files under toolbox/files in the installed package.
+Original program icons identify their respective third-party tools.
+
+The installer contains Microsoft's WebView2 Evergreen Standalone Installer and
+.NET Framework 4.8 Offline Installer under their respective Microsoft terms.
+The unmodified installers retain their embedded terms and signatures. Package
+hashes are pinned in dependencies.lock.json. Signature verification for these
+exact hashes uses the local certificate trust store without network revocation
+retrieval; other binaries retain the existing online revocation policy.
+# 恢复负载的新增源码依赖（2026-11-06）
+
+恢复的 PCBenchmark 负载使用 mimalloc 2.0.1（Microsoft Research、Daan Leijen，MIT）与 FreeType 2.10.4（FreeType Project，FTL 或 GPL-2.0）。源码许可分别保留于 `src/gamepp-original/vendor/mimalloc-2.0.1/LICENSE`、`src/gamepp-original/vendor/freetype-2.10.4/docs/FTL.TXT` 和 `GPLv2.TXT`，安装负载携带在 `tools/feature-suite/licenses/original-workloads/`。mimalloc 的两处构建适配关闭闭源 Windows 重定向组件依赖，负载通过显式源码接口分配内存。
+
+恢复的 LZMA／7z 负载包含 Igor Pavlov 的 7-Zip 19.00 源码闭包（LGPL-2.1-or-later，部分 C 文件单独标为公有领域）。上游文件未修改；FrameScope 适配和逐文件哈希见 `src/gamepp-original/lzma-sources.origin.json`。许可全文保留在 `vendor/7zip-19.00/DOC/License.txt`、`DOC/copying.txt`，并随负载分发于 `tools/feature-suite/licenses/original-workloads/`。原件精确上游版本未声明；仅对已核验 LZMA 路径报告一致性。
+
+恢复的 PDFRender 负载使用 MuPDF 1.18.0（Artifex Software，AGPL-3.0-or-later）及其固定依赖。未修改的源码闭包、逐文件哈希和依赖提交记录见 `src/gamepp-original/pdf-sources.origin.json`；MuPDF 的 `COPYING` 和各组件原始许可随包保留于 `tools/feature-suite/licenses/original-workloads/mupdf/`。14 个基础字体来自同一上游资源，并已与原件逐字节核验。

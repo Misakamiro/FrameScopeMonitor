@@ -12,7 +12,10 @@ pub fn trace(app:&tauri::AppHandle,id:u64,style:&str,stage:&str,error:Option<&st
     if let Ok(root)=app.path().app_data_dir(){let path=root.join("diagnostics").join(concat!("overlay-",env!("FRAMESCOPE_VERSION"),".jsonl"));let _=crate::overlay_diagnostics::record(&path,env!("FRAMESCOPE_VERSION"),id,style,stage,error);}
 }
 pub fn publish_raw(data:Value){*RAW.lock().unwrap_or_else(|p|p.into_inner())=Some((data,Instant::now()));}
-pub fn latest_raw()->Value {RAW.lock().unwrap_or_else(|p|p.into_inner()).as_ref().filter(|(_,at)|at.elapsed()<Duration::from_secs(2)).map(|(data,_)|data.clone()).unwrap_or_else(crate::hardware_service::empty_overlay_value)}
+pub fn latest_raw()->Value {
+    let cached=RAW.lock().unwrap_or_else(|p|p.into_inner()).as_ref().filter(|(_,at)|at.elapsed()<Duration::from_secs(2)).map(|(data,at)|(data.clone(),at.elapsed().as_millis() as u64));
+    cached.map(|(data,age)|crate::backend::validate_cached_overlay(data,age)).unwrap_or_else(crate::hardware_service::empty_overlay_value)
+}
 fn queue()->&'static mpsc::Sender<Job>{
     static QUEUE:OnceLock<mpsc::Sender<Job>>=OnceLock::new();
     QUEUE.get_or_init(||{let (send,receive)=mpsc::channel::<Job>();std::thread::Builder::new().name("framescope-osd-lifecycle".into()).spawn(move||{
@@ -97,8 +100,9 @@ fn process(job:&Job)->Result<Value,String>{
     crate::stop_windows(&job.app)?;ensure(job)?;
     let settings=overlay_panel::get_or_init_settings();let ready=STATE.prepare(job.id,job.deadline)?;
     trace(&job.app,job.id,&settings.style,"create",None);
-    if settings.style=="vertical_panel"{
-        let window=crate::create_vertical(&job.app,job.id,job.deadline)?;
+    if matches!(settings.style.as_str(),"vertical_panel"|"custom_canvas"){
+        let custom=settings.style=="custom_canvas";
+        let window=if custom{crate::custom_overlay::create(&job.app,job.id,job.deadline)?}else{crate::create_vertical(&job.app,job.id,job.deadline)?};
         loop{
             if let Err(error)=ensure(job){let _=window.destroy();return Err(error);}
             match ready.recv_timeout(Duration::from_millis(25)){
@@ -106,14 +110,19 @@ fn process(job:&Job)->Result<Value,String>{
             }
         }
         ensure(job)?;
-        let (send,receive)=mpsc::channel();let owned=window.clone();let id=job.id;
+        let (send,receive)=mpsc::channel();let owned=window.clone();let id=job.id;let app=job.app.clone();
         window.run_on_main_thread(move||{
             let result=STATE.commit(id,||{
-                owned.show().map_err(|e|e.to_string())?;
-                crate::overlay_set_hit_test_transparent(&owned,true)?;
+                if custom {
+                    crate::custom_overlay::ACTIVE.store(true,std::sync::atomic::Ordering::SeqCst);
+                    crate::custom_overlay::runtime(&app)?;
+                }else{
+                    owned.show().map_err(|e|e.to_string())?;
+                    crate::overlay_set_hit_test_transparent(&owned,true)?;
+                }
                 Ok(())
             });
-            if result.is_ok(){crate::VERTICAL_ACTIVE.store(true,std::sync::atomic::Ordering::SeqCst);let _=owned.emit("vertical-overlay-data",latest_raw());}
+            if result.is_ok()&&!custom{crate::VERTICAL_ACTIVE.store(true,std::sync::atomic::Ordering::SeqCst);let _=owned.emit("vertical-overlay-data",latest_raw());}
             let _=send.send(result);
         }).map_err(|e|e.to_string())?;
         receive.recv_timeout(job.deadline.saturating_duration_since(Instant::now())).map_err(|_|"竖排显示确认超时".to_string())??;
@@ -152,6 +161,7 @@ pub fn auxiliary(window:tauri::WebviewWindow,app:tauri::AppHandle,command:&str,a
                 let result=(||{
                     if !STATE.live(id){return Err("旧竖排布局消息已失效".into());}
                     target.set_size(tauri::LogicalSize::new(overlay_panel::get_or_init_settings().item_width as f64,height)).map_err(|e|e.to_string())?;
+                    #[cfg(windows)] crate::vertical_overlay_input::refresh(&target);
                     #[cfg(windows)] crate::vertical_overlay_position::layout_ready();
                     STATE.layout(id)
                 })();let _=send.send(result);

@@ -125,6 +125,10 @@ pub fn bootstrap() -> Result<bool> {
         let handoff: Handoff =
             serde_json::from_slice(&fs::read(&descriptor).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
+        let protected=crate::prerequisites::protected_cache_root()?;
+        if current.parent().and_then(Path::parent)!=Some(protected.as_path()) {
+            return Err("Installer relaunch is outside the protected cache".into());
+        }
         validate_handoff(&handoff, &current, &args[..index], &descriptor)?;
         let parent = process(handoff.parent)?;
         let (start, image) = identity(&parent)?;
@@ -171,12 +175,16 @@ pub fn bootstrap() -> Result<bool> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let directory =
-        std::env::temp_dir().join(format!("framescope-relaunch-{}-{id}", std::process::id()));
+    // Elevated code must not be copied into the user's writable TEMP directory.
+    let protected=crate::prerequisites::protected_cache_root()?;
+    fs::create_dir_all(&protected).map_err(|e|e.to_string())?;
+    let directory = protected.join(format!("framescope-relaunch-{}-{id}", std::process::id()));
     assert_path(&directory)?;
     fs::create_dir(&directory).map_err(|e| e.to_string())?;
     let copy = directory.join("FrameScope Installer.exe");
     fs::copy(&current, &copy).map_err(|e| e.to_string())?;
+    use std::os::windows::fs::OpenOptionsExt;
+    let _copy_guard=fs::OpenOptions::new().read(true).share_mode(1).open(&copy).map_err(|e|e.to_string())?;
     let sha256 = hash(&current)?;
     if hash(&copy)? != sha256 {
         return Err("Relaunch copy verification failed".into());
@@ -231,7 +239,6 @@ pub fn bootstrap() -> Result<bool> {
 }
 
 pub fn schedule_cleanup() -> Result<()> {
-    use std::os::windows::process::CommandExt;
     let Some((copy, descriptor, sha)) = CLEANUP.get() else {
         return Ok(());
     };
@@ -246,78 +253,18 @@ pub fn schedule_cleanup() -> Result<()> {
     {
         return Err("Relaunch cleanup identity changed".into());
     }
-    let owner = process(std::process::id())?;
-    let (start, _) = identity(&owner)?;
-    let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        r#"$ErrorActionPreference = 'Stop'
-function Assert-Plain([string]$path) {{
-  for ($part = $path; $part; $part = [IO.Path]::GetDirectoryName($part)) {{
-    if ([IO.File]::Exists($part) -or [IO.Directory]::Exists($part)) {{
-      if ([IO.File]::GetAttributes($part) -band [IO.FileAttributes]::ReparsePoint) {{ throw 'Reparse cleanup path' }}
-    }}
-  }}
-}}
-$copy = '{copy}'
-$descriptor = '{descriptor}'
-$directory = '{directory}'
-try {{
-  $owner = [Diagnostics.Process]::GetProcessById({pid})
-  $handle = $owner.Handle
-  if ($owner.StartTime.ToUniversalTime().ToFileTimeUtc() -ne {start}) {{ throw 'Cleanup owner start identity changed' }}
-  if (-not $owner.WaitForExit(30000)) {{ throw 'Cleanup owner did not exit' }}
-}} catch [ArgumentException] {{ }}
-Assert-Plain $copy
-Assert-Plain $descriptor
-Assert-Plain $directory
-if ([IO.File]::Exists($copy)) {{
-  $algorithm = [Security.Cryptography.SHA256]::Create()
-  $stream = [IO.File]::OpenRead($copy)
-  try {{ $actual = [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-', '') }}
-  finally {{ $stream.Dispose(); $algorithm.Dispose() }}
-  if ($actual -ne '{sha}') {{ throw 'Cleanup copy hash changed' }}
-}}
-foreach ($path in @($copy, $descriptor, [IO.Path]::ChangeExtension($descriptor, 'ready'))) {{
-  Assert-Plain $path
-  for ($attempt = 0; [IO.File]::Exists($path) -and $attempt -lt 20; $attempt++) {{
-    try {{ [IO.File]::Delete($path) }} catch [IO.IOException] {{ [Threading.Thread]::Sleep(100) }}
-  }}
-  if ([IO.File]::Exists($path)) {{ throw 'Temporary copy deletion remained locked' }}
-}}
-[IO.File]::Delete($PSCommandPath)
-try {{ [IO.Directory]::Delete($directory, $false) }} catch [IO.IOException] {{ }}
-"#,
-        copy = quote(copy),
-        descriptor = quote(descriptor),
-        directory = quote(directory),
-        pid = std::process::id()
-    );
-    let path = directory.join("cleanup.ps1");
-    assert_path(&path)?;
-    use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    file.write_all(format!("\u{feff}{script}").as_bytes())
-        .map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    drop(file);
-    Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(path)
-        .creation_flags(0x08000000)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    // Windows performs exact-file cleanup after this running image is released.
+    // No shell, .NET runtime, recursive removal, or forced reboot is involved.
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_DELAY_UNTIL_REBOOT};
+    for path in [descriptor.clone(),descriptor.with_extension("ready"),copy.clone(),directory.to_path_buf()] {
+        assert_path(&path)?;
+        if !path.exists(){continue;}
+        let wide:Vec<u16>=path.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe{MoveFileExW(wide.as_ptr(),std::ptr::null(),MOVEFILE_DELAY_UNTIL_REBOOT)}==0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
     Ok(())
 }
 

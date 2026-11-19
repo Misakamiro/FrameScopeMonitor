@@ -1,4 +1,4 @@
-import { Box, HStack, Text, Switch, useColorModeValue, Icon, Button, IconButton, useDisclosure } from "@chakra-ui/react";
+import { Box, HStack, Text, Switch, Icon, Button, IconButton, useDisclosure } from "@chakra-ui/react";
 import { useDynamicIsland } from "@/components/ui/dynamic-island";
 import { useThemeColor } from "@/contexts/theme-color-context";
 import { useGlassTextColor } from "@/hooks/use-adaptive-text-color";
@@ -23,8 +23,9 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { PawnioInstallModal } from "./PawnioInstallModal";
+import type { OverlayItemOptions } from '@/lib/overlay-items';
 
-export interface DisplayItem {
+export interface DisplayItem extends OverlayItemOptions {
   id: string;
   label: string;
   enabled: boolean;
@@ -35,7 +36,7 @@ interface DraggableDisplayItemsProps {
   onReorder: (items: DisplayItem[]) => void;
   onToggle: (id: string, enabled: boolean) => void;
   disabledItems?: string[];
-  onDeltaPasswordSettings?: () => void;
+  onItemSettings?: (id: string) => void;
 }
 
 const ITEM_ICONS: Record<string, React.FC<{ size?: number }>> = {
@@ -79,10 +80,9 @@ function SortableItem({
   onInstallClick?: () => void;
 }) {
   const textColor = useGlassTextColor("gray.800", "#ffffff");
-  const hoverTextColor = useColorModeValue("gray.800", "#ffffff");
   const iconColor = useGlassTextColor("gray.500", "#999999");
-  const hoverBg = useColorModeValue("gray.50", "#1a1a1a");
-  const dragBg = useColorModeValue("gray.100", "#222222");
+  const hoverBg = "var(--framescope-control-hover)";
+  const dragBg = "var(--framescope-control-hover)";
   const toast = useDynamicIsland("layout");
   const { getActiveColor } = useThemeColor();
 
@@ -135,18 +135,21 @@ function SortableItem({
         color={iconColor}
         display="flex"
         alignItems="center"
+        borderRadius="sm"
+        _focusVisible={{ outline: '2px solid var(--framescope-primary)', outlineOffset: '3px' }}
         {...attributes}
         {...listeners}
       >
         <GripVertical size={16} />
       </Box>
-      <Icon as={() => <IconComponent size={18} />} color={item.enabled ? getActiveColor() : "gray.400"} />
-      <Text color={isDragging ? hoverTextColor : textColor} _groupHover={{ color: hoverTextColor }} fontSize="sm" flex={1}>
+      <Icon as={() => <IconComponent size={18} />} color={item.enabled ? getActiveColor() : iconColor} />
+      <Text color={textColor} fontSize="sm" flex={1}>
         {item.label}
+        {disabled && ['cpu_core_clocks', 'cpu_core_voltages'].includes(item.id) && <Text as="span" ml={2} fontSize="xs" opacity={0.7}>仅竖排支持</Text>}
       </Text>
-      {item.id === "delta_password" && onSettingsClick && (
+      {onSettingsClick && (
         <IconButton
-          aria-label="地图设置"
+          aria-label={`${item.label}设置`}
           icon={<Settings size={15} />}
           size="xs"
           variant="ghost"
@@ -193,7 +196,7 @@ export function DraggableDisplayItems({
   onReorder,
   onToggle,
   disabledItems = [],
-  onDeltaPasswordSettings,
+  onItemSettings,
 }: DraggableDisplayItemsProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -238,7 +241,7 @@ export function DraggableDisplayItems({
               onToggle={onToggle}
               enabledCount={enabledCount}
               disabled={disabledItems.includes(item.id)}
-              onSettingsClick={item.id === "delta_password" ? onDeltaPasswordSettings : undefined}
+              onSettingsClick={onItemSettings ? () => onItemSettings(item.id) : undefined}
               onInstallClick={item.id === "cpu_temp" ? onPawnioModalOpen : undefined}
             />
           ))}

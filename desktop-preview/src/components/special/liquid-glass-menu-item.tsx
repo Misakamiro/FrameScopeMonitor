@@ -42,7 +42,7 @@ export function LiquidGlassMenuItem({
 
   // 普通模式在底层模糊；透明模式只折射边缘，选中项仍保留主题色。
   const effectiveBlur = liquidGlassEnabled ? liquidGlassBlur : 0;
-  const transition = "background 0.45s cubic-bezier(0.4, 0, 0.2, 1), border-color 0.45s cubic-bezier(0.4, 0, 0.2, 1)";
+  const transition = "border-color 0.16s ease";
   const isReal = liquidGlassEnabled && liquidGlassMode === "real";
 
   const backdropFilter = liquidGlassEnabled && !isReal ? `blur(${effectiveBlur}px)` : "none";
@@ -50,6 +50,11 @@ export function LiquidGlassMenuItem({
 
   return (
     <Box
+      as="button"
+      type="button"
+      width="100%"
+      textAlign="left"
+      aria-current={isActive ? "page" : undefined}
       className={`jelly-bounce-menu-item${isReal ? " real-liquid-glass" : ""}`}
       onClick={onClick}
       cursor="pointer"
@@ -79,6 +84,7 @@ export function LiquidGlassMenuItem({
           transition: "backdrop-filter 0.45s",
         },
         transition,
+        "@media (prefers-reduced-motion: reduce)": { transition: "none", "&::before": { transition: "none" } },
       }}
       _focusVisible={{
         outline: "2px solid",
@@ -111,7 +117,7 @@ export function LiquidGlassMenuItem({
       )}
       <HStack position="relative" zIndex={1}>
         {Icon && <Icon size={18} />}
-        <Text fontSize="sm" fontWeight={isActive ? "semibold" : "normal"}>
+        <Text color="inherit" fontSize="sm" fontWeight={isActive ? "semibold" : "normal"}>
           {children}
         </Text>
       </HStack>

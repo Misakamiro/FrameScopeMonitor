@@ -18,7 +18,17 @@ internal static partial class FrameScopeNativeMonitor
 {
     private static List<string> BuildTargetProcessBaseNames(string processNames, string displayName)
     {
-        return FrameScopeCapturePlanner.BuildTargetProcessBaseNames(processNames, displayName);
+        return FrameScopeCapturePlanner.BuildTargetProcessBaseNames(processNames, displayName)
+            .Where(name => !IsFeatureWorkload(name)).ToList();
+    }
+
+    private static bool IsFeatureWorkload(string name)
+    {
+        var basename = Path.GetFileNameWithoutExtension(name ?? "");
+        return string.Equals(basename, "FrameScopeFeatureWorker", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(basename, "FrameScopeRayWorker", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(basename, "FrameScopeAmdWorker", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(basename, "FrameScopeFilterSample", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ShouldUseProcessNameCapture(List<string> processBaseNames, string configuredProcessName, string displayName)
@@ -60,7 +70,7 @@ internal static partial class FrameScopeNativeMonitor
 
     private static TargetProcessSnapshot SnapshotProcess(Process process, string processBaseName, int preferredPid)
     {
-        if (process == null) return null;
+        if (process == null || IsFeatureWorkload(processBaseName)) return null;
         try
         {
             var title = "";

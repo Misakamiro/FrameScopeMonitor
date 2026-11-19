@@ -1,8 +1,8 @@
-import {composeLuminance,foregroundForSurface,foregroundTokens,glassMaterial,linearChannel,type ForegroundBranch,type MaterialSettings} from './glass-material';
+import {composeLuminance,foregroundForSurface,foregroundTokens,glassMaterial,linearChannel,mrMaterialForeground,type ForegroundBranch,type MaterialSettings} from './glass-material';
 import {uiActivity} from './ui-activity';
 import {backgroundReferences} from './background-reference';
 
-const surfaces='[data-glass-surface],.jelly-bounce-card,.real-liquid-glass,.chakra-modal__content,.chakra-drawer__content,.chakra-menu__menu-list,.chakra-popover__content,.chakra-input,.chakra-textarea,.chakra-select,.chakra-tabs__tablist,.chakra-tooltip';
+const surfaces='[data-glass-surface],.jelly-bounce-card,.real-liquid-glass,.jelly-bounce-sidebar-left,.jelly-bounce-sidebar-top,.chakra-button,.chakra-modal__content,.chakra-drawer__content,.chakra-menu__menu-list,.chakra-popover__content,.chakra-input,.chakra-textarea,.chakra-select,.chakra-tabs__tablist,.chakra-tooltip';
 
 /** One bounded background sample shared by all visible surfaces, including portals. */
 export function watchGlassBackground(settings:MaterialSettings,backgroundMode:string) {
@@ -64,7 +64,9 @@ export function watchGlassBackground(settings:MaterialSettings,backgroundMode:st
   }
   function apply(element:HTMLElement,luminance:number) {
     const animated=backgroundMode==='mr'||backgroundMode==='dynamic';
-    const branch=foregroundForSurface(luminance,animated?undefined:branches.get(element));branches.set(element,branch);
+    const branch=backgroundMode==='mr'&&settings.enabled&&settings.mode==='real'
+      ?mrMaterialForeground(settings)
+      :foregroundForSurface(luminance,animated?undefined:branches.get(element));branches.set(element,branch);
     const tokens=foregroundTokens(branch);
     set(element,'--framescope-surface-fg',tokens.foreground);
     set(element,'--framescope-surface-muted',tokens.muted);

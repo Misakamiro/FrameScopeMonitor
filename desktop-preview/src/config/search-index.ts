@@ -1,4 +1,4 @@
-import { Home, Cpu, Crosshair, FileChartColumn, PanelsTopLeft, Settings, Palette, Info } from "lucide-react";
+import { Home, Cpu, Crosshair, FileChartColumn, PanelsTopLeft, Settings, Palette, Info, UserRound, HeartHandshake, MessageSquare, Trophy } from "lucide-react";
 import type { ComponentType } from "react";
 export type SearchCategory = "page" | "setting" | "builtin-tool" | "optimization" | "thirdparty-tool";
 export interface SearchItem {
@@ -57,6 +57,7 @@ function pageFeatures(path: string, name: string, icon: SearchItem["icon"], entr
 export const searchIndex: SearchItem[] = [
   { id: "home", nameKey: "首页", path: "/", icon: Home, category: "page", keywords: ["监控", "开始", "停止"] },
   { id: "hardware", nameKey: "硬件信息", path: "/hardware", icon: Cpu, category: "page", keywords: ["CPU", "GPU", "温度", "传感器"] },
+  { id: "custom-overlay", nameKey: "自定义悬浮窗", path: "/overlay-panel/custom", icon: Palette, category: "page", keywords: ["组件", "画布", "排版", "OSD"] },
   { id: "targets", nameKey: "监控目标", path: "/targets", icon: Crosshair, category: "page", keywords: ["游戏", "进程"] },
   { id: "reports", nameKey: "报告", path: "/reports", icon: FileChartColumn, category: "page", keywords: ["历史", "诊断", "FPS"] },
   { id: "overlay", nameKey: "悬浮监控", path: "/overlay-panel", icon: PanelsTopLeft, category: "page", keywords: ["OSD", "竖排", "悬浮窗"] },
@@ -189,19 +190,8 @@ export const categoryLabels: Record<SearchCategory, string> = { page: "页面", 
 export const categoryOrder: SearchCategory[] = ["page", "setting"];
 export function getThirdPartyToolIcon(_id: string) { return undefined; }
 
-function normalize(value: string) { return value.normalize("NFKC").trim().toLowerCase(); }
+import {searchItems} from '@/lib/unified-search';
 export function findSearchResults(query: string, items: SearchItem[], t: (key: string) => string): SearchItem[] {
-  const normalized = normalize(query);
-  if (!normalized) return [];
-  const tokens = normalized.split(/\s+/);
-  const compactQuery = normalized.replace(/\s+/g, "");
-  const score = (item: SearchItem) => {
-    const name = normalize(t(item.nameKey)).replace(/\s+/g, "");
-    return name === compactQuery ? 0 : name.startsWith(compactQuery) ? 1 : name.includes(compactQuery) ? 2 : 3;
-  };
-  return items.filter(item => {
-    const text = normalize([t(item.nameKey), item.nameKey, ...(item.keywords ?? []), ...(item.locationKeys ?? []).map(key => t(key))].join(" "));
-    const compactText = text.replace(/\s+/g, "");
-    return tokens.every(token => text.includes(token) || compactText.includes(token));
-  }).sort((a, b) => score(a) - score(b));
+  if (!query.trim()) return [];
+  return searchItems(items,query,item=>[t(item.nameKey),item.nameKey,...(item.keywords??[]),...(item.locationKeys??[]).map(t)]);
 }

@@ -17,6 +17,9 @@ import { useBackground } from "./contexts/background-context";
 import { SplashScreen } from "./components/SplashScreen";
 import { DynamicIslandHost } from "./components/ui/dynamic-island";
 import { SearchTargetFocus } from "./components/ui/search-target-focus";
+import CustomOverlayEditor from './custom-overlay/Editor';
+
+import { AppExitProgress } from "./components/AppExitProgress";
 
 export default function App() {
   const location = useLocation();
@@ -36,6 +39,7 @@ export default function App() {
       <Route path="/targets" element={<AnimatedPage><TargetsPage /></AnimatedPage>} />
       <Route path="/reports" element={<AnimatedPage><ReportsPage /></AnimatedPage>} />
       <Route path="/overlay-panel" element={<AnimatedPage><OverlayPanelPage /></AnimatedPage>} />
+      <Route path="/overlay-panel/custom" element={<AnimatedPage><CustomOverlayEditor /></AnimatedPage>} />
       <Route path="/settings" element={<AnimatedPage><SettingsPage /></AnimatedPage>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -58,6 +62,7 @@ export default function App() {
       </MainLayout>
       <DynamicIslandHost />
       <SearchTargetFocus />
+      <AppExitProgress />
     </>
   );
 }
