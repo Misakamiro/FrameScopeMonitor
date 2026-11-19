@@ -9,6 +9,7 @@ import { Minus, Square, X, RefreshCw } from "lucide-react";
 import { ReportView, type ReportData } from "./ReportView";
 import "./report.css";
 import { startMotionStore } from '../lib/motion-store';
+import { traceStartup } from '../lib/startup-trace';
 const call = <T,>(command: string, args: Record<string, unknown> = {}) =>
   invoke<T>("preview_native", { command, args });
 function ReportWindow() {
@@ -224,6 +225,7 @@ function ReportWindow() {
     }
   }, [id]);
   const ready = useCallback(() => {
+    traceStartup('ui-painted');
     void call("report_ready", { id }).catch((e) => setError(String(e)));
   }, [id]);
   const regenerate = async () => {

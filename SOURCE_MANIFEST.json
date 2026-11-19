@@ -5,7 +5,7 @@
   "edition": "offline",
   "sourceHead": "76c636ff1b7a519f106d4f3966d3dc4a8aa7a027",
   "sourceDirty": true,
-  "sourceSnapshotSha256": "1E1C5AA4FFCA34C0E5F991DA4837E855F35CB6A2C91D01652E9470F0678C50FF",
+  "sourceSnapshotSha256": "4863D03B9390AA89F28F73A26A77B5CFA3923B161AA75419AA859940A1F45FEC",
   "sourceSnapshotFormat": "sha256-length-path-v1",
   "files": [
     {
@@ -35,8 +35,8 @@
     },
     {
       "path": "README.md",
-      "sha256": "B7DCC6AB7A2F41600A4809980917C059197BA0C63224AB3D6B3FB0AB7E5CBD59",
-      "length": 15177
+      "sha256": "1B1FABB0E3691BEBB27DCF3D0F01F8FA719CB77651F23B8DB4590CD57C9C123A",
+      "length": 16015
     },
     {
       "path": "THIRD-PARTY-NOTICES.md",
@@ -2185,8 +2185,8 @@
     },
     {
       "path": "desktop-preview/src/report/ReportWindow.tsx",
-      "sha256": "9710B4D1C1FFE994291C8DC27FA27A343A5178E4D2B9E26EB07825B535FC92D1",
-      "length": 11641
+      "sha256": "7A63FB2C79CC0FBDFEF578132C86B44F38763DDDE589412906C5964F4C9789AC",
+      "length": 11726
     },
     {
       "path": "desktop-preview/src/report/engine.js",
